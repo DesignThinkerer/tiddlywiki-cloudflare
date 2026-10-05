@@ -1,13 +1,8 @@
-# Plan: plugins as files the page loads
+# Plugins as files the page loads
 
-**Status: planned.** This guide describes the change and how to make it; it replaces the earlier plan to bake plugins into the page. The patch implements it, README included, after which this guide stays as the design notes behind README section 4.8.
+**Status: implemented and deployed (October 2026).** These are the design notes behind README section 4.8: the problem, the design and why it was chosen over baking plugins into the page, what it costs, the change step by step, and how to operate it.
 
-The change was prototyped against the current code (October 2026):
-- [`external-plugins.patch`](external-plugins.patch) applies cleanly with `git apply docs/external-plugins.patch`. It changes the worker, the browser module, the build script, the tests and the README.
-- With it, all test suites pass: 9 + 16 + 55 checks in the existing suites (two of them new), plus 55 in the new `test/plugins.test.mjs`. That test uses real plugins shipped with TiddlyWiki: markdown and KaTeX.
-- Against the current worker, the new test fails as soon as it looks for a plugin file.
-
-If the code has moved on since, follow section 5 by hand.
+The change is covered by the tests: `test/plugins.test.mjs` (55 checks) runs real plugins shipped with TiddlyWiki, markdown and KaTeX, on the admin site and on a stand-in for the public site. All four suites pass (`npm test`).
 
 ## Contents
 
@@ -15,7 +10,7 @@ If the code has moved on since, follow section 5 by hand.
 2. [The design](#2-the-design)
 3. [Why it's built this way](#3-why-its-built-this-way)
 4. [Cost](#4-cost)
-5. [Implementation, step by step](#5-implementation-step-by-step)
+5. [The change, step by step](#5-the-change-step-by-step)
 6. [Tests](#6-tests)
 7. [Cloudflare: a cache rule for plugin files](#7-cloudflare-a-cache-rule-for-plugin-files)
 8. [Rollout](#8-rollout)
@@ -35,9 +30,9 @@ When the page loads, TiddlyWiki boots in this order:
 3. It defines JavaScript modules (widgets, macros, parsers, startup code), from plugins and from standalone tiddlers.
 4. It runs startup modules. One of them starts the sync, which fetches the tiddler list from the worker and then each tiddler.
 
-Anything that arrives in step 4 is too late for steps 2 and 3. Today plugins installed through the wiki arrive in step 4:
+Anything that arrives in step 4 is too late for steps 2 and 3. Before this change, plugins installed through the wiki arrived in step 4:
 
-| Kind | Today | Why |
+| Kind | Before | Why |
 |---|---|---|
 | Plugin without JavaScript (`plugin-type: plugin`) | Works | TiddlyWiki registers plain plugins live when they arrive. |
 | Plugin with JavaScript modules | **Never works** | TiddlyWiki asks you to reload. After the reload the plugin again arrives after boot, so its code never runs, and TiddlyWiki asks again. |
@@ -96,12 +91,12 @@ sequenceDiagram
 **In the worker: one request**
 
 5. **It reads the body as bytes** and finds the first `,"text":`. It parses only what comes before: the fields, a few hundred bytes.
-6. **It checks for a conflict:** the stored revision against `If-Match` / `If-None-Match`, as today.
+6. **It checks for a conflict:** the stored revision against `If-Match` / `If-None-Match`, as before.
 7. **It appends `,"revision":"1791041234567","bag":"default","recipe":"default"`** before the final `}` and writes the result to `recipes/default/tiddlers/$:/plugins/tiddlywiki/markdown`, with `layout: flat` in its metadata. The text is copied as bytes, never decoded.
-8. **It queues the GitHub backup** and **purges the tiddler's public URLs**, as today. Plugin files are never purged.
+8. **It queues the GitHub backup** and **purges the tiddler's public URLs**, as before. Plugin files are never purged.
 9. **It updates the tiddler list** with the plugin's entry (all fields but `text`), and gets back the entry it replaced.
 10. **The plugin is something the page needs at boot, so it rebuilds `baked.html` before answering.** The page build:
-    - reads `index.html`, the tiddler list and the startup tiddlers, as today;
+    - reads `index.html`, the tiddler list and the startup tiddlers, as before;
     - checks each plugin's file with a `HEAD`. This one is missing or has an older revision, so it reads the stored tiddler and writes `_plugins/$:/plugins/tiddlywiki/markdown.js`: the opening of the template, the stored bytes, the closing;
     - inserts the preload script and one `<script src>` per plugin after `<head>`, working on the bytes of `index.html`;
     - saves `baked.html` and purges `/` and `/baked.html` on the public site.
@@ -118,7 +113,7 @@ The import report is a second, small save that goes through steps 5–9 and 11.
 14. **It runs before TiddlyWiki boots** and adds the plugin to `$tw.preloadTiddlers`. TiddlyWiki registers it and defines its modules.
 15. **No reload loop.** The sync gets the tiddler list and finds the same revision for the plugin as the one in the file, so it doesn't download it again.
 
-The worker sees three requests on that load (page, `/status`, tiddler list), as today. The public site serves the same `baked.html`, so visitors get the plugin too.
+The worker sees three requests on that load (page, `/status`, tiddler list), as before. The public site serves the same `baked.html`, so visitors get the plugin too.
 
 ---
 
@@ -155,9 +150,9 @@ A single loader script that adds the others would have to insert them dynamicall
 
 ### 3.5 The browser sends the layout the worker stores
 
-Today, every save is parsed and re-serialized by the worker, just to add `revision`, `bag` and `recipe`. For plugins that's a lot of CPU:
+Before this change, every save was parsed and re-serialized by the worker, just to add `revision`, `bag` and `recipe`. For plugins that's a lot of CPU:
 
-| Plugin | Size | TiddlyWeb layout (today) | Flat layout |
+| Plugin | Size | TiddlyWeb layout (before) | Flat layout |
 |---|---|---|---|
 | markdown | 240 KB | 2.6 ms | 0.1 ms |
 | KaTeX | 735 KB | 6.5 ms | 0.3 ms |
@@ -170,12 +165,12 @@ Median CPU of the body handling, measured in Node.js (the same JavaScript engine
 **The worker's fields come last.** It appends `revision`, `bag` and `recipe` to the end of the body, so even if a client sent its own `revision`, the worker's wins: JSON readers keep the last value of a repeated key.
 
 **Compatibility:**
-- Saves without the `X-Tiddler-Layout: flat` header (tabs opened before the deploy, scripts) take today's path.
-- A body sent with the header that doesn't follow the layout (pretty-printed, or with `text`, `revision`, `bag` or `recipe` among the fields before `"text"`) takes today's path too. The one thing the worker can't check cheaply is fields placed *after* `text`: they're stored, but missing from the tiddler list. The browser module never does that.
+- Saves without the `X-Tiddler-Layout: flat` header (tabs opened before the deploy, scripts) are parsed and re-serialized, as before.
+- A body sent with the header that doesn't follow the layout (pretty-printed, or with `text`, `revision`, `bag` or `recipe` among the fields before `"text"`) is handled the same way. The one thing the worker can't check cheaply is fields placed *after* `text`: they're stored, but missing from the tiddler list. The browser module never does that.
 - A tiddler with a field literally called `fields` is sent in TiddlyWeb's layout, because the flat layout can't represent it.
 - TiddlyWiki reads both layouts: its loader only unpacks `fields` when it's there. Stored tiddlers keep their layout until they're next saved.
 
-**Alternatives considered:** flattening in the worker would add about half again to today's CPU. Flattening in the plugin file (one extra line in the browser) costs nothing there, but leaves the save's own parse and re-serialize. The plugin file for a tiddler still stored in TiddlyWeb's layout uses that extra line.
+**Alternatives considered:** flattening in the worker would have added about half again to the save's CPU. Flattening in the plugin file (one extra line in the browser) costs nothing there, but leaves the save's own parse and re-serialize. The plugin file for a tiddler still stored in TiddlyWeb's layout uses that extra line.
 
 ### 3.6 The page build is the only writer of plugin files
 
@@ -237,9 +232,9 @@ These figures come from the same test machine as in section 3, so read them as p
 
 ---
 
-## 5. Implementation, step by step
+## 5. The change, step by step
 
-Changes are in `src/conflict-guard.js` and `src/worker.src.js`, then the tests and the README. After editing, run `npm run build` and `npm test`.
+What changed relative to the previous worker, with the code as it now is in `src/conflict-guard.js` and `src/worker.src.js`, then the tests and the README. "Replace X with" refers to the previous code. After editing the source, run `npm run build` and `npm test`.
 
 ### 5.1 The browser module sends the flat layout
 
@@ -470,7 +465,7 @@ await untilDone(ctx, (async () => {
 
 **Why `untilDone` rather than a plain `await`:** if the browser disconnects before the response (a reload during the build), work that is only awaited can be cancelled. `untilDone` also hands it to `ctx.waitUntil`, which keeps it running. For the same reason the backup is now queued before the tiddler list is updated, not after.
 
-**Why check `previous` too:** it covers a tiddler that stops being needed at boot, such as a startup action losing its tag, or a plugin turned into an ordinary tiddler. Today such a tiddler stays in the page until something else triggers a rebuild.
+**Why check `previous` too:** it covers a tiddler that stops being needed at boot, such as a startup action losing its tag, or a plugin turned into an ordinary tiddler. Before, such a tiddler stayed in the page until something else triggered a rebuild.
 
 ### 5.5 Reading a flat tiddler through the worker
 
@@ -827,11 +822,11 @@ writeFileSync(new URL("./worker.js", import.meta.url), banner + source.replace(P
 
 ### 5.12 Tests, package.json and README
 
-- **`test/plugins.test.mjs`:** new, in the patch (section 6).
+- **`test/plugins.test.mjs`:** new (section 6).
 - **`test/bake.test.mjs`:** the version check becomes `/^4-/`, and a new check for an `index.html` with a byte order mark.
 - **`test/queue-backup.test.mjs`:** one new check for flat saves.
 - **`package.json`:** adds `test:plugins` and runs it in `npm test`.
-- **`README.md`:** the patch updates the introduction, the architecture, the note on the build (2), the zone rules (3.5), the R2 layout and the two layouts (4.2), the page (4.3), a new section 4.8 on plugins, 5.13, operating (6), troubleshooting (7), limits (8) and tests (9).
+- **`README.md`:** updated: the introduction, the architecture, the note on the build (2), the zone rules (3.5), the R2 layout and the two layouts (4.2), the page (4.3), a new section 4.8 on plugins, 5.13, operating (6), troubleshooting (7), limits (8) and tests (9).
 
 ---
 
@@ -878,14 +873,15 @@ The CORS transform rule doesn't need to cover `/_plugins/`: script tags don't us
 
 ## 8. Rollout
 
-1. **Apply the change:** `git apply docs/external-plugins.patch`, or follow section 5.
-2. **Test:** `npm test`. All four suites should pass.
-3. **Add the cache rule** (section 7).
-4. **Check what will start running.** After the deploy, every plugin and module stored in R2 runs at boot, on both sites. That includes ones that never ran before, such as a plugin with code installed through the wiki, and stored copies of plugins that are also built into `index.html` (the stored copy wins). In the admin wiki, look at `[all[tiddlers]has[plugin-type]has[revision]] [all[tiddlers]has[module-type]has[revision]]` in Advanced Search → Filter: tiddlers with a `revision` came from the worker. Delete any you don't want.
-5. **Deploy** the new `worker.js`.
-6. **Open the admin wiki once.** The page is rebuilt (version `4-…`), files are written for the plugins already in the wiki, and the public page is purged. Reload any other open tabs: older tabs still save in TiddlyWeb's layout, which works, just without the CPU savings.
-7. **Try it:** install a plugin with code, for example from Control Panel → Plugins → Get more plugins. Wait for the save to finish, then reload.
-8. **Check the public site** shows the plugin working.
+How it was deployed. The same steps apply when setting this up from scratch.
+
+1. **Test:** `npm test`. All four suites should pass.
+2. **Add the cache rule** (section 7).
+3. **Check what will start running.** After the deploy, every plugin and module stored in R2 runs at boot, on both sites. That includes ones that never ran before, such as a plugin with code installed through the wiki, and stored copies of plugins that are also built into `index.html` (the stored copy wins). In the admin wiki, look at `[all[tiddlers]has[plugin-type]has[revision]] [all[tiddlers]has[module-type]has[revision]]` in Advanced Search → Filter: tiddlers with a `revision` came from the worker. Delete any you don't want.
+4. **Deploy** the new `worker.js`.
+5. **Open the admin wiki once.** The page is rebuilt (version `4-…`), files are written for the plugins already in the wiki, and the public page is purged. Reload any other open tabs: older tabs still save in TiddlyWeb's layout, which works, just without the CPU savings.
+6. **Try it:** install a plugin with code, for example from Control Panel → Plugins → Get more plugins. Wait for the save to finish, then reload.
+7. **Check the public site** shows the plugin working.
 
 Existing tiddlers stay in TiddlyWeb's layout until they're next saved; nothing needs converting.
 
@@ -922,15 +918,3 @@ If the page is rebuilt before step 4, for example by a deploy, the file is writt
 - **Plugin files are public,** like everything in the bucket.
 - **Very large plugins:** a save holds a few copies of the body in memory, well within the 128 MB a worker has, and well under the 100 MB request size limit.
 - **The tiddler list** is still read and rewritten on every save. It's now the largest CPU cost of a save: about 1 ms per 400–500 tiddlers.
-
----
-
-## Appendix: applying the patch
-
-```bash
-git apply --check docs/external-plugins.patch   # does it still apply?
-git apply docs/external-plugins.patch
-npm test
-```
-
-The patch was made against the version of the code this guide ships with, and doesn't include the generated `worker.js`: `npm test` (or `npm run build`) writes it. If `--check` fails, the code has changed since; follow section 5 by hand.
