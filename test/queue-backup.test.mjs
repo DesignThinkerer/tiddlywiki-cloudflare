@@ -151,6 +151,15 @@ await until(async () => textOf(repoText("Big")) === big);
 const leftovers = (await bucket.list({ prefix: "_backup/versions/" })).objects.length;
 check("200 KB tiddler committed, temporary copy removed", textOf(repoText("Big")) === big && leftovers === 0, `leftovers ${leftovers}`);
 
+// 8b. Saves in the browser module's flat layout are committed exactly as stored, small or large
+const putFlat = (title, text) => mf.dispatchFetch(`${base}/recipes/default/tiddlers/${encodeURIComponent(title)}`,
+  { method: "PUT", headers: { "Content-Type": "application/json", "X-Tiddler-Layout": "flat" }, body: JSON.stringify({ title, note: "flat", text }) });
+await putFlat("Flat small", "é 😀 small");
+await putFlat("Flat big", "y".repeat(200000) + " é");
+await until(async () => repoText("Flat small") !== undefined && repoText("Flat big") !== undefined);
+check("flat-layout saves committed byte-identical to R2", repoText("Flat small") === await r2Text("Flat small") &&
+  repoText("Flat big") === await r2Text("Flat big") && JSON.parse(repoText("Flat big")).note === "flat");
+
 // 9. Special titles keep the old file paths
 await put("$:/config/Some Thing", "s");
 await until(async () => files.has("tiddlers/$:/config/Some Thing.json"));

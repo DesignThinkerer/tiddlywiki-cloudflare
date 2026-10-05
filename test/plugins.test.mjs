@@ -1,0 +1,356 @@
+// Plugins and JavaScript modules as files in R2, loaded by the page before TiddlyWiki boots, on the
+// admin site and on the public site. Uses real plugins shipped with TiddlyWiki (markdown, KaTeX).
+// Run: npm run test:plugins   (WIKI_HTML=path/to/your/index.html to test with your own wiki file)
+import { Miniflare } from "miniflare";
+import { chromium } from "playwright";
+import fs from "node:fs";
+import http from "node:http";
+import path from "node:path";
+import vm from "node:vm";
+import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
+
+const require = createRequire(import.meta.url);
+const WORKER = fileURLToPath(new URL("../worker.js", import.meta.url));
+const WIKI_HTML = process.env.WIKI_HTML || fileURLToPath(new URL("./fixtures/index.html", import.meta.url));
+if (!fs.existsSync(WIKI_HTML)) {
+  console.error(`No wiki file at ${WIKI_HTML}. Run "npm run fixture" first, or set WIKI_HTML.`);
+  process.exit(1);
+}
+
+// Real plugins, read from the tiddlywiki package the same way TiddlyWiki builds them
+const TW_DIR = path.dirname(require.resolve("tiddlywiki/package.json"));
+const twNode = require("tiddlywiki/boot/boot.js").TiddlyWiki();
+twNode.boot.argv = ["--version"];
+await new Promise(resolve => twNode.boot.boot(resolve));
+const MARKDOWN = twNode.loadPluginFolder(path.join(TW_DIR, "plugins/tiddlywiki/markdown"));
+const KATEX = twNode.loadPluginFolder(path.join(TW_DIR, "plugins/tiddlywiki/katex"));
+
+const PORT = 8790, PUBLIC_PORT = 8791;
+const BASE = `http://127.0.0.1:${PORT}`;
+const PUB = `http://127.0.0.1:${PUBLIC_PORT}`;
+let r2Dir = fs.mkdtempSync(path.join(fs.realpathSync(process.env.TMPDIR || "/tmp"), "wiki-r2-"));
+
+const outbound = [];
+const mf = new Miniflare({
+  modules: true, scriptPath: WORKER, compatibilityDate: "2024-09-23", port: PORT,
+  r2Buckets: ["WIKI_BUCKET"], r2Persist: r2Dir,
+  bindings: { PUBLIC_WIKI_URL: PUB, CF_ZONE_ID: "zone123", CF_API_TOKEN: "token" },
+  outboundService: async (req) => {
+    outbound.push({ url: req.url, body: req.method === "GET" ? "" : await req.text() });
+    return new Response('{"success":true}');
+  },
+});
+await mf.ready;
+const bucket = await mf.getR2Bucket("WIKI_BUCKET");
+await bucket.put("index.html", fs.readFileSync(WIKI_HTML, "utf8"));
+await bucket.put("recipes/default/tiddlers.json", "[]");
+const purgedUrls = () => outbound.filter(o => o.url.includes("purge_cache")).flatMap(o => JSON.parse(o.body).files || []);
+
+// Stand-in for the public site: the R2 bucket served directly (custom domain), "/" rewritten to baked.html
+const publicRequests = [];
+const publicServer = http.createServer(async (req, res) => {
+  const url = new URL(req.url, PUB);
+  publicRequests.push(decodeURIComponent(url.pathname) + url.search);
+  try {
+    const key = decodeURIComponent(url.pathname.slice(1)) || "baked.html";
+    const obj = await bucket.get(key);
+    if (!obj) {
+      res.writeHead(404, { "Access-Control-Allow-Origin": "*" });
+      return res.end("Not found");
+    }
+    const headers = { "Access-Control-Allow-Origin": "*", "Content-Type": obj.httpMetadata?.contentType || "application/octet-stream" };
+    if (obj.httpMetadata?.cacheControl) headers["Cache-Control"] = obj.httpMetadata.cacheControl;
+    res.writeHead(200, headers);
+    res.end(Buffer.from(await obj.arrayBuffer()));
+  } catch (e) {
+    console.error("public stand-in:", e.message);
+    res.writeHead(500);
+    res.end();
+  }
+});
+await new Promise(resolve => publicServer.listen(PUBLIC_PORT, "127.0.0.1", resolve));
+
+const results = [];
+const check = (name, ok, detail = "") => { results.push(ok); console.log(`${ok ? "PASS" : "FAIL"}  ${name}${detail ? "  — " + detail : ""}`); };
+
+const browser = await chromium.launch(process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {});
+let context = await browser.newContext();
+const pageErrors = [];
+const requests = [];   // every request the browser makes: { origin: "worker" | "public", method, path, headers }
+function watch(page, tag) {
+  page.on("pageerror", e => pageErrors.push(`${tag}: ${e.message}`));
+  page.on("request", q => {
+    const url = new URL(q.url());
+    const origin = url.origin === BASE ? "worker" : url.origin === PUB ? "public" : "other";
+    requests.push({ tag, origin, method: q.method(), path: decodeURIComponent(url.pathname) + url.search, headers: q.headers() });
+  });
+}
+let page = await context.newPage();
+watch(page, "admin");
+
+async function settle(p = page) {
+  await p.waitForFunction(() => {
+    const s = window.$tw && $tw.syncer;
+    if (!s) return false;
+    const quiet = !s.isDirty() && s.numTasksInProgress === 0 && Object.keys(s.titlesToBeLoaded).length === 0 && !s.forceSyncFromServer;
+    window.__quiet = quiet ? (window.__quiet || 0) + 1 : 0;
+    return window.__quiet >= 3;
+  }, null, { timeout: 30000, polling: 300 });
+}
+async function load(url = BASE + "/") {
+  await page.goto(url);
+  await settle();
+}
+const add = fields => page.evaluate(f => $tw.wiki.addTiddler(new $tw.Tiddler(f)), fields);
+const remove = title => page.evaluate(t => $tw.wiki.deleteTiddler(t), title);
+const render = (text, type = "text/vnd.tiddlywiki", p = page) =>
+  p.evaluate(([t, ty]) => $tw.wiki.renderText("text/html", ty, t), [text, type]);
+const renderPlain = text => page.evaluate(t => $tw.wiki.renderText("text/plain", "text/vnd.tiddlywiki", t), text);
+// Imports tiddlers the way dropping a file on the wiki does: the import dialog, then its Import button
+const importViaUI = fields => page.evaluate(f => {
+  const find = w => w.parseTreeNode && w.parseTreeNode.type === "navigator" ? w : (w.children || []).map(find).find(Boolean);
+  const navigator = find($tw.rootWidget);
+  navigator.dispatchEvent({ type: "tm-import-tiddlers", param: JSON.stringify([f]) });
+  navigator.dispatchEvent({ type: "tm-perform-import", param: "$:/Import" });
+}, fields);
+const reloadAsked = () => page.evaluate(() => $tw.wiki.getTiddlerText("$:/status/RequireReloadDueToPluginChange"));
+const stored = async title => {
+  const obj = await bucket.get("recipes/default/tiddlers/" + title);
+  return obj ? { meta: obj.customMetadata, text: await obj.text() } : null;
+};
+const pluginFile = async title => {
+  const obj = await bucket.get("_plugins/" + title + ".js");
+  return obj ? { meta: obj.customMetadata, http: obj.httpMetadata, text: await obj.text() } : null;
+};
+const bakedPage = async () => (await bucket.get("baked.html")).text();
+const scriptTag = (title, revision) => `<script src="${PUB}/_plugins/${encodeURIComponent(title)}.js?v=${revision}"></script>`;
+// Runs a plugin file the way the browser does and returns what it preloads
+function runFile(source) {
+  const sandbox = {};
+  vm.runInNewContext(source, sandbox);
+  return sandbox.$tw.preloadTiddlers;
+}
+const isMarkdownActive = async (p = page) => /<h1[^>]*>Hi<\/h1>/.test(await render("# Hi", "text/markdown", p));
+const isKatexActive = async (p = page) => (await render("<$latex text='x^2'/>", "text/vnd.tiddlywiki", p)).includes('class="katex"');
+
+const ML = MARKDOWN.title, KT = KATEX.title;
+
+await load();
+
+// --- 1. Installing a real plugin with JavaScript (markdown) by dropping it on the wiki --------------
+requests.length = 0;
+await importViaUI(MARKDOWN);
+await settle();
+check("TiddlyWiki asks for a reload after installing", (await reloadAsked()) === "yes");
+const report = await stored("$:/Import");
+check("the import report is saved as an ordinary tiddler", report && JSON.parse(report.text).status === "complete" && !JSON.parse(report.text)["plugin-type"]);
+check("two saves for the import: the plugin and the report", requests.filter(r => r.method === "PUT").map(r => r.path.replace("/recipes/default/tiddlers/", "")).sort().join(" | ") === ["$:/Import", ML].sort().join(" | "),
+  requests.filter(r => r.method === "PUT").map(r => r.path).join(", "));
+const put = requests.find(r => r.method === "PUT" && r.path.endsWith(ML));
+check("the save is sent in the flat layout", put && put.headers["x-tiddler-layout"] === "flat");
+let saved = await stored(ML);
+let body = JSON.parse(saved.text);
+check("stored flat: custom fields at the top level, no 'fields' object", body["plugin-type"] === "plugin" && body.fields === undefined && body.version === MARKDOWN.version);
+check("stored with the worker's revision, bag and recipe", saved.meta.layout === "flat" && body.revision === saved.meta.revision && body.bag === "default" && body.recipe === "default");
+check("the plugin text is stored byte for byte", body.text === MARKDOWN.text);
+check("the received bytes are kept, with revision, bag and recipe appended", saved.text.endsWith(`","revision":"${saved.meta.revision}","bag":"default","recipe":"default"}`) && saved.text.startsWith('{"title":'));
+let file = await pluginFile(ML);
+check("plugin file written to _plugins/<title>.js", !!file && file.meta.revision === saved.meta.revision, file && JSON.stringify(file.meta));
+check("plugin file is your template's format, around the stored tiddler untouched",
+  file.text === "{\nconst tw = globalThis.$tw ??= Object.create(null);\ntw.preloadTiddlers = (tw.preloadTiddlers ?? []).concat([" + saved.text + "]);\n}\n");
+check("plugin file served as JavaScript, cacheable for a year", /^text\/javascript/.test(file.http.contentType) && /immutable/.test(file.http.cacheControl || ""));
+let preloaded = runFile(file.text);
+check("running the file preloads exactly the stored tiddler", preloaded.length === 1 && preloaded[0].title === ML && preloaded[0].text === MARKDOWN.text && preloaded[0]["plugin-type"] === "plugin");
+let baked = await bakedPage();
+check("baked.html loads it from the public site with ?v=<revision>", baked.includes(scriptTag(ML, saved.meta.revision)));
+check("plugin files are never purged (?v= changes instead)", !purgedUrls().some(u => u.includes("/_plugins/")));
+
+// --- 2. After a reload, the plugin works, with no reload loop and no extra worker requests ---------
+requests.length = 0;
+await load();
+check("markdown plugin is active after the reload", await isMarkdownActive());
+check("no reload asked after it", (await reloadAsked()) === "no");
+check("the plugin file came from the public site", requests.some(r => r.origin === "public" && r.path.startsWith("/_plugins/" + ML + ".js?v=")));
+check("the worker never served plugin code", !requests.some(r => r.origin === "worker" && (r.path.includes("_plugins") || r.path.includes(ML))));
+check("the sync didn't download the plugin again", !requests.some(r => r.path.includes("tiddlers/" + ML)));
+const workerOnLoad = requests.filter(r => r.origin === "worker").map(r => r.method + " " + r.path.split("?")[0]);
+check("page load still costs only the usual worker requests", workerOnLoad.length <= 3, workerOnLoad.join(", "));
+publicRequests.length = 0;
+await load();
+check("next load: the plugin file comes from the browser cache", !publicRequests.some(p => p.includes("/_plugins/")), publicRequests.join(", "));
+
+// --- 3. The public site ----------------------------------------------------------------------------
+const pub = await context.newPage();
+watch(pub, "public");
+requests.length = 0;
+await pub.goto(PUB + "/");
+await pub.waitForFunction(() => window.$tw && $tw.wiki && $tw.wiki.getTiddler("$:/StoryList"), null, { timeout: 30000 });
+check("public site: markdown plugin is active", await isMarkdownActive(pub));
+check("public site: no request reaches the worker", !requests.some(r => r.tag === "public" && r.origin === "worker"));
+await pub.close();
+
+// --- 4. A big plugin (KaTeX, ~700 KB) --------------------------------------------------------------
+await add(KATEX);
+await settle();
+saved = await stored(KT);
+check("big plugin stored flat and intact", saved.meta.layout === "flat" && JSON.parse(saved.text).text === KATEX.text, `${(saved.text.length / 1024).toFixed(0)} KB`);
+await load();
+check("KaTeX widget works after the reload", await isKatexActive());
+
+// --- 5. Upgrading: same file name, new ?v= ---------------------------------------------------------
+const oldRevision = (await stored(ML)).meta.revision;
+const upgraded = JSON.parse(MARKDOWN.text);
+upgraded.tiddlers["$:/plugins/tiddlywiki/markdown/upgrade-marker"] = { title: "$:/plugins/tiddlywiki/markdown/upgrade-marker", text: "v2" };
+await add({ ...MARKDOWN, version: "9.9.9", text: JSON.stringify(upgraded) });
+await settle();
+saved = await stored(ML);
+baked = await bakedPage();
+check("upgrade: page now points to the new ?v=", baked.includes(scriptTag(ML, saved.meta.revision)) && !baked.includes(scriptTag(ML, oldRevision)));
+check("upgrade: same file, overwritten in place", (await pluginFile(ML)).meta.revision === saved.meta.revision);
+await load();
+check("upgrade: new version active after the reload", (await page.evaluate(() => $tw.wiki.getTiddlerText("$:/plugins/tiddlywiki/markdown/upgrade-marker"))) === "v2");
+
+// --- 6. Disabling and enabling ---------------------------------------------------------------------
+const FLAG = "$:/config/Plugins/Disabled/" + ML;
+await add({ title: FLAG, text: "yes" });
+await settle();
+check("disable flag is baked into the page", (await bakedPage()).includes(JSON.stringify(FLAG).slice(1, -1)));
+await load();
+check("disabled plugin is not active after the reload", !(await isMarkdownActive()));
+check("disabled plugin: still listed (so it can be re-enabled), no reload asked",
+  (await page.evaluate(t => $tw.wiki.tiddlerExists(t), ML)) && (await reloadAsked()) === "no");
+await add({ title: FLAG, text: "no" });
+await settle();
+await load();
+check("re-enabled plugin is active again", await isMarkdownActive());
+
+// --- 7. A theme plugin and $:/theme ----------------------------------------------------------------
+await add({ title: "$:/themes/test/red", type: "application/json", "plugin-type": "theme",
+  text: JSON.stringify({ tiddlers: { "$:/themes/test/red/style": {
+    title: "$:/themes/test/red/style", tags: "$:/tags/Stylesheet", text: "body.tc-body { background: rgb(255, 0, 0); }" } } }) });
+await add({ title: "$:/theme", text: "$:/themes/test/red" });
+await settle();
+await load();
+check("theme is applied at boot", (await page.evaluate(() => getComputedStyle(document.body).backgroundColor)) === "rgb(255, 0, 0)");
+await add({ title: "$:/theme", text: "$:/themes/tiddlywiki/vanilla" });
+await settle();
+
+// --- 8. A standalone JavaScript module, with characters JSON and JavaScript treat differently ------
+const MACRO = "$:/test/greet.js";
+await add({ title: MACRO, type: "application/javascript", "module-type": "macro",
+  text: 'exports.name = "greet"; exports.params = []; exports.run = function() { return "hi from \\"macro\\" ,\\"text\\": 😀"; };' });
+await settle();
+await load();
+check("standalone macro module works after the reload", (await renderPlain("<<greet>>")).includes('hi from "macro" ,"text": 😀'));
+
+// --- 9. Bodies the worker must cut correctly ---------------------------------------------------------
+await add({ title: "Tricky", note: 'a,"text":"b', text: 'x,"text":"y"   😀 \\' });
+await add({ title: "No text", tags: ["a b", "c"] });
+await add({ title: "Has a fields field", fields: "x", text: "t" });
+await settle();
+let t = await stored("Tricky");
+body = JSON.parse(t.text);
+check("',\"text\":' inside a field and the text: both intact", body.note === 'a,"text":"b' && body.text === 'x,"text":"y"   😀 \\' && t.meta.layout === "flat");
+t = await stored("No text");
+body = JSON.parse(t.text);
+check("tiddler without text: stored with its revision", body.text === undefined && body.revision === t.meta.revision && body.tags.length === 2);
+t = await stored("Has a fields field");
+check("a field called 'fields' falls back to TiddlyWeb's layout", !t.meta.layout && JSON.parse(t.text).fields.fields === "x");
+for (const [name, json] of [["pretty-printed", JSON.stringify({ title: "Odd 1", text: "x", tags: ["z"] }, null, 2)],
+                            ["revision before text", '{"title":"Odd 2","revision":"1","tags":["z"],"text":"x"}']]) {
+  const t2 = JSON.parse(json).title;
+  const r = await mf.dispatchFetch(BASE + "/recipes/default/tiddlers/" + encodeURIComponent(t2), { method: "PUT", headers: { "X-Tiddler-Layout": "flat" }, body: json });
+  const o = await stored(t2);
+  const entry = JSON.parse(await (await bucket.get("recipes/default/tiddlers.json")).text()).find(e => e.title === t2);
+  check(`a "flat" body that isn't (${name}) is handled like any other save`, r.status === 204 && JSON.parse(o.text).revision === o.meta.revision &&
+    JSON.parse(o.text).text === "x" && entry.tags[0] === "z" && entry.text === undefined);
+}
+const viaWorker = await mf.dispatchFetch(BASE + "/recipes/default/tiddlers/" + encodeURIComponent("Tricky"));
+body = await viaWorker.json();
+check("GET of a flat tiddler is served as stored, with its ETag", body.note === 'a,"text":"b' && viaWorker.headers.get("ETag").includes((await stored("Tricky")).meta.revision));
+
+// --- 10. Older clients still send TiddlyWeb JSON -------------------------------------------------------
+const HELLO = "$:/plugins/test/hello wörld #1";
+const helloPlugin = word => ({
+  title: HELLO, type: "application/json", tags: [], fields: { "plugin-type": "plugin", version: "1.0.0" },
+  text: JSON.stringify({ tiddlers: { [HELLO + "/widget.js"]: {
+    title: HELLO + "/widget.js", type: "application/javascript", "module-type": "widget",
+    text: 'var Widget = require("$:/core/modules/widgets/widget.js").widget;' +
+      "function W(p, o) { this.initialise(p, o); } W.prototype = new Widget();" +
+      'W.prototype.render = function(parent, next) { var n = this.document.createTextNode("' + word + '"); parent.insertBefore(n, next); this.domNodes.push(n); };' +
+      "exports.hello = W;" } } })
+});
+let res = await mf.dispatchFetch(BASE + "/recipes/default/tiddlers/" + encodeURIComponent(HELLO), {
+  method: "PUT", headers: { "Content-Type": "application/json", "If-None-Match": "*" }, body: JSON.stringify(helloPlugin("Hello from a TiddlyWeb save"))
+});
+saved = await stored(HELLO);
+file = await pluginFile(HELLO);
+check("TiddlyWeb-layout save: stored nested, as before", res.status === 204 && !saved.meta.layout && JSON.parse(saved.text).fields["plugin-type"] === "plugin");
+check("its plugin file moves the fields up in the browser", file.text.startsWith("{\nconst t = ") && runFile(file.text)[0]["plugin-type"] === "plugin");
+await load();
+check("its widget works after the reload (title with spaces, # and non-ASCII)", (await renderPlain("<$hello/>")).includes("Hello from a TiddlyWeb save"));
+
+// --- 11. Plugins stored before this change: files written on the first page build --------------------
+const OLD = "$:/plugins/test/stored before";
+const oldRev = "1700000000000";
+// as another tool might have written it: no metadata, and a number for revision
+await bucket.put("recipes/default/tiddlers/" + OLD, JSON.stringify({ ...helloPlugin("Hello from before"), title: OLD, revision: Number(oldRev), bag: "default", recipe: "default" }),
+  { httpMetadata: { contentType: "application/json" } });
+const manifest = JSON.parse(await (await bucket.get("recipes/default/tiddlers.json")).text()).filter(e => e.title !== HELLO);
+manifest.push({ title: OLD, type: "application/json", tags: [], revision: oldRev, bag: "default", recipe: "default", fields: { "plugin-type": "plugin" } });
+await bucket.put("recipes/default/tiddlers.json", JSON.stringify(manifest));
+await bucket.delete(["recipes/default/tiddlers/" + HELLO, "_plugins/" + HELLO + ".js"]);   // keep a single "hello" widget
+await bucket.put("baked.html", "<html><head></head><body>old</body></html>", { customMetadata: { bakeVersion: "3-old", sourceEtag: "x" } });
+await load();
+check("first build after the deploy writes the missing file", (await pluginFile(OLD))?.meta.revision === oldRev);
+check("...and the plugin works, with no reload asked", (await renderPlain("<$hello/>")).includes("Hello from before") && (await reloadAsked()) === "no");
+
+// --- 12. A plugin that becomes a normal tiddler, a startup action that loses its tag, deletes -------
+await add({ title: OLD, text: "just text now" });
+await settle();
+check("no longer a plugin: file deleted, tag gone", !(await pluginFile(OLD)) && !(await bakedPage()).includes(encodeURIComponent(OLD)));
+await add({ title: "$:/test/startup", tags: ["$:/tags/StartupAction"], text: "" });
+await settle();
+check("startup action is baked", (await bakedPage()).includes("$:/test/startup"));
+await add({ title: "$:/test/startup", tags: [], text: "" });
+await settle();
+check("removing its tag takes it out of the page", !(await bakedPage()).includes("$:/test/startup"));
+await remove(KT);
+await settle();
+check("deleted plugin: file deleted and tag gone", !(await pluginFile(KT)) && !(await bakedPage()).includes(encodeURIComponent(KT)));
+await load();
+check("deleted plugin is gone after the reload", !(await isKatexActive()));
+
+// --- 13. Overlapping page builds never go backwards ---------------------------------------------------
+const current = await bucket.head("baked.html");
+await bucket.put("baked.html", "<html><head></head><body>from a newer list</body></html>",
+  { httpMetadata: { contentType: "text/html; charset=utf-8" }, customMetadata: { ...current.customMetadata, listVersion: "999999999" } });
+await add({ title: "$:/SiteSubtitle", text: "a startup tiddler, to trigger a build" });
+await settle();
+check("an older build doesn't replace a page built from a newer tiddler list", (await bakedPage()).includes("from a newer list"));
+await bucket.put("_plugins/" + ML + ".js", "/* a newer version */", { customMetadata: { revision: "9999999999999" } });
+await bucket.delete("baked.html");
+const rebuilt = await (await mf.dispatchFetch(BASE + "/")).text();
+check("an older build doesn't overwrite a newer plugin file, and points to it", (await pluginFile(ML)).text === "/* a newer version */" && rebuilt.includes(scriptTag(ML, "9999999999999")));
+
+// --- 14. Recovery: delete the file in R2, hard reload --------------------------------------------------
+await bucket.delete("_plugins/" + ML + ".js");
+await context.close();
+context = await browser.newContext();   // a hard reload: nothing cached
+page = await context.newPage();
+watch(page, "recovery");
+const errorsBefore = pageErrors.length;
+await load();
+check("recovery: the wiki starts without the plugin", !(await isMarkdownActive()) && pageErrors.length === errorsBefore);
+await remove(ML);
+await settle();
+check("recovery: deleting the plugin removes its tag", !(await bakedPage()).includes(encodeURIComponent(ML)));
+
+check("no page errors", pageErrors.length === 0, pageErrors.join(" | "));
+console.log(`\n${results.filter(Boolean).length}/${results.length} passed`);
+await browser.close();
+await mf.dispose();
+publicServer.close();
+fs.rmSync(r2Dir, { recursive: true, force: true });
+process.exit(results.every(Boolean) ? 0 : 1);

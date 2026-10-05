@@ -26,7 +26,11 @@ await bucket.put("index.html", html("v2"));
 page = await (await mf.dispatchFetch(base + "/")).text();
 check("a new index.html is picked up automatically", page.includes("v2") && page.includes("conflict-guard.js"));
 const meta = (await bucket.head("baked.html")).customMetadata;
-check("bake metadata records the guard version and source etag", /^3-/.test(meta.bakeVersion) && !!meta.sourceEtag, JSON.stringify(meta));
+check("bake metadata records the guard version and source etag", /^4-/.test(meta.bakeVersion) && !!meta.sourceEtag, JSON.stringify(meta));
+
+await bucket.put("index.html", "\uFEFF" + html("with a byte order mark"));
+page = await (await mf.dispatchFetch(base + "/")).text();
+check("a byte order mark doesn't shift where the script goes", /<head>\s*<script>/.test(page) && page.includes("with a byte order mark"));
 
 const options = await mf.dispatchFetch(base + "/recipes/default/tiddlers/x", { method: "OPTIONS" });
 check("CORS preflight allows If-Match and If-None-Match", /If-Match/.test(options.headers.get("access-control-allow-headers")) && /If-None-Match/.test(options.headers.get("access-control-allow-headers")));

@@ -18,6 +18,10 @@ It also keeps worker requests down:
 - Drafts and $:/StoryList, which the worker never stores, are not sent to it, and the "put" saver
   no longer probes the page URL on every load.
 - Background tabs stop polling for changes and catch up as soon as they are shown again.
+
+And it sends saves in the layout the worker stores (X-Tiddler-Layout: flat): every field at the
+top level, compact JSON, "text" last, no revision/bag/recipe. The worker then only parses the
+fields before "text" and never has to decode or re-encode the text itself, however big it is.
 \*/
 (function(){
 
@@ -34,6 +38,27 @@ var BOOKKEEPING_FIELDS = ["revision","bag","recipe","permissions","modified","mo
 
 function link(title) {
 	return (title.indexOf("]]") === -1 && title.indexOf("|") === -1) ? "[[" + title + "]]" : "'" + title + "'";
+}
+
+// The body of a save in the worker's "flat" layout; the worker appends its own revision, bag and
+// recipe. Returns null for a tiddler with a field called "fields", which this layout can't
+// represent (TiddlyWeb's loader would take it for its nested field list).
+function flatBody(tiddler) {
+	var result = {},
+		fields = tiddler.fields;
+	if($tw.utils.hop(fields,"fields")) {
+		return null;
+	}
+	$tw.utils.each(fields,function(value,name) {
+		if(name !== "text" && name !== "revision" && name !== "bag" && name !== "recipe") {
+			result[name] = name === "tags" ? value : tiddler.getFieldString(name);
+		}
+	});
+	result.type = result.type || "text/vnd.tiddlywiki";
+	if(fields.text !== undefined) {
+		result.text = tiddler.getFieldString("text");
+	}
+	return JSON.stringify(result);
 }
 
 exports.startup = function() {
@@ -285,11 +310,18 @@ exports.startup = function() {
 		if(this.isReadOnly) {
 			return callback(null);
 		}
+		var body = flatBody(tiddler),
+			headers = {"Content-type": "application/json"};
+		if(body === null) {
+			body = this.convertTiddlerToTiddlyWebFormat(tiddler);
+		} else {
+			headers["X-Tiddler-Layout"] = "flat";
+		}
 		$tw.utils.httpRequest({
 			url: this.host + "recipes/" + encodeURIComponent(this.recipe) + "/tiddlers/" + encodeURIComponent(title),
 			type: "PUT",
-			headers: addPreconditions({"Content-type": "application/json"},title,base,info),
-			data: this.convertTiddlerToTiddlyWebFormat(tiddler),
+			headers: addPreconditions(headers,title,base,info),
+			data: body,
 			callback: function(err,data,request) {
 				if(err) {
 					if(request && request.status === 412) {

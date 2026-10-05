@@ -1,8 +1,9 @@
 // TiddlyWiki on Cloudflare: the admin worker
 //
 // Serves the editable wiki (TiddlyWeb protocol) from an R2 bucket, protects against edit
-// conflicts between tabs, keeps the public R2-served copy's cache fresh, and backs every save
-// up to GitHub through a Cloudflare Queue. See README.md for the full picture.
+// conflicts between tabs, keeps the public R2-served copy's cache fresh, writes plugins as files
+// the page loads before TiddlyWiki boots, and backs every save up to GitHub through a Cloudflare
+// Queue. See README.md for the full picture.
 //
 // worker.js is generated from src/worker.src.js by `npm run build`, which embeds the browser
 // module src/conflict-guard.js as CONFLICT_GUARD_SOURCE.
@@ -58,12 +59,44 @@ function isDraft(tiddler) {
          (tiddler.fields !== null && typeof tiddler.fields === "object" && tiddler.fields["draft.of"] !== undefined);
 }
 
-// Tiddlers that must be in the page when it boots, so they are baked into baked.html
-const STARTUP_TITLES = ["$:/DefaultTiddlers", "$:/SiteTitle", "$:/SiteSubtitle"];
-function isStartupTiddler(title, tags) {
-  return STARTUP_TITLES.includes(title) || (Array.isArray(tags)
+// --- What the page needs at boot ---------------------------------------------------------------
+// TiddlyWiki only runs startup actions, plugins and JavaScript modules that are present when it
+// boots; anything that arrives later through sync is too late. Small startup tiddlers are baked
+// into baked.html. Plugins and JavaScript modules each get a file in R2 (_plugins/<title>.js),
+// which baked.html loads from the public site with a <script> tag before TiddlyWiki boots.
+
+const STARTUP_TITLES = ["$:/DefaultTiddlers", "$:/SiteTitle", "$:/SiteSubtitle",
+  // read at boot to choose the theme, language and palette
+  "$:/theme", "$:/language", "$:/palette"];
+const DISABLED_PLUGIN_PREFIX = "$:/config/Plugins/Disabled/";   // read at boot, when plugins are registered
+const PLUGIN_FILE_TYPES = ["plugin", "theme", "language"];
+const MODULE_TYPES = ["application/javascript", "application/json", "application/x-tiddler-dictionary"];   // TiddlyWiki defines modules from these at boot
+
+// A field of a tiddler in either layout: TiddlyWeb's (custom fields under "fields") or flat
+function fieldOf(tiddler, name) {
+  if (tiddler[name] !== undefined) return tiddler[name];
+  return tiddler.fields !== null && typeof tiddler.fields === "object" ? tiddler.fields[name] : undefined;
+}
+
+// These take a saved tiddler or an entry of the tiddler list
+function isStartupTiddler(tiddler) {
+  const title = tiddler.title || "", tags = tiddler.tags;
+  return STARTUP_TITLES.includes(title) || title.startsWith(DISABLED_PLUGIN_PREFIX) || (Array.isArray(tags)
     ? tags.some(tag => tag.includes("$:/tags/StartupAction"))
     : typeof tags === "string" && tags.includes("$:/tags/StartupAction"));
+}
+
+// Plugins (but not the core: it comes with index.html and is never synced) and JavaScript modules
+function needsPluginFile(tiddler) {
+  const pluginType = fieldOf(tiddler, "plugin-type");
+  if (pluginType) {
+    return PLUGIN_FILE_TYPES.includes(pluginType) && tiddler.title !== "$:/core" && fieldOf(tiddler, "platform") !== "server";
+  }
+  return MODULE_TYPES.includes(tiddler.type) && Boolean(fieldOf(tiddler, "module-type"));
+}
+
+function isPageTiddler(tiddler) {
+  return isStartupTiddler(tiddler) || needsPluginFile(tiddler);
 }
 
 function tiddlerKeys(title) {
@@ -149,6 +182,84 @@ function conflictResponse(title, reason, currentRevision, corsHeaders) {
   return new Response(`Edit conflict: '${title}' was not saved because ${reason}.`, { status: 412, headers });
 }
 
+// --- Reading a save ---------------------------------------------------------------------------
+// The browser module sends tiddlers "flat" (header X-Tiddler-Layout: flat): every field at the top
+// level, compact JSON, "text" last, without revision, bag or recipe. The worker parses only the
+// fields before "text" and appends its revision, bag and recipe, working on the raw bytes: the
+// text itself (a whole plugin, an image...) is never decoded, parsed or re-encoded.
+// Other clients send TiddlyWeb JSON (custom fields under "fields"), parsed and re-serialized.
+
+const FLAT_LAYOUT = "flat";
+const encoder = new TextEncoder();
+const decoder = new TextDecoder();
+const TEXT_KEY = encoder.encode(',"text":');
+
+function concatBytes(parts) {
+  const out = new Uint8Array(parts.reduce((length, part) => length + part.length, 0));
+  let offset = 0;
+  for (const part of parts) {
+    out.set(part, offset);
+    offset += part.length;
+  }
+  return out;
+}
+
+// Where ',"text":' starts in a flat body. Inside a JSON string every quote is escaped, so this
+// sequence can only be the "text" key itself.
+function textKeyOffset(bytes) {
+  for (let i = bytes.indexOf(TEXT_KEY[0]); i !== -1; i = bytes.indexOf(TEXT_KEY[0], i + 1)) {
+    if (TEXT_KEY.every((byte, j) => bytes[i + j] === byte)) return i;
+  }
+  return -1;
+}
+
+// A save in TiddlyWeb's layout, or any other JSON: parsed, stamped and re-serialized
+function parsedSave(tiddler) {
+  const fields = { ...tiddler };
+  delete fields.text;
+  return {
+    fields, layout: "tiddlyweb",
+    stored: revision => encoder.encode(JSON.stringify({ ...tiddler, revision, bag: "default", recipe: "default" }))
+  };
+}
+
+// Returns { fields, layout, stored(revision) }: fields = the tiddler without its text,
+// stored(revision) = the bytes to store, with the worker's revision, bag and recipe
+async function readSave(request) {
+  if (request.headers.get("X-Tiddler-Layout") !== FLAT_LAYOUT) {
+    return parsedSave(JSON.parse(await request.text()));
+  }
+  const bytes = new Uint8Array(await request.arrayBuffer());
+  let end = bytes.length;
+  while (end > 0 && bytes[end - 1] <= 0x20) end--;
+  let cut = textKeyOffset(bytes);
+  if (cut === -1) cut = end - 1;   // no text: the fields run up to the closing brace
+  const fields = bytes[0] === 0x7b && bytes[end - 1] === 0x7d && cut > 0
+    ? JSON.parse(decoder.decode(bytes.subarray(0, cut)) + "}") : null;
+  if (!fields || typeof fields !== "object" || Array.isArray(fields) || typeof fields.title !== "string") {
+    throw new Error("the body is not a tiddler in the flat layout");
+  }
+  // Not what the browser module sends (pretty-printed, or with these fields before "text"):
+  // handled like any other save
+  if (["text", "revision", "bag", "recipe"].some(name => name in fields)) {
+    return parsedSave(JSON.parse(decoder.decode(bytes)));
+  }
+  return {
+    fields, layout: FLAT_LAYOUT,
+    stored: revision => concatBytes([
+      bytes.subarray(0, end - 1),
+      encoder.encode(`,"revision":"${revision}","bag":"default","recipe":"default"}`)
+    ])
+  };
+}
+
+// Waits for work the response depends on, and keeps it running even if the browser disconnects
+// first (a reload while the page is being rebuilt, say): without waitUntil it could be cancelled
+function untilDone(ctx, promise) {
+  ctx.waitUntil(promise.catch(() => {}));
+  return promise;
+}
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
@@ -156,7 +267,7 @@ export default {
     const corsHeaders = {
       "Access-Control-Allow-Origin": "*",
       "Access-Control-Allow-Methods": "GET, PUT, DELETE, OPTIONS, HEAD",
-      "Access-Control-Allow-Headers": "Content-Type, X-Requested-With, If-Match, If-None-Match, Authorization, Accept",
+      "Access-Control-Allow-Headers": "Content-Type, X-Requested-With, X-Tiddler-Layout, If-Match, If-None-Match, Authorization, Accept",
       "Access-Control-Expose-Headers": "ETag, Etag, etag",
     };
 
@@ -193,13 +304,18 @@ export default {
 
       if (decodedKey.startsWith("recipes/default/tiddlers/") || decodedKey.startsWith("bags/default/tiddlers/")) {
         const title = decodedKey.replace(/^(recipes|bags)\/default\/tiddlers\//, "");
+        headers.set("Cache-Control", "no-cache");
+        if (object.customMetadata?.layout === FLAT_LAYOUT) {
+          // Stored with its revision, bag and recipe already in place: served as is
+          headers.set("ETag", tiddlerEtag(title, object.customMetadata.revision));
+          return new Response(request.method === "GET" ? object.body : null, { headers });
+        }
         const text = await object.text();
         let tiddlerData = null;
         try { tiddlerData = JSON.parse(text); } catch (e) {}
         // Always report the same revision that PUT/DELETE check against
         const revision = revisionOf(object, tiddlerData);
 
-        headers.set("Cache-Control", "no-cache");
         headers.set("ETag", tiddlerEtag(title, revision));
 
         if (request.method !== "GET") return new Response(null, { headers });
@@ -226,9 +342,9 @@ export default {
         if (!match) return new Response("Invalid PUT path", { status: 400, headers: corsHeaders });
 
         const title = decodeURIComponent(match[1]);
-        const tiddler = JSON.parse(await request.text());
+        const save = await readSave(request);
 
-        if (isEphemeralTitle(title) || isDraft(tiddler)) {
+        if (isEphemeralTitle(title) || isDraft(save.fields)) {
           const etag = tiddlerEtag(title, Date.now().toString());
           return new Response(null, { status: 204, headers: { ...corsHeaders, ETag: etag } });
         }
@@ -241,42 +357,46 @@ export default {
         if (reason) return conflictResponse(title, reason, currentRevision, corsHeaders);
 
         const newRevision = Date.now().toString();
-        tiddler.revision = newRevision;
-        tiddler.bag = "default";
-        tiddler.recipe = "default";
-
-        const modifiedBody = JSON.stringify(tiddler);
+        const body = save.stored(newRevision);
         const putOptions = {
           httpMetadata: { contentType: "application/json" },
-          customMetadata: { revision: newRevision }
+          // "layout" tells readers the revision, bag and recipe are already in the stored JSON
+          customMetadata: save.layout === FLAT_LAYOUT ? { revision: newRevision, layout: FLAT_LAYOUT } : { revision: newRevision }
         };
 
         if (conditional) {
           // Only write if the object is still exactly the one we checked (or still absent)
           const replacesCurrent = found !== null && found.key === tiddlerKey;
-          let written = await env.WIKI_BUCKET.put(tiddlerKey, modifiedBody, {
+          let written = await env.WIKI_BUCKET.put(tiddlerKey, body, {
             ...putOptions,
             onlyIf: replacesCurrent ? { etagMatches: found.obj.etag } : new Headers({ "If-None-Match": "*" })
           });
           if (written === null && !replacesCurrent && !(await env.WIKI_BUCKET.head(tiddlerKey))) {
             // A create-only write was refused but nothing is there: write it normally
-            written = await env.WIKI_BUCKET.put(tiddlerKey, modifiedBody, putOptions);
+            written = await env.WIKI_BUCKET.put(tiddlerKey, body, putOptions);
           }
           if (written === null) {
             const latest = await findTiddler(env, title);
             return conflictResponse(title, "it was changed in another tab or browser", latest ? await storedRevision(env, latest) : null, corsHeaders);
           }
         } else {
-          await env.WIKI_BUCKET.put(tiddlerKey, modifiedBody, putOptions);
+          await env.WIKI_BUCKET.put(tiddlerKey, body, putOptions);
         }
 
-        await updateManifest(env, title, tiddler, newRevision);
-        ctx.waitUntil(queueBackup(env, { action: "save", title, revision: newRevision, content: modifiedBody }));
+        ctx.waitUntil(queueBackup(env, { action: "save", title, revision: newRevision, content: body }));
         ctx.waitUntil(purgePublicCache(env, tiddlerPurgeUrls(env, title)));
-
-        if (isStartupTiddler(title, tiddler.tags)) {
-          ctx.waitUntil(rebakeHtml(env, ctx));
-        }
+        await untilDone(ctx, (async () => {
+          const previous = await updateManifest(env, title, save.fields, newRevision);
+          const saved = { ...save.fields, title };
+          if (previous && needsPluginFile(previous) && !needsPluginFile(saved)) {
+            await env.WIKI_BUCKET.delete(pluginFileKey(title));
+          }
+          // Something the page needs at boot was added, changed or is no longer needed: rebuild the
+          // page (which writes the plugin file) before confirming, so a reload right after has it
+          if (isPageTiddler(saved) || (previous && isPageTiddler(previous))) {
+            await rebakeHtml(env, ctx);
+          }
+        })());
 
         return new Response(null, { status: 204, headers: { ...corsHeaders, ETag: tiddlerEtag(title, newRevision) } });
       } catch (error) {
@@ -304,15 +424,22 @@ export default {
             await env.WIKI_BUCKET.delete(key);
           }
         }
-        // If it was neither stored nor listed, there is nothing to back up or purge
-        const listed = await removeFromManifest(env, title);
-        if (found || listed) {
-          ctx.waitUntil(queueBackup(env, { action: "delete", title, revision: currentRevision }));
-          ctx.waitUntil(purgePublicCache(env, tiddlerPurgeUrls(env, title)));
-        }
-        if (found && title.startsWith("$:/")) {
-          ctx.waitUntil(rebakeHtml(env, ctx));
-        }
+        await untilDone(ctx, (async () => {
+          // If it was neither stored nor listed, there is nothing to back up or purge
+          const removed = await removeFromManifest(env, title);
+          if (found || removed) {
+            ctx.waitUntil(queueBackup(env, { action: "delete", title, revision: currentRevision }));
+            ctx.waitUntil(purgePublicCache(env, tiddlerPurgeUrls(env, title)));
+          }
+          // The list entry says what it was; if it wasn't listed, delete any plugin file anyway
+          // (deleting a missing object is free) and rebuild the page for system tiddlers
+          if (removed ? needsPluginFile(removed) : found) {
+            await env.WIKI_BUCKET.delete(pluginFileKey(title));
+          }
+          if (removed ? isPageTiddler(removed) : found && title.startsWith("$:/")) {
+            await rebakeHtml(env, ctx);
+          }
+        })());
 
         return new Response(null, { status: 204, headers: corsHeaders });
       } catch (error) {
@@ -411,21 +538,21 @@ const CONFLICT_GUARD_TITLE = "$:/cfworker/conflict-guard.js";
 // from there (no worker request) and only ask the worker when that copy isn't current
 const PUBLIC_URL_TITLE = "$:/cfworker/public-url";
 
-const CONFLICT_GUARD_SOURCE = String.raw`__CONFLICT_GUARD_SOURCE__`;
+const CONFLICT_GUARD_SOURCE = "__CONFLICT_GUARD_SOURCE__";   // replaced by the build
 
 function conflictGuardEnabled(env) {
   return String(env.CONFLICT_GUARD || "").toLowerCase() !== "off";
 }
 
 // Changes whenever the guard code or the public URL changes, so baked.html is rebuilt after a deploy
+// (the number in front changes when the way pages are built changes)
 function bakeVersion(env) {
-  if (!conflictGuardEnabled(env)) return "3-off";
-  const input = CONFLICT_GUARD_SOURCE + "\n" + publicUrl(env, "/");
+  const input = (conflictGuardEnabled(env) ? CONFLICT_GUARD_SOURCE : "off") + "\n" + publicUrl(env, "/");
   let hash = 5381;
   for (let i = 0; i < input.length; i++) {
     hash = ((hash * 33) ^ input.charCodeAt(i)) >>> 0;
   }
-  return "3-" + hash.toString(36);
+  return "4-" + hash.toString(36);
 }
 
 async function serveWiki(env, ctx, corsHeaders) {
@@ -448,7 +575,7 @@ async function serveWiki(env, ctx, corsHeaders) {
   return new Response(fallback.body, { headers: htmlHeaders });
 }
 
-// Stored tiddlers use TiddlyWeb JSON (custom fields nested under "fields"); preloadTiddlers wants them flat
+// Stored tiddlers may use TiddlyWeb's layout (custom fields nested under "fields"); preloadTiddlers wants them flat
 function toPreloadFields(tiddler) {
   const flat = {};
   if (tiddler.fields !== null && typeof tiddler.fields === "object") Object.assign(flat, tiddler.fields);
@@ -459,30 +586,144 @@ function toPreloadFields(tiddler) {
   return flat;
 }
 
-// Builds baked.html = index.html + startup tiddlers + conflict guard, then purges the public copy.
-// Returns the HTML, or null.
+// --- Plugin files -------------------------------------------------------------------------------
+// _plugins/<title>.js holds the stored tiddler, untouched, inside the same code the external-plugins
+// export template produces: it adds the tiddler to $tw.preloadTiddlers before TiddlyWiki boots.
+// The file name never changes; the page loads it as <title>.js?v=<revision>, so every version has
+// its own URL and nothing needs purging. Files are served by the public site, never by the worker.
+
+const PLUGIN_FILE_DIR = "_plugins/";
+const PRELOAD_OPEN = "{\nconst tw = globalThis.$tw ??= Object.create(null);\ntw.preloadTiddlers = (tw.preloadTiddlers ?? []).concat([";
+const PRELOAD_CLOSE = "]);\n}\n";
+// Tiddlers stored in TiddlyWeb's layout (before the flat layout, or by other clients) keep their
+// custom fields under "fields": the browser moves them up first, and sets the revision as a string
+const PRELOAD_NESTED_OPEN = "{\nconst t = ";
+const preloadNestedClose = revision => ";\nconst f = t.fields || {}; delete t.fields;\nfor (const k in f) if (!(k in t)) t[k] = f[k];\n" +
+  `t.revision = ${JSON.stringify(String(revision))};\n` +
+  "const tw = globalThis.$tw ??= Object.create(null);\ntw.preloadTiddlers = (tw.preloadTiddlers ?? []).concat([t]);\n}\n";
+
+function pluginFileKey(title) {
+  return `${PLUGIN_FILE_DIR}${title}.js`;
+}
+
+// Encoded the same way as the tiddler URLs the public wiki already loads
+function pluginFileUrl(env, title, revision) {
+  return publicUrl(env, `/${PLUGIN_FILE_DIR}${encodeURIComponent(title)}.js?v=${encodeURIComponent(revision)}`);
+}
+
+// Writes the plugin file from the stored tiddler. file: what head() returned for it (or null).
+// Two page builds can overlap, so it never replaces a file holding a newer version, and writes
+// only if the file is still the one it looked at. Returns the revision the file holds, or null.
+async function writePluginFile(env, title, file) {
+  let obj = null;
+  for (const key of tiddlerKeys(title)) {
+    if ((obj = await env.WIKI_BUCKET.get(key))) break;
+  }
+  if (!obj) return null;
+  const bytes = new Uint8Array(await obj.arrayBuffer());
+  let revision = obj.customMetadata?.revision;
+  if (!revision) {
+    let body = null;
+    try { body = JSON.parse(decoder.decode(bytes)); } catch (e) {}
+    revision = revisionOf(obj, body);
+  }
+  const flat = obj.customMetadata?.layout === FLAT_LAYOUT;
+  const content = concatBytes([
+    encoder.encode(flat ? PRELOAD_OPEN : PRELOAD_NESTED_OPEN), bytes, encoder.encode(flat ? PRELOAD_CLOSE : preloadNestedClose(revision))
+  ]);
+  const key = pluginFileKey(title);
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const held = file?.customMetadata?.revision;
+    if (held && (held === revision || isNewerRevision(held, revision))) return held;
+    const options = {
+      httpMetadata: { contentType: "text/javascript; charset=utf-8", cacheControl: "public, max-age=31536000, immutable" },
+      customMetadata: { revision }
+    };
+    // Create-only if missing; on the last try, a missing file is written whatever happens
+    if (file) options.onlyIf = { etagMatches: file.etag };
+    else if (attempt < 3) options.onlyIf = new Headers({ "If-None-Match": "*" });
+    if (await env.WIKI_BUCKET.put(key, content, options)) return revision;
+    file = await env.WIKI_BUCKET.head(key);   // another build wrote it meanwhile: look again
+  }
+  return file?.customMetadata?.revision ?? null;
+}
+
+// Makes sure each listed plugin's file holds its current version (writing it if not) and returns
+// the <script> tags that load them, in the order of the tiddler list. Disabled plugins are loaded
+// too: their disable flag is baked into the page, so TiddlyWiki skips them at boot. (Leaving them
+// out would make the sync fetch them after boot, and TiddlyWiki would then ask for a reload.)
+async function pluginScriptTags(env, entries) {
+  const tags = await Promise.all(entries.map(async (entry) => {
+    const file = await env.WIKI_BUCKET.head(pluginFileKey(entry.title));
+    let revision = file?.customMetadata?.revision;
+    if (!revision || revision !== String(entry.revision)) {
+      revision = await writePluginFile(env, entry.title, file);
+    }
+    return revision ? `<script src="${pluginFileUrl(env, entry.title, revision)}"></script>` : "";
+  }));
+  return tags.filter(Boolean).join("\n");
+}
+
+// Inserts markup right after <head ...>. Works on the bytes of index.html (a few MB): decoding,
+// editing and re-encoding the whole page as a string costs about ten times more CPU.
+const pageDecoder = new TextDecoder("utf-8", { fatal: false, ignoreBOM: true });   // keeps a BOM, so offsets stay right
+function insertAfterHead(html, markup) {
+  for (const length of [16384, html.length]) {
+    const start = pageDecoder.decode(html.subarray(0, length));
+    const match = /<head[^>]*>/i.exec(start);
+    if (match) {
+      const at = encoder.encode(start.slice(0, match.index + match[0].length)).length;
+      return concatBytes([html.subarray(0, at), encoder.encode(markup), html.subarray(at)]);
+    }
+    if (length >= html.length) break;
+  }
+  return html;
+}
+
+// Saves baked.html, unless an overlapping build from a newer tiddler list has already saved one
+// for the same worker and index.html. Returns false if it kept that one.
+async function storePage(env, html, meta) {
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const current = await env.WIKI_BUCKET.head("baked.html");
+    const theirs = current?.customMetadata || {};
+    if (current && theirs.bakeVersion === meta.bakeVersion && theirs.sourceEtag === meta.sourceEtag &&
+        Number(theirs.listVersion) > Number(meta.listVersion)) {
+      return false;
+    }
+    const written = await env.WIKI_BUCKET.put("baked.html", html, {
+      httpMetadata: { contentType: "text/html; charset=utf-8" },
+      customMetadata: meta,
+      ...(current && attempt < 3 ? { onlyIf: { etagMatches: current.etag } } : {})
+    });
+    if (written) return true;
+  }
+  return false;
+}
+
+// Builds baked.html = index.html + startup tiddlers + conflict guard + plugin <script> tags, then
+// purges the public copy. Returns the page (bytes), or null.
 async function rebakeHtml(env, ctx) {
   try {
     const htmlObj = await env.WIKI_BUCKET.get("index.html");
     if (!htmlObj) return null;
+    let html = new Uint8Array(await htmlObj.arrayBuffer());
 
-    let htmlText = await htmlObj.text();
-    const startupTitles = new Set(STARTUP_TITLES);
-
+    let manifest = [];
     const manifestObj = await env.WIKI_BUCKET.get(MANIFEST_KEY);
     if (manifestObj) {
       try {
-        for (const t of JSON.parse(await manifestObj.text())) {
-          if (isStartupTiddler(t.title, t.tags)) startupTitles.add(t.title);
-        }
+        manifest = JSON.parse(await manifestObj.text());
       } catch (e) {
         console.error("Manifest parse error:", e);
       }
+      if (!Array.isArray(manifest)) manifest = [];
     }
+    // Every stored tiddler is listed, so only listed startup tiddlers are read
+    const startupTitles = manifest.filter(t => t.title && isStartupTiddler(t)).map(t => t.title);
 
     const store = [];
-    await Promise.all(
-      Array.from(startupTitles).map(async (title) => {
+    const [, pluginTags] = await Promise.all([
+      Promise.all(startupTitles.map(async (title) => {
         for (const key of tiddlerKeys(title)) {
           const obj = await env.WIKI_BUCKET.get(key);
           if (obj) {
@@ -490,8 +731,9 @@ async function rebakeHtml(env, ctx) {
             return;
           }
         }
-      })
-    );
+      })),
+      pluginScriptTags(env, manifest.filter(t => t.title && needsPluginFile(t)))
+    ]);
 
     if (conflictGuardEnabled(env)) {
       store.push({
@@ -503,25 +745,27 @@ async function rebakeHtml(env, ctx) {
       store.push({ title: PUBLIC_URL_TITLE, text: publicUrl(env, "/") });
     }
 
+    let injected = "";
     if (store.length > 0) {
       const safeJson = JSON.stringify(store).replace(/</g, '\\u003c');
-      const injectedScript = `
+      injected = `
         <script>
           window.$tw = window.$tw || {};
           window.$tw.preloadTiddlers = window.$tw.preloadTiddlers || [];
           window.$tw.preloadTiddlers = window.$tw.preloadTiddlers.concat(${safeJson});
         </script>
       `;
-      // A replacer function, so "$&", "$1" etc. inside tiddler text are not treated as patterns
-      htmlText = htmlText.replace(/<head[^>]*>/i, (headTag) => `${headTag}\n${injectedScript}\n`);
     }
+    if (pluginTags) injected += `\n${pluginTags}\n`;
+    if (injected) html = insertAfterHead(html, `\n${injected}\n`);
 
-    await env.WIKI_BUCKET.put("baked.html", htmlText, {
-      httpMetadata: { contentType: "text/html; charset=utf-8" },
-      customMetadata: { bakeVersion: bakeVersion(env), sourceEtag: htmlObj.etag }
+    const stored = await storePage(env, html, {
+      bakeVersion: bakeVersion(env),
+      sourceEtag: htmlObj.etag,
+      listVersion: manifestObj?.customMetadata?.version || "0"
     });
-    ctx.waitUntil(purgePublicCache(env, PUBLIC_PAGE_PATHS.map(path => publicUrl(env, path))));
-    return htmlText;
+    if (stored) ctx.waitUntil(purgePublicCache(env, PUBLIC_PAGE_PATHS.map(path => publicUrl(env, path))));
+    return html;
   } catch (err) {
     console.error("Failed to rebake HTML:", err);
     return null;
@@ -557,7 +801,9 @@ async function mutateManifest(env, mutator, attempts = 5) {
     if (manifest === null) return false;
 
     const putOptions = {
-      httpMetadata: { contentType: "application/json" }
+      httpMetadata: { contentType: "application/json" },
+      // Counts the list's versions, so page builds can tell which of two lists is newer
+      customMetadata: { version: String((Number(existing?.customMetadata?.version) || 0) + 1) }
     };
 
     if (etag) {
@@ -578,8 +824,14 @@ async function mutateManifest(env, mutator, attempts = 5) {
   throw new Error("Manifest update failed: too many concurrent write conflicts");
 }
 
+// tiddler: everything but the text, in either layout. Returns the entry it replaced, or null.
 async function updateManifest(env, title, tiddler, revisionStr) {
+  const fields = { ...tiddler };
+  delete fields.revision;
+  delete fields.bag;
+  delete fields.recipe;
   const skinny = {
+    ...fields,
     title: tiddler.title ?? title,
     bag: "default",
     recipe: "default",
@@ -591,21 +843,25 @@ async function updateManifest(env, title, tiddler, revisionStr) {
     _is_skinny: ""
   };
 
-  if (tiddler.fields) skinny.fields = tiddler.fields;
-
+  let previous = null;
   await mutateManifest(env, (manifest) => {
     const idx = manifest.findIndex(t => t.title === title);
+    previous = idx >= 0 ? manifest[idx] : null;
     if (idx >= 0) manifest[idx] = skinny;
     else manifest.push(skinny);
     return manifest;
   });
+  return previous;
 }
 
-// Returns true if the title was listed
+// Returns the entry it removed, or null if the title wasn't listed
 async function removeFromManifest(env, title) {
-  return mutateManifest(env, (manifest) =>
-    manifest.some(t => t.title === title) ? manifest.filter(t => t.title !== title) : null
-  );
+  let removed = null;
+  await mutateManifest(env, (manifest) => {
+    removed = manifest.find(t => t.title === title) || null;
+    return removed ? manifest.filter(t => t.title !== title) : null;
+  });
+  return removed;
 }
 
 // --- GitHub backup through a Cloudflare Queue -------------------------------------------------
@@ -619,15 +875,15 @@ const BACKUP_INLINE_LIMIT = 100000;   // queue messages are limited to 128 KB; b
 const BACKUP_PER_RUN = 10;            // keeps one run within Cloudflare's 50-subrequest limit (free plan)
 const BACKUP_MAX_DELAY = 6 * 3600;    // longest wait between retries (seconds)
 
-// Called after a save or delete has been stored
+// Called after a save or delete has been stored; job.content is the stored bytes
 async function queueBackup(env, job) {
   if (!env.GITHUB_REPO || !env.GITHUB_TOKEN) return;
   const message = { action: job.action, title: job.title, revision: job.revision ?? null, time: Date.now(), tries: 0 };
   if (env.BACKUP_QUEUE) {
     try {
       if (job.action === "save") {
-        if (new TextEncoder().encode(job.content).length <= BACKUP_INLINE_LIMIT) {
-          message.content = job.content;
+        if (job.content.length <= BACKUP_INLINE_LIMIT) {
+          message.content = decoder.decode(job.content);
         } else {
           // Keep this exact version until it is committed (R2 itself only holds the latest one)
           message.contentKey = `_backup/versions/${message.time}-${encodeURIComponent(job.title)}.json`;
@@ -642,7 +898,7 @@ async function queueBackup(env, job) {
     }
   }
   // No queue: run the same backup right away, with a couple of quick retries
-  const direct = { ...message, content: job.content, contentKey: undefined };
+  const direct = { ...message, content: job.content && decoder.decode(job.content), contentKey: undefined };
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
       return await backupJob(env, direct);
