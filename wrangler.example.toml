@@ -35,4 +35,4 @@ CF_ZONE_ID = "YOUR-ZONE-ID"
 # Secrets: set with `npx wrangler secret put NAME`, never in this file
 #   GITHUB_TOKEN   fine-grained token with Contents: read and write on the backup repository
 #   CF_API_TOKEN   API token with Zone > Cache Purge on the zone
-# Leave API_KEY unset (see README, "Secrets and variables").
+# Leave API_KEY unset (see README section 3.2, "Variables and secrets").

@@ -385,9 +385,11 @@ export default {
         }
 
         ctx.waitUntil(queueBackup(env, { action: "save", title, revision: newRevision, content: body }));
-        ctx.waitUntil(purgePublicCache(env, tiddlerPurgeUrls(env, title)));
         await untilDone(ctx, (async () => {
           const previous = await updateManifest(env, title, save.fields, newRevision);
+          // Only once the new list is in R2: a public request between the purge and the list update
+          // would put the old list back in Cloudflare's cache
+          ctx.waitUntil(purgePublicCache(env, tiddlerPurgeUrls(env, title)));
           const saved = { ...save.fields, title };
           if (previous && needsPluginFile(previous) && !needsPluginFile(saved)) {
             await env.WIKI_BUCKET.delete(pluginFileKey(title));
@@ -613,8 +615,10 @@ function pluginFileUrl(env, title, revision) {
 }
 
 // Writes the plugin file from the stored tiddler. file: what head() returned for it (or null).
-// Two page builds can overlap, so it never replaces a file holding a newer version, and writes
-// only if the file is still the one it looked at. Returns the revision the file holds, or null.
+// Two page builds can overlap, so it doesn't replace a file holding a newer version, and writes
+// only if the file is still the one it looked at. After two lost races, a missing file is written
+// unconditionally (like the PUT handler's create-only fallback): best effort, not a guarantee.
+// Returns the revision the file holds, or null.
 async function writePluginFile(env, title, file) {
   let obj = null;
   for (const key of tiddlerKeys(title)) {
@@ -682,7 +686,9 @@ function insertAfterHead(html, markup) {
 }
 
 // Saves baked.html, unless an overlapping build from a newer tiddler list has already saved one
-// for the same worker and index.html. Returns false if it kept that one.
+// for the same worker and index.html. "Newer" compares when R2 stored each list (listVersion), so
+// a list replaced by hand counts as newer too. Returns false if it kept the other page. The last
+// try writes unconditionally, like the create-only fallback in the PUT handler: best effort.
 async function storePage(env, html, meta) {
   for (let attempt = 1; attempt <= 3; attempt++) {
     const current = await env.WIKI_BUCKET.head("baked.html");
@@ -763,7 +769,7 @@ async function rebakeHtml(env, ctx) {
     const stored = await storePage(env, html, {
       bakeVersion: bakeVersion(env),
       sourceEtag: htmlObj.etag,
-      listVersion: manifestObj?.customMetadata?.version || "0"
+      listVersion: String(manifestObj ? manifestObj.uploaded.getTime() : 0)
     });
     if (stored) ctx.waitUntil(purgePublicCache(env, PUBLIC_PAGE_PATHS.map(path => publicUrl(env, path))));
     return html;
@@ -802,9 +808,7 @@ async function mutateManifest(env, mutator, attempts = 5) {
     if (manifest === null) return false;
 
     const putOptions = {
-      httpMetadata: { contentType: "application/json" },
-      // Counts the list's versions, so page builds can tell which of two lists is newer
-      customMetadata: { version: String((Number(existing?.customMetadata?.version) || 0) + 1) }
+      httpMetadata: { contentType: "application/json" }
     };
 
     if (etag) {
@@ -1029,8 +1033,13 @@ function githubContents(env) {
   };
   async function call(method, title, body) {
     const apiBase = `https://api.github.com/repos/${env.GITHUB_REPO}/contents/tiddlers/${encodeURIComponent(title)}.json`;
+    // Reads ask for the "object" format: the default one isn't available for files between 1 and
+    // 100 MB, so their backups would fail forever and hold up every later one. The object format
+    // works for all sizes, with empty content above 1 MB.
     const res = await fetch(method === "GET" ? `${apiBase}?ref=${branch}` : apiBase, {
-      method, headers, body: body ? JSON.stringify(body) : undefined
+      method,
+      headers: method === "GET" ? { ...headers, Accept: "application/vnd.github.object+json" } : headers,
+      body: body ? JSON.stringify(body) : undefined
     });
     if (method === "GET" && res.status === 404) return null;
     if (!res.ok) {

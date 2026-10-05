@@ -2,7 +2,9 @@
 
 **Status: implemented and deployed (October 2026).** These are the design notes behind README section 4.8: the problem, the design and why it was chosen over baking plugins into the page, what it costs, the change step by step, and how to operate it.
 
-The change is covered by the tests: `test/plugins.test.mjs` (55 checks) runs real plugins shipped with TiddlyWiki, markdown and KaTeX, on the admin site and on a stand-in for the public site. All four suites pass (`npm test`).
+The change is covered by the tests: `test/plugins.test.mjs` (57 checks) runs real plugins shipped with TiddlyWiki, markdown and KaTeX, on the admin site and on a stand-in for the public site. All four suites pass (`npm test`).
+
+"The external-plugins plugin" below is `$:/plugins/theophile.dev/external-plugins`, which exports plugins as standalone `.js` files for single-file wikis. The plugin files here use the same format as its export template.
 
 ## Contents
 
@@ -40,7 +42,7 @@ Anything that arrives in step 4 is too late for steps 2 and 3. Before this chang
 | Standalone JavaScript module (`module-type: …`) | **Never works** | Modules are only defined at boot. |
 | Disabling a plugin | **Ignored at boot** | The flag arrives after plugins are registered. |
 
-The workaround is to build plugins into `index.html` locally and upload it. That works, but every plugin change needs a local build.
+The workaround was to build plugins into `index.html` locally and upload it. That works, but every plugin change needs a local build.
 
 **The constraint:** the public site is R2 behind Cloudflare's cache, and can never use the worker. Whatever loads plugins has to work from files in R2 alone.
 
@@ -48,13 +50,13 @@ The workaround is to build plugins into `index.html` locally and upload it. That
 
 ## 2. The design
 
-- **One file per plugin in R2,** `_plugins/<title>.js`. It's the stored tiddler, untouched, inside the same code your external-plugins export template produces: it adds the tiddler to `$tw.preloadTiddlers`.
+- **One file per plugin in R2,** `_plugins/<title>.js`. It's the stored tiddler, untouched, inside the same code the external-plugins export template produces: it adds the tiddler to `$tw.preloadTiddlers`. The stored JSON can go in as it is because JSON is valid JavaScript (since ES2019, even with the U+2028 and U+2029 characters).
 - **One `<script>` tag per plugin in `baked.html`,** pointing to the public site: `https://my-tiddlywiki.theophile.dev/_plugins/%24%3A%2Fplugins%2Ftiddlywiki%2Fmarkdown.js?v=1791041234567`. Both sites use this page, so neither loads plugin code through the worker.
 - **The browser sends saves in the layout the worker stores:** flat, compact, `text` last. The worker never parses plugin code: it parses only the small part before `"text"`, and appends its revision to the bytes it received.
 - **The page build writes the files.** It checks each plugin's file against the tiddler list and rewrites any file that is missing or out of date.
 - **The boot choices go into the page too:** `$:/theme`, `$:/language`, `$:/palette` and the plugin disable flags.
 
-What gets a file: tiddlers with `plugin-type` `plugin`, `theme` or `language` (except `$:/core`, and plugins marked `platform: server`), and modules: tiddlers with a `module-type` whose type is `application/javascript`, `application/json` or `application/x-tiddler-dictionary`, the types TiddlyWiki defines modules from at boot.
+What gets a file: tiddlers with `plugin-type` `plugin`, `theme` or `language` (except `$:/core`, which comes with `index.html`, and plugins marked `platform: server`, which only run on a Node.js server and which TiddlyWiki's own tiddler list leaves out too), and modules: tiddlers with a `module-type` whose type is `application/javascript`, `application/json` or `application/x-tiddler-dictionary`, the types TiddlyWiki defines modules from at boot.
 
 ### What happens when you drop a plugin on the wiki
 
@@ -70,14 +72,15 @@ sequenceDiagram
   W->>R: plugin file, then baked.html with its script tag
   W-->>B: 204 with the new revision
   B->>W: PUT the import report
-  B->>W: reload: page, /status, tiddler list
-  B->>P: plugin file ?v=revision
+  B->>W: reload: the page
+  B->>P: plugin file ?v=revision, before TiddlyWiki starts
   P->>R: first request for this version only
+  B->>W: /status, tiddler list
 ```
 
 **In the browser**
 
-1. **The drop.** TiddlyWiki opens the import dialog. While it waits for you, it holds the plugin in `$:/Import`, which is never synced.
+1. **The drop.** TiddlyWiki opens the import dialog. While it waits for you, it holds the plugin in `$:/Import`, which isn't synced while the import is pending.
 2. **You click Import.** TiddlyWiki adds `$:/plugins/tiddlywiki/markdown` to its store. `$:/Import` becomes a short import report, an ordinary tiddler that gets saved too.
 3. **TiddlyWiki sees a plugin with JavaScript.** It can't activate it without a reload, so it shows "Please save and reload…". The plugin is in the store but not running.
 4. **The save is automatic.** About a second later, the conflict guard sends it:
@@ -93,8 +96,8 @@ sequenceDiagram
 5. **It reads the body as bytes** and finds the first `,"text":`. It parses only what comes before: the fields, a few hundred bytes.
 6. **It checks for a conflict:** the stored revision against `If-Match` / `If-None-Match`, as before.
 7. **It appends `,"revision":"1791041234567","bag":"default","recipe":"default"`** before the final `}` and writes the result to `recipes/default/tiddlers/$:/plugins/tiddlywiki/markdown`, with `layout: flat` in its metadata. The text is copied as bytes, never decoded.
-8. **It queues the GitHub backup** and **purges the tiddler's public URLs**, as before. Plugin files are never purged.
-9. **It updates the tiddler list** with the plugin's entry (all fields but `text`), and gets back the entry it replaced.
+8. **It queues the GitHub backup,** as before.
+9. **It updates the tiddler list** with the plugin's entry (all fields but `text`), and gets back the entry it replaced. Only then does it purge the tiddler's public URLs and the list's, so a public request in between can't put the old list back in the cache. Plugin files are never purged.
 10. **The plugin is something the page needs at boot, so it rebuilds `baked.html` before answering.** The page build:
     - reads `index.html`, the tiddler list and the startup tiddlers, as before;
     - checks each plugin's file with a `HEAD`. This one is missing or has an older revision, so it reads the stored tiddler and writes `_plugins/$:/plugins/tiddlywiki/markdown.js`: the opening of the template, the stored bytes, the closing;
@@ -125,13 +128,13 @@ The earlier plan put every plugin inside `baked.html`:
 - **The page would grow** with each plugin, easily by a megabyte or more, and both sites would download all of it again whenever anything in the page changed.
 - **Each rebuild would read and re-serialize every plugin,** which doesn't fit in 10 ms of CPU.
 
-With files, the page grows by one line per plugin, each plugin is cached on its own, and the rebuild never reads plugin code.
+With files, the page grows by one line per plugin, each plugin is cached on its own, and the rebuild never parses plugin code: it only copies a plugin's stored bytes when that plugin's file needs rewriting (and, for a plugin stored by another tool without the worker's metadata, reads it once to find its revision).
 
-Your external-plugins plugin does the same for a single-file wiki, where you export and upload each file by hand. Here the worker already receives every plugin when it's saved, so it writes the file itself.
+The external-plugins plugin does the same for a single-file wiki, where you export and upload each file by hand. Here the worker already receives every plugin when it's saved, so it writes the file itself.
 
 ### 3.2 Loaded from the public site, even by the admin page
 
-A relative URL (`/_plugins/…`) would make the admin page load plugins through the worker: one request per plugin on every page load, since Cloudflare never caches what a worker generates. The public URL costs no worker request on either site. A `<script src>` from another hostname needs no CORS header.
+A relative URL (`/_plugins/…`) would make the admin page load plugins through the worker. Browsers would still cache them, since the worker passes the files' cache headers on, but every browser would cost one worker request per plugin version, every hard reload would cost more, and Cloudflare never caches what a worker generates, so there'd be no shared cache. The public URL costs no worker request on either site. A `<script src>` from another hostname needs no CORS header.
 
 The trade-off: the admin page now depends on the public site being up to load its plugins. It already uses the public site for tiddler contents, but those fall back to the worker; plugin files don't.
 
@@ -158,7 +161,7 @@ Before this change, every save was parsed and re-serialized by the worker, just 
 | KaTeX | 735 KB | 6.5 ms | 0.3 ms |
 | geospatial | 945 KB | 10 ms | 0.4 ms |
 
-Median CPU of the body handling, measured in Node.js (the same JavaScript engine as Workers) on a development machine, so only the proportions matter. The flat column includes building the plugin file.
+Median CPU of the body handling, measured in Node.js (the same JavaScript engine as Workers) on a slow, shared 2-core test machine, so only the proportions matter. The flat column includes building the plugin file.
 
 **Why cutting at `,"text":` is safe:** inside a JSON string every quote is escaped as `\"`, so the sequence `,"text":` can only be the `text` key itself. The flat layout has no nested objects, and the browser puts `text` last. In UTF-8, bytes of multi-byte characters are never ASCII, so searching the bytes can't match inside one either.
 
@@ -166,7 +169,7 @@ Median CPU of the body handling, measured in Node.js (the same JavaScript engine
 
 **Compatibility:**
 - Saves without the `X-Tiddler-Layout: flat` header (tabs opened before the deploy, scripts) are parsed and re-serialized, as before.
-- A body sent with the header that doesn't follow the layout (pretty-printed, or with `text`, `revision`, `bag` or `recipe` among the fields before `"text"`) is handled the same way. The one thing the worker can't check cheaply is fields placed *after* `text`: they're stored, but missing from the tiddler list. The browser module never does that.
+- A body sent with the header that doesn't follow the layout (pretty-printed, or with `text`, `revision`, `bag` or `recipe` among the fields before `"text"`) is parsed and re-serialized too. A body that isn't a JSON object at all is refused with `500`, as before. The one thing the worker can't check cheaply is fields placed *after* `text`: they're stored, but missing from the tiddler list. The browser module never does that.
 - A tiddler with a field literally called `fields` is sent in TiddlyWeb's layout, because the flat layout can't represent it.
 - TiddlyWiki reads both layouts: its loader only unpacks `fields` when it's there. Stored tiddlers keep their layout until they're next saved.
 
@@ -176,15 +179,16 @@ Median CPU of the body handling, measured in Node.js (the same JavaScript engine
 
 - **One place** that decides what a file contains.
 - **It repairs itself:** a missing or outdated file is rewritten on the next build. That also covers the first load after deploying, for plugins already in the wiki.
-- **The cost:** one `HEAD` per plugin per build, and one read of the stored tiddler when its file is rewritten. Builds only happen when something the page needs at boot changes.
+- **The cost:** one `HEAD` per plugin per build, and one read of the stored tiddler when its file is rewritten. Builds only happen when something the page needs at boot changes, and on the first admin page load after a deploy or a new `index.html`.
 
-**Overlapping builds never go backwards.** Two builds can run at once: two tabs saving, or a save during the first load after a deploy. Without care, the slower one could write an older version last. That would be bad for a file in particular: the page could ask for `?v=r2` while R2 holds r1, and Cloudflare would cache r1 under that URL for a year. So:
-- **A file** is written only if it's still the one the build looked at (`etagMatches`, or create-only if it was missing), and never replaced by an older version. If another build got there first, the tag uses the revision the file holds.
-- **The page:** the tiddler list gets a version number, increased on every write, and each `baked.html` records the one it was built from (`listVersion`). A build never replaces a page built from a newer list for the same worker and `index.html`.
+**Overlapping builds don't go backwards.** Two builds can run at once: two tabs saving, or a save during the first load after a deploy. Without care, the slower one could write an older version last. That would be bad for a file in particular: the page could ask for `?v=r2` while R2 holds r1, and Cloudflare would cache r1 under that URL for a year. So:
+- **A file** is written only if it's still the one the build looked at (`etagMatches`, or create-only if it was missing), and not replaced by one holding a newer revision. If another build got there first, the tag uses the revision the file holds.
+- **The page:** each `baked.html` records when the tiddler list it was built from was stored in R2 (`listVersion`, R2's own upload time). A build doesn't replace a page built from a newer list for the same worker and `index.html`. Using R2's time rather than a counter of the worker's own means a list replaced by hand counts as newer too, instead of freezing the page.
+- **Best effort:** each of these tries three times, and the last try writes without a condition, like the create-only fallback in the save handler (a create-only write can be refused even though nothing is there). Losing two races in a row is very unlikely with one person editing.
 
 ### 3.7 The page is built from bytes
 
-`index.html` is a few MB. On my test machine (a slow, shared 2-core server), decoding the 2.6 MB test wiki into a string, inserting the script and encoding it back took about 16 ms of CPU. Working on the bytes, and only decoding the first 16 KB to find `<head>`, took about 1.6 ms. Cloudflare's servers are faster, so both numbers are lower there, but the ratio holds. Decoding that start of the file keeps a byte order mark, if there is one, so the insertion point stays exact.
+`index.html` is a few MB. On the test machine (a slow, shared 2-core server), decoding the 2.6 MB test wiki into a string, inserting the script and encoding it back took about 16 ms of CPU. Working on the bytes, and only decoding the first 16 KB to find `<head>`, took about 1.6 ms. Cloudflare's servers are faster, so both numbers are lower there, but the ratio holds. Decoding that start of the file keeps a byte order mark, if there is one, so the insertion point stays exact.
 
 ### 3.8 Disabled plugins keep their tag
 
@@ -216,7 +220,7 @@ If it were excluded, updating it from the plugin library would store the new ver
 
 These figures come from the same test machine as in section 3, so read them as proportions. The worker's metrics in the Cloudflare dashboard show its real CPU time per request.
 
-**The backup queue consumer** spends 30–100 ms of CPU on a plugin (base64 encoding, git's blob hash, reading the previous version). That's fine: queue consumers get 30 seconds of CPU by default. The fallback without a queue runs inside the save request, so keep the queue bound.
+**The backup queue consumer** spends 30–100 ms of CPU on a plugin (base64 encoding, git's blob hash, reading the previous version). That's fine: queue consumers get 30 seconds of CPU by default, on both plans ([Queues limits](https://developers.cloudflare.com/queues/platform/limits/)). The fallback without a queue runs inside the save request, so keep the queue bound.
 
 **Worker requests:** unchanged. A page load is still three requests; plugin files never reach the worker.
 
@@ -234,11 +238,11 @@ These figures come from the same test machine as in section 3, so read them as p
 
 ## 5. The change, step by step
 
-What changed relative to the previous worker, with the code as it now is in `src/conflict-guard.js` and `src/worker.src.js`, then the tests and the README. "Replace X with" refers to the previous code. After editing the source, run `npm run build` and `npm test`.
+What changed relative to the previous worker, with the code as it now is in `src/conflict-guard.js` and `src/worker.src.js`, then the tests and the README. Each step says what replaced what in the previous code. After editing the source, `npm run build` rebuilds `worker.js` and `npm test` checks everything.
 
 ### 5.1 The browser module sends the flat layout
 
-In `src/conflict-guard.js`, add this function after `link()`:
+In `src/conflict-guard.js`, this function was added after `link()`:
 
 ```js
 // The body of a save in the worker's "flat" layout; the worker appends its own revision, bag and
@@ -263,7 +267,7 @@ function flatBody(tiddler) {
 }
 ```
 
-In `proto.saveTiddler`, replace the `$tw.utils.httpRequest({` call's `headers` and `data` lines by building them first:
+In `proto.saveTiddler`, the `headers` and `data` of the `$tw.utils.httpRequest({` call are now built first:
 
 ```js
 var body = flatBody(tiddler),
@@ -280,11 +284,11 @@ $tw.utils.httpRequest({
 	data: body,
 ```
 
-Also add a paragraph to the header comment saying the module sends saves in the flat layout.
+A paragraph in the header comment says the module sends saves in the flat layout.
 
 ### 5.2 The worker: what the page needs at boot
 
-In `src/worker.src.js`, replace the block that defines `STARTUP_TITLES` and `isStartupTiddler` (just above `tiddlerKeys`) with:
+In `src/worker.src.js`, the block that defined `STARTUP_TITLES` and `isStartupTiddler` (just above `tiddlerKeys`) became:
 
 ```js
 // --- What the page needs at boot ---------------------------------------------------------------
@@ -332,7 +336,7 @@ function isPageTiddler(tiddler) {
 
 ### 5.3 The worker: reading a save
 
-Add this block after `conflictResponse()`:
+This block was added after `conflictResponse()`:
 
 ```js
 // --- Reading a save ---------------------------------------------------------------------------
@@ -418,11 +422,11 @@ function untilDone(ctx, promise) {
 }
 ```
 
-Add `X-Tiddler-Layout` to `Access-Control-Allow-Headers` in `corsHeaders`.
+`X-Tiddler-Layout` was added to `Access-Control-Allow-Headers` in `corsHeaders`.
 
 ### 5.4 Saving
 
-In the `PUT` handler, replace `const tiddler = JSON.parse(await request.text());` and the draft check with:
+In the `PUT` handler, `const tiddler = JSON.parse(await request.text());` and the draft check became:
 
 ```js
 const save = await readSave(request);
@@ -430,7 +434,7 @@ const save = await readSave(request);
 if (isEphemeralTitle(title) || isDraft(save.fields)) {
 ```
 
-Replace everything from `const newRevision = …` to `const putOptions = {…};` with:
+Everything from `const newRevision = …` to `const putOptions = {…};` became:
 
 ```js
 const newRevision = Date.now().toString();
@@ -442,13 +446,15 @@ const putOptions = {
 };
 ```
 
-Then use `body` instead of `modifiedBody` in the three `env.WIKI_BUCKET.put(tiddlerKey, …)` calls, and replace the lines from `await updateManifest(…)` to the `isStartupTiddler` block with:
+The three `env.WIKI_BUCKET.put(tiddlerKey, …)` calls write `body` instead of `modifiedBody`, and the lines from `await updateManifest(…)` to the `isStartupTiddler` block became:
 
 ```js
 ctx.waitUntil(queueBackup(env, { action: "save", title, revision: newRevision, content: body }));
-ctx.waitUntil(purgePublicCache(env, tiddlerPurgeUrls(env, title)));
 await untilDone(ctx, (async () => {
   const previous = await updateManifest(env, title, save.fields, newRevision);
+  // Only once the new list is in R2: a public request between the purge and the list update
+  // would put the old list back in Cloudflare's cache
+  ctx.waitUntil(purgePublicCache(env, tiddlerPurgeUrls(env, title)));
   const saved = { ...save.fields, title };
   if (previous && needsPluginFile(previous) && !needsPluginFile(saved)) {
     await env.WIKI_BUCKET.delete(pluginFileKey(title));
@@ -463,7 +469,7 @@ await untilDone(ctx, (async () => {
 
 **Why wait for the rebuild:** TiddlyWiki asks for a reload as soon as a plugin is imported. If the page were rebuilt after the response, a reload right after the save could still get the old page.
 
-**Why `untilDone` rather than a plain `await`:** if the browser disconnects before the response (a reload during the build), work that is only awaited can be cancelled. `untilDone` also hands it to `ctx.waitUntil`, which keeps it running. For the same reason the backup is now queued before the tiddler list is updated, not after.
+**Why `untilDone` rather than a plain `await`:** if the browser disconnects before the response (a reload during the build), work that is only awaited can be cancelled. `untilDone` also hands it to `ctx.waitUntil`, which keeps it running. For the same reason the backup is now queued before the tiddler list is updated, not after. The purge stays after the list update: purging first would let a public request in between put the old list back in Cloudflare's cache.
 
 **Why check `previous` too:** it covers a tiddler that stops being needed at boot, such as a startup action losing its tag, or a plugin turned into an ordinary tiddler. Before, such a tiddler stayed in the page until something else triggered a rebuild.
 
@@ -483,7 +489,7 @@ const text = await object.text();
 
 ### 5.6 Deleting
 
-In the `DELETE` handler, replace the lines from `// If it was neither stored nor listed…` to the end of the `rebakeHtml` block with:
+In the `DELETE` handler, the lines from `// If it was neither stored nor listed…` to the end of the `rebakeHtml` block became:
 
 ```js
 await untilDone(ctx, (async () => {
@@ -506,7 +512,7 @@ await untilDone(ctx, (async () => {
 
 ### 5.7 Plugin files and the page build
 
-Replace `rebakeHtml` (and the comment above it) with:
+`rebakeHtml` (and the comment above it) became:
 
 ```js
 // --- Plugin files -------------------------------------------------------------------------------
@@ -535,8 +541,10 @@ function pluginFileUrl(env, title, revision) {
 }
 
 // Writes the plugin file from the stored tiddler. file: what head() returned for it (or null).
-// Two page builds can overlap, so it never replaces a file holding a newer version, and writes
-// only if the file is still the one it looked at. Returns the revision the file holds, or null.
+// Two page builds can overlap, so it doesn't replace a file holding a newer version, and writes
+// only if the file is still the one it looked at. After two lost races, a missing file is written
+// unconditionally (like the PUT handler's create-only fallback): best effort, not a guarantee.
+// Returns the revision the file holds, or null.
 async function writePluginFile(env, title, file) {
   let obj = null;
   for (const key of tiddlerKeys(title)) {
@@ -604,7 +612,9 @@ function insertAfterHead(html, markup) {
 }
 
 // Saves baked.html, unless an overlapping build from a newer tiddler list has already saved one
-// for the same worker and index.html. Returns false if it kept that one.
+// for the same worker and index.html. "Newer" compares when R2 stored each list (listVersion), so
+// a list replaced by hand counts as newer too. Returns false if it kept the other page. The last
+// try writes unconditionally, like the create-only fallback in the PUT handler: best effort.
 async function storePage(env, html, meta) {
   for (let attempt = 1; attempt <= 3; attempt++) {
     const current = await env.WIKI_BUCKET.head("baked.html");
@@ -685,7 +695,7 @@ async function rebakeHtml(env, ctx) {
     const stored = await storePage(env, html, {
       bakeVersion: bakeVersion(env),
       sourceEtag: htmlObj.etag,
-      listVersion: manifestObj?.customMetadata?.version || "0"
+      listVersion: String(manifestObj ? manifestObj.uploaded.getTime() : 0)
     });
     if (stored) ctx.waitUntil(purgePublicCache(env, PUBLIC_PAGE_PATHS.map(path => publicUrl(env, path))));
     return html;
@@ -698,11 +708,11 @@ async function rebakeHtml(env, ctx) {
 
 `isNewerRevision`, used by `writePluginFile`, is the existing helper from the backup code.
 
-Also update the comment above `toPreloadFields`: stored tiddlers *may* use TiddlyWeb's layout.
+The comment above `toPreloadFields` now says stored tiddlers *may* use TiddlyWeb's layout.
 
 ### 5.8 The tiddler list helpers return what they replaced
 
-Replace `updateManifest` and `removeFromManifest`, so they return the entry as it was before:
+`updateManifest` and `removeFromManifest` now return the entry as it was before:
 
 ```js
 // tiddler: everything but the text, in either layout. Returns the entry it replaced, or null.
@@ -746,17 +756,7 @@ async function removeFromManifest(env, title) {
 }
 ```
 
-`mutateManifest` may run the callback more than once when two saves race; the variables end up holding the value from the attempt that succeeded. `updateManifest` now also keeps every field of a flat tiddler in its entry.
-
-In `mutateManifest`, the list also gets a version number, which `storePage` compares:
-
-```js
-const putOptions = {
-  httpMetadata: { contentType: "application/json" },
-  // Counts the list's versions, so page builds can tell which of two lists is newer
-  customMetadata: { version: String((Number(existing?.customMetadata?.version) || 0) + 1) }
-};
-```
+`mutateManifest` may run the callback more than once when two saves race; the variables end up holding the value from the attempt that succeeded. `updateManifest` now keeps every field except the text, in either layout. The page build and the save and delete handlers decide everything from list entries (`plugin-type`, `module-type`, `platform`, `tags`), so the entries need them; the list grows a little as a result.
 
 ### 5.9 The backup takes the stored bytes
 
@@ -773,11 +773,13 @@ and for the fallback without a queue:
 const direct = { ...message, content: job.content && decoder.decode(job.content), contentKey: undefined };
 ```
 
-The queue consumer is unchanged: it receives text, as before.
+The queue consumer receives text, as before. Backups now hold the stored bytes, so each file in the GitHub repository switches to the flat layout on its tiddler's next save, and the repository holds both layouts.
+
+It also reads GitHub's current copy in the "object" format (`Accept: application/vnd.github.object+json`): GitHub doesn't return files between 1 and 100 MB in its default format, so the second backup of a tiddler over 1 MB would fail forever and hold up every later backup. In the object format their content comes back empty, which only means the "newer version restored" step can't run for them.
 
 ### 5.10 Bake version
 
-Bump the version, so the first page load after deploying rebuilds the page and writes files for the plugins already in the wiki. The public URL now counts even with `CONFLICT_GUARD=off`, since the plugin tags use it:
+The version was bumped to `4-`, so the first page load after deploying rebuilt the page and wrote files for the plugins already in the wiki. The public URL now counts even with `CONFLICT_GUARD=off`, since the plugin tags use it:
 
 ```js
 // Changes whenever the guard code or the public URL changes, so baked.html is rebuilt after a deploy
@@ -800,7 +802,7 @@ function bakeVersion(env) {
 const CONFLICT_GUARD_SOURCE = "__CONFLICT_GUARD_SOURCE__";   // replaced by the build
 ```
 
-and in `build.mjs`, the placeholder, the check and the replacement become:
+and in `build.mjs`, the backtick check is gone, and the placeholder and the replacement became:
 
 ```js
 const PLACEHOLDER = '"__CONFLICT_GUARD_SOURCE__"';
@@ -826,7 +828,7 @@ writeFileSync(new URL("./worker.js", import.meta.url), banner + source.replace(P
 - **`test/bake.test.mjs`:** the version check becomes `/^4-/`, and a new check for an `index.html` with a byte order mark.
 - **`test/queue-backup.test.mjs`:** one new check for flat saves.
 - **`package.json`:** adds `test:plugins` and runs it in `npm test`.
-- **`README.md`:** updated: the introduction, the architecture, the note on the build (2), the zone rules (3.5), the R2 layout and the two layouts (4.2), the page (4.3), a new section 4.8 on plugins, 5.13, operating (6), troubleshooting (7), limits (8) and tests (9).
+- **`README.md`:** updated: the introduction, the architecture, the note on the build (2), the zone rules (3.5), the requests table (4.1), the R2 layout and the two layouts (4.2), the page (4.3), a new section 4.8 on plugins, 5.13, operating (6), troubleshooting (7), limits (8) and tests (9).
 
 ---
 
@@ -834,21 +836,23 @@ writeFileSync(new URL("./worker.js", import.meta.url), banner + source.replace(P
 
 `test/plugins.test.mjs` runs the worker locally (Miniflare), a stand-in for the public site that serves the R2 bucket directly, and a real TiddlyWiki in Chromium. It checks:
 
-1. **Install by drag and drop** (the real import dialog flow) of the markdown plugin: two saves (plugin and import report); the save is flat; the stored tiddler is the received bytes with the worker's revision appended, and its text is byte for byte the plugin's; the file is exactly the template around the stored bytes, served as JavaScript with a one-year cache; running it preloads exactly the stored tiddler; the page has the script tag with `?v=<revision>`; no plugin file is purged.
-2. **After the reload:** markdown renders; no reload is asked; the file came from the public site; the worker never served plugin code; the sync didn't download the plugin; the worker saw three requests; on the next load the file comes from the browser cache.
+1. **Install** of the markdown plugin through the import messages a drop sends: two saves (plugin and import report); the save is flat; the stored tiddler is the received bytes with the worker's revision appended, and its text is byte for byte the plugin's; the file is exactly the template around the stored bytes, served as JavaScript with a one-year cache; running it preloads exactly the stored tiddler; the page has the script tag with `?v=<revision>`; no plugin file is purged.
+2. **After the reload:** markdown renders; no reload is asked; the file came from the public site; the worker never served plugin code; the sync didn't download the plugin; the worker saw at most three requests; on the next load the file comes from the browser cache.
 3. **The public site:** markdown renders, with no request to the worker.
 4. **A big plugin:** KaTeX (735 KB) is stored intact and its widget works.
 5. **Update:** the page points to the new `?v=`, the same file is overwritten, and the new version is active.
 6. **Disable and enable:** the flag is in the page, the plugin is inactive with no reload asked and still listed, then active again.
 7. **A theme** is applied at boot.
 8. **A standalone macro module** whose code contains `U+2028`, escaped quotes, `,"text":` and an emoji works.
-9. **Bodies the worker must cut correctly:** `,"text":` inside a field and inside the text, a tiddler without text, a field called `fields`, two bodies that claim the flat layout but don't follow it, and a flat tiddler read back through the worker.
+9. **Bodies the worker must cut correctly:** `,"text":` inside a field and inside the text, a tiddler without text, a field called `fields`, two bodies that claim the flat layout but don't follow it, and a flat tiddler read back through the worker. Also the order of a save's purge: the list is purged only once it's updated. That check always passes when the order is right, but can only catch the wrong order some of the time, since it depends on timing.
 10. **A save in TiddlyWeb's layout** (an old tab or a script) is stored as before; its file moves the fields up in the browser; the title has spaces, `#` and non-ASCII characters.
 11. **Plugins stored before the change,** here as another tool would store one (no metadata, a number as revision): the first page build writes the file, and the plugin works with no reload asked.
 12. **No longer needed:** a plugin turned into an ordinary tiddler, a startup action losing its tag, a deleted plugin.
-13. **Overlapping builds:** a build doesn't replace a page built from a newer tiddler list, or a file holding a newer version.
+13. **Overlapping builds:** a build doesn't replace a page built from a newer tiddler list, or a file holding a newer version; and a tiddler list replaced by hand doesn't stop the page from being rebuilt.
 14. **Recovery:** with the file deleted, the wiki starts without the plugin; deleting the plugin then removes its tag.
 15. **No page errors** throughout.
+
+`test/queue-backup.test.mjs` also checks flat saves, and a tiddler over 1 MB saved twice with a later backup behind it.
 
 Run it with `npm run test:plugins`, or `WIKI_HTML=/path/to/index.html npm run test:plugins` against your own wiki file.
 
@@ -893,10 +897,10 @@ A plugin that throws while TiddlyWiki boots stops the wiki from starting, on bot
 
 1. **Delete the file** in R2: `_plugins/<plugin title>.js`. The dashboard shows it under folders, since titles contain `/`.
 2. **Purge it** from Cloudflare's cache: Caching → Configuration → Purge Cache. Either the exact URL with its `?v=`, which is in the page's source, or everything.
-3. **Hard-reload the admin wiki** (Ctrl+Shift+R), which also skips the browser's copy. It starts without the plugin. The sync then fetches the plugin, which doesn't run, and TiddlyWiki asks for a reload; ignore that.
+3. **Hard-reload the admin wiki** (Ctrl+Shift+R), which also skips the browser's copy. It starts without the plugin. The sync then fetches the plugin, which doesn't run, and TiddlyWiki may ask for a reload; ignore it.
 4. **Delete or disable the plugin** in the Control Panel and wait for the save. The page is rebuilt without it (deleted) or with its disable flag (disabled), so its code doesn't run anymore.
 
-If the page is rebuilt before step 4, for example by a deploy, the file is written again; just delete it again. Visitors' browsers may still hold the broken file, but once the page no longer runs it, that doesn't matter.
+If the page is rebuilt before step 4, by a deploy or by saving another plugin, a startup action, `$:/theme` or a disable flag, the file is written again; just delete it again. Visitors' browsers may still hold the broken file, but once the page no longer runs it, that doesn't matter.
 
 | Symptom | Likely cause | What to do |
 |---|---|---|
@@ -913,8 +917,8 @@ If the page is rebuilt before step 4, for example by a deploy, the file is writt
 - **`$:/core`** never gets a file: it isn't synced. Upgrade TiddlyWiki by uploading a new `index.html`.
 - **An old page loading new code:** a page cached somewhere with an old `?v=` could fetch a file that has since been overwritten, once that old URL has left Cloudflare's cache. It then simply runs the new version, which matches the tiddler list.
 - **Leftover files:** a file can outlive its plugin if two builds overlap at the moment the plugin is turned into an ordinary tiddler. Nothing loads it; delete it in R2 if you notice it.
-- **Browsers:** the file uses `??=` and `??`, like your template, so it needs a browser from 2020 or later.
+- **Browsers:** the file uses `??=` and `??`, like the external-plugins template, so it needs a browser from 2020 or later.
 - **`$:/tags/RawMarkup…` tiddlers** do nothing here: TiddlyWiki only inserts them when it saves a single-file wiki.
-- **Plugin files are public,** like everything in the bucket.
+- **Plugin files are public,** like everything in the bucket. A deleted plugin's file is removed from R2 but not purged, so its old `?v=` URL stays reachable in Cloudflare's cache until it expires; nothing loads it.
 - **Very large plugins:** a save holds a few copies of the body in memory, well within the 128 MB a worker has, and well under the 100 MB request size limit.
 - **The tiddler list** is still read and rewritten on every save. It's now the largest CPU cost of a save: about 1 ms per 400–500 tiddlers.

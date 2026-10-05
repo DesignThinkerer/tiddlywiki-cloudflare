@@ -34,7 +34,15 @@ async function fakeGitHub(req) {
     inFlight--;
   }
   const file = files.get(path);
-  if (req.method === "GET") return file ? json({ sha: file.sha, encoding: "base64", content: Buffer.from(file.text).toString("base64").replace(/(.{60})/g, "$1\n") }) : json({ message: "Not Found" }, 404);
+  if (req.method === "GET") {
+    if (!file) return json({ message: "Not Found" }, 404);
+    // Like GitHub: files over 1 MB only come in the "object" (or raw) format, without content
+    const big = Buffer.byteLength(file.text) > 1024 * 1024;
+    if (big && !/application\/vnd\.github\.(object|raw)/.test(req.headers.get("accept") || "")) {
+      return json({ message: "This API returns blobs up to 1 MB in size.", errors: [{ resource: "Blob", field: "data", code: "too_large" }] }, 403);
+    }
+    return json({ sha: file.sha, encoding: big ? "none" : "base64", content: big ? "" : Buffer.from(file.text).toString("base64").replace(/(.{60})/g, "$1\n") });
+  }
   if (req.method === "PUT") {
     if (file && body.sha !== file.sha) return json({ message: "sha mismatch" }, 409);
     if (!file && body.sha) return json({ message: "no such file" }, 422);
@@ -159,6 +167,15 @@ await putFlat("Flat big", "y".repeat(200000) + " é");
 await until(async () => repoText("Flat small") !== undefined && repoText("Flat big") !== undefined);
 check("flat-layout saves committed byte-identical to R2", repoText("Flat small") === await r2Text("Flat small") &&
   repoText("Flat big") === await r2Text("Flat big") && JSON.parse(repoText("Flat big")).note === "flat");
+
+// 8c. A tiddler over 1 MB is backed up again on its next save, without holding up later backups
+const huge = "z".repeat(1100000);
+await put("Huge", huge + " v1");
+await until(async () => textOf(repoText("Huge")) === huge + " v1");
+await put("Huge", huge + " v2");
+await put("After huge", "still backed up");
+check("a tiddler over 1 MB is backed up on every save, and later backups go through",
+  await until(async () => textOf(repoText("Huge")) === huge + " v2" && textOf(repoText("After huge")) === "still backed up", 20000));
 
 // 9. Special titles keep the old file paths
 await put("$:/config/Some Thing", "s");
