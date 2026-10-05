@@ -68,8 +68,8 @@ flowchart LR
 ├── README.md                 this document
 ├── worker.js                 GENERATED: the file you deploy (npm run build)
 ├── docs/
-│   ├── external-plugins.md       design notes for plugin files (4.8)
-│   └── external-plugins.patch    the change that added them, as a patch
+│   └── external-plugins.md   design notes for plugin files (4.8)
+├── tiddlers/                 the GitHub backup (4.7): one JSON file per tiddler, committed by the worker
 ├── src/
 │   ├── worker.src.js         the worker's source
 │   └── conflict-guard.js     the browser module, embedded into worker.js by the build
