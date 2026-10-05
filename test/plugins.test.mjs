@@ -37,7 +37,14 @@ const mf = new Miniflare({
   r2Buckets: ["WIKI_BUCKET"], r2Persist: r2Dir,
   bindings: { PUBLIC_WIKI_URL: PUB, CF_ZONE_ID: "zone123", CF_API_TOKEN: "token" },
   outboundService: async (req) => {
-    outbound.push({ url: req.url, body: req.method === "GET" ? "" : await req.text() });
+    const arrived = Date.now();
+    const entry = { url: req.url, body: req.method === "GET" ? "" : await req.text() };
+    if (req.url.includes("purge_cache")) {
+      // When the tiddler list was last written, compared with when the purge arrived
+      const list = await bucket.head("recipes/default/tiddlers.json");
+      entry.purgedAfterList = !!list && list.uploaded.getTime() <= arrived;
+    }
+    outbound.push(entry);
     return new Response('{"success":true}');
   },
 });
@@ -266,6 +273,10 @@ for (const [name, json] of [["pretty-printed", JSON.stringify({ title: "Odd 1", 
   check(`a "flat" body that isn't (${name}) is handled like any other save`, r.status === 204 && JSON.parse(o.text).revision === o.meta.revision &&
     JSON.parse(o.text).text === "x" && entry.tags[0] === "z" && entry.text === undefined);
 }
+await add({ title: "Purge order", text: "listed before its purge?" });
+await settle();
+const purge = outbound.find(o => o.url.includes("purge_cache") && o.body.includes(encodeURIComponent("Purge order")));
+check("a save purges the public tiddler list only once the list is updated", !!purge && purge.purgedAfterList);
 const viaWorker = await mf.dispatchFetch(BASE + "/recipes/default/tiddlers/" + encodeURIComponent("Tricky"));
 body = await viaWorker.json();
 check("GET of a flat tiddler is served as stored, with its ETag", body.note === 'a,"text":"b' && viaWorker.headers.get("ETag").includes((await stored("Tricky")).meta.revision));
@@ -325,7 +336,7 @@ check("deleted plugin is gone after the reload", !(await isKatexActive()));
 // --- 13. Overlapping page builds never go backwards ---------------------------------------------------
 const current = await bucket.head("baked.html");
 await bucket.put("baked.html", "<html><head></head><body>from a newer list</body></html>",
-  { httpMetadata: { contentType: "text/html; charset=utf-8" }, customMetadata: { ...current.customMetadata, listVersion: "999999999" } });
+  { httpMetadata: { contentType: "text/html; charset=utf-8" }, customMetadata: { ...current.customMetadata, listVersion: "99999999999999" } });
 await add({ title: "$:/SiteSubtitle", text: "a startup tiddler, to trigger a build" });
 await settle();
 check("an older build doesn't replace a page built from a newer tiddler list", (await bakedPage()).includes("from a newer list"));
@@ -333,6 +344,11 @@ await bucket.put("_plugins/" + ML + ".js", "/* a newer version */", { customMeta
 await bucket.delete("baked.html");
 const rebuilt = await (await mf.dispatchFetch(BASE + "/")).text();
 check("an older build doesn't overwrite a newer plugin file, and points to it", (await pluginFile(ML)).text === "/* a newer version */" && rebuilt.includes(scriptTag(ML, "9999999999999")));
+const handList = await (await bucket.get("recipes/default/tiddlers.json")).text();
+await bucket.put("recipes/default/tiddlers.json", handList, { httpMetadata: { contentType: "application/json" } });   // replaced by hand
+await add({ title: "$:/SiteSubtitle", text: "after a hand-replaced list" });
+await settle();
+check("a tiddler list replaced by hand doesn't stop the page from being rebuilt", (await bakedPage()).includes("after a hand-replaced list"));
 
 // --- 14. Recovery: delete the file in R2, hard reload --------------------------------------------------
 await bucket.delete("_plugins/" + ML + ".js");
