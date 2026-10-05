@@ -1,0 +1,353 @@
+// End-to-end test: the worker in workerd (Miniflare) with R2, a real TiddlyWiki in Chromium, several tabs.
+// Covers edit-conflict protection, baking, public-cache purges, the 304 and the request savings.
+// Run: npm run test:tabs   (WIKI_HTML=path/to/your/index.html to test with your own wiki file)
+import { Miniflare } from "miniflare";
+import { chromium } from "playwright";
+import fs from "node:fs";
+import http from "node:http";
+import { fileURLToPath } from "node:url";
+
+const WORKER = fileURLToPath(new URL("../worker.js", import.meta.url));
+const WIKI_HTML = process.env.WIKI_HTML || fileURLToPath(new URL("./fixtures/index.html", import.meta.url));
+if (!fs.existsSync(WIKI_HTML)) {
+  console.error(`No wiki file at ${WIKI_HTML}. Run "npm run fixture" first, or set WIKI_HTML.`);
+  process.exit(1);
+}
+const outbound = [];
+const mf = new Miniflare({
+  modules: true,
+  scriptPath: WORKER,
+  compatibilityDate: "2024-09-23",
+  r2Buckets: ["WIKI_BUCKET"],
+  port: 8799,
+  bindings: { CF_ZONE_ID: "zone123", CF_API_TOKEN: "token", PUBLIC_WIKI_URL: "http://127.0.0.1:8800" },
+  outboundService: async (req) => {
+    const body = req.method === "GET" ? "" : await req.text();
+    outbound.push({ method: req.method, url: req.url, body });
+    return new Response(req.url.includes("purge_cache") ? '{"success":true}' : "{}", { status: req.method === "GET" ? 404 : 200 });
+  },
+});
+const purged = () => outbound.filter(o => o.url.includes("purge_cache")).map(o => JSON.parse(o.body));
+const base = (await mf.ready).toString().replace(/\/$/, "");
+const bucket = await mf.getR2Bucket("WIKI_BUCKET");
+await bucket.put("index.html", fs.readFileSync(WIKI_HTML, "utf8"));
+await bucket.put("recipes/default/tiddlers.json", "[]");
+
+// Stand-in for the public site: the R2 bucket served directly (custom domain + CORS header rule)
+const PUB = "http://127.0.0.1:8800";
+let publicCors = true;
+const staleOverride = new Map();
+const publicServer = http.createServer(async (req, res) => {
+  const key = decodeURIComponent(new URL(req.url, PUB).pathname.slice(1));
+  let body = staleOverride.get(key);
+  if (body === undefined) {
+    const obj = await bucket.get(key);
+    body = obj ? await obj.text() : null;
+  }
+  const headers = publicCors ? { "Access-Control-Allow-Origin": "*" } : {};
+  if (body === null) { res.writeHead(404, headers); return res.end("Not found"); }
+  res.writeHead(200, { ...headers, "Content-Type": "application/json" });
+  res.end(body);
+});
+await new Promise(r => publicServer.listen(8800, "127.0.0.1", r));
+
+const results = [];
+function check(name, ok, detail = "") {
+  results.push({ name, ok });
+  console.log(`${ok ? "PASS" : "FAIL"}  ${name}${detail ? "  — " + detail : ""}`);
+}
+async function server(title) {
+  const r = await mf.dispatchFetch(`${base}/recipes/default/tiddlers/${encodeURIComponent(title)}`);
+  return r.status === 200 ? await r.json() : null;
+}
+
+const browser = await chromium.launch(process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {});
+const context = await browser.newContext();
+const net = [];
+const pageErrors = [];
+const requests = [];
+async function openTab(tag) {
+  const page = await context.newPage();
+  page.on("response", r => {
+    const q = r.request();
+    if (q.method() === "PUT" || q.method() === "DELETE") {
+      const h = q.headers();
+      net.push({ tag, method: q.method(), path: decodeURIComponent(new URL(q.url()).pathname), status: r.status(),
+        ifMatch: h["if-match"] || "", ifNoneMatch: h["if-none-match"] || "" });
+    }
+  });
+  page.on("pageerror", e => pageErrors.push(`${tag}: ${e.message}`));
+  page.on("request", q => requests.push({ tag, method: q.method(), url: q.url() }));
+  page.on("console", m => { if (m.type() === "error" && !m.text().startsWith("Failed to load resource") && !(tag === "D" && m.text().includes("CORS"))) pageErrors.push(`${tag} console: ${m.text()}`); });
+  await page.goto(base + "/");
+  await page.waitForFunction(() => window.$tw && $tw.syncer && $tw.syncer.timestampLastSyncFromServer);
+  await settle(page);
+  return page;
+}
+async function settle(page) {
+  await page.waitForFunction(() => {
+    const s = $tw.syncer;
+    const quiet = !s.isDirty() && s.numTasksInProgress === 0 && Object.keys(s.titlesToBeLoaded).length === 0 && !s.forceSyncFromServer;
+    window.__quiet = quiet ? (window.__quiet || 0) + 1 : 0;
+    return window.__quiet >= 3;
+  }, null, { timeout: 20000, polling: 300 });
+}
+async function sync(page) {
+  await page.evaluate(() => $tw.syncer.syncFromServer());
+  await settle(page);
+}
+async function create(page, title, text, extra = {}) {
+  await page.evaluate(([title, text, extra]) => {
+    $tw.wiki.addTiddler(new $tw.Tiddler($tw.wiki.getCreationFields(), extra, { title, text }, $tw.wiki.getModificationFields()));
+  }, [title, text, extra]);
+}
+async function startEdit(page, title) {
+  await page.evaluate(t => new $tw.Story().navigateTiddler(t), title);
+  await page.locator(`.tc-tiddler-frame[data-tiddler-title="${title}"] button[aria-label="Edit this tiddler"]`).first().click();
+  await page.waitForFunction(t => !!$tw.wiki.findDraft(t), title);
+}
+async function finishEdit(page, title, text, newTitle) {
+  const draftTitle = await page.evaluate(([t, text, newTitle]) => {
+    const d = $tw.wiki.findDraft(t);
+    const fields = { text };
+    if (newTitle) fields["draft.title"] = newTitle;
+    $tw.wiki.addTiddler(new $tw.Tiddler($tw.wiki.getTiddler(d), fields));
+    return d;
+  }, [title, text, newTitle]);
+  await page.locator(`.tc-tiddler-frame[data-tiddler-title="${draftTitle}"] button[aria-label="Confirm changes to this tiddler"]`).first().click();
+  await page.waitForFunction(d => !$tw.wiki.tiddlerExists(d), draftTitle);
+}
+async function editViaUI(page, title, text) {
+  await startEdit(page, title);
+  await finishEdit(page, title, text);
+}
+const localText = (page, title) => page.evaluate(t => $tw.wiki.getTiddlerText(t, null), title);
+const conflictCopies = (page, title) => page.evaluate(t => $tw.wiki.filterTiddlers("[field:conflict-of[" + t + "]]"), title);
+const alerts = page => page.evaluate(() => $tw.wiki.filterTiddlers("[tag[$:/tags/Alert]]").map(t => $tw.wiki.getTiddlerText(t)));
+const clearAlerts = page => page.evaluate(() => $tw.wiki.filterTiddlers("[tag[$:/tags/Alert]]").forEach(t => $tw.wiki.deleteTiddler(t)));
+const netSince = n => net.slice(n);
+
+// --- 0. Baked page + legacy clients -------------------------------------------------------
+const home = await (await mf.dispatchFetch(base + "/")).text();
+check("baked page includes the conflict guard module", home.includes("$:/cfworker/conflict-guard.js"));
+const A = await openTab("A");
+const B = await openTab("B");
+check("guard module is active in the browser", await A.evaluate(() => !!$tw.syncadaptor.conflictGuardInstalled));
+
+await create(A, "Alpha", "a1");
+await settle(A);
+let r = await mf.dispatchFetch(`${base}/recipes/default/tiddlers/Alpha`, { method: "PUT", body: JSON.stringify({ title: "Alpha", text: "legacy" }), headers: { "Content-Type": "application/json" } });
+check("PUT without If-Match is accepted (no more 428)", r.status === 204, `status ${r.status}`);
+r = await mf.dispatchFetch(`${base}/recipes/default/tiddlers/Alpha`, { method: "PUT", body: JSON.stringify({ title: "Alpha", text: "a1" }), headers: { "Content-Type": "application/json", "If-Match": '"default/Alpha/123:auto"' } });
+check("PUT with a stale If-Match gets 412", r.status === 412, `status ${r.status}`);
+await sync(A); await sync(B);
+
+// --- 1. Normal back-and-forth editing never conflicts ---------------------------------------
+let mark = net.length;
+await editViaUI(B, "Alpha", "b1"); await settle(B);
+await sync(A);
+await editViaUI(A, "Alpha", "a2"); await settle(A);
+await sync(B);
+await editViaUI(B, "Alpha", "b2"); await settle(B);
+check("alternating edits after sync: no 412", !netSince(mark).some(x => x.status === 412));
+check("alternating edits: server has the last edit", (await server("Alpha"))?.text === "b2");
+check("saves carried If-Match", netSince(mark).filter(x => x.method === "PUT" && x.path.endsWith("/Alpha")).every(x => x.ifMatch.includes("/Alpha/")));
+await sync(A);
+
+// --- 2. Edit started before the other tab saved, tab re-synced meanwhile (the old silent overwrite)
+mark = net.length;
+await startEdit(B, "Alpha");
+await editViaUI(A, "Alpha", "A wins"); await settle(A);
+await sync(B);                                  // B's poll pulls A's version in behind the open draft
+check("B loaded A's version behind its open draft", (await localText(B, "Alpha")) === "A wins");
+check("B's open editor survived the poll (drafts aren't synced)", await B.evaluate(() => !!$tw.wiki.findDraft("Alpha")));
+await finishEdit(B, "Alpha", "B late edit"); await settle(B);
+let copies = await conflictCopies(B, "Alpha");
+check("stale-draft save is rejected with 412", netSince(mark).some(x => x.tag === "B" && x.method === "PUT" && x.path.endsWith("/Alpha") && x.status === 412));
+check("server keeps A's version", (await server("Alpha"))?.text === "A wins");
+check("B's text is kept in a conflict copy on the server", copies.length === 1 && (await server(copies[0]))?.text === "B late edit", JSON.stringify(copies));
+check("B's tiddler now shows the server version", (await localText(B, "Alpha")) === "A wins");
+check("B shows an alert linking the copy", (await alerts(B)).some(t => t.includes("Edit conflict") && t.includes(copies[0])));
+check("B ends clean (nothing left to retry)", await B.evaluate(() => !$tw.syncer.isDirty()));
+check("conflict copy opened in B's story", await B.evaluate(c => $tw.wiki.getTiddlerList("$:/StoryList").includes(c), copies[0]));
+await clearAlerts(B);
+await sync(A);
+check("A receives the conflict copy on its next sync", (await A.evaluate(c => $tw.wiki.tiddlerExists(c), copies[0])));
+
+// --- 3. Stale tab that never re-synced -------------------------------------------------------
+mark = net.length;
+await editViaUI(A, "Alpha", "A again"); await settle(A);
+await editViaUI(B, "Alpha", "B stale"); await settle(B);
+check("stale tab save rejected", netSince(mark).some(x => x.tag === "B" && x.status === 412));
+check("server still has A's edit", (await server("Alpha"))?.text === "A again");
+check("second conflict copy holds B's edit", (await conflictCopies(B, "Alpha")).length === 2);
+await clearAlerts(B);
+await sync(A); await sync(B);
+
+// --- 4. Rapid edits in one tab (draft opened while previous save is in flight) -----------------
+mark = net.length;
+await editViaUI(A, "Alpha", "r1");
+await editViaUI(A, "Alpha", "r2");
+await editViaUI(A, "Alpha", "r3");
+await settle(A);
+check("rapid same-tab edits: no 412", !netSince(mark).some(x => x.status === 412), JSON.stringify(netSince(mark).filter(x=>x.status===412)));
+check("rapid same-tab edits: server has the last one", (await server("Alpha"))?.text === "r3");
+check("rapid same-tab edits: no conflict copies created", (await conflictCopies(A, "Alpha")).length === 2);
+await sync(B);
+
+// --- 5. Same new title created in two tabs ---------------------------------------------------
+mark = net.length;
+await create(A, "Gamma", "from A"); await settle(A);
+await create(B, "Gamma", "from B"); await settle(B);
+check("second creator gets 412 (If-None-Match: *)", netSince(mark).some(x => x.tag === "B" && x.path.endsWith("/Gamma") && x.ifNoneMatch === "*" && x.status === 412));
+check("server keeps the first Gamma", (await server("Gamma"))?.text === "from A");
+copies = await conflictCopies(B, "Gamma");
+check("B's Gamma is kept as a copy", copies.length === 1 && (await server(copies[0]))?.text === "from B");
+await clearAlerts(B);
+await sync(A);
+
+// --- 6. Delete in a stale tab after the other tab edited -------------------------------------
+await create(A, "Delta", "d1"); await settle(A); await sync(B);
+mark = net.length;
+await editViaUI(A, "Delta", "d2"); await settle(A);
+await B.evaluate(() => $tw.wiki.deleteTiddler("Delta")); await settle(B);
+check("stale delete is rejected with 412", netSince(mark).some(x => x.tag === "B" && x.method === "DELETE" && x.status === 412));
+check("Delta still on the server with A's edit", (await server("Delta"))?.text === "d2");
+check("Delta restored in B", (await localText(B, "Delta")) === "d2");
+await clearAlerts(B);
+mark = net.length;
+await B.evaluate(() => $tw.wiki.deleteTiddler("Delta")); await settle(B);
+check("up-to-date delete succeeds", netSince(mark).some(x => x.method === "DELETE" && x.status === 204) && (await server("Delta")) === null);
+await sync(A);
+check("A drops Delta after sync", !(await A.evaluate(() => $tw.wiki.tiddlerExists("Delta"))));
+
+// --- 7. Both tabs make the identical change --------------------------------------------------
+await create(A, "Epsilon", "e1"); await settle(A); await sync(B);
+await startEdit(B, "Epsilon");
+await editViaUI(A, "Epsilon", "same"); await settle(A);
+await finishEdit(B, "Epsilon", "same"); await settle(B);
+check("identical edits: no conflict copy", (await conflictCopies(B, "Epsilon")).length === 0);
+check("identical edits: no alert, B clean", (await alerts(B)).length === 0 && await B.evaluate(() => !$tw.syncer.isDirty()));
+
+// --- 8. Rename ------------------------------------------------------------------------------
+await sync(A); await sync(B);
+mark = net.length;
+await startEdit(B, "Epsilon");
+await finishEdit(B, "Epsilon", "renamed", "Epsilon renamed"); await settle(B);
+check("rename: no 412", !netSince(mark).some(x => x.status === 412), JSON.stringify(netSince(mark)));
+check("rename: new title on server, old one gone", (await server("Epsilon renamed"))?.text === "renamed" && (await server("Epsilon")) === null);
+
+// --- 9. Two saves hitting the worker at the same instant --------------------------------------
+await create(A, "Zeta", "z0"); await settle(A);
+const zeta = await server("Zeta");
+const put = text => mf.dispatchFetch(`${base}/recipes/default/tiddlers/Zeta`, { method: "PUT",
+  body: JSON.stringify({ title: "Zeta", text }), headers: { "Content-Type": "application/json", "If-Match": `"default/Zeta/${zeta.revision}:auto"` } });
+const statuses = (await Promise.all([put("one"), put("two"), put("three")])).map(x => x.status).sort();
+check("simultaneous saves: exactly one wins", JSON.stringify(statuses) === "[204,412,412]", JSON.stringify(statuses));
+
+// --- 10. Older object stored under the encoded key, body revision disagrees with metadata -----
+await bucket.put("recipes/default/tiddlers/" + encodeURIComponent("Legacy one"), JSON.stringify({ title: "Legacy one", text: "old", revision: "999", tags: [] }));
+const manifest = JSON.parse(await (await bucket.get("recipes/default/tiddlers.json")).text());
+manifest.push({ title: "Legacy one", revision: "999", tags: [], type: "text/vnd.tiddlywiki" });
+await bucket.put("recipes/default/tiddlers.json", JSON.stringify(manifest));
+await sync(B);
+mark = net.length;
+await editViaUI(B, "Legacy one", "updated"); await settle(B);
+check("legacy object: edit saves without a false conflict", !netSince(mark).some(x => x.status === 412) && (await server("Legacy one"))?.text === "updated");
+
+// --- 11. Startup tiddlers are baked with their custom fields flattened ------------------------
+await create(A, "$:/my/startup", "<$action-setfield $tiddler='$:/temp/x' text='$1 $& done'/>", { tags: ["$:/tags/StartupAction"], "my-field": "flat" });
+await settle(A);
+await new Promise(r => setTimeout(r, 500));
+const baked = await (await mf.dispatchFetch(base + "/baked.html")).text();
+check("baked startup tiddler has flattened custom field", baked.includes('"my-field":"flat"') && !baked.includes('"fields":{"my-field"'));
+check("$-patterns in tiddler text survive baking", baked.includes("$1 $& done"));
+
+// --- 12. Public cache purges and the tiddler-list 304 ------------------------------------------
+const PUBLIC_LIST = PUB + "/recipes/default/tiddlers.json?filter=%5Ball%5Btiddlers%5D%5D%20-%5B%5B%24%3A%2FisEncrypted%5D%5D%20-%5Bprefix%5B%24%3A%2Ftemp%2F%5D%5D%20-%5Bprefix%5B%24%3A%2Fstatus%2F%5D%5D%20-%5B%5B%24%3A%2Fboot%2Fboot.js%5D%5D%20-%5B%5B%24%3A%2Fboot%2Fbootprefix.js%5D%5D%20-%5Bhas%5Bplugin-type%5Dfield%3Aplatform%5Bserver%5D%5D%20-%5B%5B%24%3A%2Flibrary%2Fsjcl.js%5D%5D%20-%5B%5B%24%3A%2Fcore%5D%5D";
+await sync(A);
+let before = outbound.length;
+await editViaUI(A, "Zeta", "purge me"); await settle(A);
+await new Promise(r => setTimeout(r, 300));
+let bodies = outbound.slice(before).filter(o => o.url.includes("purge_cache")).map(o => JSON.parse(o.body));
+check("save purges the public tiddler URL and the exact public tiddler-list URL",
+  bodies.some(b => b.files && b.files.includes(PUB + "/recipes/default/tiddlers/Zeta") && b.files.includes(PUBLIC_LIST)), JSON.stringify(bodies));
+await create(A, "$:/config/Some Thing", "x"); await settle(A);
+await new Promise(r => setTimeout(r, 300));
+check("system tiddler URL encoded like TiddlyWiki requests it",
+  purged().some(b => b.files && b.files.includes(PUB + "/recipes/default/tiddlers/%24%3A%2Fconfig%2FSome%20Thing")));
+check("rebuilt baked.html is purged on the public site", purged().some(b => b.files && b.files.includes(PUB + "/baked.html")));
+check("purge_everything is never used", !purged().some(b => b.purge_everything));
+const fresh = await mf.dispatchFetch(base + "/recipes/default/tiddlers.json");
+const etag = fresh.headers.get("ETag");
+const again = await mf.dispatchFetch(base + "/recipes/default/tiddlers.json", { headers: { "If-None-Match": "W/" + etag } });
+check("unchanged tiddler list answers 304 (weak ETag accepted)", again.status === 304 && again.headers.get("ETag") === etag, `${again.status} ${etag}`);
+await editViaUI(A, "Zeta", "changed again"); await settle(A);
+const changed = await mf.dispatchFetch(base + "/recipes/default/tiddlers.json", { headers: { "If-None-Match": etag } });
+check("changed tiddler list answers 200 with a new ETag", changed.status === 200 && changed.headers.get("ETag") !== etag && (await changed.json()).length > 0);
+
+// --- 13. Fewer worker requests ---------------------------------------------------------------
+for (let i = 1; i <= 5; i++) await create(A, `Note ${i}`, `note text ${i}`);
+await settle(A);
+let reqMark = requests.length;
+const C = await openTab("C");
+const workerTiddlerGets = rs => rs.filter(r => r.method === "GET" && r.url.startsWith(base + "/recipes/default/tiddlers/"));
+const publicTiddlerGets = rs => rs.filter(r => r.method === "GET" && r.url.startsWith(PUB + "/recipes/default/tiddlers/"));
+let cReqs = requests.slice(reqMark).filter(r => r.tag === "C");
+const texts = await C.evaluate(() => [1,2,3,4,5].map(i => $tw.wiki.getTiddlerText("Note " + i)));
+check("new tab loads every tiddler correctly", texts.every((t, i) => t === `note text ${i + 1}`), JSON.stringify(texts));
+check("page load fetches tiddlers from the public site, not the worker",
+  workerTiddlerGets(cReqs).length === 0 && publicTiddlerGets(cReqs).length >= 5,
+  `worker ${workerTiddlerGets(cReqs).length}, public ${publicTiddlerGets(cReqs).length}`);
+check("page load makes only 3 worker requests (page, status, tiddler list)", cReqs.filter(r => r.url.startsWith(base)).length === 3);
+console.log("      worker requests during C's page load:", cReqs.filter(r => r.url.startsWith(base)).map(r => r.method + " " + decodeURIComponent(new URL(r.url).pathname)).join(", "));
+check("no $:/StoryList or draft writes reach the worker", !net.some(x => x.path.includes("$:/StoryList") || x.path.includes("Draft of")));
+
+// public copy is stale -> falls back to the worker
+await sync(C);
+staleOverride.set("recipes/default/tiddlers/Note 1", await (await bucket.get("recipes/default/tiddlers/Note 1")).text());
+await editViaUI(A, "Note 1", "note 1 edited"); await settle(A);
+reqMark = requests.length;
+await sync(C);
+cReqs = requests.slice(reqMark).filter(r => r.tag === "C");
+check("stale public copy is ignored, worker used instead",
+  (await localText(C, "Note 1")) === "note 1 edited" && workerTiddlerGets(cReqs).some(r => r.url.endsWith("/Note%201")));
+staleOverride.clear();
+await editViaUI(C, "Note 1", "edited in C"); await settle(C);
+check("editing after a fallback load saves without conflict", (await server("Note 1"))?.text === "edited in C" && (await conflictCopies(C, "Note 1")).length === 0);
+
+// no CORS header on the public site -> everything still works through the worker
+publicCors = false;
+reqMark = requests.length;
+const D = await openTab("D");
+const dReqs = requests.slice(reqMark).filter(r => r.tag === "D");
+check("without the CORS header the wiki still loads (via the worker)",
+  (await D.evaluate(() => $tw.wiki.getTiddlerText("Note 2"))) === "note text 2" && workerTiddlerGets(dReqs).length >= 5);
+publicCors = true;
+await D.close();
+
+// background tab stops polling, catches up when shown
+await C.evaluate(() => {
+  Object.defineProperty(document, "hidden", { get: () => !!window.__hidden, configurable: true });
+  window.__hidden = true;
+  $tw.syncer.pollTimerInterval = 1000;
+  $tw.syncer.processTaskQueue();
+});
+reqMark = requests.length;
+await new Promise(r => setTimeout(r, 11000));
+const hiddenPolls = requests.slice(reqMark).filter(r => r.tag === "C" && r.url.includes("tiddlers.json")).length;
+reqMark = requests.length;
+await C.evaluate(() => { window.__hidden = false; document.dispatchEvent(new Event("visibilitychange")); });
+await new Promise(r => setTimeout(r, 800));
+const shownPolls = requests.slice(reqMark).filter(r => r.tag === "C" && r.url.includes("tiddlers.json")).length;
+check("hidden tab does not poll; shown tab syncs at once", hiddenPolls === 0 && shownPolls >= 1, `hidden ${hiddenPolls}, on show ${shownPolls}`);
+
+// --- Summary --------------------------------------------------------------------------------
+const bad = net.filter(x => x.status === 428 || x.status >= 500);
+check("no 428/5xx responses anywhere", bad.length === 0, JSON.stringify(bad));
+check("no page errors", pageErrors.length === 0, pageErrors.join(" | "));
+console.log(`\n${results.filter(x => x.ok).length}/${results.length} passed; ${net.filter(x => x.status === 412).length} conflicts detected; ${net.length} writes`);
+await browser.close();
+await mf.dispose();
+publicServer.close();
+process.exit(results.every(x => x.ok) ? 0 : 1);

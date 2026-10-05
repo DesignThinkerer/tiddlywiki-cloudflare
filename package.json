@@ -1,0 +1,19 @@
+{
+  "name": "tiddlywiki-cloudflare-worker",
+  "private": true,
+  "type": "module",
+  "description": "TiddlyWiki served by a Cloudflare Worker from R2, with edit-conflict protection, a public cached copy and queued GitHub backups",
+  "scripts": {
+    "build": "node build.mjs",
+    "fixture": "node test/make-fixture.mjs",
+    "test": "npm run build && npm run fixture && node test/bake.test.mjs && node test/queue-backup.test.mjs && node test/two-tabs.test.mjs",
+    "test:bake": "npm run build && node test/bake.test.mjs",
+    "test:backup": "npm run build && node test/queue-backup.test.mjs",
+    "test:tabs": "npm run build && npm run fixture && node test/two-tabs.test.mjs"
+  },
+  "devDependencies": {
+    "miniflare": "3.20250718.3",
+    "playwright": "1.63.0",
+    "tiddlywiki": "5.4.1"
+  }
+}

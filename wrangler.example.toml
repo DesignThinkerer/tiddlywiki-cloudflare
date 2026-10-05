@@ -1,0 +1,38 @@
+# Example wrangler configuration for deploying with `npx wrangler deploy`.
+# Copy to wrangler.toml and replace the placeholders. Everything here can also be set in the dashboard.
+
+name = "tiddlywiki-admin"                 # your worker's name
+main = "worker.js"                        # the generated file (npm run build)
+compatibility_date = "2024-09-23"         # keep the date your worker already uses
+workers_dev = false                       # optional: no workers.dev address (Worker Access covers it anyway)
+
+routes = [
+  { pattern = "admin.my-tiddlywiki.theophile.dev", custom_domain = true }
+]
+
+[[r2_buckets]]
+binding = "WIKI_BUCKET"
+bucket_name = "YOUR-BUCKET-NAME"
+
+# GitHub backup queue: the worker sends to it and consumes it, one batch at a time
+[[queues.producers]]
+binding = "BACKUP_QUEUE"
+queue = "wiki-backup"
+
+[[queues.consumers]]
+queue = "wiki-backup"
+max_batch_size = 10
+max_batch_timeout = 5
+max_concurrency = 1
+
+[vars]
+GITHUB_REPO = "OWNER/REPO"
+GITHUB_BRANCH = "main"
+CF_ZONE_ID = "YOUR-ZONE-ID"
+# PUBLIC_WIKI_URL = "https://my-tiddlywiki.theophile.dev"   # the default
+# CONFLICT_GUARD = "off"                                     # stop baking the browser module
+
+# Secrets: set with `npx wrangler secret put NAME`, never in this file
+#   GITHUB_TOKEN   fine-grained token with Contents: read and write on the backup repository
+#   CF_API_TOKEN   API token with Zone > Cache Purge on the zone
+# Leave API_KEY unset (see README, "Secrets and variables").

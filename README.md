@@ -1,0 +1,517 @@
+# TiddlyWiki on Cloudflare (Worker + R2 + Queue + GitHub)
+
+A personal [TiddlyWiki](https://tiddlywiki.com) with two faces:
+
+- **Admin wiki:** `https://admin.my-tiddlywiki.theophile.dev`, editable, behind Cloudflare Access. A Cloudflare Worker speaks TiddlyWiki's TiddlyWeb sync protocol and stores every tiddler in an R2 bucket.
+- **Public wiki:** `https://my-tiddlywiki.theophile.dev`, read-only. It's the same R2 bucket served directly through R2's custom domain and Cloudflare's cache, with no worker involved.
+
+Every save is backed up to a GitHub repository as its own commit, through a Cloudflare Queue.
+
+The worker also does the following:
+- **Protects against edit conflicts:** two tabs or devices editing the same tiddler can no longer silently overwrite each other.
+- **Keeps the public copy fresh:** it purges exactly the cached URLs that changed.
+- **Uses as few worker requests as it can.**
+
+This document covers the setup, how each part works, and why it was built this way.
+
+---
+
+## Contents
+
+1. [Architecture](#1-architecture)
+2. [Repository layout](#2-repository-layout)
+3. [Setup](#3-setup)
+4. [How it works](#4-how-it-works)
+5. [Why it is built this way](#5-why-it-is-built-this-way)
+6. [Operating it](#6-operating-it)
+7. [Troubleshooting](#7-troubleshooting)
+8. [Known limits](#8-known-limits)
+9. [Development and tests](#9-development-and-tests)
+10. [Reference](#10-reference)
+
+---
+
+## 1. Architecture
+
+```mermaid
+flowchart LR
+  subgraph Browsers
+    T["Admin wiki tab<br/>TiddlyWiki + conflict guard module"]
+    V["Public visitor"]
+  end
+  T -- "page, /status, tiddler list,<br/>saves and deletes" --> W["Worker<br/>admin.my-tiddlywiki.theophile.dev<br/>(Cloudflare Access)"]
+  T -- "tiddler contents<br/>(read-only, cached)" --> P["Public site<br/>my-tiddlywiki.theophile.dev<br/>(R2 custom domain + cache)"]
+  V --> P
+  W <--> R2[("R2 bucket")]
+  P --> R2
+  W -- "one message per save/delete" --> Q[["Queue: wiki-backup"]]
+  Q -- "one batch at a time" --> C["Worker queue handler"]
+  C --> GH[("GitHub repository")]
+  W -- "purge changed public URLs" --> API["Cloudflare purge API"]
+```
+
+| Piece | Role |
+|---|---|
+| **Worker** (`worker.js`) | Serves the admin wiki: the HTML page, TiddlyWeb endpoints, saves and deletes, conflict checks, cache purges. It also consumes the backup queue. |
+| **Conflict guard** (`src/conflict-guard.js`) | A TiddlyWiki startup module that the worker builds into the page. It makes the browser send the version each edit is based on, handles conflicts, and cuts unneeded requests. |
+| **R2 bucket** | Holds everything: the wiki HTML, the tiddler list and one JSON file per tiddler. |
+| **Public site** | The bucket's custom domain. Cloudflare caches it, and nothing on it runs the worker. |
+| **Queue** `wiki-backup` | Holds one message per save or delete until it has been committed to GitHub. |
+| **GitHub repository** | Version history: one commit per save, in `tiddlers/<title>.json`. |
+
+---
+
+## 2. Repository layout
+
+```
+├── README.md                 this document
+├── worker.js                 GENERATED: the file you deploy (npm run build)
+├── src/
+│   ├── worker.src.js         the worker's source
+│   └── conflict-guard.js     the browser module, embedded into worker.js by the build
+├── build.mjs                 inserts src/conflict-guard.js into src/worker.src.js → worker.js
+├── wrangler.example.toml     all bindings and settings, for deploying with wrangler
+├── package.json              build and test scripts
+└── test/
+    ├── make-fixture.mjs      builds a test TiddlyWiki (test/fixtures/index.html)
+    ├── two-tabs.test.mjs     real TiddlyWiki in Chromium, several tabs (55 checks)
+    ├── queue-backup.test.mjs queue backup against an imitation of GitHub (15 checks)
+    └── bake.test.mjs         page serving and rebuilding (8 checks)
+```
+
+The browser module lives in its own file so it can be read and edited as normal JavaScript. The build embeds it in `worker.js` as a string (`CONFLICT_GUARD_SOURCE`), so only one file is deployed. That string is a template literal, so the module can't contain backticks or `${`; the build checks this.
+
+---
+
+## 3. Setup
+
+Everything below can be done in the Cloudflare dashboard. `wrangler.example.toml` has the same settings for `npx wrangler deploy`.
+
+### 3.1 R2 bucket
+
+1. **Create a bucket** and upload:
+   - **`index.html`:** a TiddlyWiki file that includes the TiddlyWeb plugin (`$:/plugins/tiddlywiki/tiddlyweb`). This is the wiki "engine"; your content lives in the tiddler files.
+   - **`recipes/default/tiddlers.json`** containing `[]`, if you're starting from scratch. The worker maintains it afterwards.
+2. **Turn on public access:**
+   - **Custom Domains:** connect `my-tiddlywiki.theophile.dev`.
+   - **Public Development URL (`r2.dev`):** keep it disabled. It's a second public address that skips the zone's cache and rules.
+   - **CORS Policy:** leave it empty. A transform rule handles CORS instead (see 3.5 and 5.9).
+
+Everything in the bucket is public through the custom domain, including tiddlers, the tiddler list and the HTML. That's intended: nothing private belongs in this bucket. Secrets live in the worker's settings, not in R2.
+
+### 3.2 Worker
+
+1. **Deploy `worker.js`** (ES module format).
+2. **Attach it to `admin.my-tiddlywiki.theophile.dev`**, as a Custom Domain or a route covering every path.
+3. **Bindings:**
+
+   | Binding | Type | Required |
+   |---|---|---|
+   | `WIKI_BUCKET` | R2 bucket | yes |
+   | `BACKUP_QUEUE` | Queue (producer) → `wiki-backup` | for queued backups (see 3.4) |
+
+4. **Variables and secrets:**
+
+   | Name | Kind | Purpose |
+   |---|---|---|
+   | `GITHUB_REPO` | variable | `owner/repo` of the backup repository |
+   | `GITHUB_BRANCH` | variable | branch to commit to (default `main`) |
+   | `GITHUB_TOKEN` | **secret** | fine-grained token, *Contents: read and write* on that repository |
+   | `CF_ZONE_ID` | variable | zone id of `theophile.dev`, for cache purges |
+   | `CF_API_TOKEN` | **secret** | API token with *Zone → Cache Purge* on that zone |
+   | `PUBLIC_WIKI_URL` | variable, optional | public address (default `https://my-tiddlywiki.theophile.dev`) |
+   | `CONFLICT_GUARD` | variable, optional | `off` stops building the browser module into the page |
+   | `BACKUP_RETRY_SECONDS` | variable, optional | first retry delay for failed backups (default 60) |
+   | `API_KEY` | **leave unset** | see below |
+
+   About `API_KEY`: when it's set, the worker requires `Authorization: Bearer <key>` on every save and delete. TiddlyWiki in the browser never sends that header, so setting it would block all saving from the wiki. The admin host is protected by Cloudflare Access instead.
+
+   Purges are skipped without `CF_ZONE_ID`/`CF_API_TOKEN`, and backups without `GITHUB_REPO`/`GITHUB_TOKEN`.
+
+### 3.3 Cloudflare Access
+
+Protect the worker with **Worker Access → All traffic** (production and preview URLs) and a policy allowing your Cloudflare account members. This covers the custom domain, the worker's `workers.dev` address and its preview URLs. Requests Access blocks never reach the worker, so they cost no quota.
+
+### 3.4 Backup queue
+
+1. **Create the queue** under Storage & Databases → Queues: `wiki-backup`.
+2. **Producer:** in the worker's Settings → Bindings, add a Queue binding named `BACKUP_QUEUE` that points to `wiki-backup`.
+3. **Consumer:** in the queue's settings, add a consumer with these settings:
+
+   | Setting | Value | Why |
+   |---|---|---|
+   | Worker | this worker | |
+   | Batch size | 10 | one run stays within the free plan's 50-subrequest limit |
+   | Batch wait time | 5 seconds | commits appear a few seconds after a save |
+   | Maximum concurrency | **1** | backups run one at a time, so commits never collide |
+   | Retries / dead letter queue | leave as they are | the code re-queues failures itself (see 4.7) |
+
+Until `BACKUP_QUEUE` is bound, the worker runs the same backup directly after each save, with a couple of quick retries but no long-term waiting. So the deploy order doesn't matter.
+
+### 3.5 Zone rules (`theophile.dev`)
+
+**URL rewrite**, so the public site opens on the baked page:
+- **When:** `http.host eq "my-tiddlywiki.theophile.dev"` and `http.request.uri.path eq "/"`
+- **Then:** rewrite the path to `/baked.html`
+
+Include the hostname condition, so `/` on other hostnames in the zone isn't rewritten too.
+
+**Cache rule "Cache Public Wiki":**
+- **When:** `http.host eq "my-tiddlywiki.theophile.dev"`
+- **Cache eligibility:** eligible for cache
+- **Edge TTL:** ignore the cache-control header and use a TTL. R2 sends none, and every change made through the worker is purged right away. One day is a safe default. Longer works too, but a missed purge or a file uploaded to R2 by hand then stays stale that long.
+- **Browser TTL:** override with something short, for example 5 minutes. Purges can't reach visitors' browsers, and without this Cloudflare's default of 4 hours applies.
+- **Serve stale content while revalidating:** off.
+- **Cache key:** the defaults. The query string must stay in the key, because purges target exact URLs (see 4.6).
+
+A "Bypass cache" rule for the admin host is optional. Cloudflare never caches responses a worker generates itself, so it changes nothing; it only matters if part of that host were ever served by something else.
+
+**Response header transform rule "CORS for admin wiki":**
+- **When:** `http.host eq "my-tiddlywiki.theophile.dev"` and `starts_with(http.request.uri.path, "/recipes/")`
+- **Then:** set the static header `Access-Control-Allow-Origin` to `https://admin.my-tiddlywiki.theophile.dev` (no trailing slash)
+
+This lets the admin wiki read tiddler contents from the public site (see 4.5 and 5.9). Without it, everything still works, but every tiddler is fetched through the worker.
+
+### 3.6 GitHub
+
+- **A repository** for the backup. Files go in `tiddlers/`.
+- **A fine-grained personal access token** limited to that repository, with *Contents: read and write*. Store it as the `GITHUB_TOKEN` secret.
+
+---
+
+## 4. How it works
+
+### 4.1 Requests the worker answers
+
+| Request | What happens |
+|---|---|
+| `OPTIONS *` | CORS headers (allows `If-Match`, `If-None-Match`, exposes `ETag`). |
+| `GET /status` | TiddlyWeb status: user `admin`, writable, recipe `default`. |
+| `GET /`, `/index.html`, `/baked.html` | The wiki page, rebuilt first if outdated (4.3). |
+| `GET recipes/default/tiddlers.json` | The tiddler list, or `304 Not Modified` when unchanged (4.5). |
+| `GET recipes/default/tiddlers/<title>` (also `bags/default/…`) | One tiddler as TiddlyWeb JSON, with its revision in the body and the `ETag`. |
+| `GET <any other key>` | That R2 object as is. |
+| `PUT recipes/default/tiddlers/<title>` | Save (4.4): precondition check, conditional write, list update, purge, backup. |
+| `DELETE bags/<bag>/tiddlers/<title>` | Delete (4.4): same checks, then removal, purge, backup. |
+| queue messages | Backup to GitHub (4.7). |
+
+**Ephemeral titles.** These are never stored or backed up: `$:/StoryList`, `$:/HistoryList`, anything under `$:/state/`, `$:/temp/` or `$:/status/`, and drafts (`Draft of '…'`, `Draft 2 of '…'`, or anything with a `draft.of` field). A `PUT` of one answers `204` with a throwaway ETag, and a `DELETE` answers `204`. With the conflict guard loaded, the browser doesn't send them at all (4.5).
+
+### 4.2 Storage, revisions and ETags
+
+R2 layout:
+
+| Key | Content |
+|---|---|
+| `index.html` | The wiki engine you uploaded. |
+| `baked.html` | Generated: `index.html` plus the tiddlers needed at startup (4.3). |
+| `recipes/default/tiddlers.json` | The "skinny" tiddler list: title, tags, type, dates, custom fields and revision for every tiddler, but no text. |
+| `recipes/default/tiddlers/<title>` | One tiddler in TiddlyWeb JSON. Custom fields are nested under `fields`. The key uses the raw title, though older objects may sit under the URL-encoded title, and both are looked up. |
+| `_backup/versions/…` | Temporary copies of large versions waiting to be backed up (4.7). |
+
+**Revisions.** Each save gets a new revision, `Date.now()` in milliseconds. It's stored in three places that always agree: the object's custom metadata, the `revision` field inside the tiddler JSON, and the tiddler list. For objects written by other tools, the revision is the one in the JSON, or else one derived from the R2 etag. `GET`, `PUT` and `DELETE` all use the same rule, which avoids false conflicts.
+
+**ETags** follow TiddlyWeb's format: `"default/<url-encoded title>/<revision>:auto"`. TiddlyWiki reads the revision from the ETag of each save response.
+
+### 4.3 The wiki page (`baked.html`)
+
+TiddlyWiki only runs JavaScript modules and startup actions that are present when the page boots. Tiddlers loaded later through sync arrive too late. So the worker builds `baked.html`: `index.html` with a `<script>` added right after `<head>` that preloads these tiddlers (`$tw.preloadTiddlers`):
+
+- `$:/DefaultTiddlers`, `$:/SiteTitle`, `$:/SiteSubtitle`
+- every tiddler tagged `$:/tags/StartupAction`
+- the conflict guard module `$:/cfworker/conflict-guard.js`
+- `$:/cfworker/public-url`: the public address, read by the module
+
+The last two are left out when `CONFLICT_GUARD` is `off`.
+
+Stored tiddlers are flattened from TiddlyWeb JSON (custom fields under `fields`) into the flat form `preloadTiddlers` expects. Each is inserted with a replacer function, so text containing `$&`, `$1` and the like is copied literally.
+
+**When it's rebuilt:**
+- **On a page request,** if `baked.html` is missing, or was built by a different version of the guard module or for a different public address (`bakeVersion` in its metadata), or from a different `index.html` (`sourceEtag`). Deploying a new worker or uploading a new `index.html` therefore takes effect on the next admin page load.
+- **After saving** `$:/DefaultTiddlers`, `$:/SiteTitle`, `$:/SiteSubtitle` or a tiddler tagged `$:/tags/StartupAction`, and after deleting any `$:/` tiddler.
+
+After each rebuild the worker purges `/` and `/baked.html` on the public site.
+
+### 4.4 Edit-conflict protection
+
+**The problem.** TiddlyWiki's TiddlyWeb adaptor never says which version an edit is based on: no `If-Match` header. The server therefore can't tell a normal save from one that overwrites someone else's newer edit. The original worker's logs show this: not one request carried `If-Match`.
+
+It's worse than "two tabs saving at once". Each tab checks the server every minute and quietly loads newer versions, including behind an editor you have open. So the tab "knows" the latest revision even though your edit started from an older text. A naive `If-Match` using that latest revision would approve the overwrite.
+
+```mermaid
+sequenceDiagram
+  participant B as Tab B (editor open since r1)
+  participant A as Tab A
+  participant W as Worker
+  A->>W: PUT T, If-Match r1
+  W-->>A: 204, ETag r2
+  B->>W: poll: list shows r2, loads T@r2 behind the editor
+  B->>W: PUT T (your edit), If-Match r1 (the draft's base)
+  W-->>B: 412 Precondition Failed (current is r2)
+  B->>B: keep your text as "T (conflict …)", show T@r2, alert
+```
+
+**In the browser (the conflict guard module):**
+
+- **Every save says what it's based on.** It sends `If-Match` with the base revision, or `If-None-Match: *` for a tiddler the server shouldn't have yet. If the revision is unknown, nothing is sent and the save is unconditional.
+- **Drafts remember their starting point.** When an editor opens, the module records the revision the draft was copied from. When you confirm the edit, that becomes the base of the save, even if the tab has synced newer versions since. After the tab's own successful save, anything based on the old revision moves to the new one, so quick consecutive edits in one tab never conflict with themselves.
+- **Deletes send `If-Match` too.**
+- **On `412` for a save:**
+  1. The module fetches the server's version.
+  2. If it has the same content as yours (ignoring `revision`, `bag`, `recipe`, `permissions`, `modified` and `modifier`), it simply adopts it: no copy, no alert.
+  3. Otherwise it saves your version as a new tiddler, `Title (conflict YYYY-MM-DD hh.mm.ss)`. That copy gets a `conflict-of: Title` field. Tags starting with `$:/tags/` are moved into `conflict-removed-tags`, so the copy stays inert instead of acting as a second stylesheet, macro set or startup action.
+  4. The copy opens in the story river, the original shows the server version (or disappears, if it was deleted elsewhere), and an alert explains what happened, with links.
+- **On `412` for a delete:** the newer server version is restored and an alert says it wasn't deleted.
+- **A background reload never overwrites unsaved local changes.** If a tiddler has changes waiting to upload, the reload is skipped, and the pending save detects any conflict instead.
+
+**On the server:**
+
+- **`PUT` and `DELETE` check `If-Match` and `If-None-Match`** against the current revision. They accept full ETags, bare revisions, weak (`W/`) forms and `*`, and answer `412` with the current `ETag` on a mismatch.
+- **For a save that carries a precondition, the R2 write itself is conditional.** It uses `etagMatches` on the object that was checked, or `If-None-Match: *` for a new tiddler. Two saves arriving at the same instant therefore can't both succeed: exactly one wins and the other gets `412`.
+- **Requests without precondition headers are still accepted**, as before. These come from tabs opened before the module existed, and from scripts.
+
+To find conflict copies later, use the filter `[has[conflict-of]]`.
+
+### 4.5 Keeping worker requests down
+
+On an admin page load the worker sees only three requests: the page, `/status` and the tiddler list. While a tab is visible it sees one list request a minute, plus your saves.
+
+| Change | Effect |
+|---|---|
+| **Tiddler contents come from the public site.** After reading the list, TiddlyWiki fetches every tiddler's full text one by one. The module fetches each from the public site instead (same R2 object, served by cache or R2). | Removes one worker request per tiddler per page load. |
+| **Each public copy is checked.** It's used only if its `revision` equals the one in the worker's list. Otherwise, or on any error (including a missing CORS header), the module falls back to the worker. | A stale cached copy can never be loaded into the admin wiki. |
+| **The tiddler list stays on the worker.** | It's the up-to-date source of truth that the checks above rely on (5.8). |
+| **`304` for the tiddler list.** The browser revalidates with its ETag, and when nothing changed the worker answers `304` without reading and rewriting the list. Weak `W/"…"` ETags, which Cloudflare's compression produces, are accepted. | Cheaper polls (still one request each). |
+| **Drafts and `$:/StoryList` aren't synced.** | No request per navigation or per draft autosave. It also fixes a real bug (5.7). |
+| **The "put" saver is switched off.** It probed the page URL with `OPTIONS` and `HEAD` on every load, but can't save to this worker. | Two fewer requests per page load. |
+| **Hidden tabs don't poll.** While a tab is in the background, the minute-by-minute check is postponed. When it becomes visible again, it checks right away if the last check is more than 10 seconds old. Saves from a hidden tab still go out. | No polling from forgotten tabs. A visible tab still polls every minute. |
+
+### 4.6 Public cache purges
+
+After a change, the worker asks Cloudflare to purge exactly these public URLs. It's a single-file purge, never "purge everything".
+
+- **After a save or delete:**
+  - the tiddler's URL, `/recipes/default/tiddlers/<title encoded with encodeURIComponent>`, the same way TiddlyWiki requests it;
+  - `/recipes/default/tiddlers.json` without a query string;
+  - the same URL with the `?filter=…` query TiddlyWiki adds, for both the 5.4 filter and the filter of earlier versions (`SKINNY_LIST_FILTERS` in the source). The cache key includes the query string, so it has to match exactly.
+- **After `baked.html` is rebuilt:** `/` and `/baked.html`.
+
+Purges run in the background after the response, and failures are logged (`Cache purge failed`).
+
+### 4.7 GitHub backup
+
+```mermaid
+sequenceDiagram
+  participant W as Worker (save)
+  participant Q as Queue wiki-backup
+  participant C as Worker (queue handler, one at a time)
+  participant G as GitHub
+  W->>Q: {action: save, title, revision, time, content}
+  Q->>C: batch (up to 10, sorted by time)
+  C->>G: GET contents/tiddlers/{title}.json
+  C->>G: PUT new content (skipped if identical)
+  G-->>C: ok
+  Note over C: on error: re-send this and later messages<br/>with a growing delay, keep their order
+```
+
+1. **A save or delete adds a message** after it has been stored: `{action, title, revision, time, tries, content}`.
+   - Messages are limited to 128 KB, so a version over 100,000 bytes is stored in R2 under `_backup/versions/` and the message points to it.
+   - If the queue isn't bound or can't be reached, the worker runs the same backup routine (steps 3–5) directly, retrying up to 3 times within a few seconds.
+2. **The queue handler takes up to 10 messages per run, in save order.** With *maximum concurrency 1* there's only ever one run, so commits never collide.
+3. **For a save,** it reads the file's current state on GitHub and commits the new content. If GitHub already has exactly that content, it skips the commit, so a message delivered twice makes no duplicate. The comparison uses git's blob hash.
+4. **Late arrivals keep both history and the right final state.** If a version reaches GitHub after a newer one of the same tiddler (because it had to be retried), it's still committed, so it's in the history. Then the newer version is committed back on top, with the message `(newer version restored)`. If the tiddler was deleted in the meantime, the late version is committed and then deleted again.
+5. **For a delete,** the file is removed if present. If the tiddler has been recreated since, the delete is skipped, because the recreation's own message updates GitHub.
+6. **On any GitHub error** (rate limit, outage, bad token, conflict), the failing message and every later one in the batch are sent to the queue again as fresh messages, with a delay. The delay starts at `BACKUP_RETRY_SECONDS` (60), doubles each time up to 6 hours, and honours GitHub's `retry-after` / `x-ratelimit-reset` when given. Re-sending, instead of using the queue's own retry, means neither the queue's retry limit nor its message lifetime (24 hours on the free plan) can drop a backup. A failure only delays it.
+
+Commit messages: `✏️ Save: <title>`, `🗑️ Delete: <title>`, and `✏️ Save: <title> (newer version restored)` for the case in point 4.
+
+File paths are the ones the original worker used: the Contents API URL `…/contents/tiddlers/<encodeURIComponent(title)>.json`. History therefore continues in the same files.
+
+---
+
+## 5. Why it is built this way
+
+### 5.1 The original failure was a missing header, not compression
+
+The first suspicion was Cloudflare compression turning strong ETags into weak ones (`W/"…"`). That does happen, but only on downloads, where browsers use the ETag to re-check their cache. It has nothing to do with saves. The logs showed no save ever carried `If-Match`, because TiddlyWiki's TiddlyWeb adaptor doesn't send one. The previous version then rejected every save of an existing tiddler with `428 Precondition Required`, which is why saving broke. Turning compression off couldn't change that.
+
+### 5.2 Return `412` on real conflicts, and accept saves without the header
+
+A "strict" server that requires the header blocks every client that doesn't send it, which is exactly how saving broke. It can also stall TiddlyWiki's sync: a save that keeps failing is retried forever and blocks everything after it. So the server only refuses a save when it can prove a conflict, and the browser module makes sure the proof is available.
+
+### 5.3 The browser module is built into the page by the worker
+
+TiddlyWiki only runs JavaScript modules that exist when the page boots, so the module can't simply be another synced tiddler. Building it into `baked.html` gives three things:
+- **One deploy:** the worker and the browser half always change together.
+- **Nothing to install** in the wiki.
+- **Automatic updates:** a page built with an older module is rebuilt on the next load.
+
+### 5.4 Drafts carry their own base revision
+
+Each tab silently loads newer versions every minute. So "the latest revision this tab knows" is not "the version this edit started from". Without per-draft tracking, the most common conflict — an editor left open while another tab saves — would still overwrite silently.
+
+### 5.5 A conflict copy instead of overwriting or a merge dialog
+
+- **The version already on the server stays.** Whoever saves second gets their text kept as a copy, plus an alert.
+- **Both versions survive and are visible,** which is the property that matters.
+- **No modal dialog** that could interrupt typing or be dismissed by mistake.
+- **No automatic text merge,** which could silently produce nonsense.
+
+The copy is made inert (`$:/tags/…` tags removed) because a duplicate stylesheet, macro or startup action would change how the wiki behaves. Identical edits from two tabs are recognised and accepted without a copy.
+
+### 5.6 The R2 write is conditional, not just checked
+
+Checking the revision and then writing leaves a small window where two saves both pass the check. R2's conditional put closes it: the second write fails and gets `412`.
+
+### 5.7 Drafts and the story list aren't synced
+
+The worker never stored them; it answered "OK" and threw them away. That caused a real bug. After the next minute's poll, TiddlyWiki saw the draft "missing from the server" and deleted it locally, closing any editor left open longer than a poll interval. Not sending them at all fixes this and saves requests.
+
+The story list wasn't stored either. The Control Panel's "retain story ordering" button sets Default tiddlers to `[list[$:/StoryList]]`, which only works when the story list is saved, so it never worked with this worker. To use your current story as the default, this button stores a snapshot of the titles:
+
+```
+<$button set="$:/DefaultTiddlers" setTo={{{ [list[$:/StoryList]format:titlelist[]join[ ]] }}}>Use current story as default</$button>
+```
+
+### 5.8 Tiddler contents come from the public site, the list from the worker
+
+The public site already serves the same R2 objects through Cloudflare's cache, so reading tiddler contents from there costs no worker requests. Cached data can lag behind: a purge can fail, and browsers keep their own copies. That's why each copy is checked against the worker's list and only used if its revision matches. The list itself must be current: it detects changes from other tabs and checks the copies, and conflict protection depends on it. So it always comes from the worker.
+
+### 5.9 CORS through a transform rule, not R2's CORS policy
+
+The admin page and the public site are different hostnames, so the browser only lets the page read public responses that carry `Access-Control-Allow-Origin`. R2's CORS policy adds that header only to requests that announce another origin. A public visitor's request doesn't, so the cached copy has no header. Cloudflare's cache keeps one copy per URL, so it can hand that header-less copy to the admin page. A response header transform rule adds the header at the edge to every response, cached or not.
+
+### 5.10 Targeted purges, not "purge everything"
+
+The previous version purged the whole zone after every save and delete:
+- **Too often:** on the free plan, "purge everything" is limited to 5 requests a minute (bursts of 25), so after a quick series of saves the purges failed and the public site stayed stale.
+- **Too broad:** it also cleared every other site in the zone.
+
+Single-URL purges allow 800 URLs a second on the free plan and touch only what changed. Their one requirement is exact URLs, query strings included.
+
+### 5.11 Backups through a queue
+
+Three alternatives were considered:
+
+| Option | Why not |
+|---|---|
+| **Commit directly after each save** (the original) | Commits running in parallel collide on the branch. The code retried 3 times, then silently dropped the backup. This happened in any burst: imports, renames that update links, retagging several tiddlers, two tabs. GitHub also limits commits to about 80 a minute and 500 an hour. |
+| **A scheduled job committing everything changed every few minutes** | Keeps only the last version of each tiddler per interval, so one bad edit could lose the good version. It also runs forever, even when the wiki is untouched for years. |
+| **Retrying in place, plus a "pending" store in R2** | Would work, but it's a home-made queue: more custom code, and leftover backups only move when you use the wiki again. |
+
+The queue solves the cause instead of working around it:
+- **Commits run one at a time,** so they can't collide.
+- **Every save keeps its own commit,** in order.
+- **Failed backups wait** as long as needed and are retried by Cloudflare.
+- **Nothing runs while the queue is empty.**
+
+### 5.12 Things deliberately not done
+
+- **Capping what's built into `baked.html`:** it holds only startup-related tiddlers and the module, so it doesn't grow with the wiki. A cap would silently drop a startup action.
+- **Serving the tiddler list from the public cache:** see 5.8.
+- **Requiring `If-Match` (strict mode):** see 5.2.
+
+---
+
+## 6. Operating it
+
+**Deploying a change:** edit `src/`, run `npm run build` and `npm test`, then deploy `worker.js`, either by pasting it into the dashboard editor or with `npx wrangler deploy`. If the browser module changed, the next admin page load rebuilds `baked.html`. Reload any open admin tabs: tabs opened before a change keep the old module, and tabs older than the module have no conflict protection.
+
+**Updating the wiki engine:** upload the new `index.html` to R2. The next admin page load rebuilds `baked.html` and purges the public page. If a TiddlyWiki upgrade changes the filter in `tiddlers.json?filter=…`, add the new filter to `SKINNY_LIST_FILTERS`, or the public tiddler list won't be purged after saves. You'll see the exact URL in the browser's Network tab.
+
+**Checking the module is active:** in the admin wiki's browser console, `$tw.syncadaptor.conflictGuardInstalled` should be `true`.
+
+**Log lines** (worker logs):
+
+| Line | Meaning |
+|---|---|
+| `[Backup] '<title>' not backed up yet (<reason>); retrying in Ns` | A GitHub call failed. It will be retried, and nothing is lost. |
+| `[Backup] Could not queue '<title>', backing up directly` | The queue was unavailable, so the backup ran directly. |
+| `[Backup] '<title>' could not be backed up` | A direct backup (no queue bound, or the queue unavailable) failed 3 times. That version isn't on GitHub. |
+| `Cache purge failed (<status>)` | The purge API refused; check the `CF_API_TOKEN` permission. |
+| `[Manifest] Write conflict detected, retrying` | Two saves updated the tiddler list at once. This is normal and retried automatically. |
+| `Failed to rebake HTML` | Building `baked.html` failed; the plain `index.html` is served instead. |
+
+**Manual purge:** Cloudflare dashboard → Caching → Configuration → Purge Cache. Use it if something on the public site looks stuck, for example after uploading files to R2 by hand.
+
+**Turning the browser module off:** set `CONFLICT_GUARD` to `off`. The next page load rebuilds `baked.html` without it. Saves then go back to TiddlyWiki's default behaviour, without protection or request savings.
+
+---
+
+## 7. Troubleshooting
+
+| Symptom | Likely cause | What to do |
+|---|---|---|
+| Every save fails with 428 | The previous ("strict") worker is still deployed | Deploy this `worker.js`. |
+| Alert "Edit conflict: … was changed in another tab or browser" | Another tab, device or script saved that tiddler after you started editing | Compare the tiddler with its `(conflict …)` copy, keep what you want and delete the copy. |
+| Console shows "blocked by CORS policy" for `my-tiddlywiki…` | The transform rule is missing or scoped wrong | Add or fix it (3.5). Until then, tiddlers simply load through the worker. |
+| The public site shows an old version | Browser TTL, or a failed purge | Check the cache rule's Browser TTL; look for `Cache purge failed` in the logs; purge manually. |
+| No commits on GitHub | Queue not bound, no consumer, or a GitHub token problem | Check 3.4, and look for `[Backup]` lines in the logs. Backups wait in the queue and go through once fixed. |
+| The editor closes by itself after about a minute | The module isn't loaded (`CONFLICT_GUARD=off`, or an old tab) | Reload; check `$tw.syncadaptor.conflictGuardInstalled`. |
+| Changes to `index.html` don't show | You haven't opened the admin wiki since uploading | Open the admin wiki once; it rebuilds `baked.html` and purges the public page. |
+
+---
+
+## 8. Known limits
+
+- **Conflict copies are merged by hand.** That's by design: you get both versions and decide.
+- **Old tabs aren't protected.** A tab opened before the module was deployed saves without conflict protection until reloaded.
+- **A short window at page load.** A tiddler that's part of `index.html` itself, edited before the first sync finishes, is saved without a version check.
+- **Big imports take a while to back up.** GitHub allows about 500 commits an hour, so 1,000 tiddlers take a little over two hours. Nothing is lost while they wait.
+- **Free-plan quotas** (October 2026, see 10): 100,000 worker requests a day; 10,000 queue operations a day, about 3 per backup or retry, so roughly 3,300 saves a day; 10 ms of CPU per request. Each save reads and rewrites the whole tiddler list, which is fine for hundreds of tiddlers. At several thousand, saves could start hitting that CPU limit on the free plan.
+- **Waiting backup copies are public.** Versions over 100 KB wait in `_backup/versions/` until committed, which is usually seconds, and that path is public like the rest of the bucket.
+- **Retries cost queue operations.** If the GitHub token stays broken, backups keep retrying (at most every 6 hours each), each retry using a few queue operations, until it's fixed.
+
+---
+
+## 9. Development and tests
+
+Requirements: Node.js 20 or newer and a Chromium for the browser tests.
+
+```bash
+npm install
+npx playwright install chromium      # or: export CHROMIUM_PATH=/path/to/chrome
+npm test                             # build, make the test wiki, run all three suites
+```
+
+| Command | What it runs |
+|---|---|
+| `npm run build` | Writes `worker.js`. |
+| `npm run fixture` | Builds `test/fixtures/index.html`, an empty TiddlyWiki with the TiddlyWeb plugin. |
+| `npm run test:bake` | Page serving: rebuild on an outdated bake, a new `index.html` or a new module; CORS and `/status`. |
+| `npm run test:backup` | Queue backup against an imitation of GitHub's Contents API (see below). |
+| `npm run test:tabs` | Real TiddlyWiki in Chromium with several tabs (see below). |
+
+The tests run the real worker in Cloudflare's local runtime (workerd, through Miniflare) with a local R2 bucket and queue. Outgoing calls to GitHub and Cloudflare's API are answered by imitations, so nothing touches your accounts. They use local ports 8793–8800.
+
+`test:backup` covers:
+- a 150-tiddler import (one commit each, never two at once, byte-identical content);
+- quick successive edits;
+- a rate limit and an outage;
+- a version delivered late;
+- delete then recreate;
+- a 200 KB tiddler;
+- non-ASCII text;
+- a duplicate delivery;
+- the fallback without a queue.
+
+`test:tabs` covers:
+- **Conflicts:** an editor open while another tab saves, a stale tab, a new title created in two tabs, a stale delete, identical edits, rename, simultaneous saves.
+- **Baking:** flattened startup tiddlers.
+- **Public cache:** exact purge URLs and the `304`.
+- **Request savings:** a 3-request page load, the stale-public-copy fallback, a missing CORS header, the hidden-tab pause.
+
+To run the browser tests against your own wiki file, download `index.html` from the bucket and run `WIKI_HTML=/path/to/index.html npm run test:tabs`.
+
+---
+
+## 10. Reference
+
+Limits and behaviours this design relies on (checked October 2026):
+
+- **Workers:** [platform limits](https://developers.cloudflare.com/workers/platform/limits/) (requests per day, CPU, subrequests); [how the cache works with Workers](https://developers.cloudflare.com/workers/reference/how-the-cache-works/) (worker-generated responses aren't cached).
+- **R2:** [Workers API](https://developers.cloudflare.com/r2/api/workers/workers-api-reference/), including conditional `put` with `onlyIf`.
+- **Queues:** [limits](https://developers.cloudflare.com/queues/platform/limits/) (128 KB messages, 24-hour retention on free, 100 retries, delays up to 24 hours) and [pricing](https://developers.cloudflare.com/queues/platform/pricing/) (10,000 operations a day on free).
+- **Cache:** [purge methods and rate limits](https://developers.cloudflare.com/cache/how-to/purge-cache/); [single-file purge](https://developers.cloudflare.com/cache/how-to/purge-cache/purge-by-single-file/); [browser cache TTL](https://developers.cloudflare.com/cache/how-to/edge-browser-cache-ttl/) (4-hour default).
+- **GitHub:** [REST API rate limits](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api), including the secondary limits of 80 content-creating requests a minute and 500 an hour.
+- **TiddlyWiki:** the TiddlyWeb adaptor (`$:/plugins/tiddlywiki/tiddlyweb/tiddlywebadaptor.js`) and the syncer (`$:/core/modules/syncer.js`).
