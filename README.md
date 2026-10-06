@@ -78,9 +78,10 @@ flowchart LR
 ├── package.json              build and test scripts
 └── test/
     ├── make-fixture.mjs      builds a test TiddlyWiki (test/fixtures/index.html)
-    ├── two-tabs.test.mjs     real TiddlyWiki in Chromium, several tabs (55 checks)
-    ├── plugins.test.mjs      real plugins on the admin and public sites (57 checks)
+    ├── two-tabs.test.mjs     real TiddlyWiki in Chromium, several tabs (60 checks)
+    ├── plugins.test.mjs      real plugins on the admin and public sites (63 checks)
     ├── queue-backup.test.mjs queue backup against an imitation of GitHub (17 checks)
+    ├── integrity.test.mjs    the tiddler list's integrity, draft-like titles, .gitignore (45 checks)
     └── bake.test.mjs         page serving and rebuilding (9 checks)
 ```
 
@@ -199,17 +200,17 @@ This lets the admin wiki read tiddler contents from the public site (see 4.5 and
 
 | Request | What happens |
 |---|---|
-| `OPTIONS *` | CORS headers (allows `If-Match`, `If-None-Match`, `X-Tiddler-Layout`, exposes `ETag`). |
+| `OPTIONS *` | CORS headers (allows `If-Match`, `If-None-Match`, `X-Tiddler-Layout`, exposes `ETag`, `X-Tiddler-List` and `Retry-After`). |
 | `GET /status` | TiddlyWeb status: user `admin`, writable, recipe `default`. |
 | `GET /`, `/index.html`, `/baked.html` | The wiki page, rebuilt first if outdated (4.3). |
-| `GET recipes/default/tiddlers.json` | The tiddler list, or `304 Not Modified` when unchanged (4.5). |
+| `GET recipes/default/tiddlers.json` | The tiddler list, or `304 Not Modified` when unchanged (4.5), or `503` while it's being rebuilt (4.2). |
 | `GET recipes/default/tiddlers/<title>` | One tiddler as JSON (a flat one exactly as stored, see 4.2), with its revision in the body and the `ETag`. |
 | `GET <any other key>` | That R2 object as is. |
-| `PUT recipes/default/tiddlers/<title>` | Save (4.4): precondition check, conditional write, list update, purge, backup; for a plugin, its file and the page (4.8). |
+| `PUT recipes/default/tiddlers/<title>` | Save (4.4): precondition check, conditional write, list update, purge, backup; for a plugin, its file and the page (4.8). A body that isn't a tiddler (a JSON object whose `title` is text, the same as in the URL) gets `400`. |
 | `DELETE bags/<bag>/tiddlers/<title>` (or `recipes/<recipe>/…`) | Delete (4.4): same checks, then removal, purge, backup. |
 | queue messages | Backup to GitHub (4.7). |
 
-**Ephemeral titles.** These are never stored or backed up: `$:/StoryList`, `$:/HistoryList`, anything under `$:/state/`, `$:/temp/` or `$:/status/`, and drafts (`Draft of '…'`, `Draft 2 of '…'`, or anything with a `draft.of` field). A `PUT` of one answers `204` with a throwaway ETag, and a `DELETE` answers `204`. In practice the browser doesn't send them: TiddlyWiki's own sync filter leaves out `$:/HistoryList`, `$:/state/`, `$:/temp/` and `$:/status/`, and the conflict guard also leaves out drafts and `$:/StoryList` (4.5).
+**Ephemeral titles.** These are never stored or backed up: `$:/StoryList`, `$:/HistoryList`, anything under `$:/state/`, `$:/temp/` or `$:/status/`, and drafts, recognised by their `draft.of` field. A title alone doesn't make a draft: a tiddler called `Draft of 'Chapter 1'` is saved like any other. A `PUT` of one answers `204` with a throwaway ETag, and a `DELETE` answers `204`. In practice the browser doesn't send them: TiddlyWiki's own sync filter leaves out `$:/HistoryList`, `$:/state/`, `$:/temp/` and `$:/status/`, and the conflict guard also leaves out drafts and `$:/StoryList` (4.5).
 
 ### 4.2 Storage, revisions and ETags
 
@@ -219,10 +220,11 @@ R2 layout:
 |---|---|
 | `index.html` | The wiki engine you uploaded. |
 | `baked.html` | Generated: `index.html` plus the tiddlers needed at startup (4.3). |
-| `recipes/default/tiddlers.json` | The "skinny" tiddler list: title, tags, type, dates, custom fields and revision for every tiddler, but no text. |
+| `recipes/default/tiddlers.json` | The "skinny" tiddler list: title, tags, type, dates, custom fields and revision for every tiddler, but no text. If it's ever missing or damaged, the worker rebuilds it from the stored tiddlers (below). |
 | `recipes/default/tiddlers/<title>` | One tiddler as JSON, in one of two layouts (below). The key uses the raw title, though older objects may sit under the URL-encoded title, and both are looked up. |
 | `_plugins/<title>.js` | Generated: the script that loads a plugin or JavaScript module into the page (4.8). |
 | `_backup/versions/…` | Temporary copies of large versions waiting to be backed up (4.7). |
+| `_repair/…` | Left by a rebuild of the tiddler list: the damaged copy, and the progress of a rebuild that takes several requests (below). |
 
 **Revisions.** Each save gets a new revision, `Date.now()` in milliseconds. It's stored in three places that always agree: the object's custom metadata, the `revision` field inside the tiddler JSON, and the tiddler list. For objects written by other tools, the revision is the one in the JSON, or else one derived from the R2 etag. `GET`, `PUT` and `DELETE` all use the same rule, which avoids false conflicts.
 
@@ -235,6 +237,16 @@ R2 layout:
 | 945 KB (geospatial) | about 10 ms | about 0.4 ms |
 
 Measured in Node.js (the same JavaScript engine as Workers) on a development machine, so only the proportions matter.
+
+**A damaged or missing tiddler list rebuilds itself.** The list is only an index: every tiddler is also stored on its own, with all its fields. If the list can't be read (a bad upload or a hand edit) or is missing, the worker rebuilds it from the stored tiddlers wherever it needs it (serving it, a save, a delete, a page build) and carries on. Nothing needs doing by hand, and nothing runs in the background: the requests do the work.
+- **It reads as little as it can.** For a flat tiddler the fields come before `"text"`, so it reads only the first 16 KB of the object. A tiddler in TiddlyWeb's layout is read whole, but its text, usually most of it, is skipped as bytes rather than parsed: about 1 ms per MB, half of what parsing costs (JSON formatted by hand may be parsed whole). Each tiddler is listed under the title it's stored under, once.
+- **A big wiki takes several requests.** A request may make 1,000 R2 calls and use about 10 ms of CPU, so each request reads up to 100 tiddlers (fewer if they must be read whole) and keeps its progress in `_repair/`. Meanwhile the list, saves and deletes answer `503` with `X-Tiddler-List: rebuilding`, before changing anything (unless the list is damaged in the middle of that very request). The open tab sends them again at once, quietly (the conflict guard does this; roughly a second per 100 tiddlers), and each of those requests takes the next step. The damaged list is replaced only when the new one is complete. That last step writes the list as the steps built it, without parsing it, so it costs no more than the others. (It does parse it in one rare case, to remove a duplicate: a tiddler listed from an older version's URL-encoded key whose plain key was uploaded during the rebuild.)
+- **Public tabs keep their tiddlers.** They read the list straight from R2. A missing list is replaced by a short text while it's rebuilt (each rebuild has its own, so it can't be mistaken for another one's). It isn't JSON, because TiddlyWiki removes every tiddler that isn't in the list it gets, and would take any JSON for one. The conflict guard recognises that text and fetches the list again every few seconds, at a URL no cache holds, and turns a list it can't read (a damaged upload) into an ordinary sync error, after asking once more past any cached copy, instead of TiddlyWiki's "Internal JavaScript Error". A tab without the guard (`CONFLICT_GUARD=off`, or a page opened before this version) stops syncing with that error, but still keeps its tiddlers.
+- **Nothing is lost.** The damaged copy is kept in `_repair/` in case it held a hand edit you want to redo; delete it when you no longer need it. The new list holds exactly what is stored, so a hand edit to the list itself is gone, but no tiddler is.
+- **The page is rebuilt on the next admin page load**, as the rebuilt list may differ from the one it was built from (a plugin saved by a tab closed before its list update was retried, say).
+- **Progress is deleted when the rebuild completes.** If you repair the list yourself in the middle of one, its progress file stays in `_repair/` and does nothing; the next rebuild replaces it.
+
+Deleting `recipes/default/tiddlers.json` in R2 has the same effect, which makes a rebuild easy to force.
 
 **ETags** follow TiddlyWeb's format: `"default/<url-encoded title>/<revision>:auto"`. TiddlyWiki reads the revision from the ETag of each save response.
 
@@ -298,6 +310,7 @@ sequenceDiagram
 - **`PUT` and `DELETE` check `If-Match` and `If-None-Match`** against the current revision. They accept full ETags, bare revisions, weak (`W/`) forms and `*`, and answer `412` with the current `ETag` on a mismatch.
 - **For a save that carries a precondition, the R2 write itself is conditional.** It uses `etagMatches` on the object that was checked, or `If-None-Match: *` for a new tiddler. Two saves arriving at the same instant therefore can't both succeed: exactly one wins and the other gets `412`.
 - **Requests without precondition headers are still accepted**, as before. These come from tabs opened before the module existed, and from scripts.
+- **A retried save that's already stored is finished, not refused.** The worker stores the tiddler, then updates the tiddler list. If the list update fails, the browser retries the save with the same precondition, which no longer matches. When the stored tiddler is byte for byte what that save would store, the worker completes the list update and answers as if it had just saved it. Without this, the conflict guard would adopt the identical copy, the list would never be fixed, and the tiddler would vanish from every tab at the next poll. Different content still gets `412`.
 
 To find conflict copies later, use the filter `[has[conflict-of]]`.
 
@@ -324,6 +337,7 @@ After a change, the worker asks Cloudflare to purge exactly these public URLs. I
   - `/recipes/default/tiddlers.json` without a query string;
   - the same URL with the `?filter=…` query TiddlyWiki adds, for both the 5.4 filter and the filter of earlier versions (`SKINNY_LIST_FILTERS` in the source). The cache key includes the query string, so it has to match exactly.
 - **After `baked.html` is rebuilt:** `/` and `/baked.html`.
+- **After the tiddler list is rebuilt (4.2):** the list URLs above, at once and again 5 seconds later, in case a public request that read the damaged list or the stand-in was still under way.
 
 Purges aren't awaited: they run while the response goes out, and failures are logged (`Cache purge failed`). A save purges the tiddler list only once the new list is stored, so a request in between can't put the old list back in the cache.
 
@@ -522,7 +536,10 @@ If the page is rebuilt before step 4 (by a deploy, or by saving another plugin, 
 | `[Backup] '<title>' could not be backed up` | A direct backup (no queue bound, or the queue unavailable) failed 3 times. That version isn't on GitHub. |
 | `Cache purge failed (<status>)` | The purge API refused; check the `CF_API_TOKEN` permission. |
 | `[Manifest] Write conflict detected, retrying` | Two saves updated the tiddler list at once. This is normal and retried automatically. |
-| `Failed to rebake HTML` | Building `baked.html` failed; the plain `index.html` is served instead. |
+| `The tiddler list can't be read: rebuilding it from the stored tiddlers` | The list was damaged, and the worker is rebuilding it (4.2). The damaged copy is in `_repair/`. |
+| `Tiddler list rebuilt: <n> tiddlers` | The rebuild is complete. |
+| `Rebuilding the tiddler list: <key> is not a readable tiddler, left out` | That object in R2 isn't valid JSON. It was already unreadable for the wiki. |
+| `Failed to rebake HTML` | Building `baked.html` failed; the last page built is served instead (or `index.html` if there is none). A list being rebuilt over several requests also shows this line until it's done. |
 
 **Manual purge:** Cloudflare dashboard → Caching → Configuration → Purge Cache. Use it if something on the public site looks stuck, for example after uploading files to R2 by hand.
 
@@ -543,6 +560,7 @@ If the page is rebuilt before step 4 (by a deploy, or by saving another plugin, 
 | Changes to `index.html` don't show | You haven't opened the admin wiki since uploading | Open the admin wiki once; it rebuilds `baked.html` and purges the public page. |
 | A plugin is still inactive after the reload | You reloaded before the save finished, or the page build failed | Reload once the save has finished. If the logs show `Failed to rebake HTML`, delete `baked.html` in R2 and open the admin wiki: the page is rebuilt. |
 | The wiki doesn't start after installing a plugin | The plugin breaks at boot | Follow "If a plugin breaks the page" (6). |
+| A tiddler that is in R2 doesn't show in the wiki | It's missing from the tiddler list: a save whose list update failed and was never retried (the tab was closed) | Delete `recipes/default/tiddlers.json` in R2: the worker rebuilds it from the stored tiddlers (4.2). |
 | Console shows a failed `_plugins/…` request | The file is missing from R2 | Delete `baked.html` in R2 and open the admin wiki: the rebuild writes missing files. |
 
 ---
@@ -550,12 +568,15 @@ If the page is rebuilt before step 4 (by a deploy, or by saving another plugin, 
 ## 8. Known limits
 
 - **A plugin that breaks at boot breaks both sites** until you remove it (6).
+- **A damaged or missing list is rebuilt only while the admin wiki is open** (4.2): the worker's requests do the work, and public visitors don't use the worker. Until then the public site keeps what its cache holds; a visitor who gets the damaged list or the stand-in sees no tiddlers until it's done.
+- **A rebuild step's CPU** stays around a normal save's, but a single stored tiddler with several megabytes in fields other than its text (rare: plugins keep their content in the text) is read in one step, and could take that step over the limit each time.
 - **`$:/tags/RawMarkup…` tiddlers do nothing.** TiddlyWiki only inserts them when it saves a single-file wiki; here they work only if they're in `index.html`.
 - **Conflict copies are merged by hand.** That's by design: you get both versions and decide.
 - **Old tabs aren't protected.** A tab opened before the module was deployed saves without conflict protection until reloaded.
 - **A short window at page load.** A tiddler that's part of `index.html` itself, edited before the first sync finishes, is saved without a version check.
 - **Big imports take a while to back up.** GitHub allows about 500 commits an hour, so 1,000 tiddlers take a little over two hours. Nothing is lost while they wait.
 - **Free-plan quotas** (October 2026, see 10): 100,000 worker requests a day; 10,000 queue operations a day, about 3 per backup or retry, so roughly 3,300 saves a day; 10 ms of CPU per request, with some flexibility for occasional overruns. Each save reads and rewrites the whole tiddler list, about 1 ms of CPU per 400–500 tiddlers, which is now the largest cost of a save. At several thousand tiddlers, saves could start hitting that limit. Saving a plugin also rebuilds the page, which reads the list once more.
+- **A tab closed right after a failed list update.** The worker stores a tiddler, then updates the tiddler list. If that update fails, the browser's retry completes it (4.4), but if the tab is closed first, the tiddler stays out of the list until the list is rebuilt (7).
 - **Waiting backup copies are public.** Versions over 100,000 bytes wait in `_backup/versions/` until committed, which is usually seconds, and that path is public like the rest of the bucket.
 - **Files over 1 MB on GitHub:** they're backed up like any other, but the "newer version restored" step (4.7) can't run for them.
 - **Retries cost queue operations.** If the GitHub token stays broken, backups keep retrying (at most every 6 hours each), each retry using a few queue operations, until it's fixed.
@@ -569,7 +590,7 @@ Requirements: Node.js 20 or newer and a Chromium for the browser tests.
 ```bash
 npm install
 npx playwright install chromium      # or: export CHROMIUM_PATH=/path/to/chrome
-npm test                             # build, make the test wiki, run all four suites
+npm test                             # build, make the test wiki, run all five suites
 ```
 
 | Command | What it runs |
@@ -577,11 +598,23 @@ npm test                             # build, make the test wiki, run all four s
 | `npm run build` | Writes `worker.js`. |
 | `npm run fixture` | Builds `test/fixtures/index.html`, an empty TiddlyWiki with the TiddlyWeb plugin. It skips an existing file: after upgrading the `tiddlywiki` package, run `npm run fixture -- --force`. |
 | `npm run test:bake` | Page serving: rebuild on an outdated bake or a new `index.html`, a byte order mark; CORS, a bad `PUT` path and `/status`. |
+| `npm run test:integrity` | The tiddler list's integrity, draft-like titles and `.gitignore` (see below). |
 | `npm run test:backup` | Queue backup against an imitation of GitHub's Contents API (see below). |
 | `npm run test:tabs` | Real TiddlyWiki in Chromium with several tabs (see below). |
 | `npm run test:plugins` | Real plugins in Chromium, on the admin site and a stand-in for the public site (see below). |
 
 The tests run the real worker in Cloudflare's local runtime (workerd, through Miniflare) with a local R2 bucket and queue. Outgoing calls to GitHub and Cloudflare's API are answered by imitations, so nothing touches your accounts. They use local ports 8790–8800.
+
+`test:integrity` covers:
+- a save whose list update failed: its retry completes it, for a new and an existing tiddler, while real conflicts are still refused;
+- a damaged or missing tiddler list: rebuilt from the stored tiddlers when it's served, saved to, deleted from or used for a page, with every field but the text, in both layouts, from an object under its URL-encoded key, leaving out the story list and drafts, the damaged copy kept;
+- a list too big for one request (400 tiddlers): `503` until it's complete (with `X-Tiddler-List` readable from another origin), the damaged list untouched meanwhile, two tabs driving it at once, a save and a delete in the middle retried successfully, a later damage or deletion starting over rather than resuming old progress, no progress left behind;
+- a missing list: each rebuild with its own stand-in in R2, which isn't JSON;
+- tiddlers in TiddlyWeb's layout with the text first or in the middle, escaped quotes and a backslash before the closing quote, or formatted by hand: the text skipped, every other field kept;
+- a tiddler under an older version's URL-encoded key whose plain key appears during the rebuild: listed once; and a title listed twice by hand, listed once after its next save;
+- titles: a save whose title isn't text, or isn't the one in its URL, is refused (`400`), and such tiddlers stored by hand are listed under their key instead of stopping the rebuild or being listed under the wrong title;
+- tiddlers titled `Draft of '…'` saved and deleted like any other, while real drafts still aren't stored;
+- `.gitignore` covering `wrangler.toml`, `.dev.vars` and `.wrangler/`.
 
 `test:backup` covers:
 - a 150-tiddler import (one commit each, never two at once, byte-identical content);
@@ -601,6 +634,7 @@ The tests run the real worker in Cloudflare's local runtime (workerd, through Mi
 - **Baking:** flattened startup tiddlers.
 - **Public cache:** exact purge URLs and the `304`.
 - **Request savings:** a 3-request page load, the stale-public-copy fallback, a missing CORS header, the hidden-tab pause.
+- **A damaged tiddler list** rebuilt over several requests while a tab is open: the tab keeps its tiddlers and shows no error; a save answered "rebuilding" is sent again quietly, and any other `503` is reported as before.
 
 `test:plugins` uses the markdown and KaTeX plugins shipped with TiddlyWiki and covers:
 - **Install** through the import messages a drop sends: the flat save, the stored tiddler, the file (byte for byte the template format), the script tag, no purge of plugin files.
@@ -608,6 +642,7 @@ The tests run the real worker in Cloudflare's local runtime (workerd, through Mi
 - **The public site:** the plugin works, with no worker request.
 - **Update, disable and re-enable, a theme, a standalone module, delete,** and a plugin turned back into an ordinary tiddler.
 - **Edge cases:** a body containing `,"text":` in a field and in the text, a tiddler without text, a field called `fields`, "flat" bodies that aren't, a save in TiddlyWeb's layout, a title with spaces, `#` and non-ASCII, plugins stored before the change by another tool, the order of a save's purge, overlapping page builds, a tiddler list replaced by hand, and the recovery steps.
+- **A public tab while the tiddler list is missing or damaged:** it keeps its tiddlers and doesn't crash, asks again at a URL no cache holds, and catches up by itself once the worker has rebuilt the list; after a damaged list, its next sync bypasses caches too, and a damaged copy its browser kept is passed over quietly.
 
 To run the browser tests against your own wiki file, download `index.html` from the bucket and run `WIKI_HTML=/path/to/index.html npm run test:tabs` (or `test:plugins`).
 

@@ -20,8 +20,8 @@ function toBase64(str) {
   return btoa(binary);
 }
 
-function getTwTimestamp() {
-  return new Date().toISOString().replace(/\D/g, '').slice(0, 17);
+function getTwTimestamp(date = new Date()) {
+  return date.toISOString().replace(/\D/g, '').slice(0, 17);
 }
 
 // Security check for mutations
@@ -43,14 +43,14 @@ function isAuthorized(request, env) {
 //    conditional, so two saves arriving at the same moment can't both win.
 //  * Requests without If-Match/If-None-Match (old tabs, scripts) are still accepted, as before.
 
-// Titles the wiki keeps only in the browser: never stored, never backed up
+// Titles the wiki keeps only in the browser: never stored, never backed up. Drafts are recognised by
+// their draft.of field (isDraft), not their title: a tiddler can be called "Draft of 'Chapter 1'".
 function isEphemeralTitle(title) {
   return title.startsWith("$:/StoryList") ||
          title.startsWith("$:/HistoryList") ||
          title.startsWith("$:/state/") ||
          title.startsWith("$:/temp/") ||
-         title.startsWith("$:/status/") ||
-         /^Draft( \d+)? of '/.test(title);
+         title.startsWith("$:/status/");
 }
 
 // TiddlyWeb JSON puts non-standard fields such as draft.of under "fields"
@@ -213,8 +213,25 @@ function textKeyOffset(bytes) {
   return -1;
 }
 
+// A save whose body isn't a tiddler: answered 400, nothing stored
+class BadSave extends Error {}
+
+function isTiddlerObject(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value) && typeof value.title === "string";
+}
+
+function parseJsonBody(text) {
+  try {
+    return JSON.parse(text);
+  } catch (e) {
+    throw new BadSave(`the body is not JSON (${e.message})`);
+  }
+}
+
 // A save in TiddlyWeb's layout, or any other JSON: parsed, stamped and re-serialized
 function parsedSave(tiddler) {
+  // A title that isn't text would make the tiddler list unreadable (and no browser sends one)
+  if (!isTiddlerObject(tiddler)) throw new BadSave("the body is not a tiddler (a JSON object with a text title)");
   const fields = { ...tiddler };
   delete fields.text;
   return {
@@ -227,7 +244,7 @@ function parsedSave(tiddler) {
 // stored(revision) = the bytes to store, with the worker's revision, bag and recipe
 async function readSave(request) {
   if (request.headers.get("X-Tiddler-Layout") !== FLAT_LAYOUT) {
-    return parsedSave(JSON.parse(await request.text()));
+    return parsedSave(parseJsonBody(await request.text()));
   }
   const bytes = new Uint8Array(await request.arrayBuffer());
   let end = bytes.length;
@@ -235,14 +252,12 @@ async function readSave(request) {
   let cut = textKeyOffset(bytes);
   if (cut === -1) cut = end - 1;   // no text: the fields run up to the closing brace
   const fields = bytes[0] === 0x7b && bytes[end - 1] === 0x7d && cut > 0
-    ? JSON.parse(decoder.decode(bytes.subarray(0, cut)) + "}") : null;
-  if (!fields || typeof fields !== "object" || Array.isArray(fields) || typeof fields.title !== "string") {
-    throw new Error("the body is not a tiddler in the flat layout");
-  }
+    ? parseJsonBody(decoder.decode(bytes.subarray(0, cut)) + "}") : null;
+  if (!isTiddlerObject(fields)) throw new BadSave("the body is not a tiddler in the flat layout");
   // Not what the browser module sends (pretty-printed, or with these fields before "text"):
   // handled like any other save
   if (["text", "revision", "bag", "recipe"].some(name => name in fields)) {
-    return parsedSave(JSON.parse(decoder.decode(bytes)));
+    return parsedSave(parseJsonBody(decoder.decode(bytes)));
   }
   return {
     fields, layout: FLAT_LAYOUT,
@@ -251,6 +266,37 @@ async function readSave(request) {
       encoder.encode(`,"revision":"${revision}","bag":"default","recipe":"default"}`)
     ])
   };
+}
+
+// The rest of a save once the tiddler is stored: the tiddler list, the public cache and the page.
+// list: the list as read before the tiddler was stored (readableList), or null to read it here.
+async function finishSave(env, ctx, title, fields, revision, list = null) {
+  const previous = await updateManifest(env, ctx, title, fields, revision, list);
+  // Only once the new list is in R2: a public request between the purge and the list update
+  // would put the old list back in Cloudflare's cache
+  ctx.waitUntil(purgePublicCache(env, tiddlerPurgeUrls(env, title)));
+  const saved = { ...fields, title };
+  if (previous && needsPluginFile(previous) && !needsPluginFile(saved)) {
+    await env.WIKI_BUCKET.delete(pluginFileKey(title));
+  }
+  // Something the page needs at boot was added, changed or is no longer needed: rebuild the
+  // page (which writes the plugin file) before confirming, so a reload right after has it
+  if (isPageTiddler(saved) || (previous && isPageTiddler(previous))) {
+    await rebakeHtml(env, ctx);
+  }
+}
+
+// Whether the stored object holds exactly what this save would store with that revision
+async function storesSameContent(env, found, save, revision) {
+  const obj = await env.WIKI_BUCKET.get(found.key);
+  if (!obj) return false;
+  const stored = new Uint8Array(await obj.arrayBuffer());
+  const wouldStore = save.stored(revision);
+  if (stored.length !== wouldStore.length) return false;
+  for (let i = 0; i < stored.length; i++) {
+    if (stored[i] !== wouldStore[i]) return false;
+  }
+  return true;
 }
 
 // Waits for work the response depends on, and keeps it running even if the browser disconnects
@@ -268,7 +314,7 @@ export default {
       "Access-Control-Allow-Origin": "*",
       "Access-Control-Allow-Methods": "GET, PUT, DELETE, OPTIONS, HEAD",
       "Access-Control-Allow-Headers": "Content-Type, X-Requested-With, X-Tiddler-Layout, If-Match, If-None-Match, Authorization, Accept",
-      "Access-Control-Expose-Headers": "ETag, Etag, etag",
+      "Access-Control-Expose-Headers": "ETag, Etag, etag, X-Tiddler-List, Retry-After",
     };
 
     if (request.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
@@ -291,7 +337,7 @@ export default {
       const rawKey = url.pathname.substring(1);
       const decodedKey = decodeURIComponent(rawKey);
 
-      if (decodedKey === MANIFEST_KEY) return serveManifest(request, env, corsHeaders);
+      if (decodedKey === MANIFEST_KEY) return serveManifest(request, env, ctx, corsHeaders);
 
       let object = await env.WIKI_BUCKET.get(decodedKey);
       if (!object && rawKey !== decodedKey) {
@@ -343,6 +389,9 @@ export default {
 
         const title = decodeURIComponent(match[1]);
         const save = await readSave(request);
+        // Stored and listed under the title in the URL: a different one in the body would make the
+        // list disagree with the stored tiddlers (the browser always sends the same one)
+        if (save.fields.title !== title) throw new BadSave("the title in the body isn't the one in the URL");
 
         if (isEphemeralTitle(title) || isDraft(save.fields)) {
           const etag = tiddlerEtag(title, Date.now().toString());
@@ -354,7 +403,20 @@ export default {
         const currentRevision = found ? await storedRevision(env, found) : null;
 
         const { conditional, reason } = checkPreconditions(request, currentRevision);
-        if (reason) return conflictResponse(title, reason, currentRevision, corsHeaders);
+        if (reason) {
+          // A retry of a save that was stored but whose list update then failed: the stored tiddler
+          // is exactly what this save would store, so finish that save instead of refusing it.
+          // (Otherwise the browser sees the identical copy, adopts it, and the list is never fixed.)
+          if (found && await storesSameContent(env, found, save, currentRevision)) {
+            await untilDone(ctx, finishSave(env, ctx, title, save.fields, currentRevision));
+            return new Response(null, { status: 204, headers: { ...corsHeaders, ETag: tiddlerEtag(title, currentRevision) } });
+          }
+          return conflictResponse(title, reason, currentRevision, corsHeaders);
+        }
+
+        // Read before the tiddler is written: while a damaged list is being rebuilt, the save is
+        // refused (503) without changing anything, so the browser's retry can't conflict with it
+        const list = await readableList(env, ctx);
 
         const newRevision = Date.now().toString();
         const body = save.stored(newRevision);
@@ -384,25 +446,11 @@ export default {
         }
 
         ctx.waitUntil(queueBackup(env, { action: "save", title, revision: newRevision, content: body }));
-        await untilDone(ctx, (async () => {
-          const previous = await updateManifest(env, title, save.fields, newRevision);
-          // Only once the new list is in R2: a public request between the purge and the list update
-          // would put the old list back in Cloudflare's cache
-          ctx.waitUntil(purgePublicCache(env, tiddlerPurgeUrls(env, title)));
-          const saved = { ...save.fields, title };
-          if (previous && needsPluginFile(previous) && !needsPluginFile(saved)) {
-            await env.WIKI_BUCKET.delete(pluginFileKey(title));
-          }
-          // Something the page needs at boot was added, changed or is no longer needed: rebuild the
-          // page (which writes the plugin file) before confirming, so a reload right after has it
-          if (isPageTiddler(saved) || (previous && isPageTiddler(previous))) {
-            await rebakeHtml(env, ctx);
-          }
-        })());
+        await untilDone(ctx, finishSave(env, ctx, title, save.fields, newRevision, list));
 
         return new Response(null, { status: 204, headers: { ...corsHeaders, ETag: tiddlerEtag(title, newRevision) } });
       } catch (error) {
-        return new Response("Save failed: " + error.message, { status: 500, headers: corsHeaders });
+        return failureResponse("Save failed", error, corsHeaders);
       }
     }
 
@@ -413,26 +461,31 @@ export default {
         if (!match) return new Response("Invalid DELETE path", { status: 400, headers: corsHeaders });
 
         const title = decodeURIComponent(match[1]);
-        // Drafts, the story list etc. are never stored, so there is nothing to delete or back up
+        // The story list, state and temp tiddlers are never stored, so there is nothing to delete or back up
         if (isEphemeralTitle(title)) return new Response(null, { status: 204, headers: corsHeaders });
 
+        // Read first, like a save (see there). The check below is then followed at once by the
+        // delete, which can't be made conditional.
+        const list = await readableList(env, ctx);
         const found = await findTiddler(env, title);
         let currentRevision;
         if (found) {
           currentRevision = await storedRevision(env, found);
           const { reason } = checkPreconditions(request, currentRevision);
           if (reason) return conflictResponse(title, reason, currentRevision, corsHeaders);
+        }
+        if (found) {
           for (const key of tiddlerKeys(title)) {
             await env.WIKI_BUCKET.delete(key);
           }
         }
+        // Queued before the list update, which may fail (the retry then finds nothing to delete)
+        if (found) ctx.waitUntil(queueBackup(env, { action: "delete", title, revision: currentRevision }));
         await untilDone(ctx, (async () => {
           // If it was neither stored nor listed, there is nothing to back up or purge
-          const removed = await removeFromManifest(env, title);
-          if (found || removed) {
-            ctx.waitUntil(queueBackup(env, { action: "delete", title, revision: currentRevision }));
-            ctx.waitUntil(purgePublicCache(env, tiddlerPurgeUrls(env, title)));
-          }
+          const removed = await removeFromManifest(env, ctx, title, list);
+          if (!found && removed) ctx.waitUntil(queueBackup(env, { action: "delete", title, revision: currentRevision }));
+          if (found || removed) ctx.waitUntil(purgePublicCache(env, tiddlerPurgeUrls(env, title)));
           // The list entry says what it was; if it wasn't listed, delete any plugin file anyway
           // (deleting a missing object is free) and rebuild the page for system tiddlers
           if (removed ? needsPluginFile(removed) : found) {
@@ -445,7 +498,7 @@ export default {
 
         return new Response(null, { status: 204, headers: corsHeaders });
       } catch (error) {
-        return new Response("Delete failed: " + error.message, { status: 500, headers: corsHeaders });
+        return failureResponse("Delete failed", error, corsHeaders);
       }
     }
 
@@ -483,8 +536,11 @@ function publicUrl(env, path) {
 
 // Encoded the same way TiddlyWiki encodes them when it requests them
 function tiddlerPurgeUrls(env, title) {
+  return [publicUrl(env, `/recipes/default/tiddlers/${encodeURIComponent(title)}`), ...listPurgeUrls(env)];
+}
+
+function listPurgeUrls(env) {
   return [
-    publicUrl(env, `/recipes/default/tiddlers/${encodeURIComponent(title)}`),
     publicUrl(env, "/recipes/default/tiddlers.json"),
     ...SKINNY_LIST_FILTERS.map(filter => publicUrl(env, `/recipes/default/tiddlers.json?filter=${encodeURIComponent(filter)}`))
   ];
@@ -508,26 +564,35 @@ async function purgePublicCache(env, urls) {
 }
 
 // Serves the tiddler list, answering 304 when the browser already has the current version
-async function serveManifest(request, env, corsHeaders) {
+async function serveManifest(request, env, ctx, corsHeaders) {
   // Our ETag is "<R2 etag>-patched"; Cloudflare's compression may hand it back weakened as W/"..."
   const known = parseEtagList(request.headers.get("If-None-Match")).find(token => token.endsWith("-patched"));
-  const object = await env.WIKI_BUCKET.get(MANIFEST_KEY,
+  let object = await env.WIKI_BUCKET.get(MANIFEST_KEY,
     known ? { onlyIf: { etagDoesNotMatch: known.slice(0, -"-patched".length) } } : undefined);
-  if (!object) return new Response("Not found", { status: 404, headers: corsHeaders });
+  // A conditional get that fails its precondition returns the object without a body
+  if (object && !("body" in object)) return new Response(null, { status: 304, headers: listHeaders(object, corsHeaders) });
 
+  let text = object ? await object.text() : null;
+  let manifest = text === null ? null : parseList(text);
+  if (!manifest) {
+    // Missing or damaged: rebuilt from the stored tiddlers. (Answering [] would make every open tab
+    // remove all its tiddlers as "missing from the server".)
+    const rebuilt = await untilDone(ctx, rebuildList(env, ctx, { object, text }));
+    // Just rebuilt: served as written (every entry already has its bag and recipe)
+    if (rebuilt?.fresh) return new Response(rebuilt.text, { headers: listHeaders(rebuilt.object, corsHeaders) });
+    manifest = rebuilt?.entries;
+    if (!manifest) return rebuildingResponse(corsHeaders);
+    object = rebuilt.object;
+  }
+  manifest = manifest.map(t => ({ ...t, bag: t.bag || "default", recipe: t.recipe || "default" }));
+  return new Response(JSON.stringify(manifest), { headers: listHeaders(object, corsHeaders) });
+}
+
+function listHeaders(object, corsHeaders) {
   const headers = objectHeaders(object, corsHeaders);
   headers.set("Cache-Control", "no-cache");
   headers.set("ETag", `"${object.etag}-patched"`);
-  // A conditional get that fails its precondition returns the object without a body
-  if (!("body" in object)) return new Response(null, { status: 304, headers });
-
-  try {
-    const manifest = JSON.parse(await object.text())
-      .map(t => ({ ...t, bag: t.bag || "default", recipe: t.recipe || "default" }));
-    return new Response(JSON.stringify(manifest), { headers });
-  } catch (e) {
-    return new Response("[]", { headers });
-  }
+  return headers;
 }
 
 // --- Browser-side conflict guard -------------------------------------------------------------
@@ -572,6 +637,9 @@ async function serveWiki(env, ctx, corsHeaders) {
   }
   const html = await rebakeHtml(env, ctx);
   if (html !== null) return new Response(html, { headers: htmlHeaders });
+  // The rebuild failed (see the logs): the last page built is better than the bare engine
+  const lastPage = baked && await env.WIKI_BUCKET.get("baked.html");
+  if (lastPage) return new Response(lastPage.body, { headers: htmlHeaders });
   const fallback = await env.WIKI_BUCKET.get("index.html");
   if (!fallback) return new Response("Wiki not found", { status: 404 });
   return new Response(fallback.body, { headers: htmlHeaders });
@@ -714,16 +782,9 @@ async function rebakeHtml(env, ctx) {
     if (!htmlObj) return null;
     let html = new Uint8Array(await htmlObj.arrayBuffer());
 
-    let manifest = [];
-    const manifestObj = await env.WIKI_BUCKET.get(MANIFEST_KEY);
-    if (manifestObj) {
-      try {
-        manifest = JSON.parse(await manifestObj.text());
-      } catch (e) {
-        console.error("Manifest parse error:", e);
-      }
-      if (!Array.isArray(manifest)) manifest = [];
-    }
+    // A missing or damaged list is rebuilt first (a page built without it would have no plugins).
+    // While that takes more requests, this throws and the page stays as it is.
+    const { object: manifestObj, entries: manifest } = await readableList(env, ctx, { pageBuild: true });
     // Every stored tiddler is listed, so only listed startup tiddlers are read
     const startupTitles = manifest.filter(t => t.title && isStartupTiddler(t)).map(t => t.title);
 
@@ -782,90 +843,386 @@ const MANIFEST_KEY = "recipes/default/tiddlers.json";
 
 // Drops anything that should never have been listed (drafts, story list, state...)
 function scrubManifest(manifest) {
-  return manifest.filter(t => !isEphemeralTitle(t.title || ""));
+  return manifest.filter(t => !isEphemeralTitle(t.title || "") && !isDraft(t));
 }
 
-// mutator returns the new manifest, or null when nothing needs to change
-async function mutateManifest(env, mutator, attempts = 5) {
+// The list's entries, or null if it isn't a JSON array of tiddlers
+function parseList(text) {
+  try {
+    const entries = JSON.parse(text);
+    return Array.isArray(entries) && entries.every(e => e !== null && typeof e === "object" && typeof e.title === "string") ? entries : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+// The list as stored: entries is null if it's missing (object null) or damaged
+async function getList(env) {
+  const object = await env.WIKI_BUCKET.get(MANIFEST_KEY);
+  if (!object) return { object: null, text: null, entries: null };
+  const text = await object.text();
+  return { object, text, entries: parseList(text) };
+}
+
+// The list, readable: { object, text, entries }. A missing or damaged list is rebuilt from the
+// stored tiddlers first; throws ListRebuilding while that takes more requests.
+async function readableList(env, ctx, options) {
+  const list = await getList(env);
+  if (list.entries) return list;
+  const rebuilt = await rebuildList(env, ctx, list, options);
+  const entries = rebuilt?.entries;   // parsed once
+  if (!entries) throw new ListRebuilding();
+  return { object: rebuilt.object, text: rebuilt.text, entries };
+}
+
+// mutator returns the new manifest, or null when nothing needs to change. list: the list already
+// read (readableList), used for the first attempt.
+async function mutateManifest(env, ctx, mutator, list = null, attempts = 5) {
   for (let attempt = 1; attempt <= attempts; attempt++) {
-    const existing = await env.WIKI_BUCKET.get(MANIFEST_KEY);
+    const { object: existing, entries } = list || await readableList(env, ctx);
+    list = null;
+    const etag = existing.etag || existing.httpEtag.replace(/"/g, "");
 
-    let manifest = [];
-    let etag = null;
-
-    if (existing) {
-      try {
-        manifest = JSON.parse(await existing.text());
-      } catch (e) {
-        manifest = [];
-      }
-      if (!Array.isArray(manifest)) manifest = [];
-      etag = existing.etag || existing.httpEtag.replace(/"/g, "");
-    }
-
-    manifest = mutator(scrubManifest(manifest));
+    const manifest = mutator(scrubManifest(entries));
     if (manifest === null) return false;
 
-    const putOptions = {
-      httpMetadata: { contentType: "application/json" }
-    };
-
-    if (etag) {
-      putOptions.onlyIf = { etagMatches: etag };
-    }
-
-    const written = await env.WIKI_BUCKET.put(
-      MANIFEST_KEY,
-      JSON.stringify(manifest, null, 2),
-      putOptions
-    );
+    // Only if the list is still the one we read
+    const written = await env.WIKI_BUCKET.put(MANIFEST_KEY, JSON.stringify(manifest, null, 2), {
+      httpMetadata: { contentType: "application/json" },
+      onlyIf: { etagMatches: etag }
+    });
 
     if (written !== null) return true;
 
     console.warn(`[Manifest] Write conflict detected, retrying (${attempt}/${attempts})...`);
+    // A short, growing, slightly random pause, so saves that collided don't collide again
+    await new Promise(resolve => setTimeout(resolve, 25 * attempt + Math.random() * 25));
   }
 
   throw new Error("Manifest update failed: too many concurrent write conflicts");
 }
 
-// tiddler: everything but the text, in either layout. Returns the entry it replaced, or null.
-async function updateManifest(env, title, tiddler, revisionStr) {
-  const fields = { ...tiddler };
-  delete fields.revision;
-  delete fields.bag;
-  delete fields.recipe;
-  const skinny = {
-    ...fields,
-    title: tiddler.title ?? title,
+// A tiddler's entry in the list: every field but the text. title: the title it's stored under
+// (always text, whatever the body says); fields: the tiddler without its text, in either layout.
+// date fills in a missing modified or created date.
+function listEntry(title, fields, revision, date = getTwTimestamp()) {
+  const rest = { ...fields };
+  delete rest.text;
+  delete rest.revision;
+  delete rest.bag;
+  delete rest.recipe;
+  return {
+    ...rest,
+    title,
     bag: "default",
     recipe: "default",
-    modified: tiddler.modified || getTwTimestamp(),
-    created: tiddler.created || getTwTimestamp(),
-    tags: tiddler.tags || [],
-    type: tiddler.type || "text/vnd.tiddlywiki",
-    revision: revisionStr,
+    modified: fields.modified || date,
+    created: fields.created || date,
+    tags: fields.tags || [],
+    type: fields.type || "text/vnd.tiddlywiki",
+    revision: String(revision),
     _is_skinny: ""
   };
+}
 
+// Returns the entry it replaced, or null
+async function updateManifest(env, ctx, title, fields, revision, list = null) {
+  const entry = listEntry(title, fields, revision);
   let previous = null;
-  await mutateManifest(env, (manifest) => {
+  await mutateManifest(env, ctx, (manifest) => {
     const idx = manifest.findIndex(t => t.title === title);
     previous = idx >= 0 ? manifest[idx] : null;
-    if (idx >= 0) manifest[idx] = skinny;
-    else manifest.push(skinny);
-    return manifest;
-  });
+    if (idx < 0) {
+      manifest.push(entry);
+      return manifest;
+    }
+    manifest[idx] = entry;
+    // Listed twice (a hand edit, say): listed once from now on
+    return manifest.some((t, i) => i > idx && t.title === title) ? manifest.filter((t, i) => i <= idx || t.title !== title) : manifest;
+  }, list);
   return previous;
 }
 
 // Returns the entry it removed, or null if the title wasn't listed
-async function removeFromManifest(env, title) {
+async function removeFromManifest(env, ctx, title, list = null) {
   let removed = null;
-  await mutateManifest(env, (manifest) => {
+  await mutateManifest(env, ctx, (manifest) => {
     removed = manifest.find(t => t.title === title) || null;
     return removed ? manifest.filter(t => t.title !== title) : null;
-  });
+  }, list);
   return removed;
+}
+
+// --- Rebuilding the tiddler list -----------------------------------------------------------------
+// The list is an index: every tiddler is also stored on its own, with all its fields. If the list
+// is missing or damaged (a bad upload or hand edit), the worker rebuilds it from the stored
+// tiddlers wherever it needs it (serving it, a save, a delete, a page build) and carries on. The
+// damaged copy is kept in _repair/. Nothing runs in the background: the requests do the work.
+//
+// A request may make 1,000 R2 calls and use about 10 ms of CPU (Free plan), so a big wiki is
+// rebuilt a step per request, its progress kept in _repair/. Until the last step the damaged list
+// stays as it is, and the list, saves and deletes answer 503 without changing anything, so the
+// browser simply asks again: the conflict guard at once, TiddlyWiki itself every 5 seconds.
+
+const TIDDLER_PREFIX = "recipes/default/tiddlers/";
+const REPAIR_PROGRESS_KEY = "_repair/tiddler-list-progress.json";
+const REPAIR_STEP_TIDDLERS = 100;         // read per request
+const REPAIR_STEP_READ_BYTES = 2000000;   // tiddlers not in the flat layout are read whole (text skipped, about 1 ms per MB): at most this much per request
+const REPAIR_STALE_MS = 2 * 60 * 1000;    // progress untouched for this long is from an abandoned rebuild
+const HEAD_BYTES = 16384;                 // flat tiddlers: how much is read to get the fields before "text"
+const LIST_REBUILDING = "The tiddler list is being rebuilt from the stored tiddlers. Try again in a moment.";
+// Stands in for a missing list during a rebuild, so that each rebuild has its own list to replace
+// (hence the time and random part). Public tabs read it straight from R2, so it isn't JSON:
+// TiddlyWiki would take any JSON for a list and remove every tiddler not in it. The conflict guard
+// recognises the first words and asks again a little later (it has the same text: keep both in step).
+const LIST_STAND_IN_MARK = "Tiddler list being rebuilt";
+function listStandIn() {
+  return `${LIST_STAND_IN_MARK} (${new Date().toISOString()} ${crypto.randomUUID()})\n` +
+    "The list was missing: the worker is rebuilding it from the stored tiddlers.\n";
+}
+function isListStandIn(text) {
+  return typeof text === "string" && text.startsWith(LIST_STAND_IN_MARK);
+}
+
+class ListRebuilding extends Error {
+  constructor() {
+    super(LIST_REBUILDING);
+  }
+}
+
+// The header tells the conflict guard this 503 is the rebuild (nothing was changed): it asks again
+function rebuildingResponse(corsHeaders) {
+  return new Response(LIST_REBUILDING, {
+    status: 503,
+    headers: {
+      ...corsHeaders, "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store",
+      "Retry-After": "1", "X-Tiddler-List": "rebuilding"
+    }
+  });
+}
+
+function failureResponse(what, error, corsHeaders) {
+  if (error instanceof ListRebuilding) return rebuildingResponse(corsHeaders);
+  return new Response(`${what}: ${error.message}`, { status: error instanceof BadSave ? 400 : 500, headers: corsHeaders });
+}
+
+// Calls fn on each item, at most `limit` at a time (a request has 6 connections)
+async function mapLimit(items, limit, fn) {
+  const results = new Array(items.length);
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) {
+      const i = next++;
+      results[i] = await fn(items[i]);
+    }
+  }));
+  return results;
+}
+
+// A create-only write, with the same fallback as the save handler: if it's refused but nothing is
+// there, it's written anyway. Returns the object written, or null if one was already there.
+async function putIfAbsent(env, key, value, options) {
+  const written = await env.WIKI_BUCKET.put(key, value, { ...options, onlyIf: new Headers({ "If-None-Match": "*" }) });
+  if (written || await env.WIKI_BUCKET.head(key)) return written;
+  return env.WIKI_BUCKET.put(key, value, options);
+}
+
+// Where the closing quote of the JSON string starting at `start` is, or -1: the next quote that
+// isn't escaped (preceded by an even number of backslashes). Inside a string every quote is escaped.
+function stringEnd(bytes, start) {
+  for (let quote = bytes.indexOf(0x22, start + 1); quote !== -1; quote = bytes.indexOf(0x22, quote + 1)) {
+    let slashes = 0;
+    while (bytes[quote - 1 - slashes] === 0x5c) slashes++;
+    if (slashes % 2 === 0) return quote;
+  }
+  return -1;
+}
+
+// Where a stored tiddler's text is, to skip it: { start, end } covers the top-level '"text":"…"' and
+// the comma that separates it, or null if there's none. Strings are jumped over with indexOf, so a
+// big text costs one hop per quote in it; only the bytes between strings are looked at one by one.
+const TEXT_VALUE = encoder.encode('"text":"');
+function textValueRange(bytes) {
+  let depth = 0;
+  for (let i = 0; i < bytes.length; i++) {
+    const byte = bytes[i];
+    if (byte === 0x7b || byte === 0x5b) depth++;
+    else if (byte === 0x7d || byte === 0x5d) depth--;
+    else if (byte === 0x22) {
+      const end = stringEnd(bytes, i);
+      if (end === -1) return null;
+      if (depth === 1 && TEXT_VALUE.every((b, j) => bytes[i + j] === b)) {
+        const valueEnd = stringEnd(bytes, i + TEXT_VALUE.length - 1);
+        if (valueEnd === -1) return null;
+        let before = i - 1;
+        while (before >= 0 && bytes[before] <= 0x20) before--;
+        // ',"text":"…"' goes with the comma before it; the first key with the comma after it
+        if (bytes[before] === 0x2c) return { start: before, end: valueEnd + 1 };
+        let after = valueEnd + 1;
+        while (after < bytes.length && bytes[after] <= 0x20) after++;
+        return { start: i, end: bytes[after] === 0x2c ? after + 1 : valueEnd + 1 };
+      }
+      i = end;
+    }
+  }
+  return null;
+}
+
+// A stored tiddler's fields without its text, in either layout, or null if it isn't a JSON object.
+// The text, often most of the object (a plugin's is), is skipped as bytes, never decoded or parsed;
+// if what's left doesn't parse, the whole object is parsed.
+function storedFields(bytes) {
+  const text = textValueRange(bytes);
+  let fields = null;
+  if (text) {
+    try { fields = JSON.parse(decoder.decode(bytes.subarray(0, text.start)) + decoder.decode(bytes.subarray(text.end))); } catch (e) {}
+  }
+  if (fields === null) {
+    try { fields = JSON.parse(decoder.decode(bytes)); } catch (e) { return null; }
+  }
+  if (fields === null || typeof fields !== "object" || Array.isArray(fields)) return null;
+  delete fields.text;
+  return fields;
+}
+
+// The list entry for a stored tiddler (item: from list()), or null if it isn't listed. Flat
+// tiddlers have their fields before "text": usually only the start of the object is read.
+async function storedEntry(env, item) {
+  const partial = item.customMetadata?.layout === FLAT_LAYOUT && item.size > HEAD_BYTES;
+  let obj = await env.WIKI_BUCKET.get(item.key, partial ? { range: { offset: 0, length: HEAD_BYTES } } : undefined);
+  if (!obj) return null;   // deleted meanwhile
+  let bytes = new Uint8Array(await obj.arrayBuffer());
+  let fields = null;
+  if (partial) {
+    const cut = obj.customMetadata?.layout === FLAT_LAYOUT ? textKeyOffset(bytes) : -1;   // as stored now
+    if (cut !== -1) {
+      try { fields = JSON.parse(decoder.decode(bytes.subarray(0, cut)) + "}"); } catch (e) {}
+    } else {
+      // Re-saved in another layout meanwhile, or fields over HEAD_BYTES: read whole
+      obj = await env.WIKI_BUCKET.get(item.key);
+      if (!obj) return null;
+      bytes = new Uint8Array(await obj.arrayBuffer());
+    }
+  }
+  if (!fields) fields = storedFields(bytes);
+  if (!fields || typeof fields !== "object" || Array.isArray(fields)) {
+    console.error(`Rebuilding the tiddler list: ${item.key} is not a readable tiddler, left out`);
+    return null;
+  }
+  // A tiddler is stored under its title: the one in the save's URL, which must match the body's.
+  // An older version stored some under their URL-encoded title.
+  const keyTitle = item.key.slice(TIDDLER_PREFIX.length);
+  const title = typeof fields.title === "string" && (fields.title === keyTitle || encodeURIComponent(fields.title) === keyTitle) ? fields.title : keyTitle;
+  if (isEphemeralTitle(title) || isDraft(fields)) return null;
+  // If both keys exist, the wiki uses the plain one (findTiddler)
+  if (item.key !== TIDDLER_PREFIX + title && await env.WIKI_BUCKET.head(TIDDLER_PREFIX + title)) return null;
+  return listEntry(title, fields, revisionOf(obj, fields), getTwTimestamp(obj.uploaded));
+}
+
+// One step of a rebuild. damaged: { object, text } of the list as found (object null if missing).
+// Returns null while the rebuild needs more requests, otherwise the list as now stored
+// ({ object, text, entries }: rebuilt here, with fresh: true and entries parsed on each access;
+// or replaced meanwhile, entries null if still unreadable).
+// pageBuild: called by the page build, which builds the page anyway.
+async function rebuildList(env, ctx, damaged, { pageBuild = false } = {}) {
+  let list = damaged.object;
+  if (!list) {
+    // Missing: a stand-in takes its place, so this rebuild has a list of its own to replace
+    list = await putIfAbsent(env, MANIFEST_KEY, listStandIn(), { httpMetadata: { contentType: "text/plain; charset=utf-8" } });
+    if (!list) return getList(env);   // created meanwhile
+  }
+  // Identifies this damaged list: the same content uploaded again later is another rebuild
+  const rebuildId = `${list.etag}/${list.uploaded.getTime()}`;
+  const progress = await env.WIKI_BUCKET.get(REPAIR_PROGRESS_KEY);
+  const meta = progress?.customMetadata || {};
+  const resume = progress !== null && meta.rebuild === rebuildId && Date.now() - progress.uploaded.getTime() < REPAIR_STALE_MS &&
+    (meta.cursor !== undefined || meta.after !== undefined);   // a position this version wrote
+  const done = resume ? new Uint8Array(await progress.arrayBuffer()) : new Uint8Array(0);
+  if (progress && !resume) await progress.body.cancel();   // from another or an abandoned rebuild: start over
+  if (!resume && damaged.object && !isListStandIn(damaged.text)) {
+    // Kept, in case it holds a hand edit worth redoing
+    await env.WIKI_BUCKET.put(`_repair/damaged-tiddler-list-${damaged.object.etag}.json`, damaged.text, {
+      httpMetadata: { contentType: "application/json" }
+    });
+    console.error("The tiddler list can't be read: rebuilding it from the stored tiddlers. The damaged copy is in _repair/.");
+  }
+
+  // The next tiddlers, as many as this request can read
+  const listing = await env.WIKI_BUCKET.list({
+    prefix: TIDDLER_PREFIX, limit: REPAIR_STEP_TIDDLERS, include: ["customMetadata"],
+    ...(resume ? (meta.cursor ? { cursor: meta.cursor } : { startAfter: decodeURIComponent(meta.after) }) : {})
+  });
+  const items = [];
+  let readBytes = 0;
+  for (const item of listing.objects) {
+    const whole = item.customMetadata?.layout === FLAT_LAYOUT ? 0 : item.size;
+    if (items.length > 0 && readBytes + whole > REPAIR_STEP_READ_BYTES) break;
+    readBytes += whole;
+    items.push(item);
+  }
+  const results = await mapLimit(items, 6, item => storedEntry(env, item));
+  const entries = results.filter(Boolean);
+  // Listed from an older version's URL-encoded key: if its plain key appears later in the rebuild
+  // (a hand upload), it's listed twice, so the last step then removes duplicates
+  const dedupe = (resume && meta.dedupe === "yes") || results.some((entry, i) => entry && items[i].key !== TIDDLER_PREFIX + entry.title);
+  const added = encoder.encode(entries.map(entry => JSON.stringify(entry)).join(","));
+  const all = concatBytes(done.length > 0 && added.length > 0 ? [done, encoder.encode(","), added] : [done, added]);
+  let count = (resume ? Number(meta.count) || 0 : 0) + entries.length;
+
+  if (listing.truncated || items.length < listing.objects.length) {
+    // Only if the damaged list is still there (a request that read it just before another one
+    // finished the rebuild would otherwise start a new one)
+    if (!resume) {
+      const current = await env.WIKI_BUCKET.head(MANIFEST_KEY);
+      if (!current || `${current.etag}/${current.uploaded.getTime()}` !== rebuildId) return getList(env);
+    }
+    // Where the next step starts (list() may return an empty page that isn't the last); the key is
+    // encoded, as metadata may be sent as HTTP headers
+    const position = items.length > 0 ? { after: encodeURIComponent(items[items.length - 1].key) } : { cursor: listing.cursor };
+    const options = { customMetadata: { rebuild: rebuildId, count: String(count), ...(dedupe ? { dedupe: "yes" } : {}), ...position } };
+    // Saved only if no other request took this step meanwhile (otherwise its progress stands)
+    if (progress) await env.WIKI_BUCKET.put(REPAIR_PROGRESS_KEY, all, { ...options, onlyIf: { etagMatches: progress.etag } });
+    else await putIfAbsent(env, REPAIR_PROGRESS_KEY, all, options);
+    return null;
+  }
+
+  // Every tiddler read: the new list replaces the damaged one, unless it was replaced meanwhile.
+  // It's normally written as is, without parsing it, so the last step costs no more than the others:
+  // each key is read once (each step adds to the progress it read, and only if no other request did
+  // meanwhile), and a title has one key, except as above.
+  let text = `[${decoder.decode(all)}]`;
+  if (dedupe) {
+    const byTitle = new Map(JSON.parse(text).map(entry => [entry.title, entry]));   // the last one read wins
+    text = JSON.stringify([...byTitle.values()]);
+    count = byTitle.size;
+  }
+  const written = await env.WIKI_BUCKET.put(MANIFEST_KEY, text, {
+    httpMetadata: { contentType: "application/json" },
+    onlyIf: { etagMatches: list.etag }
+  });
+  if (!written) return getList(env);
+  if (progress) await env.WIKI_BUCKET.delete(REPAIR_PROGRESS_KEY);
+  console.log(`Tiddler list rebuilt: ${count} tiddlers`);
+  // Purged now, and again a little later: a public request that read the damaged list or the
+  // stand-in just before could otherwise put it back in Cloudflare's cache for a day
+  const urls = listPurgeUrls(env);
+  ctx.waitUntil(purgePublicCache(env, urls));
+  ctx.waitUntil(new Promise(resolve => setTimeout(resolve, 5000)).then(() => purgePublicCache(env, urls)));
+  if (!pageBuild) ctx.waitUntil(markPageOutdated(env));
+  // Served as is; parsed only by callers that need the entries (a save, a page build)
+  return { object: written, text, fresh: true, get entries() { return parseList(text); } };
+}
+
+// The page may have been built from a list that missed a plugin (a save whose list update failed
+// and was never retried): it's built again on the next page load, rather than in this request
+async function markPageOutdated(env) {
+  const page = await env.WIKI_BUCKET.get("baked.html");
+  if (!page) return;
+  await env.WIKI_BUCKET.put("baked.html", await page.arrayBuffer(), {
+    httpMetadata: page.httpMetadata,
+    customMetadata: { ...page.customMetadata, bakeVersion: "outdated" },
+    onlyIf: { etagMatches: page.etag }
+  });
 }
 
 // --- GitHub backup through a Cloudflare Queue -------------------------------------------------

@@ -1,2 +1,6 @@
-node_modules/
+node_modules
 test/fixtures/
+# Local Wrangler configuration, secrets and state
+wrangler.toml
+.dev.vars
+.wrangler/
