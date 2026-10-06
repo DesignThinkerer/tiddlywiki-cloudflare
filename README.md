@@ -689,13 +689,11 @@ If the page is rebuilt before step 4 (by a deploy, or by saving another plugin, 
 - **Both sites depend on the core file on the public site,** as they already do on plugin files. If it can't be loaded, the wiki doesn't start (TiddlyWiki shows an alert).
 - **The page follows the admin wiki.** A change made elsewhere (a tiddler edited in R2) reaches the page at the next admin page load. Raw markup that depends on being logged in is rendered as the admin sees it.
 - **Conflict copies are merged by hand.** That's by design: you get both versions and decide.
-- **Old tabs aren't protected.** A tab opened before the module was deployed saves without conflict protection until reloaded.
 - **A short window at page load.** A tiddler that's part of `index.html` itself, edited before the first sync finishes, is saved without a version check.
 - **Big imports take a while to back up.** GitHub allows about 500 commits an hour, so 1,000 tiddlers take a little over two hours. Nothing is lost while they wait.
 - **Free-plan quotas** (October 2026, see 10): 100,000 worker requests a day; 10,000 queue operations a day, about 3 per backup or retry, so roughly 3,300 saves a day; 10 ms of CPU per request, with some flexibility for occasional overruns. Each save reads and rewrites the whole tiddler list, about 1 ms of CPU per 400–500 tiddlers, which is now the largest cost of a save. At several thousand tiddlers, saves could start hitting that limit. Saving a plugin also rebuilds the page, from the list the save has just written.
 - **A tab closed right after a failed list update.** The worker stores a tiddler, then updates the tiddler list. If that update fails, the browser's retry completes it (4.4), but if the tab is closed first, the tiddler stays out of the list until the list is rebuilt (7).
-- **Waiting backup copies are public.** Versions too big for a queue message (4.7) wait in `_backup/versions/` until committed, which is usually seconds, and that path is public like the rest of the bucket (under a random name, so not one anyone can guess).
-- **Retries cost queue operations.** If the GitHub token stays broken, backups keep retrying (at most every 6 hours each), each retry using a few queue operations, until it's fixed.
+- **Retries cost queue operations.** If the GitHub token stays broken, backups keep retrying (at most every 6 hours each), each retry using a few queue operations, until it's fixed (the admin wiki shows an alert after an hour, 4.7).
 
 ---
 
