@@ -484,6 +484,30 @@ check("a save answered \"rebuilding\" is sent again quietly and goes through",
 await A.unroute("**/recipes/default/tiddlers/QuietSave");
 net.splice(netBefore, net.length - netBefore, ...net.slice(netBefore).filter(x => x.status !== 503));   // expected, not failures
 
+// --- 14. Leaving with an editor open ----------------------------------------------------------
+// Drafts are never saved to the server, so closing or reloading the tab would lose what's being typed:
+// the browser asks first, as TiddlyWiki does for unsaved changes. Not for an editor left unchanged.
+async function leaving(page) {
+  let asked = false;
+  page.once("dialog", dialog => { asked = dialog.type() === "beforeunload"; dialog.dismiss().catch(() => {}); });
+  await page.close({ runBeforeUnload: true });
+  await new Promise(r => setTimeout(r, 1000));
+  return { asked, closed: page.isClosed() };
+}
+const typing = await openTab("E");
+await startEdit(typing, "Alpha");
+await typing.evaluate(() => {
+  const d = $tw.wiki.findDraft("Alpha");
+  $tw.wiki.addTiddler(new $tw.Tiddler($tw.wiki.getTiddler(d), { text: "half-typed sentence" }));
+});
+const whileTyping = await leaving(typing);
+check("closing a tab while typing in an editor asks first (the draft isn't saved anywhere)", whileTyping.asked && !whileTyping.closed, JSON.stringify(whileTyping));
+if (!typing.isClosed()) await typing.close();
+const looking = await openTab("F");
+await startEdit(looking, "Alpha");
+const unchanged = await leaving(looking);
+check("...but not for an editor opened and left unchanged", !unchanged.asked && unchanged.closed, JSON.stringify(unchanged));
+
 // --- Summary --------------------------------------------------------------------------------
 const bad = net.filter(x => x.status === 428 || x.status >= 500);
 check("no 428/5xx responses anywhere", bad.length === 0, JSON.stringify(bad));

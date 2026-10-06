@@ -302,6 +302,21 @@ exports.startup = function() {
 		});
 	}
 
+	// Drafts are never saved to the server (see getSyncedTiddlers above), so TiddlyWiki's syncer doesn't
+	// count an open editor as unsaved: closing or reloading the tab would lose what's being typed
+	// without its usual warning. The browser asks here instead, if an editor holds changes.
+	window.addEventListener("beforeunload",function(event) {
+		var typing = wiki.filterTiddlers("[is[draft]]").some(function(title) {
+			return wiki.isDraftModified(title);
+		});
+		if(typing) {
+			var message = $tw.language.getString("UnsavedChangesWarning");
+			event.preventDefault();
+			event.returnValue = message;
+			return message;
+		}
+	});
+
 	// Remember which revision each draft was opened from
 	wiki.addEventListener("change",function(changes) {
 		$tw.utils.each(changes,function(change,title) {

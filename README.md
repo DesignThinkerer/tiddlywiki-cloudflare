@@ -81,7 +81,7 @@ flowchart LR
 ├── package.json              build and test scripts
 └── test/
     ├── make-fixture.mjs      builds a test TiddlyWiki (test/fixtures/index.html)
-    ├── two-tabs.test.mjs     real TiddlyWiki in Chromium, several tabs (69 checks)
+    ├── two-tabs.test.mjs     real TiddlyWiki in Chromium, several tabs (71 checks)
     ├── plugins.test.mjs      real plugins on the admin and public sites (65 checks)
     ├── page-publish.test.mjs the page published from a real TiddlyWiki (42 checks)
     ├── queue-backup.test.mjs queue backup against an imitation of GitHub (21 checks)
@@ -519,6 +519,8 @@ Checking the revision and then writing leaves a small window where two saves bot
 
 The worker never stored them; it answered "OK" and threw them away. That caused a real bug. After the next minute's poll, TiddlyWiki saw the draft "missing from the server" and deleted it locally, closing any editor left open longer than a poll interval. Not sending them at all fixes this and saves requests.
 
+The flip side: what you're typing exists only in that tab, and TiddlyWiki's syncer, which no longer counts drafts, wouldn't warn before you close or reload it. So the conflict guard does: the browser asks first while an editor holds changes (not for one opened and left unchanged).
+
 The story list wasn't stored either. The Control Panel's "retain story ordering" button sets Default tiddlers to `[list[$:/StoryList]]`, which only works when the story list is saved, so it never worked with this worker. To use your current story as the default, this button stores a snapshot of the titles:
 
 ```
@@ -746,6 +748,7 @@ Backups don't appear here: with the queue bound, as deployed, they run later in 
 - **Public cache:** exact purge URLs (also the admin page's copy, purged with its `Origin` header, on a save and a delete) and the `304`.
 - **Request savings:** a 2-request page load (the module answers `/status`, and TiddlyWiki still knows it's logged in), a reload that downloads none of the page (`304`), also through a stand-in for Cloudflare that removes the page's ETag (the browser asks by date), the stale-public-copy fallback, a missing CORS header, the hidden-tab pause.
 - **A damaged tiddler list** rebuilt over several requests while a tab is open: the tab keeps its tiddlers and shows no error; a save answered "rebuilding" is sent again quietly, and any other `503` is reported as before.
+- **Leaving with an editor open:** the browser asks before closing a tab whose editor holds changes, not one left unchanged.
 
 `test:plugins` uses the markdown and KaTeX plugins shipped with TiddlyWiki and covers:
 - **Install** through the import messages a drop sends: the flat save, the stored tiddler, the file (byte for byte the template format), the script tag, no purge of plugin files.
