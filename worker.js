@@ -1301,7 +1301,9 @@ async function markPageOutdated(env) {
 // Every save or delete becomes one message. The queue consumer (the queue() handler, configured
 // with max_concurrency 1) commits them one at a time, in order, one commit per save, so commits
 // never collide, and GitHub rate limits or outages only delay backups: failed messages are put
-// back with a growing delay until they go through. Nothing runs while the queue is empty.
+// back with a growing delay until they go through. A rate limit holds everything back; any other
+// failure only that tiddler's versions, so a file GitHub refuses can't hold up the others. Nothing
+// runs while the queue is empty.
 // Without a BACKUP_QUEUE binding (or if the queue is unavailable) the same backup runs directly.
 
 const BACKUP_INLINE_LIMIT = 100000;   // queue messages are limited to 128 KB; bigger versions wait in R2
@@ -1346,12 +1348,19 @@ async function queueBackup(env, job) {
 async function processBackupBatch(batch, env) {
   const messages = [...batch.messages].sort((a, b) =>
     (a.body.time - b.body.time) || String(a.body.revision).localeCompare(String(b.body.revision)));
+  const held = new Map();   // title -> delay: a version of it failed, its later versions wait with it
+  let attempts = 0;
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i];
-    if (i >= BACKUP_PER_RUN) {
+    if (held.has(msg.body.title)) {
+      await requeueBackup(env, msg, held.get(msg.body.title), false);
+      continue;
+    }
+    if (attempts >= BACKUP_PER_RUN) {
       await requeueBackup(env, msg, 0, false);
       continue;
     }
+    attempts++;
     try {
       await backupJob(env, msg.body);
       msg.ack();
@@ -1359,13 +1368,25 @@ async function processBackupBatch(batch, env) {
     } catch (e) {
       const delay = backupRetryDelay(env, msg.body.tries, e.retryAfter);
       console.error(`[Backup] '${msg.body.title}' not backed up yet (${e.message}); retrying in ${delay}s`);
-      // Keep the order: this message and all later ones wait and retry together
-      for (let j = i; j < messages.length; j++) {
-        await requeueBackup(env, messages[j], delay, j === i);
+      await requeueBackup(env, msg, delay, true);
+      if (isRateLimit(e)) {
+        // GitHub asks to slow down: everything left waits and retries with it, in order
+        for (let j = i + 1; j < messages.length; j++) {
+          await requeueBackup(env, messages[j], delay, false);
+        }
+        return;
       }
-      return;
+      // Anything else may concern this file only (GitHub refusing its path, say): its later
+      // versions wait with it, so they stay in order, and other tiddlers' backups go ahead
+      held.set(msg.body.title, delay);
     }
   }
+}
+
+// GitHub asking to slow down: Retry-After or an exhausted rate limit, 429, or its "rate limit"
+// messages (a secondary rate limit can come as a 403 without a header)
+function isRateLimit(e) {
+  return e.retryAfter > 0 || e.status === 429 || /rate limit/i.test(e.message || "");
 }
 
 function backupRetryDelay(env, tries, retryAfter) {
@@ -1440,12 +1461,14 @@ async function gitBlobSha(text) {
   return Array.from(digest, b => b.toString(16).padStart(2, "0")).join("");
 }
 
-// A failed GitHub call; retryAfter (seconds) is set when GitHub says how long to wait
+// A failed GitHub call; retryAfter (seconds) is set when GitHub says how long to wait, status is
+// GitHub's HTTP status
 class GitHubError extends Error {
-  constructor(message, retryAfter) {
+  constructor(message, retryAfter, status) {
     super(message);
     this.name = "GitHubError";
     this.retryAfter = retryAfter;
+    this.status = status;
   }
 }
 
@@ -1477,7 +1500,7 @@ function githubContents(env) {
       const reset = parseInt(res.headers.get("x-ratelimit-reset"), 10);
       if (retryAfter > 0) waitSeconds = retryAfter;
       else if (res.headers.get("x-ratelimit-remaining") === "0" && reset) waitSeconds = Math.max(reset - Date.now() / 1000, 1);
-      throw new GitHubError(`GitHub ${method} ${res.status}: ${(await res.text()).slice(0, 200)}`, waitSeconds);
+      throw new GitHubError(`GitHub ${method} ${res.status}: ${(await res.text()).slice(0, 200)}`, waitSeconds, res.status);
     }
     return res.json();
   }
