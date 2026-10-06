@@ -85,7 +85,7 @@ flowchart LR
     ├── plugins.test.mjs      real plugins on the admin and public sites (65 checks)
     ├── page-publish.test.mjs the page published from a real TiddlyWiki (44 checks)
     ├── queue-backup.test.mjs queue backup against an imitation of GitHub (21 checks)
-    ├── integrity.test.mjs    the tiddler list's integrity, a failed page build, draft-like titles, .gitignore (51 checks)
+    ├── integrity.test.mjs    the tiddler list's integrity, a failed page build, draft-like titles, .gitignore (53 checks)
     ├── r2-ops.test.mjs       R2 calls per kind of request, against a budget (25 checks)
     ├── r2-counter.mjs        test-only wrapper that counts the worker's R2 calls
     └── bake.test.mjs         page serving and rebuilding, the published page (44 checks)
@@ -261,6 +261,8 @@ R2 layout:
 | 945 KB (geospatial) | about 10 ms | about 0.4 ms |
 
 Measured in Node.js (the same JavaScript engine as Workers) on a development machine, so only the proportions matter.
+
+**The list keeps the newest.** It's updated with a conditional write, retried if another request changed it in between. A retried write can therefore land after a later request for the same title: an older save then doesn't replace the newer entry, and a delete doesn't remove a title that was saved again since (both compare revisions).
 
 **A damaged or missing tiddler list rebuilds itself.** The list is only an index: every tiddler is also stored on its own, with all its fields. If the list can't be read (a bad upload or a hand edit) or is missing, the worker rebuilds it from the stored tiddlers wherever it needs it (serving it, a save, a delete, a page build) and carries on. Nothing needs doing by hand, and nothing runs in the background: the requests do the work.
 - **It reads as little as it can.** A tiddler's fields come before `"text"`, so it reads only the first 16 KB of each object (more only for fields bigger than that). Each tiddler is listed under the title it's stored under. Objects not in the stored layout (an older version's, or uploaded by hand) are left out, with a line in the logs.
@@ -705,6 +707,7 @@ The tests run the real worker in Cloudflare's local runtime (workerd, through Mi
 - a list too big for one request (400 tiddlers): `503` until it's complete (with `X-Tiddler-List` readable from another origin), the damaged list untouched meanwhile, two tabs driving it at once, a save and a delete in the middle retried successfully, a later damage or deletion starting over rather than resuming old progress, no progress left behind;
 - a missing list: each rebuild with its own stand-in in R2, which isn't JSON;
 - a title listed twice by hand, listed once after its next save;
+- list writes landing out of order (one delayed through `test/r2-counter.mjs`): a delete after the title was created again keeps the new tiddler listed, and an older save doesn't replace a newer entry;
 - a page build that fails after a plugin save or delete (the page or the plugin file can't be written, through `test/r2-counter.mjs`): the change is still confirmed, the page is marked outdated, and the next page load builds it with the change;
 - titles: a save whose title isn't text, or isn't the one in its URL, is refused (`400`), and such tiddlers stored by hand are listed under their key instead of stopping the rebuild or being listed under the wrong title;
 - a field called `fields` stored nested, as TiddlyWeb's layout has it; a value that's an object refused (`400`); custom fields named like built-in properties (`constructor`) kept, and a `text` among the custom fields doesn't move the text;

@@ -333,7 +333,32 @@ text = await loadPage();
 check("a plugin delete whose page build failed: the next page load builds the page without it",
   res.status === 204 && outdated && !text.includes(tagOf(P1)), `status ${res.status}, outdated ${outdated}`);
 
-// --- 4. A tiddler whose title only looks like a draft is saved like any other ---------------------
+// --- 4. List updates follow revisions --------------------------------------------------------------
+// Two requests for the same title can update the list in the other order (a list write retried after
+// another one): the list keeps the newer version
+const delayNext = (call, delay) => mf.dispatchFetch(`${base}/__r2fail`, { method: "POST", body: JSON.stringify({ call, delay }) });
+const pause = ms => new Promise(r => setTimeout(r, ms));
+await save("Raced", { text: "first" });
+await delayNext("put list", 600);
+const deleting = del("Raced");
+await pause(200);
+res = await save("Raced", { text: "again" }, { "If-None-Match": "*" });
+const againRevision = etagRevision(res);
+const deleted = await deleting;
+check("a delete whose list update lands after the title was created again leaves the new tiddler listed",
+  deleted.status === 204 && res.status === 204 && (await entry("Raced"))?.revision === againRevision && await storedRevision("Raced") === againRevision,
+  `listed ${JSON.stringify((await entry("Raced"))?.revision)}, stored ${await storedRevision("Raced")}, created ${againRevision}`);
+await delayNext("put list", 600);
+const older = save("Twice", { text: "older" });
+await pause(200);
+res = await save("Twice", { text: "newer" });
+const newerRevision = etagRevision(res);
+await older;
+check("an older save whose list update lands after a newer one's doesn't put its revision back in the list",
+  (await entry("Twice"))?.revision === newerRevision && await storedRevision("Twice") === newerRevision,
+  `listed ${(await entry("Twice"))?.revision}, stored ${await storedRevision("Twice")}, newer ${newerRevision}`);
+
+// --- 5. A tiddler whose title only looks like a draft is saved like any other ---------------------
 const NOT_A_DRAFT = "Draft of 'Chapter 1'";
 res = await save(NOT_A_DRAFT, { text: "my chapter" });
 check("a tiddler titled \"Draft of '…'\" is stored", !!(await storedRevision(NOT_A_DRAFT)) && !!(await entry(NOT_A_DRAFT)), `status ${res.status}`);
@@ -346,7 +371,7 @@ await bucket.put(LIST, JSON.stringify(withIdeas));
 res = await del("Draft 2 of 'Ideas'");
 check("deleting a tiddler titled \"Draft 2 of '…'\" deletes it", !(await storedRevision("Draft 2 of 'Ideas'")) && !(await entry("Draft 2 of 'Ideas'")), `status ${res.status}`);
 
-// --- 5. Local secrets and Wrangler's files stay out of git ---------------------------------------
+// --- 6. Local secrets and Wrangler's files stay out of git ---------------------------------------
 const ignored = fs.readFileSync(path.join(ROOT, ".gitignore"), "utf8").split(/\r?\n/).map(l => l.trim());
 const missing = ["wrangler.toml", ".dev.vars", ".wrangler/"].filter(p => !ignored.includes(p));
 check(".gitignore covers wrangler.toml, .dev.vars and .wrangler/", missing.length === 0, missing.length ? "missing: " + missing.join(", ") : "");

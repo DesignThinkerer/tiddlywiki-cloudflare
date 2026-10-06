@@ -267,7 +267,9 @@ async function readSave(request) {
 // list: the list as read before the tiddler was stored (readableList), or null to read it here.
 // adminOrigin: the admin site's origin (where this request came to), see tiddlerPurgeUrls.
 async function finishSave(env, ctx, title, fields, revision, list, adminOrigin) {
-  const { previous, list: stored } = await updateManifest(env, ctx, title, fields, revision, list);
+  const { previous, list: stored, superseded } = await updateManifest(env, ctx, title, fields, revision, list);
+  // A newer save of this tiddler got there first: its purge, plugin file and page build are the ones
+  if (superseded) return;
   // Only once the new list is in R2: a public request between the purge and the list update
   // would put the old list back in Cloudflare's cache
   ctx.waitUntil(purgePublicCache(env, tiddlerPurgeUrls(env, title, adminOrigin)));
@@ -452,7 +454,9 @@ export default {
         if (found) ctx.waitUntil(queueBackup(env, { action: "delete", title, revision: currentRevision }));
         await untilDone(ctx, (async () => {
           // If it was neither stored nor listed, there is nothing to back up or purge
-          const { removed, list: stored } = await removeFromManifest(env, ctx, title, list);
+          const { removed, list: stored, recreated } = await removeFromManifest(env, ctx, title, list, found ? currentRevision : null);
+          // Saved again since: that save's purge, plugin file and page build are the ones
+          if (recreated) return;
           if (!found && removed) ctx.waitUntil(queueBackup(env, { action: "delete", title, revision: currentRevision }));
           if (found || removed) ctx.waitUntil(purgePublicCache(env, tiddlerPurgeUrls(env, title, url.origin)));
           // The list entry says what it was; if it wasn't listed, delete any plugin file anyway
@@ -1074,13 +1078,17 @@ function listEntry(title, fields, revision, date = getTwTimestamp()) {
   };
 }
 
-// Returns { previous: the entry it replaced, or null; list: the list as now stored }
+// Returns { previous: the entry it replaced, or null; list: the list as now stored; superseded: a
+// newer save of the tiddler is already listed (this save's list write was retried after it), so the
+// list keeps that one }
 async function updateManifest(env, ctx, title, fields, revision, list = null) {
   const entry = listEntry(title, fields, revision);
-  let previous = null;
+  let previous = null, superseded = false;
   const stored = await mutateManifest(env, ctx, (manifest) => {
     const idx = manifest.findIndex(t => t.title === title);
     previous = idx >= 0 ? manifest[idx] : null;
+    superseded = !!previous && isNewerRevision(String(previous.revision), revision);
+    if (superseded) return null;
     if (idx < 0) {
       manifest.push(entry);
       return manifest;
@@ -1089,17 +1097,21 @@ async function updateManifest(env, ctx, title, fields, revision, list = null) {
     // Listed twice (a hand edit, say): listed once from now on
     return manifest.some((t, i) => i > idx && t.title === title) ? manifest.filter((t, i) => i <= idx || t.title !== title) : manifest;
   }, list);
-  return { previous, list: stored };
+  return { previous, list: stored, superseded };
 }
 
-// Returns { removed: the entry it removed, or null if the title wasn't listed; list: the list as now stored }
-async function removeFromManifest(env, ctx, title, list = null) {
-  let removed = null;
+// Returns { removed: the entry it removed, or null if the title wasn't listed; list: the list as now
+// stored; recreated: the title was saved again since the deleted revision (this delete's list write
+// was retried after that save), so its entry stays }
+async function removeFromManifest(env, ctx, title, list = null, deletedRevision = null) {
+  let removed = null, recreated = false;
   const stored = await mutateManifest(env, ctx, (manifest) => {
     removed = manifest.find(t => t.title === title) || null;
+    recreated = !!removed && !!deletedRevision && isNewerRevision(String(removed.revision), deletedRevision);
+    if (recreated) removed = null;
     return removed ? manifest.filter(t => t.title !== title) : null;
   }, list);
-  return { removed, list: stored };
+  return { removed, list: stored, recreated };
 }
 
 // --- Rebuilding the tiddler list -----------------------------------------------------------------
