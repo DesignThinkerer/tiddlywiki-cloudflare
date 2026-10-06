@@ -84,7 +84,7 @@ flowchart LR
     ├── two-tabs.test.mjs     real TiddlyWiki in Chromium, several tabs (69 checks)
     ├── plugins.test.mjs      real plugins on the admin and public sites (65 checks)
     ├── page-publish.test.mjs the page published from a real TiddlyWiki (42 checks)
-    ├── queue-backup.test.mjs queue backup against an imitation of GitHub (19 checks)
+    ├── queue-backup.test.mjs queue backup against an imitation of GitHub (21 checks)
     ├── integrity.test.mjs    the tiddler list's integrity, a failed page build, draft-like titles, .gitignore (51 checks)
     ├── r2-ops.test.mjs       R2 calls per kind of request, against a budget (25 checks)
     ├── r2-counter.mjs        test-only wrapper that counts the worker's R2 calls
@@ -393,8 +393,8 @@ sequenceDiagram
    - Messages are limited to 128 KB, so a version over 100,000 bytes is stored in R2 under `_backup/versions/` and the message points to it.
    - If the queue isn't bound or can't be reached, the worker runs the same backup routine (steps 3–5) directly, trying up to 3 times (two retries, 1 and 2 seconds apart).
 2. **The queue handler takes up to 10 messages per run, in save order.** With *maximum concurrency 1* there's only ever one run, so commits never collide.
-3. **For a save,** it reads the file's current state on GitHub and commits the new content. If GitHub already has exactly that content, it skips the commit, so a message delivered twice makes no duplicate. The comparison uses git's blob hash.
-4. **Late arrivals keep both history and the right final state.** If a version reaches GitHub after a newer one of the same tiddler (because it had to be retried), it's still committed, so it's in the history. Then the newer version is committed back on top, with the message `(newer version restored)`. If the tiddler was deleted in the meantime, the late version is committed and then deleted again. For files over 1 MB, GitHub's API doesn't return the current content, so the restore step is skipped: the late version stays on top until the next save.
+3. **For a save,** it asks GitHub for the file's `sha` (git's blob hash, which GitHub needs to replace a file) and commits the new content. If GitHub already has exactly that content, it skips the commit, so a message delivered twice makes no duplicate: the hash of a content is always the same. GitHub sends the file's content too, but it isn't decoded: for a plugin that took more CPU than a run is allowed.
+4. **Late arrivals keep both history and the right final state.** If a version reaches GitHub after a newer one of the same tiddler (because it had to be retried), it's still committed, so it's in the history. Then the newer version is committed back on top, with the message `(newer version restored)`. A version is late when the wiki holds a newer one *and* GitHub already holds that one (its hash matches GitHub's `sha`); a newer version still waiting for its own backup (quick successive edits) is simply committed by its own message, in order. If putting it back fails, the retried message still does it. If the tiddler was deleted in the meantime, the late version is committed and then deleted again.
 5. **For a delete,** the file is removed if present. If the tiddler has been recreated since, the delete is skipped, because the recreation's own message updates GitHub.
 6. **On any GitHub error** (rate limit, outage, bad token, conflict, a path GitHub refuses), the failing message is sent to the queue again as a fresh message, with a delay. On a rate limit, every later message in the batch waits with it, in order. On any other error only that tiddler's later versions do, so they stay in order, while other tiddlers' backups go ahead: a file GitHub keeps refusing can't hold up the rest. The delay starts at `BACKUP_RETRY_SECONDS` (60), doubles each time up to 6 hours, and honours GitHub's `retry-after` / `x-ratelimit-reset` when given. Re-sending, instead of using the queue's own retry, means neither the queue's retry limit nor its message lifetime (24 hours on the free plan) can drop a backup: a failure only delays it. Only if re-sending itself fails does the worker fall back to the queue's own retry, where the retry limit applies.
 
@@ -669,7 +669,6 @@ If the page is rebuilt before step 4 (by a deploy, or by saving another plugin, 
 - **Free-plan quotas** (October 2026, see 10): 100,000 worker requests a day; 10,000 queue operations a day, about 3 per backup or retry, so roughly 3,300 saves a day; 10 ms of CPU per request, with some flexibility for occasional overruns. Each save reads and rewrites the whole tiddler list, about 1 ms of CPU per 400–500 tiddlers, which is now the largest cost of a save. At several thousand tiddlers, saves could start hitting that limit. Saving a plugin also rebuilds the page, from the list the save has just written.
 - **A tab closed right after a failed list update.** The worker stores a tiddler, then updates the tiddler list. If that update fails, the browser's retry completes it (4.4), but if the tab is closed first, the tiddler stays out of the list until the list is rebuilt (7).
 - **Waiting backup copies are public.** Versions over 100,000 bytes wait in `_backup/versions/` until committed, which is usually seconds, and that path is public like the rest of the bucket.
-- **Files over 1 MB on GitHub:** they're backed up like any other, but the "newer version restored" step (4.7) can't run for them.
 - **Retries cost queue operations.** If the GitHub token stays broken, backups keep retrying (at most every 6 hours each), each retry using a few queue operations, until it's fixed.
 
 ---
@@ -738,6 +737,7 @@ Backups don't appear here: with the queue bound, as deployed, they run later in 
 - non-ASCII text;
 - a duplicate delivery;
 - a file GitHub keeps refusing: the backups after it go through, it keeps being retried, and goes through once accepted;
+- GitHub's copy not decoded (only its `sha` used), and a late version whose "newer version restored" step fails, put back by the retry;
 - the fallback without a queue.
 
 `test:tabs` covers:

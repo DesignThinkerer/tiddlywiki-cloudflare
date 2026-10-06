@@ -12,7 +12,7 @@ const blobSha = buf => sha1(Buffer.concat([Buffer.from(`blob ${buf.length}\0`), 
 const files = new Map();      // decoded path -> { sha, text }
 const commits = [];           // { message, path, text|null }
 let inFlight = 0, maxInFlight = 0, latencyMs = 50;
-const faults = { rateLimitPuts: 0, outage: false, failOnce: new Set(), refuse: new Set() };
+const faults = { rateLimitPuts: 0, outage: false, failOnce: new Set(), refuse: new Set(), failPutOnceOfText: new Map(), garbleContent: new Set() };
 const ghCalls = [];
 const json = (obj, status = 200, headers = {}) => new Response(JSON.stringify(obj), { status, headers: { "Content-Type": "application/json", ...headers } });
 
@@ -28,6 +28,10 @@ async function fakeGitHub(req) {
   if (req.method !== "GET") {
     const key = `${req.method} ${path}`;
     if (faults.refuse.has(path)) return json({ message: "This path isn't allowed" }, 422);
+    if (req.method === "PUT" && faults.failPutOnceOfText.get(path) === JSON.parse(Buffer.from(body.content, "base64").toString("utf8")).text) {
+      faults.failPutOnceOfText.delete(path);
+      return json({ message: "Server Error" }, 500);
+    }
     if (faults.failOnce.has(key)) { faults.failOnce.delete(key); return json({ message: "Server Error" }, 500); }
     if (faults.rateLimitPuts > 0) { faults.rateLimitPuts--; return json({ message: "You have exceeded a secondary rate limit" }, 403, { "retry-after": "1" }); }
     inFlight++; maxInFlight = Math.max(maxInFlight, inFlight);
@@ -42,6 +46,8 @@ async function fakeGitHub(req) {
     if (big && !/application\/vnd\.github\.(object|raw)/.test(req.headers.get("accept") || "")) {
       return json({ message: "This API returns blobs up to 1 MB in size.", errors: [{ resource: "Blob", field: "data", code: "too_large" }] }, 403);
     }
+    // (garbleContent: content that isn't base64 at all, to show the worker doesn't decode it)
+    if (faults.garbleContent.has(path)) return json({ sha: file.sha, encoding: "base64", content: "%%% not base64 %%%" });
     return json({ sha: file.sha, encoding: big ? "none" : "base64", content: big ? "" : Buffer.from(file.text).toString("base64").replace(/(.{60})/g, "$1\n") });
   }
   if (req.method === "PUT") {
@@ -200,6 +206,28 @@ const producer = await mf.getQueueProducer("BACKUP_QUEUE");
 await producer.send({ action: "save", title: "Imported 5", revision: obj.customMetadata.revision, content: await obj.text(), time: Date.now(), tries: 0 });
 await new Promise(r => setTimeout(r, 2000));
 check("duplicate delivery: no extra commit", commits.length === before, `${commits.length - before} extra`);
+
+// 14. GitHub's copy isn't decoded (that cost about 16 ms of CPU for a 254 KB plugin): only its sha is
+// used, so a copy the worker couldn't decode doesn't matter
+await put("Plain", "p1");
+await until(async () => textOf(repoText("Plain")) === "p1");
+faults.garbleContent.add("tiddlers/Plain.json");
+await put("Plain", "p2");
+check("a backup doesn't decode GitHub's copy of the file, only uses its sha", await until(async () => textOf(repoText("Plain")) === "p2", 15000), textOf(repoText("Plain")));
+faults.garbleContent.clear();
+
+// 15. A late version whose "newer version restored" step fails: the retry still puts the newer one back
+faults.failOnce.add("PUT tiddlers/Late.json");
+await put("Late", "v1");
+await new Promise(r => setTimeout(r, 400));     // v1 has failed and is waiting
+await put("Late", "v2");
+await until(async () => textOf(repoText("Late")) === "v2");
+faults.failPutOnceOfText.set("tiddlers/Late.json", "v2");   // putting v2 back after v1's late commit fails once
+const lateDone = await until(async () => commits.filter(c => c.path === "tiddlers/Late.json").some(c => textOf(c.text) === "v1") &&
+  textOf(repoText("Late")) === "v2" && !faults.failPutOnceOfText.has("tiddlers/Late.json"), 30000);
+await new Promise(r => setTimeout(r, 2000));
+const late = commits.filter(c => c.path === "tiddlers/Late.json").map(c => textOf(c.text));
+check("a late version whose restore of the newer one failed: GitHub still ends on the newer one", lateDone && textOf(repoText("Late")) === "v2", JSON.stringify(late));
 
 // 13. A file GitHub refuses for good doesn't hold up the backups after it: it keeps being retried on
 // its own (nothing is dropped) while the others go through. (A slow commit first keeps the consumer
