@@ -97,7 +97,21 @@ Everything below can be done in the Cloudflare dashboard. `wrangler.example.toml
 
 1. **Create a bucket** and upload:
    - **`index.html`:** a TiddlyWiki file that includes the TiddlyWeb plugin (`$:/plugins/tiddlywiki/tiddlyweb`). This is the wiki "engine"; your content lives in the tiddler files.
-   - **`recipes/default/tiddlers.json`** containing `[]`, if you're starting from scratch. The worker maintains it afterwards.
+   - **`status`**, with this content. It's the TiddlyWeb status for the public site, which serves R2 directly: without it, public tabs don't know the recipe and can't load the tiddler list. (The admin site gets its own from the worker.)
+
+     ```json
+     {
+       "username": "GUEST",
+       "read_only": true,
+       "anonymous": true,
+       "logout_is_available": false,
+       "space": {
+         "recipe": "default"
+       }
+     }
+     ```
+
+   The tiddler list (`recipes/default/tiddlers.json`) isn't needed: if it's missing, the worker creates it from the stored tiddlers, an empty list for a new wiki (4.2).
 2. **Turn on public access:**
    - **Custom Domains:** connect `my-tiddlywiki.theophile.dev`.
    - **Public Development URL (`r2.dev`):** keep it disabled. It's a second public address that skips the zone's cache and rules.
@@ -219,6 +233,7 @@ R2 layout:
 | Key | Content |
 |---|---|
 | `index.html` | The wiki engine you uploaded. |
+| `status` | The public site's TiddlyWeb status, uploaded once (3.1). |
 | `baked.html` | Generated: `index.html` plus the tiddlers needed at startup (4.3). |
 | `recipes/default/tiddlers.json` | The "skinny" tiddler list: title, tags, type, dates, custom fields and revision for every tiddler, but no text. If it's ever missing or damaged, the worker rebuilds it from the stored tiddlers (below). |
 | `recipes/default/tiddlers/<title>` | One tiddler as JSON, in one of two layouts (below). The key uses the raw title, though older objects may sit under the URL-encoded title, and both are looked up. |
