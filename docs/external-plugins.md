@@ -512,7 +512,7 @@ async function finishSave(env, ctx, title, fields, revision, list, adminOrigin) 
   // Something the page needs at boot was added, changed or is no longer needed: rebuild the
   // page (which writes the plugin file) before confirming, so a reload right after has it
   if (isPageTiddler(saved) || (previous && isPageTiddler(previous))) {
-    await rebakeHtml(env, ctx, stored);
+    await rebuildPage(env, ctx, stored);
   }
 }
 ```
@@ -554,7 +554,7 @@ await untilDone(ctx, (async () => {
     await env.WIKI_BUCKET.delete(pluginFileKey(title));
   }
   if (removed ? isPageTiddler(removed) : found && title.startsWith("$:/")) {
-    await rebakeHtml(env, ctx, stored);
+    await rebuildPage(env, ctx, stored);
   }
 })());
 ```
@@ -996,7 +996,7 @@ If the page is rebuilt before step 4, by a deploy or by saving another plugin, a
 
 | Symptom | Likely cause | What to do |
 |---|---|---|
-| A plugin is still inactive after the reload | You reloaded before the save finished, or the build failed | Reload once the save has finished. If the worker logs show `Failed to rebake HTML`, delete `baked.html` in R2 and open the admin wiki: the page is rebuilt. |
+| A plugin is still inactive after the reload | You reloaded before the save finished, or the build failed | Reload once the save has finished. A failed build marks the page outdated, so the next page load builds it again (README 4.3). |
 | The wiki doesn't start after installing a plugin | The plugin breaks at boot | The steps above. |
 | A failed `_plugins/…` request in the console | The file is missing from R2 | Delete `baked.html` in R2 and open the admin wiki: the build rewrites missing files. |
 
