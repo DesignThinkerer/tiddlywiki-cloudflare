@@ -959,7 +959,8 @@ async function publishShell(request, env, ctx, corsHeaders) {
     return refusal("The shell has no tiddler store.", corsHeaders);
   }
   if (!/"title":"\$:\/plugins\/tiddlywiki\/tiddlyweb"/.test(text)) {
-    return refusal("The shell doesn't contain the TiddlyWeb plugin: the page couldn't sync.", corsHeaders);
+    // Usually TiddlyWeb installed or updated from the wiki: the publisher then leaves it to its file
+    return refusal("The page doesn't contain the TiddlyWeb plugin, so it couldn't sync. If TiddlyWeb was installed or updated from the wiki, delete it there and reload to go back to the one in index.html, or upload an index.html with that version.", corsHeaders);
   }
   if (!text.includes(EXTERNAL_SCRIPTS_MARKER)) return refusal("The shell has no place for the external scripts (TiddlyWiki's marker).", corsHeaders);
   const version = core?.customMetadata?.v;

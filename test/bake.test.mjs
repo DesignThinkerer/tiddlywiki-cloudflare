@@ -161,8 +161,8 @@ for (const [what, body, v] of [
 }
 
 // The shell: refused unless it's a page that works
-for (const [what, body, options, status] of [
-  ["no TiddlyWeb plugin in its tiddlers", fakeShell({ tiddlyweb: false }), {}, 400],
+for (const [what, body, options, status, says] of [
+  ["no TiddlyWeb plugin in its tiddlers, saying what to do", fakeShell({ tiddlyweb: false }), {}, 400, /delete it there and reload.*index\.html/s],
   ["no tiddler store", fakeShell({ store: false }), {}, 400],
   ["no place for the external scripts", fakeShell({ external: false }), {}, 400],
   ["a core file version that isn't stored", fakeShell({ v: "5.9.9-1" }), {}, 400],
@@ -172,7 +172,7 @@ for (const [what, body, options, status] of [
 ]) {
   res = await putShell(body, options);
   const text = await res.text();
-  check(`shell refused (${status}): ${what}`, res.status === status && text.length > 0 && !(await bucket.head("_page/shell.html")), `${res.status} ${text}`);
+  check(`shell refused (${status}): ${what}`, res.status === status && text.length > 0 && (!says || says.test(text)) && !(await bucket.head("_page/shell.html")), `${res.status} ${text}`);
 }
 
 // Accepted: kept, and the page built from it
