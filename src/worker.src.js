@@ -577,32 +577,41 @@ async function purgePublicCache(env, urls) {
 async function serveManifest(request, env, ctx, corsHeaders) {
   // Our ETag is "<R2 etag>-patched"; Cloudflare's compression may hand it back weakened as W/"..."
   const known = parseEtagList(request.headers.get("If-None-Match")).find(token => token.endsWith("-patched"));
-  let object = await env.WIKI_BUCKET.get(MANIFEST_KEY,
-    known ? { onlyIf: { etagDoesNotMatch: known.slice(0, -"-patched".length) } } : undefined);
+  // The admin wiki asks how backups go with this request (README 4.7): read at the same time
+  const [listObject, backups] = await Promise.all([
+    env.WIKI_BUCKET.get(MANIFEST_KEY, known ? { onlyIf: { etagDoesNotMatch: known.slice(0, -"-patched".length) } } : undefined),
+    request.headers.get("X-Backup-Status") === "ask" ? readBackupStatus(env) : null
+  ]);
+  let object = listObject;
+  const listHeaders = obj => {
+    const headers = listResponseHeaders(obj, corsHeaders);
+    if (backups) headers.set("X-Backup-Status", backupReport(env, backups));
+    return headers;
+  };
   // A conditional get that fails its precondition returns the object without a body
-  if (object && !("body" in object)) return new Response(null, { status: 304, headers: listHeaders(object, corsHeaders) });
+  if (object && !("body" in object)) return new Response(null, { status: 304, headers: listHeaders(object) });
 
   let text = object ? await object.text() : null;
   let manifest = text === null ? null : parseList(text);
   // Every entry the worker writes has its bag and recipe: then the list is served as stored, not
   // written out again (which costs about as much CPU as reading it)
-  if (manifest && manifest.every(t => t.bag && t.recipe)) return new Response(text, { headers: listHeaders(object, corsHeaders) });
+  if (manifest && manifest.every(t => t.bag && t.recipe)) return new Response(text, { headers: listHeaders(object) });
   if (!manifest) {
     // Missing or damaged: rebuilt from the stored tiddlers. (Answering [] would make every open tab
     // remove all its tiddlers as "missing from the server".)
     const rebuilt = await untilDone(ctx, rebuildList(env, ctx, { object, text }));
     // Just rebuilt: served as written (every entry already has its bag and recipe)
-    if (rebuilt?.fresh) return new Response(rebuilt.text, { headers: listHeaders(rebuilt.object, corsHeaders) });
+    if (rebuilt?.fresh) return new Response(rebuilt.text, { headers: listHeaders(rebuilt.object) });
     manifest = rebuilt?.entries;
     if (!manifest) return rebuildingResponse(corsHeaders);
     object = rebuilt.object;
   }
   // Written by hand, say
   manifest = manifest.map(t => ({ ...t, bag: t.bag || "default", recipe: t.recipe || "default" }));
-  return new Response(JSON.stringify(manifest), { headers: listHeaders(object, corsHeaders) });
+  return new Response(JSON.stringify(manifest), { headers: listHeaders(object) });
 }
 
-function listHeaders(object, corsHeaders) {
+function listResponseHeaders(object, corsHeaders) {
   const headers = objectHeaders(object, corsHeaders);
   headers.set("Cache-Control", "no-cache");
   headers.set("ETag", `"${object.etag}-patched"`);
@@ -1437,12 +1446,88 @@ async function queueBackup(env, job) {
   const direct = { ...message, content: job.content && decoder.decode(job.content), contentKey: undefined };
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
-      return await backupJob(env, direct);
+      await backupJob(env, direct);
+      return await recordBackupResults(env, [], [job.title]);
     } catch (e) {
-      if (attempt === 3) console.error(`[Backup] '${job.title}' could not be backed up:`, e.message);
-      else await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
+      if (attempt < 3) {
+        await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
+        continue;
+      }
+      console.error(`[Backup] '${job.title}' could not be backed up:`, e.message);
+      await recordBackupResults(env, [backupFailure(direct, e)], []);
     }
   }
+}
+
+// --- How backups go, for the admin wiki ----------------------------------------------------------
+// Backups GitHub keeps refusing (not a rate limit: that only delays them) are recorded in
+// _backup/status.json, one entry per tiddler: since (when its oldest waiting version was saved),
+// last (its latest attempt), error (GitHub's answer) and status (its HTTP status, 0 without one).
+// The entry goes when that tiddler's backup gets through. Written only when something changes, read
+// only by a batch with a failure or a version that failed before. The admin wiki asks with its
+// tiddler list request (X-Backup-Status: ask) when it loads, then hourly, and shows an alert.
+
+const BACKUP_STATUS_KEY = "_backup/status.json";
+// An entry not retried for a day belongs to a backup no longer waiting (one still waiting is retried
+// at least every 6 hours: BACKUP_MAX_DELAY), and is dropped
+const BACKUP_STATUS_STALE = 24 * 3600 * 1000;
+
+function backupFailure(job, e) {
+  return { title: job.title, since: job.time || Date.now(), error: String(e.detail || e.message || e).slice(0, 200), status: e.status || 0 };
+}
+
+// title -> entry
+async function readBackupStatus(env) {
+  try {
+    const obj = await env.WIKI_BUCKET.get(BACKUP_STATUS_KEY);
+    const failing = obj ? (await obj.json()).failing : null;
+    return new Map(failing && typeof failing === "object" ? Object.entries(failing) : []);
+  } catch {
+    return new Map();
+  }
+}
+
+// failures: from backupFailure; cleared: titles whose backup got through. Never throws: an R2 error
+// here mustn't count as a failed backup
+async function recordBackupResults(env, failures, cleared) {
+  try {
+    await updateBackupStatus(env, failures, cleared);
+  } catch (e) {
+    console.error("[Backup] Could not record how backups go:", e.message);
+  }
+}
+
+async function updateBackupStatus(env, failures, cleared) {
+  const failing = await readBackupStatus(env), now = Date.now();
+  let changed = false;
+  for (const title of cleared) changed = failing.delete(title) || changed;
+  for (const { title, since, error, status } of failures) {
+    const entry = failing.get(title);
+    failing.set(title, { since: entry ? Math.min(entry.since, since) : since, last: now, error, status });
+    changed = true;
+  }
+  for (const [title, entry] of failing) {
+    // (Also an entry that isn't one: no time to go by)
+    if (!(now - entry.last <= BACKUP_STATUS_STALE)) changed = failing.delete(title) || changed;
+  }
+  if (!changed) return;
+  if (failing.size) {
+    await env.WIKI_BUCKET.put(BACKUP_STATUS_KEY, JSON.stringify({ failing: Object.fromEntries(failing) }), { httpMetadata: { contentType: "application/json" } });
+  } else {
+    await env.WIKI_BUCKET.delete(BACKUP_STATUS_KEY);
+  }
+}
+
+// What the admin wiki is told: "ok", or the backups failing for at least BACKUP_ALERT_MINUTES (60
+// by default), as encoded JSON: { count, title, since, error, status } of the oldest
+function backupReport(env, failing) {
+  const minutes = parseFloat(env.BACKUP_ALERT_MINUTES);
+  const after = (minutes >= 0 ? minutes : 60) * 60000;
+  const now = Date.now();
+  const due = [...failing].filter(([, e]) => now - e.last <= BACKUP_STATUS_STALE && now - e.since >= after).sort((a, b) => a[1].since - b[1].since);
+  if (!due.length) return "ok";
+  const [title, e] = due[0];
+  return encodeURIComponent(JSON.stringify({ count: due.length, title: title.slice(0, 200), since: e.since, error: e.error, status: e.status }));
 }
 
 // Queue consumer
@@ -1450,6 +1535,7 @@ async function processBackupBatch(batch, env) {
   const messages = [...batch.messages].sort((a, b) =>
     (a.body.time - b.body.time) || String(a.body.revision).localeCompare(String(b.body.revision)));
   const held = new Map();   // title -> delay: a version of it failed, its later versions wait with it
+  const failures = [], cleared = [];   // for the backup status (backupFailure)
   let attempts = 0;
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i];
@@ -1466,22 +1552,27 @@ async function processBackupBatch(batch, env) {
       await backupJob(env, msg.body);
       msg.ack();
       if (msg.body.contentKey) await env.WIKI_BUCKET.delete(msg.body.contentKey);
+      // Only a version that failed before can clear a recorded failure
+      if (msg.body.tries > 0) cleared.push(msg.body.title);
     } catch (e) {
       const delay = backupRetryDelay(env, msg.body.tries, e.retryAfter);
       console.error(`[Backup] '${msg.body.title}' not backed up yet (${e.message}); retrying in ${delay}s`);
       await requeueBackup(env, msg, delay, true);
       if (isRateLimit(e)) {
-        // GitHub asks to slow down: everything left waits and retries with it, in order
+        // GitHub asks to slow down: everything left waits and retries with it, in order. (Not a
+        // failure to report: a big import waits like this for hours.)
         for (let j = i + 1; j < messages.length; j++) {
           await requeueBackup(env, messages[j], delay, false);
         }
-        return;
+        break;
       }
       // Anything else may concern this file only (GitHub refusing its path, say): its later
       // versions wait with it, so they stay in order, and other tiddlers' backups go ahead
       held.set(msg.body.title, delay);
+      failures.push(backupFailure(msg.body, e));
     }
   }
+  if (failures.length || cleared.length) await recordBackupResults(env, failures, cleared);
 }
 
 // GitHub asking to slow down: Retry-After or an exhausted rate limit, 429, or its "rate limit"
@@ -1580,11 +1671,13 @@ async function gitBlobSha(text) {
 // A failed GitHub call; retryAfter (seconds) is set when GitHub says how long to wait, status is
 // GitHub's HTTP status
 class GitHubError extends Error {
-  constructor(message, retryAfter, status) {
+  // detail: GitHub's own message ("Bad credentials"), when its answer has one
+  constructor(message, retryAfter, status, detail = "") {
     super(message);
     this.name = "GitHubError";
     this.retryAfter = retryAfter;
     this.status = status;
+    this.detail = detail;
   }
 }
 
@@ -1616,7 +1709,12 @@ function githubContents(env) {
       const reset = parseInt(res.headers.get("x-ratelimit-reset"), 10);
       if (retryAfter > 0) waitSeconds = retryAfter;
       else if (res.headers.get("x-ratelimit-remaining") === "0" && reset) waitSeconds = Math.max(reset - Date.now() / 1000, 1);
-      throw new GitHubError(`GitHub ${method} ${res.status}: ${(await res.text()).slice(0, 200)}`, waitSeconds, res.status);
+      const answer = await res.text();
+      let detail = "";
+      try {
+        detail = String(JSON.parse(answer).message || "");
+      } catch {}
+      throw new GitHubError(`GitHub ${method} ${res.status}: ${answer.slice(0, 200)}`, waitSeconds, res.status, detail);
     }
     return res.json();
   }

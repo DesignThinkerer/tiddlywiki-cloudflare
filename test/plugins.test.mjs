@@ -374,6 +374,7 @@ const rebuildList = async () => {
 };
 const tabErrors = pageErrors.length;
 const tabListGets = () => requests.filter(r => r.tag === "public tab" && r.path.startsWith("/recipes/default/tiddlers.json")).length;
+check("a public tab never asks how backups go (only the admin site does)", !requests.some(r => r.tag === "public tab" && r.headers["x-backup-status"]));
 const listGetsBefore = tabListGets();
 await bucket.delete("recipes/default/tiddlers.json");
 await mf.dispatchFetch(BASE + "/recipes/default/tiddlers.json");   // an admin request: the first step

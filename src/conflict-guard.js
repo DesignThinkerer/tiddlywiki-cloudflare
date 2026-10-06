@@ -18,6 +18,9 @@ It also keeps worker requests down:
 - Drafts and $:/StoryList, which the worker never stores, are not sent to it, and the "put" saver
   no longer probes the page URL on every load.
 - Background tabs stop polling for changes and catch up as soon as they are shown again.
+
+On the admin site it also asks how backups to GitHub go, with the tiddler list request (when the
+page loads, then hourly), and shows an alert while they keep failing.
 - While the worker rebuilds a damaged or missing tiddler list, requests it answers "rebuilding"
   are sent again quietly, and a list that can't be read is a sync error: TiddlyWiki would
   otherwise remove every tiddler it doesn't find in it, or stop with an "Internal JavaScript Error".
@@ -494,6 +497,54 @@ exports.startup = function() {
 
 	// Remember which revision the worker currently lists for each tiddler, fetch the list again while
 	// it's being rebuilt (isRebuilding, isListStandIn), and never pass on a list that isn't one
+	// How backups to GitHub go: asked with the tiddler list request on the admin site (the worker reads
+	// it only then), when the page loads, then hourly, and at each request while the alert shows
+	var BACKUP_ALERT = "$:/temp/cfworker/backup-alert",
+		BACKUP_CHECK_INTERVAL = 60 * 60 * 1000,
+		backupAsked = 0,          // when the worker last answered
+		backupProblem = null;     // the problem the alert was about, so a dismissed one stays dismissed
+
+	function askBackupStatus(adaptor) {
+		return !!publicBase && siteOf(adaptor.host) !== siteOf(publicBase) &&
+			(!backupAsked || wiki.tiddlerExists(BACKUP_ALERT) || Date.now() - backupAsked >= BACKUP_CHECK_INTERVAL);
+	}
+
+	// answer: "ok", or the oldest failing backup as encoded JSON {count, title, since, error, status}
+	function showBackupStatus(answer) {
+		if(answer === "ok") {
+			backupProblem = null;
+			if(wiki.tiddlerExists(BACKUP_ALERT)) {
+				wiki.deleteTiddler(BACKUP_ALERT);
+			}
+			return;
+		}
+		var problem;
+		try {
+			problem = JSON.parse(decodeURIComponent(answer));
+		} catch(e) {
+			return;
+		}
+		var key = problem.since + " " + problem.error;
+		if(key === backupProblem && !wiki.tiddlerExists(BACKUP_ALERT)) {
+			return;
+		}
+		backupProblem = key;
+		var hint = problem.status === 401 ? "The token in the worker's GITHUB_TOKEN secret is wrong or has expired: make a new one and put it in the secret." :
+			problem.status === 403 || problem.status === 404 ? "The token may not be allowed to write to the repository in GITHUB_REPO, or the repository or its branch doesn't exist." :
+			problem.status === 409 || problem.status === 422 ? "GitHub refuses that file." :
+			"GitHub, or the way to it, may be down.";
+		wiki.addTiddler(new $tw.Tiddler({
+			title: BACKUP_ALERT,
+			tags: ["$:/tags/Alert"],
+			component: "GitHub backup",
+			modified: new Date(),
+			text: "Backups to GitHub have been failing since " + $tw.utils.formatDateString(new Date(problem.since),"DDth MMM YYYY 0hh:0mm") + ": " +
+				(problem.count > 1 ? problem.count + " tiddlers, " + link(problem.title) + " the oldest, aren't" : link(problem.title) + " isn't") +
+				" backed up yet. GitHub answered: ``" + String(problem.error).replace(/`/g,"'") + "``. " + hint +
+				" They're retried by themselves, and the wiki keeps everything meanwhile."
+		}));
+	}
+
 	proto.getSkinnyTiddlers = function(callback) {
 		var self = this,
 			tries = 0;
@@ -505,14 +556,23 @@ exports.startup = function() {
 				delivered = false,
 				unreadable = false,
 				bypassed = listBypassCache,
+				asking = askBackupStatus(self),
 				httpRequest = $tw.utils.httpRequest;
 			$tw.utils.httpRequest = function(options) {
 				var done = options.callback;
 				if(listBypassCache) {
 					options.data = $tw.utils.extend({},options.data,{"cfworker-retry": String(Date.now())});
 				}
+				if(asking) {
+					options.headers = $tw.utils.extend({},options.headers,{"X-Backup-Status": "ask"});
+				}
 				options.callback = function(err,data,xhr) {
 					request = xhr;
+					var answer = asking && xhr && xhr.getResponseHeader ? xhr.getResponseHeader("X-Backup-Status") : null;
+					if(answer) {
+						backupAsked = Date.now();
+						showBackupStatus(answer);
+					}
 					try {
 						return done.apply(this,arguments);
 					} catch(e) {
