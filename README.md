@@ -83,7 +83,7 @@ flowchart LR
     ├── make-fixture.mjs      builds a test TiddlyWiki (test/fixtures/index.html)
     ├── two-tabs.test.mjs     real TiddlyWiki in Chromium, several tabs (64 checks)
     ├── plugins.test.mjs      real plugins on the admin and public sites (65 checks)
-    ├── page-publish.test.mjs the page published from a real TiddlyWiki (30 checks)
+    ├── page-publish.test.mjs the page published from a real TiddlyWiki (38 checks)
     ├── queue-backup.test.mjs queue backup against an imitation of GitHub (17 checks)
     ├── integrity.test.mjs    the tiddler list's integrity, draft-like titles, .gitignore (47 checks)
     ├── r2-ops.test.mjs       R2 calls per kind of request, against a budget (25 checks)
@@ -449,7 +449,7 @@ For a tiddler with a field called `fields`, stored nested (4.2), the file has on
 When TiddlyWiki saves a single-file wiki, it writes the whole page from a template: the `<title>`, the language, the `$:/tags/RawMarkup…` tiddlers (TiddlyWiki 5.4's own Open Graph tags for link previews among them, from `$:/SiteTitle`, `$:/SiteSubtitle`, `$:/SiteUrl` and `$:/SitePreviewUrl`; a splash screen; web fonts...), the content for browsers without JavaScript. Here nothing saves the file. So the admin wiki renders the page itself, with the same template, and publishes it; the page publisher module does it by itself.
 
 **What it renders.** TiddlyWiki's own `$:/core/templates/tiddlywiki5-external-js.html`, the page of its "external core" edition: everything but the core, which is loaded at the end from a separate file. The template only gets two inputs:
-- `saveTiddlerFilter`, the tiddlers in the page: the plugins that came with the page (plugin tiddlers the worker doesn't list: the themes and TiddlyWeb from `index.html`; never `$:/core`, `$:/temp/…` or a pending import), and the tiddlers tagged `$:/tags/RawMarkup…` (without drafts). Plugins installed from the wiki stay files (4.8), and content stays synced.
+- `saveTiddlerFilter`, the tiddlers in the page: the plugins that came with the page (plugin tiddlers the worker doesn't list: the themes and TiddlyWeb from `index.html`; never `$:/core`, `$:/temp/…` or a pending import), the plugins installed from the wiki that have raw markup (below), and the tiddlers tagged `$:/tags/RawMarkup…` (without drafts). Other installed plugins are only files (4.8), and content stays synced.
 - `coreURL`, the core file on the public site.
 
 One thing differs from TiddlyWiki's own save: the TiddlyWeb plugin writes each tiddler's `revision` in the page as its *changecount*, a count of changes made in that tab, which differs from tab to tab. Here it's the tiddler's revision, the worker's, so the same wiki gives the same page in every tab, and a page load doesn't take the copies in the page for changed tiddlers. (A tiddler the tab has just saved still carries its old revision, TiddlyWiki only records the new one in the syncer: it's loaded again before rendering.)
@@ -469,6 +469,10 @@ One thing differs from TiddlyWiki's own save: the TiddlyWeb plugin writes each t
 - **A failure** (refused, or the worker unreachable) is shown in a notification, and tried again at the next save or load.
 
 The page is rendered afresh at each check, then compared with the published one by a fingerprint. It isn't kept rendered and refreshed: raw markup is wikified apart from TiddlyWiki's widget tree, so the refresh mechanism wouldn't see a change to a tiddler it transcludes (`$:/SiteTitle` in the Open Graph tags).
+
+**Plugins with raw markup.** The template only renders the raw markup of plugins that are in the page: a plugin that loads a library from `<head>`, adds meta tags or a splash screen needs to be there. So an installed plugin with a tiddler tagged `$:/tags/RawMarkup…` is also written into the page, as TiddlyWiki would, and its markup rendered. Its file stays: TiddlyWiki reads the page's tiddlers first and the files after, so the file's copy, the same plugin, replaces the page's. The page grows by the size of those plugins only.
+- A plugin without JavaScript is published a moment after it's installed, updated or deleted, like any change to the page.
+- A plugin with JavaScript (TiddlyWiki asks for a reload) only starts after a reload, and the template can only render its markup then: it's published at the next admin load. After an update, the page gets the new plugin at once and its new markup at that load.
 
 **Raw markup is written the way TiddlyWiki documents it:** `$:/tags/RawMarkup` tiddlers are copied as they are; the wikified tags render their text as wikitext, so HTML in them needs `\rules only filteredtranscludeinline transcludeinline` on the first line (transclusions are filled in, the HTML kept).
 
@@ -633,7 +637,7 @@ If the page is rebuilt before step 4 (by a deploy, or by saving another plugin, 
 | Alert "Edit conflict: … was changed in another tab or browser" | Another tab, device or script saved that tiddler after you started editing | Compare the tiddler with its `(conflict …)` copy, keep what you want and delete the copy. |
 | Console shows "blocked by CORS policy" for `my-tiddlywiki…` | The transform rule is missing or scoped wrong | Add or fix it (3.5). Until then, tiddlers simply load through the worker. |
 | The public site shows an old version | Browser TTL, or a failed purge | Check the cache rule's Browser TTL; look for `Cache purge failed` in the logs; purge manually. |
-| Link previews or the tab show "My TiddlyWiki", or a raw markup tiddler has no effect | The page hasn't been published since the change (4.9) | Open the admin wiki: it publishes once loaded. A notification says if it can't. |
+| Link previews or the tab show "My TiddlyWiki", or raw markup (yours or a plugin's) has no effect | The page hasn't been published since the change (4.9); for a plugin with JavaScript, the admin wiki hasn't been reloaded since installing it | Open or reload the admin wiki: it publishes once loaded. A notification says if it can't. |
 | "Page not published: …" notification | The worker refused the page, or couldn't be reached | The message says why. It's tried again at the next save or load; "index.html has changed" means reload the admin wiki. |
 | Console shows a failed `_plugins/tiddlywikicore.js` request | The core file is missing from R2 | Delete `_page/shell.html` and `baked.html` in R2 and open the admin wiki: it publishes both again. |
 | The admin page downloads in full at every load | Neither `ETag` nor `Last-Modified` reaches the browser (look at the page's response headers), or "Disable cache" is ticked in DevTools | Without `Last-Modified`: check that the deployed worker is current (its pages carry it since `bakeVersion` 5). Cloudflare removing the `ETag` alone is expected (4.3). |
@@ -653,7 +657,7 @@ If the page is rebuilt before step 4 (by a deploy, or by saving another plugin, 
 - **A plugin that breaks at boot breaks both sites** until you remove it (6).
 - **A damaged or missing list is rebuilt only while the admin wiki is open** (4.2): the worker's requests do the work, and public visitors don't use the worker. Until then the public site keeps what its cache holds; a visitor who gets the damaged list or the stand-in sees no tiddlers until it's done.
 - **A rebuild step's CPU** stays around a normal save's, but a single stored tiddler with several megabytes in fields other than its text (rare: plugins keep their content in the text) is read in one step, and could take that step over the limit each time.
-- **Raw markup inside installed plugins doesn't render.** Those plugins load as files (4.8), so the page template doesn't see them. Raw markup in your own tiddlers, in `index.html`'s plugins and in the core does.
+- **An installed plugin's raw markup reaches the page after a reload if the plugin has JavaScript** (4.9): TiddlyWiki only starts such a plugin then. And plugins with raw markup are in the page as well as in their file, so a big one makes the page bigger (the worker refuses a page over 2 MB).
 - **Both sites depend on the core file on the public site,** as they already do on plugin files. If it can't be loaded, the wiki doesn't start (TiddlyWiki shows an alert).
 - **The page follows the admin wiki.** A change made elsewhere (a tiddler edited in R2) reaches the page at the next admin page load. Raw markup that depends on being logged in is rendered as the admin sees it.
 - **Conflict copies are merged by hand.** That's by design: you get both versions and decide.
@@ -749,7 +753,7 @@ Backups don't appear here: with the queue bound, as deployed, they run later in 
 
 `test:publish` starts from the full test wiki as `index.html` and covers:
 - **The first admin load** publishing the core file (TiddlyWiki's, without the snapshot setting) and the shell (TiddlyWiki's external-core page, a fraction of the size), `index.html` untouched; the next load getting the light page with the core from the public site, at 2 worker requests, publishing nothing.
-- **A plugin installed from the wiki** staying a file, loaded before the core; **the title and raw markup** published once per burst, each where TiddlyWiki puts it, the Open Graph tags with your title, the copies in the page with the worker's revisions; **the public site** running from the page, splash screen removed once started.
+- **A plugin installed from the wiki** staying a file, loaded before the core; **one with raw markup** also written into the page with its markup, published once when it's installed, updated or deleted (one with JavaScript at the next load, then running its markup first), nothing published at a reload; **the title and raw markup** published once per burst, each where TiddlyWiki puts it, the Open Graph tags with your title, the copies in the page with the worker's revisions; **the public site** running from the page, splash screen removed once started.
 - **Nothing published** for a save that doesn't change the page (not even a list request) or typing in a draft; **another tab** not publishing at load or for changes it receives, and a tab publishing after another including that one's change.
 - **An edit made in R2** published at the next admin load once its slow-loading text has arrived; **a failed publish** reported and retried; **a new `index.html`** used at once, then published for (the core file not sent again); **safe mode** neither publishing nor syncing.
 

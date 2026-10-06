@@ -1,7 +1,8 @@
 // The page, published from the admin wiki: a real TiddlyWiki in Chromium renders the shell (TiddlyWiki's
 // $:/core/templates/tiddlywiki5-external-js.html) and the core file, sends them to the worker by
 // itself, and both sites then run from them. Covers the first publish, saves that change the page
-// and saves that don't, several tabs, tiddlers still loading, failures, a new index.html and safe mode.
+// and saves that don't, plugins with raw markup, several tabs, tiddlers still loading, failures, a new
+// index.html and safe mode.
 // Run: npm run test:publish   (WIKI_HTML=path/to/your/index.html to test with your own wiki file)
 import { Miniflare } from "miniflare";
 import { chromium } from "playwright";
@@ -93,6 +94,11 @@ const after = (html, name) => {
   return at < 0 ? "" : html.slice(at + MARK(name).length).trimStart();
 };
 const RAW = "\\rules only filteredtranscludeinline transcludeinline\n";
+// Whether text is in the page, after the marker named from and before the text to
+const between = (html, text, from, to) => {
+  const at = (html || "").indexOf(text), start = (html || "").indexOf(MARK(from));
+  return at >= 0 && start >= 0 && at > start && at < html.indexOf(to, start);
+};
 async function openAdmin(tag, context, hash = "") {
   const p = await context.newPage();
   watch(p, tag);
@@ -226,7 +232,96 @@ await sleep(QUIET_WINDOW);
 check("typing in a draft of a raw markup tiddler: nothing published", shellPuts("A", mark) === 0 && !(await shell()).includes("typing..."));
 await A.evaluate(() => $tw.wiki.deleteTiddler("Draft of 'Splash'"));
 
-// --- 6. Several tabs: the tab that saved publishes, with what other tabs saved before ---------------
+// --- 6. A plugin with raw markup is written into the page too, so TiddlyWiki renders its markup -------
+// (Its file is still loaded: TiddlyWiki reads the page's tiddlers first, then the files, which hold
+// the same plugin.) One without JavaScript works at once; one with JavaScript after a reload.
+const FONTS = "$:/plugins/test/fonts";
+const fonts = v => ({
+  title: FONTS, "plugin-type": "plugin", type: "application/json", version: v,
+  text: JSON.stringify({ tiddlers: {
+    [FONTS + "/head"]: { tags: "$:/tags/RawMarkup", type: "text/plain", text: `<meta name="cfw-fonts" content="${v}">` },
+    [FONTS + "/body"]: { tags: "$:/tags/RawMarkupWikified/TopBody", text: RAW + `<div class="tc-remove-when-wiki-loaded" id="cfw-fonts">fonts ${v}</div>` },
+    [FONTS + "/readme"]: { text: "A plugin that adds a meta tag and a block" }
+  } })
+});
+async function reloadAdmin(p) {
+  await p.reload();
+  await p.waitForFunction(() => window.$tw && $tw.syncer, null, { timeout: 30000 });
+  await settle(p);
+}
+mark = requests.length;
+await add(A, fonts("1.0.0"));
+await settle(A);
+await waitFor(async () => shellPuts("A", mark) > 0);
+await sleep(QUIET_WINDOW);
+html = await shell();
+check("installing a plugin that has raw markup publishes the page once, its markup where TiddlyWiki puts it",
+  shellPuts("A", mark) === 1 && between(html, '<meta name="cfw-fonts" content="1.0.0">', "Raw markup", "</head>") &&
+  between(html, '<div class="tc-remove-when-wiki-loaded" id="cfw-fonts">fonts 1.0.0</div>', "Raw markup for the top of the body section", MARK("Static styles")),
+  `${shellPuts("A", mark)} publishes`);
+let store = storeOf(html);
+check("...the plugin is in the page, with the worker's revision; a plugin without raw markup still isn't",
+  !!store.find(t => t.title === FONTS) && store.find(t => t.title === FONTS).revision === await listedRevision(FONTS) && !store.some(t => t.title === HELLO),
+  `${store.find(t => t.title === FONTS)?.revision} vs ${await listedRevision(FONTS)}`);
+mark = requests.length;
+await reloadAdmin(A);
+await sleep(QUIET_WINDOW);
+const served = await (await bucket.get("baked.html")).text();
+check("...the page served has its markup and still loads its file, and a reload publishes nothing",
+  served.includes('<meta name="cfw-fonts" content="1.0.0">') && served.includes(`${PUB}/_plugins/${encodeURIComponent(FONTS)}.js?v=`) &&
+  shellPuts("A", mark) === 0 && await A.evaluate(t => $tw.wiki.isShadowTiddler(t), FONTS + "/head"), `${shellPuts("A", mark)} publishes`);
+
+mark = requests.length;
+await add(A, fonts("2.0.0"));
+await settle(A);
+await waitFor(async () => shellPuts("A", mark) > 0);
+await sleep(QUIET_WINDOW);
+html = await shell();
+check("updating it publishes the page once, with the new markup", shellPuts("A", mark) === 1 &&
+  html.includes('<meta name="cfw-fonts" content="2.0.0">') && html.includes('id="cfw-fonts">fonts 2.0.0</div>') &&
+  !html.includes('<meta name="cfw-fonts" content="1.0.0">') && !html.includes('id="cfw-fonts">fonts 1.0.0</div>'), `${shellPuts("A", mark)} publishes`);
+
+// A plugin with JavaScript (a widget loading a library from <head>, say): TiddlyWiki only starts it
+// after a reload, and only then has its raw markup to render
+const WIDGET = "$:/plugins/test/widget";
+mark = requests.length;
+await add(A, {
+  title: WIDGET, "plugin-type": "plugin", type: "application/json", version: "1.0.0",
+  text: JSON.stringify({ tiddlers: {
+    [WIDGET + "/library"]: { tags: "$:/tags/RawMarkup", type: "text/plain", text: "<script>window.__widgetLibrary = true;</script>" },
+    [WIDGET + "/startup.js"]: { type: "application/javascript", "module-type": "startup",
+      text: "exports.name='widget-test';exports.platforms=['browser'];exports.synchronous=true;exports.startup=function(){window.__widgetRan=window.__widgetLibrary===true;};" }
+  } })
+});
+await settle(A);
+await sleep(QUIET_WINDOW);
+check("a plugin with JavaScript and raw markup: TiddlyWiki asks for a reload, nothing is published yet",
+  shellPuts("A", mark) === 0 && await A.evaluate(() => $tw.wiki.getTiddlerText("$:/status/RequireReloadDueToPluginChange") === "yes"));
+mark = requests.length;
+await reloadAdmin(A);
+await waitFor(async () => shellPuts("A", mark) > 0);
+await sleep(QUIET_WINDOW);
+html = await shell();
+check("...the next admin load publishes the page with its markup", shellPuts("A", mark) === 1 &&
+  between(html, "<script>window.__widgetLibrary = true;</script>", "Raw markup", "</head>"), `${shellPuts("A", mark)} publishes`);
+mark = requests.length;
+await reloadAdmin(A);
+await sleep(QUIET_WINDOW);
+check("...from then on its markup runs before the plugin starts, and loads publish nothing",
+  await A.evaluate(() => window.__widgetRan === true) && shellPuts("A", mark) === 0, `${shellPuts("A", mark)} publishes`);
+
+mark = requests.length;
+await A.evaluate(titles => titles.forEach(title => $tw.wiki.deleteTiddler(title)), [FONTS, WIDGET]);
+await settle(A);
+await waitFor(async () => shellPuts("A", mark) > 0);
+await sleep(QUIET_WINDOW);
+html = await shell();
+store = storeOf(html);
+check("deleting both publishes the page once, without them or their markup", shellPuts("A", mark) === 1 &&
+  !html.includes('<meta name="cfw-fonts"') && !html.includes("<script>window.__widgetLibrary") && !store.some(t => t.title === FONTS || t.title === WIDGET),
+  `${shellPuts("A", mark)} publishes`);
+
+// --- 7. Several tabs: the tab that saved publishes, with what other tabs saved before ---------------
 const contextB = await browser.newContext();
 mark = requests.length;
 const { p: B } = await openAdmin("B", contextB);
@@ -257,7 +352,7 @@ check("a tab that publishes after another includes that tab's change (it syncs f
   html.includes("subtitle from A") && html.includes("window.__footerRan = 'B'"), `B had "${bBefore}"`);
 await contextB.close();
 
-// --- 7. A tiddler whose text hasn't arrived yet is waited for ----------------------------------------
+// --- 8. A tiddler whose text hasn't arrived yet is waited for ----------------------------------------
 // Edited outside the admin wiki (in R2): the next admin load publishes it, once its text is there
 const splashKey = "recipes/default/tiddlers/Splash";
 const storedSplash = JSON.parse(await (await bucket.get(splashKey)).text());
@@ -283,7 +378,7 @@ check("an edit made outside the admin wiki is published at the next admin load, 
   shellPuts("C", mark) === 1 && after(html, "Raw markup for the top of the body section").includes("Edited outside"), `${shellPuts("C", mark)} publishes`);
 await contextC.close();
 
-// --- 8. A failed publish is reported and tried again -----------------------------------------------
+// --- 9. A failed publish is reported and tried again -----------------------------------------------
 let failNext = true;
 await A.route(url => url.pathname === "/page/shell", async route => {
   if (failNext) {
@@ -304,7 +399,7 @@ await waitFor(async () => (await shell()).includes("after a failure"));
 check("...and tried again at the next save", (await shell()).includes("after a failure") && (await status(A))?.state === "published", JSON.stringify(await status(A)));
 await A.unroute(url => url.pathname === "/page/shell");
 
-// --- 9. A new index.html: the page is built from it, then published again ----------------------------
+// --- 10. A new index.html: the page is built from it, then published again ----------------------------
 await bucket.put("index.html", ENGINE.replace("</head>", "<!-- new upload -->\n</head>"));
 const contextD = await browser.newContext();
 mark = requests.length;
@@ -317,7 +412,7 @@ check("...and that load publishes a shell for it (the stored core file reused, n
   (await bucket.head("_page/shell.html"))?.customMetadata?.index === (await bucket.head("index.html")).etag);
 await contextD.close();
 
-// --- 10. Safe mode publishes nothing --------------------------------------------------------------
+// --- 11. Safe mode publishes nothing --------------------------------------------------------------
 const contextS = await browser.newContext();
 mark = requests.length;
 const { p: S } = await openAdmin("S", contextS, "#:safe");

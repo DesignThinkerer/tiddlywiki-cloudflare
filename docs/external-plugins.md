@@ -1010,7 +1010,7 @@ If the page is rebuilt before step 4, by a deploy or by saving another plugin, a
 - **An old page loading new code:** a page cached somewhere with an old `?v=` could fetch a file that has since been overwritten, once that old URL has left Cloudflare's cache. It then simply runs the new version, which matches the tiddler list.
 - **Leftover files:** a file can outlive its plugin if two builds overlap at the moment the plugin is turned into an ordinary tiddler. Nothing loads it; delete it in R2 if you notice it.
 - **Browsers:** the file uses `??=` and `??`, like the external-plugins template, so it needs a browser from 2020 or later.
-- **`$:/tags/RawMarkup…` tiddlers inside an installed plugin** aren't in the page: the admin wiki renders the page (README 4.9) from the tiddlers that came with it and your own, and an installed plugin is a file. Raw markup in your own tiddlers works.
+- **`$:/tags/RawMarkup…` tiddlers inside an installed plugin:** the admin wiki renders the page (README 4.9) with that plugin in it as well as in its file, so its markup is there; for a plugin with JavaScript, from the first admin load after installing it.
 - **Plugin files are public,** like everything in the bucket. A deleted plugin's file is removed from R2 but not purged, so its old `?v=` URL stays reachable in Cloudflare's cache until it expires; nothing loads it.
 - **Very large plugins:** a save holds a few copies of the body in memory, well within the 128 MB a worker has, and well under the 100 MB request size limit.
 - **The tiddler list** is still read and rewritten on every save. It's now the largest CPU cost of a save: about 1 ms per 400–500 tiddlers.

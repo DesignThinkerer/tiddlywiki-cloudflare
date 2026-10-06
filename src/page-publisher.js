@@ -7,9 +7,10 @@ Publishes the page from the admin wiki (served by the Cloudflare worker), the wa
 its own file, but with the core in a separate file:
 
 - The shell: TiddlyWiki's own $:/core/templates/tiddlywiki5-external-js.html, with the tiddlers that
-  came with the page (the themes, TiddlyWeb: plugins the worker doesn't list) and your raw markup
-  tiddlers. TiddlyWiki writes everything else: the title, the language, the raw markup, the content
-  for browsers without JavaScript. The core is loaded at the end, from the public site.
+  came with the page (the themes, TiddlyWeb: plugins the worker doesn't list), installed plugins that
+  have raw markup, and your raw markup tiddlers. TiddlyWiki writes everything else: the title, the
+  language, the raw markup, the content for browsers without JavaScript. The core is loaded at the
+  end, from the public site.
 - The core file: TiddlyWiki's own $:/core/templates/tiddlywiki5.js (boot code, library modules,
   $:/core), sent once per TiddlyWiki version.
 
@@ -95,13 +96,30 @@ exports.startup = function() {
 		return title in ownChanges ? ownChanges[title] : $tw.utils.hop(listed,title);
 	}
 
-	// The shell's tiddlers: the plugins that came with the page (the worker lists everything stored,
-	// installed plugins included) and the raw markup tiddlers, without drafts. Like TiddlyWiki's own
-	// save filters, without $:/temp/ (its $:/temp/info-plugin, made at each startup) and pending imports.
+	// Whether a plugin has raw markup the template would render: a tiddler of the plugin, as TiddlyWiki
+	// has registered it, with a raw markup tag. (A plugin with JavaScript is only registered after a
+	// reload; until then the template couldn't render its markup either.)
+	function hasRawMarkup(title) {
+		var info = wiki.getPluginInfo(title);
+		return !!info && Object.keys(info.tiddlers || {}).some(function(shadow) {
+			var tiddler = wiki.getTiddler(shadow);
+			return !!tiddler && RAW_MARKUP_TAGS.some(function(tag) {
+				return tiddler.hasTag(tag);
+			});
+		});
+	}
+
+	// The shell's tiddlers, without drafts:
+	// - the plugins that came with the page (the worker lists everything stored, installed plugins
+	//   included), and installed plugins that have raw markup: the template only renders the markup
+	//   of plugins in the page (they're still loaded as files too, which hold the same plugin);
+	// - the raw markup tiddlers.
+	// Like TiddlyWiki's own save filters, without $:/temp/ (its $:/temp/info-plugin, made at each
+	// startup) and pending imports.
 	function pageTitles() {
 		var listed = adaptor.cfworkerListed() || {},
 			titles = wiki.filterTiddlers("[all[tiddlers]has[plugin-type]!is[draft]] -[[$:/core]] -[prefix[$:/temp/]] -[prefix[$:/state/]] -[plugin-type[import]] -[has[plugin-type]field:platform[server]]").filter(function(title) {
-				return !onServer(title,listed);
+				return !onServer(title,listed) || hasRawMarkup(title);
 			});
 		$tw.utils.each(RAW_MARKUP_TAGS,function(tag) {
 			$tw.utils.pushTop(titles,wiki.filterTiddlers("[all[tiddlers]tag[" + tag + "]!is[draft]]"));
