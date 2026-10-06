@@ -101,7 +101,7 @@ sequenceDiagram
 10. **The plugin is something the page needs at boot, so it rebuilds `baked.html` before answering.** The page build:
     - reads `index.html`, the tiddler list and the startup tiddlers, as before;
     - checks each plugin's file with a `HEAD`. This one is missing or has an older revision, so it reads the stored tiddler and writes `_plugins/$:/plugins/tiddlywiki/markdown.js`: the opening of the template, the stored bytes, the closing;
-    - inserts the preload script and one `<script src>` per plugin after `<head>`, working on the bytes of `index.html`;
+    - inserts the preload script and one `<script src>` per plugin after `<head>`, working on the bytes of `index.html` (since the admin wiki publishes the page, README 4.9, usually the published shell instead, where the plugin tags go right before the core file's `<script>`);
     - saves `baked.html` and purges `/` and `/baked.html` on the public site.
 11. **It answers `204`** with the new revision in the `ETag`.
 
@@ -188,7 +188,7 @@ At first, other layouts were stored as they came, so the bucket held both and ev
 
 ### 3.7 The page is built from bytes
 
-`index.html` is a few MB. On the test machine (a slow, shared 2-core server), decoding the 2.6 MB test wiki into a string, inserting the script and encoding it back took about 16 ms of CPU. Working on the bytes, and only decoding the first 16 KB to find `<head>`, took about 1.6 ms. Cloudflare's servers are faster, so both numbers are lower there, but the ratio holds. Decoding that start of the file keeps a byte order mark, if there is one, so the insertion point stays exact.
+`index.html` is a few MB. On the test machine (a slow, shared 2-core server), decoding the 2.6 MB test wiki into a string, inserting the script and encoding it back took about 16 ms of CPU. Working on the bytes, and only decoding the first 16 KB to find `<head>`, took about 1.6 ms. (In a published shell, plugin tags go before the core file's `<script>`, found by decoding the page's last 64 KB the same way.) Cloudflare's servers are faster, so both numbers are lower there, but the ratio holds. Decoding that start of the file keeps a byte order mark, if there is one, so the insertion point stays exact.
 
 ### 3.8 Disabled plugins keep their tag
 
@@ -561,7 +561,7 @@ await untilDone(ctx, (async () => {
 
 ### 5.7 Plugin files and the page build
 
-`rebakeHtml` (and the comment above it) became:
+`rebakeHtml` (and the comment above it) became the following. (Shown as it is now: it has since learned to build the page from the shell the admin wiki publishes, `readPageSource`, see README 4.3 and 4.9.)
 
 ```js
 // --- Plugin files -------------------------------------------------------------------------------
@@ -650,6 +650,28 @@ function insertAfterHead(html, markup) {
   return html;
 }
 
+// A byte offset moved back to the start of a character, so a window never cuts one in two
+function charStart(bytes, at) {
+  while (at > 0 && at < bytes.length && (bytes[at] & 0xC0) === 0x80) at--;
+  return at;
+}
+
+// Inserts markup right before the last occurrence of marker, looked for in the page's last 64 KB
+// (all of it if it isn't there). Returns the new bytes, or null if the page doesn't have it.
+function insertBeforeLast(html, marker, markup) {
+  for (const length of [65536, html.length]) {
+    const from = charStart(html, Math.max(0, html.length - length));
+    const tail = pageDecoder.decode(html.subarray(from));
+    const index = tail.lastIndexOf(marker);
+    if (index >= 0) {
+      const at = from + encoder.encode(tail.slice(0, index)).length;
+      return concatBytes([html.subarray(0, at), encoder.encode(markup), html.subarray(at)]);
+    }
+    if (from === 0) break;
+  }
+  return null;
+}
+
 // Saves baked.html, unless an overlapping build from a newer tiddler list has already saved one
 // for the same worker and index.html. "Newer" compares when R2 stored each list (listVersion), so
 // a list replaced by hand counts as newer too. Each page gets its date (pageTime, see serveWiki).
@@ -674,14 +696,15 @@ async function storePage(env, html, meta) {
   return null;
 }
 
-// Builds baked.html = index.html + startup tiddlers + conflict guard + plugin <script> tags, then
-// purges the public copy. Returns { html (bytes), page: the stored page's R2 object, or null if an
-// overlapping build's page was kept }, or null.
-async function rebakeHtml(env, ctx, list = null) {
+// Builds baked.html = the page source (the published shell, or index.html, see readPageSource) +
+// startup tiddlers + browser modules + plugin <script> tags, then purges the public copy. source:
+// the page source, if the caller has it. Returns { html (bytes), page: the stored page's R2 object,
+// or null if an overlapping build's page was kept }, or null.
+async function rebakeHtml(env, ctx, list = null, source = null) {
   try {
-    const htmlObj = await env.WIKI_BUCKET.get("index.html");
-    if (!htmlObj) return null;
-    let html = new Uint8Array(await htmlObj.arrayBuffer());
+    const pageSource = source || await readPageSource(env);
+    if (!pageSource) return null;
+    let html = pageSource.html;
 
     // list: the list a save or delete has just written. Otherwise it's read, and a missing or
     // damaged one rebuilt first (a page built without it would have no plugins); while that takes
@@ -713,6 +736,20 @@ async function rebakeHtml(env, ctx, list = null) {
       });
       store.push({ title: PUBLIC_URL_TITLE, text: publicUrl(env, "/") });
       store.push({ title: STATUS_TITLE, type: "application/json", text: JSON.stringify(ADMIN_STATUS) });
+      store.push({ title: PAGE_PUBLISHER_TITLE, type: "application/javascript", "module-type": "startup", text: PAGE_PUBLISHER_SOURCE });
+      store.push({ title: PAGE_SOURCE_TITLE, type: "application/json", text: JSON.stringify({ index: pageSource.index, fingerprint: pageSource.fingerprint, core: pageSource.core }) });
+    }
+
+    // In a shell, plugins load right before the core (they must run before TiddlyWiki starts, which
+    // the core does), so they don't hold up the top of the page (a splash screen). In a full
+    // index.html, where TiddlyWiki starts from code inside the page, from <head>.
+    let pluginsPlaced = false;
+    if (pluginTags) {
+      const placed = insertBeforeLast(html, EXTERNAL_SCRIPTS_MARKER, `${pluginTags}\n`);
+      if (placed) {
+        html = placed;
+        pluginsPlaced = true;
+      }
     }
 
     let injected = "";
@@ -726,12 +763,13 @@ async function rebakeHtml(env, ctx, list = null) {
         </script>
       `;
     }
-    if (pluginTags) injected += `\n${pluginTags}\n`;
+    if (pluginTags && !pluginsPlaced) injected += `\n${pluginTags}\n`;
     if (injected) html = insertAfterHead(html, `\n${injected}\n`);
 
     const stored = await storePage(env, html, {
       bakeVersion: bakeVersion(env),
-      sourceEtag: htmlObj.etag,
+      sourceEtag: pageSource.index,
+      shell: pageSource.fingerprint,
       listVersion: String(manifestObj ? manifestObj.uploaded.getTime() : 0)
     });
     if (stored) ctx.waitUntil(purgePublicCache(env, PUBLIC_PAGE_PATHS.map(path => publicUrl(env, path))));
@@ -827,18 +865,18 @@ It also reads GitHub's current copy in the "object" format (`Accept: application
 
 ### 5.10 Bake version
 
-The version was bumped to `4-`, so the first page load after deploying rebuilt the page and wrote files for the plugins already in the wiki. The public URL now counts even with `CONFLICT_GUARD=off`, since the plugin tags use it:
+The version was bumped to `4-`, so the first page load after deploying rebuilt the page and wrote files for the plugins already in the wiki. The public URL now counts even with `CONFLICT_GUARD=off`, since the plugin tags use it. (As it is now, after later changes, with the page publisher module in it too:)
 
 ```js
-// Changes whenever the guard code or the public URL changes, so baked.html is rebuilt after a deploy
-// (the number in front changes when the way pages are built changes)
+// Changes whenever the browser modules or the public URL change, so baked.html is rebuilt after a
+// deploy (the number in front changes when the way pages are built changes)
 function bakeVersion(env) {
-  const input = (conflictGuardEnabled(env) ? CONFLICT_GUARD_SOURCE : "off") + "\n" + publicUrl(env, "/");
+  const input = (conflictGuardEnabled(env) ? CONFLICT_GUARD_SOURCE + "\n" + PAGE_PUBLISHER_SOURCE : "off") + "\n" + publicUrl(env, "/");
   let hash = 5381;
   for (let i = 0; i < input.length; i++) {
     hash = ((hash * 33) ^ input.charCodeAt(i)) >>> 0;
   }
-  return "5-" + hash.toString(36);
+  return "7-" + hash.toString(36);
 }
 ```
 
@@ -854,18 +892,23 @@ and in `build.mjs`, the backtick check is gone, and the placeholder and the repl
 
 ```js
 const PLACEHOLDER = '"__CONFLICT_GUARD_SOURCE__"';
+const PUBLISHER_PLACEHOLDER = '"__PAGE_PUBLISHER_SOURCE__"';
 const source = readFileSync(new URL("./src/worker.src.js", import.meta.url), "utf8");
 const guard = readFileSync(new URL("./src/conflict-guard.js", import.meta.url), "utf8");
+const publisher = readFileSync(new URL("./src/page-publisher.js", import.meta.url), "utf8");
 
-if (source.split(PLACEHOLDER).length !== 2) {
-  throw new Error(`src/worker.src.js must contain ${PLACEHOLDER} exactly once`);
+for (const placeholder of [PLACEHOLDER, PUBLISHER_PLACEHOLDER]) {
+  if (source.split(placeholder).length !== 2) {
+    throw new Error(`src/worker.src.js must contain ${placeholder} exactly once`);
+  }
 }
 
 // Inserted as a JSON string literal, which is valid JavaScript for any text: the module can
 // contain backticks, ${, quotes or backslashes. (A replacer function, so "$&" and the like in
 // the module aren't treated as replacement patterns.)
-const banner = "// GENERATED by build.mjs from src/worker.src.js and src/conflict-guard.js. Edit those, then run `npm run build`.\n";
-writeFileSync(new URL("./worker.js", import.meta.url), banner + source.replace(PLACEHOLDER, () => JSON.stringify(guard)));
+const banner = "// GENERATED by build.mjs from src/worker.src.js, src/conflict-guard.js and src/page-publisher.js. Edit those, then run `npm run build`.\n";
+const output = source.replace(PLACEHOLDER, () => JSON.stringify(guard));
+writeFileSync(new URL("./worker.js", import.meta.url), banner + output.replace(PUBLISHER_PLACEHOLDER, () => JSON.stringify(publisher)));
 ```
 
 `worker.js` is still a single file you can paste into the dashboard, and the embedded text is the same, so the page isn't rebuilt because of this change alone.
@@ -967,7 +1010,7 @@ If the page is rebuilt before step 4, by a deploy or by saving another plugin, a
 - **An old page loading new code:** a page cached somewhere with an old `?v=` could fetch a file that has since been overwritten, once that old URL has left Cloudflare's cache. It then simply runs the new version, which matches the tiddler list.
 - **Leftover files:** a file can outlive its plugin if two builds overlap at the moment the plugin is turned into an ordinary tiddler. Nothing loads it; delete it in R2 if you notice it.
 - **Browsers:** the file uses `??=` and `??`, like the external-plugins template, so it needs a browser from 2020 or later.
-- **`$:/tags/RawMarkup…` tiddlers** do nothing here: TiddlyWiki only inserts them when it saves a single-file wiki.
+- **`$:/tags/RawMarkup…` tiddlers inside an installed plugin:** the admin wiki renders the page (README 4.9) with that plugin in it as well as in its file, so its markup is there; for a plugin with JavaScript, from the first admin load after installing it.
 - **Plugin files are public,** like everything in the bucket. A deleted plugin's file is removed from R2 but not purged, so its old `?v=` URL stays reachable in Cloudflare's cache until it expires; nothing loads it.
 - **Very large plugins:** a save holds a few copies of the body in memory, well within the 128 MB a worker has, and well under the 100 MB request size limit.
 - **The tiddler list** is still read and rewritten on every save. It's now the largest CPU cost of a save: about 1 ms per 400–500 tiddlers.

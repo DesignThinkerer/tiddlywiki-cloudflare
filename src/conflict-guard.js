@@ -525,6 +525,13 @@ exports.startup = function() {
 		fetchList();
 	};
 
+	// The worker's latest tiddler list, title -> revision (null before the first): the page publisher
+	// ($:/cfworker/page-publisher.js) uses it to tell the tiddlers that came with the page from the
+	// stored ones
+	proto.cfworkerListed = function() {
+		return lastListFetch ? listedRevisions : null;
+	};
+
 	// Fetch a tiddler from the public copy of the wiki (R2 + Cloudflare's cache, no worker request).
 	// Only accepted if it is exactly the revision the worker listed; callback(fields) or callback(null).
 	function loadFromPublicSite(adaptor,title,callback) {

@@ -6,13 +6,14 @@
   "scripts": {
     "build": "node build.mjs",
     "fixture": "node test/make-fixture.mjs",
-    "test": "npm run build && npm run fixture && node test/bake.test.mjs && node test/integrity.test.mjs && node test/r2-ops.test.mjs && node test/queue-backup.test.mjs && node test/two-tabs.test.mjs && node test/plugins.test.mjs",
+    "test": "npm run build && npm run fixture && node test/bake.test.mjs && node test/integrity.test.mjs && node test/r2-ops.test.mjs && node test/queue-backup.test.mjs && node test/two-tabs.test.mjs && node test/plugins.test.mjs && node test/page-publish.test.mjs",
     "test:bake": "npm run build && node test/bake.test.mjs",
     "test:integrity": "npm run build && node test/integrity.test.mjs",
     "test:r2": "npm run build && node test/r2-ops.test.mjs",
     "test:backup": "npm run build && node test/queue-backup.test.mjs",
     "test:tabs": "npm run build && npm run fixture && node test/two-tabs.test.mjs",
-    "test:plugins": "npm run build && npm run fixture && node test/plugins.test.mjs"
+    "test:plugins": "npm run build && npm run fixture && node test/plugins.test.mjs",
+    "test:publish": "npm run build && npm run fixture && node test/page-publish.test.mjs"
   },
   "devDependencies": {
     "miniflare": "3.20250718.3",

@@ -11,6 +11,7 @@ The worker also does the following:
 - **Protects against edit conflicts:** two tabs or devices editing the same tiddler can no longer silently overwrite each other.
 - **Keeps the public copy fresh:** it purges exactly the cached URLs that changed.
 - **Runs plugins installed from the wiki:** each plugin gets its own file, which the page loads from the public site before TiddlyWiki starts, on both sites.
+- **Lets TiddlyWiki write its own page:** the admin wiki renders the page with TiddlyWiki's own template and publishes it by itself, so the title, the language and `$:/tags/RawMarkup…` tiddlers (link-preview tags, a splash screen...) work as in a single-file wiki. The core is a separate file cached for a year, which makes the page about 300 KB instead of 2.8 MB (4.9).
 - **Uses as few worker requests as it can.**
 
 This document covers the setup, how each part works, and why it was built this way.
@@ -37,11 +38,11 @@ This document covers the setup, how each part works, and why it was built this w
 ```mermaid
 flowchart LR
   subgraph Browsers
-    T["Admin wiki tab<br/>TiddlyWiki + conflict guard module"]
+    T["Admin wiki tab<br/>TiddlyWiki + conflict guard<br/>+ page publisher"]
     V["Public visitor"]
   end
-  T -- "page, tiddler list,<br/>saves and deletes" --> W["Worker<br/>admin.my-tiddlywiki.theophile.dev<br/>(Cloudflare Access)"]
-  T -- "tiddler contents, plugin files<br/>(read-only, cached)" --> P["Public site<br/>my-tiddlywiki.theophile.dev<br/>(R2 custom domain + cache)"]
+  T -- "page, tiddler list,<br/>saves and deletes, published page" --> W["Worker<br/>admin.my-tiddlywiki.theophile.dev<br/>(Cloudflare Access)"]
+  T -- "tiddler contents, plugin files, core file<br/>(read-only, cached)" --> P["Public site<br/>my-tiddlywiki.theophile.dev<br/>(R2 custom domain + cache)"]
   V --> P
   W <--> R2[("R2 bucket")]
   P --> R2
@@ -55,7 +56,8 @@ flowchart LR
 |---|---|
 | **Worker** (`worker.js`) | Serves the admin wiki: the HTML page, TiddlyWeb endpoints, saves and deletes, conflict checks, cache purges. It writes a file for each plugin, and consumes the backup queue. |
 | **Conflict guard** (`src/conflict-guard.js`) | A TiddlyWiki startup module that the worker builds into the page. It makes the browser send the version each edit is based on, handles conflicts, cuts unneeded requests, and sends saves in the layout the worker stores. |
-| **R2 bucket** | Holds everything: the wiki HTML, the tiddler list, one JSON file per tiddler and one script per plugin. |
+| **Page publisher** (`src/page-publisher.js`) | A second startup module built into the page. In the admin wiki, it renders the page with TiddlyWiki's own template and sends it to the worker whenever it changes (4.9). |
+| **R2 bucket** | Holds everything: the wiki HTML (`index.html` and the published page), the tiddler list, one JSON file per tiddler, one script per plugin and TiddlyWiki's core file. |
 | **Public site** | The bucket's custom domain. Cloudflare caches it, and nothing on it runs the worker. |
 | **Queue** `wiki-backup` | Holds one message per save or delete until it has been committed to GitHub. |
 | **GitHub repository** | Version history: one commit per save, in `tiddlers/<title>.json`. |
@@ -72,22 +74,24 @@ flowchart LR
 ├── tiddlers/                 the GitHub backup (4.7): one JSON file per tiddler, committed by the worker
 ├── src/
 │   ├── worker.src.js         the worker's source
-│   └── conflict-guard.js     the browser module, embedded into worker.js by the build
-├── build.mjs                 inserts src/conflict-guard.js into src/worker.src.js → worker.js
+│   ├── conflict-guard.js     the browser module, embedded into worker.js by the build
+│   └── page-publisher.js     the second browser module (4.9), embedded the same way
+├── build.mjs                 inserts both modules into src/worker.src.js → worker.js
 ├── wrangler.example.toml     all bindings and settings, for deploying with wrangler
 ├── package.json              build and test scripts
 └── test/
     ├── make-fixture.mjs      builds a test TiddlyWiki (test/fixtures/index.html)
     ├── two-tabs.test.mjs     real TiddlyWiki in Chromium, several tabs (64 checks)
     ├── plugins.test.mjs      real plugins on the admin and public sites (65 checks)
+    ├── page-publish.test.mjs the page published from a real TiddlyWiki (38 checks)
     ├── queue-backup.test.mjs queue backup against an imitation of GitHub (17 checks)
     ├── integrity.test.mjs    the tiddler list's integrity, draft-like titles, .gitignore (47 checks)
-    ├── r2-ops.test.mjs       R2 calls per kind of request, against a budget (15 checks)
+    ├── r2-ops.test.mjs       R2 calls per kind of request, against a budget (25 checks)
     ├── r2-counter.mjs        test-only wrapper that counts the worker's R2 calls
-    └── bake.test.mjs         page serving and rebuilding (21 checks)
+    └── bake.test.mjs         page serving and rebuilding, the published page (44 checks)
 ```
 
-The browser module lives in its own file so it can be read and edited as normal JavaScript. The build embeds it in `worker.js` as a string (`CONFLICT_GUARD_SOURCE`), so only one file is deployed, which you can paste into the dashboard. The string is written as JSON, so the module can contain any character, backticks and `${` included.
+The browser modules live in their own files so they can be read and edited as normal JavaScript. The build embeds them in `worker.js` as strings (`CONFLICT_GUARD_SOURCE`, `PAGE_PUBLISHER_SOURCE`), so only one file is deployed, which you can paste into the dashboard. The strings are written as JSON, so a module can contain any character, backticks and `${` included.
 
 ---
 
@@ -192,7 +196,7 @@ Include the hostname condition, so `/` on other hostnames in the zone isn't rewr
 - **Browser TTL:** respect origin
 - **Cache key:** the defaults. The query string (`?v=<revision>`) must stay in the key: it's what makes each version a new URL.
 
-Plugin files are never purged: each version has its own URL (4.8). Without this rule they follow "Cache Public Wiki", which still works, but browsers re-check them every few minutes.
+Plugin files are never purged: each version has its own URL (4.8). Without this rule they follow "Cache Public Wiki", which still works, but browsers re-check them every few minutes. TiddlyWiki's core file, `_plugins/tiddlywikicore.js` (4.9), is under the same path, with the same caching.
 
 A "Bypass cache" rule for the admin host is optional. Cloudflare never caches responses a worker generates itself, so it changes nothing; it only matters if part of that host were ever served by something else.
 
@@ -223,6 +227,8 @@ This lets the admin wiki read tiddler contents from the public site (see 4.5 and
 | `GET <any other key>` | That R2 object as is. |
 | `PUT recipes/default/tiddlers/<title>` | Save (4.4): precondition check, conditional write, list update, purge, backup; for a plugin, its file and the page (4.8). Stored flat, whatever layout it arrives in (4.2). A body that isn't a tiddler (a JSON object whose `title` is text, the same as in the URL), or with a value that isn't text, gets `400`. |
 | `DELETE bags/<bag>/tiddlers/<title>` (or `recipes/<recipe>/…`) | Delete (4.4): same checks, then removal, purge, backup. |
+| `PUT /page/core?v=<version>-<format>` | TiddlyWiki's core file, from the admin wiki, once per TiddlyWiki version (4.9). |
+| `PUT /page/shell` | The page published by the admin wiki, kept and used to build the page (4.9). |
 | queue messages | Backup to GitHub (4.7). |
 
 **Ephemeral titles.** These are never stored or backed up: `$:/StoryList`, `$:/HistoryList`, anything under `$:/state/`, `$:/temp/` or `$:/status/`, and drafts, recognised by their `draft.of` field. A title alone doesn't make a draft: a tiddler called `Draft of 'Chapter 1'` is saved like any other. A `PUT` of one answers `204` with a throwaway ETag, and a `DELETE` answers `204`. In practice the browser doesn't send them: TiddlyWiki's own sync filter leaves out `$:/HistoryList`, `$:/state/`, `$:/temp/` and `$:/status/`, and the conflict guard also leaves out drafts and `$:/StoryList` (4.5).
@@ -235,7 +241,9 @@ R2 layout:
 |---|---|
 | `index.html` | The wiki engine you uploaded. |
 | `status` | The public site's TiddlyWeb status, uploaded once (3.1). |
-| `baked.html` | Generated: `index.html` plus the tiddlers needed at startup (4.3). |
+| `baked.html` | Generated: the page (the published shell, or `index.html`) plus the tiddlers needed at startup (4.3). |
+| `_page/shell.html` | The page published by the admin wiki, without the core (4.9). |
+| `_plugins/tiddlywikicore.js` | TiddlyWiki's core file, published by the admin wiki (4.9). |
 | `recipes/default/tiddlers.json` | The "skinny" tiddler list, as compact JSON: title, tags, type, dates, custom fields and revision for every tiddler, but no text. If it's ever missing or damaged, the worker rebuilds it from the stored tiddlers (below). |
 | `recipes/default/tiddlers/<title>` | One tiddler as JSON, flat (below), under its raw title. |
 | `_plugins/<title>.js` | Generated: the script that loads a plugin or JavaScript module into the page (4.8). |
@@ -268,7 +276,7 @@ Deleting `recipes/default/tiddlers.json` in R2 has the same effect, which makes 
 
 ### 4.3 The wiki page (`baked.html`)
 
-TiddlyWiki only runs JavaScript modules, plugins and startup actions that are present when the page boots. Tiddlers loaded later through sync arrive too late. So the worker builds `baked.html`: `index.html` with, right after `<head>`, a `<script>` that preloads these tiddlers (`$tw.preloadTiddlers`):
+TiddlyWiki only runs JavaScript modules, plugins and startup actions that are present when the page boots. Tiddlers loaded later through sync arrive too late. So the worker builds `baked.html` from the page source, which is the shell the admin wiki published when there's one for the current `index.html`, and `index.html` itself otherwise (4.9). It adds, right after `<head>`, a `<script>` that preloads these tiddlers (`$tw.preloadTiddlers`):
 
 - `$:/DefaultTiddlers`, `$:/SiteTitle`, `$:/SiteSubtitle`
 - `$:/theme`, `$:/language`, `$:/palette`: TiddlyWiki reads them at boot to choose the theme, language and palette
@@ -277,8 +285,9 @@ TiddlyWiki only runs JavaScript modules, plugins and startup actions that are pr
 - the conflict guard module `$:/cfworker/conflict-guard.js`
 - `$:/cfworker/public-url`: the public address, read by the module
 - `$:/cfworker/status`: the worker's `/status` answer, which the module gives TiddlyWiki on admin pages instead of asking (4.5)
+- the page publisher `$:/cfworker/page-publisher.js`, and `$:/cfworker/page-source`: what the page was built from (the `index.html` ETag, the shell's fingerprint, the stored core file's version), read by the publisher (4.9)
 
-followed by one `<script src="…">` per plugin and JavaScript module (4.8). The conflict guard, the public address and the status are left out when `CONFLICT_GUARD` is `off`.
+then one `<script src="…">` per plugin and JavaScript module (4.8). In a page built from the shell, those tags go right before TiddlyWiki's `<!--~~ Load external JavaScripts ~~-->`, at the end of the page: they still run before TiddlyWiki starts (the core file starts it), but no longer hold up the top of the page, such as a splash screen. In a full `index.html`, where TiddlyWiki starts from code inside the page, they go in `<head>`. The browser modules, the public address, the status and the page source are left out when `CONFLICT_GUARD` is `off`.
 
 **The browser keeps the page.** The page goes out with an ETag, `"<baked.html's R2 etag>-page"`, and `Cache-Control: no-cache`, so the browser asks at each load whether it changed. If it hasn't, the worker answers `304 Not Modified` without even reading the page's body from R2, and nothing is downloaded. A page that has to be rebuilt is sent in full, with the ETag of the page it stored, so the load after a rebuild (after a deploy, say) is already a `304`.
 
@@ -287,8 +296,9 @@ followed by one `<script src="…">` per plugin and JavaScript module (4.8). The
 Stored tiddlers are baked as they're stored: flat, already the form `preloadTiddlers` expects. (A field called `fields` is unpacked first: TiddlyWiki does that itself only for tiddlers it loads through sync, 4.2.) The page is edited as bytes, without decoding `index.html` (a few MB) into a string and back, which costs about ten times more CPU. Text containing `$&`, `$1` and the like is copied literally.
 
 **When it's rebuilt:**
-- **On a page request,** if `baked.html` is missing, or was built by a different version of the guard module or of the page format, or for a different public address (`bakeVersion` in its metadata), or from a different `index.html` (`sourceEtag`). Deploying a new worker or uploading a new `index.html` therefore takes effect on the next admin page load.
+- **On a page request,** if `baked.html` is missing, or was built by a different version of the browser modules or of the page format, or for a different public address (`bakeVersion` in its metadata), or from a different `index.html` (`sourceEtag`). Deploying a new worker or uploading a new `index.html` therefore takes effect on the next admin page load.
 - **After saving or deleting a tiddler the page needs at boot:** one of those listed above, a plugin or a JavaScript module. That includes a tiddler that *stops* being needed, such as a startup action losing its tag. The save waits for the rebuild, so a reload right after it already gets the new page.
+- **After the admin wiki publishes a new shell** (4.9).
 
 Two builds can overlap (two tabs saving at once, or a save during the first load after a deploy). Each page records when the tiddler list it was built from was stored in R2 (`listVersion`), and a build doesn't replace a page built from a newer list. This is best effort: after two lost races, the last attempt writes anyway.
 
@@ -434,6 +444,40 @@ For a tiddler with a field called `fields`, stored nested (4.2), the file has on
 
 **Themes and languages** work at boot, since both the plugin and `$:/theme` or `$:/language` are in the page.
 
+### 4.9 The page, published from the admin wiki
+
+When TiddlyWiki saves a single-file wiki, it writes the whole page from a template: the `<title>`, the language, the `$:/tags/RawMarkup…` tiddlers (TiddlyWiki 5.4's own Open Graph tags for link previews among them, from `$:/SiteTitle`, `$:/SiteSubtitle`, `$:/SiteUrl` and `$:/SitePreviewUrl`; a splash screen; web fonts...), the content for browsers without JavaScript. Here nothing saves the file. So the admin wiki renders the page itself, with the same template, and publishes it; the page publisher module does it by itself.
+
+**What it renders.** TiddlyWiki's own `$:/core/templates/tiddlywiki5-external-js.html`, the page of its "external core" edition: everything but the core, which is loaded at the end from a separate file. The template only gets two inputs:
+- `saveTiddlerFilter`, the tiddlers in the page: the plugins that came with the page (plugin tiddlers the worker doesn't list: the themes and TiddlyWeb from `index.html`; never `$:/core`, `$:/temp/…` or a pending import), the plugins installed from the wiki that have raw markup (below), and the tiddlers tagged `$:/tags/RawMarkup…` (without drafts). Other installed plugins are only files (4.8), and content stays synced.
+- `coreURL`, the core file on the public site.
+
+One thing differs from TiddlyWiki's own save: the TiddlyWeb plugin writes each tiddler's `revision` in the page as its *changecount*, a count of changes made in that tab, which differs from tab to tab. Here it's the tiddler's revision, the worker's, so the same wiki gives the same page in every tab, and a page load doesn't take the copies in the page for changed tiddlers. (A tiddler the tab has just saved still carries its old revision, TiddlyWiki only records the new one in the syncer: it's loaded again before rendering.)
+
+**The core file** is rendered with TiddlyWiki's `$:/core/templates/tiddlywiki5.js`: the boot code, library modules and `$:/core`. TiddlyWiki adds a line to it that switches the save template to the external-core one; it's taken out, since it would turn TiddlyWeb's "Save snapshot for offline use" into snapshots that need the core file next to them. It's stored as `_plugins/tiddlywikicore.js` and loaded as `?v=<TiddlyWiki version>-<format>`, cached for a year like plugin files, and sent only when the page doesn't already load that version: once per TiddlyWiki version.
+
+**What the worker does with them** (`PUT /page/core`, `PUT /page/shell`):
+- It checks the core file starts and ends like TiddlyWiki's, and the shell has TiddlyWiki's tiddler store with the TiddlyWeb plugin in it (or the page couldn't sync), the `<!--~~ Load external JavaScripts ~~-->` marker, and a `<script>` loading the stored core file. Anything else is refused with a message, shown by the admin wiki.
+- It keeps the shell as `_page/shell.html`, with the `index.html` it was rendered for (refused, `409`, if `index.html` changed since the admin page loaded) and its fingerprint, then rebuilds the page from it (4.3). `index.html` is never changed: a new upload is used as it is until the admin wiki publishes a shell for it.
+- The same shell again does nothing, and the same core file version isn't stored again.
+
+**When it publishes:**
+- **A moment after this tab saves or deletes something** (a second, so a burst of saves gives one publish), if the page it renders isn't the one published. It first syncs with the worker, so a change another tab saved before is included. A save that doesn't change the page costs only the render, in the browser: no request.
+- **When the admin wiki loads,** once synced and loaded, if it renders something other than the page it loaded: the first load after this version is deployed or a new `index.html` is uploaded, a publish that failed, a change made outside the admin wiki.
+- **Not for changes that arrive from other tabs:** the tab that saved them publishes them. Otherwise several tabs would publish, and one that hadn't caught up could publish an older page over a newer one.
+- **Not while a tiddler it needs hasn't loaded yet** (rendering would leave its text out): it waits for it. And never in safe mode (`#:safe`), on the public site, or without the worker's browser module.
+- **A failure** (refused, or the worker unreachable) is shown in a notification, and tried again at the next save or load.
+
+The page is rendered afresh at each check, then compared with the published one by a fingerprint. It isn't kept rendered and refreshed: raw markup is wikified apart from TiddlyWiki's widget tree, so the refresh mechanism wouldn't see a change to a tiddler it transcludes (`$:/SiteTitle` in the Open Graph tags).
+
+**Plugins with raw markup.** The template only renders the raw markup of plugins that are in the page: a plugin that loads a library from `<head>`, adds meta tags or a splash screen needs to be there. So an installed plugin with a tiddler tagged `$:/tags/RawMarkup…` is also written into the page, as TiddlyWiki would, and its markup rendered. Its file stays: TiddlyWiki reads the page's tiddlers first and the files after, so the file's copy, the same plugin, replaces the page's. The page grows by the size of those plugins only.
+- A plugin without JavaScript is published a moment after it's installed, updated or deleted, like any change to the page.
+- A plugin with JavaScript (TiddlyWiki asks for a reload) only starts after a reload, and the template can only render its markup then: it's published at the next admin load. After an update, the page gets the new plugin at once and its new markup at that load.
+
+**Raw markup is written the way TiddlyWiki documents it:** `$:/tags/RawMarkup` tiddlers are copied as they are; the wikified tags render their text as wikitext, so HTML in them needs `\rules only filteredtranscludeinline transcludeinline` on the first line (transclusions are filled in, the HTML kept).
+
+**What it costs:** nothing per page load (still 2 worker requests on the admin site, none on the public one). A first visit gets the core file from the public site's cache, one more request, then keeps it a year. The page is about 300 KB instead of 2.8 MB for the test wiki, so a rebuilt page (a plugin, a title, a deploy) costs visitors and the worker much less. A publish is one sync with the worker, an upload of about 300 KB and a page rebuild; the core file, 2.4 MB, once per TiddlyWiki version.
+
 ---
 
 ## 5. Why it is built this way
@@ -529,17 +573,30 @@ The queue solves the cause instead of working around it:
 
 [`docs/external-plugins.md`](docs/external-plugins.md) has the full reasoning and the alternatives that were considered.
 
+### 5.14 The admin wiki renders the page
+
+- **Rendered by TiddlyWiki, not the worker:** only TiddlyWiki can run wikitext, so this is the only way the title, raw markup and the rest come out exactly as TiddlyWiki writes them, transclusions included. The worker can't, and rendering a few sections and inserting them meant reimplementing where TiddlyWiki puts each one.
+- **TiddlyWiki's template as it is,** given two inputs, rather than a template of ours: whatever a TiddlyWiki version writes in its page comes with it.
+- **The external-core template:** the core is most of the page, the same for a whole TiddlyWiki version, so it's a separate file cached a year, and the published page is small to send and quick to render.
+- **The shell kept apart from `index.html` and `baked.html`:** `index.html` stays the file you uploaded, and each page build starts from the same clean source, never from a page that already holds the worker's additions.
+- **Published from the tab that saved, without a button:** like everything else in the wiki, a change is live once saved, and nothing depends on remembering to publish.
+
 ---
 
 ## 6. Operating it
 
-**Deploying a change:** edit `src/`, run `npm run build` and `npm test`, then deploy `worker.js`, either by pasting it into the dashboard editor or with `npx wrangler deploy`. If the browser module changed, the next admin page load rebuilds `baked.html`. If you changed how the page itself is built, also bump the number in front of `bakeVersion` (now `5-`), or existing pages keep the old format until something else rebuilds them; plugin files are only rewritten when their plugin changes, so after changing their format, delete `_plugins/` and open the admin wiki. Reload any open admin tabs: tabs opened before a change keep the old module, and tabs older than the module have no conflict protection.
+**Deploying a change:** edit `src/`, run `npm run build` and `npm test`, then deploy `worker.js`, either by pasting it into the dashboard editor or with `npx wrangler deploy`. If a browser module changed, the next admin page load rebuilds `baked.html`. If you changed how the page itself is built, also bump the number in front of `bakeVersion` (now `7-`), or existing pages keep the old format until something else rebuilds them; plugin files are only rewritten when their plugin changes, so after changing their format, delete `_plugins/` and open the admin wiki. Reload any open admin tabs: tabs opened before a change keep the old module, and tabs older than the module have no conflict protection.
 
 **Converting a bucket filled by an older version:** the worker reads only the flat layout (4.2), and versions before it stored tiddlers in TiddlyWeb's layout, some under their URL-encoded title or with the revision only in the file. Convert them once, *before* deploying this version, while the older one is still in place (one that already stores plugins as files: the script checks, and stops if not). Close any other admin tab, open the admin wiki, wait until it has loaded, and don't edit anything until you've deployed. Paste `tools/convert-stored-tiddlers.js` into the browser's console and press Enter. It re-saves every tiddler in the list exactly as it's stored, in the flat layout (each gets a new revision and one commit in the backup), and prints a table of what it did. A tiddler with a value that isn't text (only a script could have stored one) is skipped. Then deploy right away, and reload the admin wiki. Any object left under a URL-encoded key (a `%20` or `%24` in its name in R2) is no longer used, and can be deleted. Don't deploy first: until they're converted, tiddlers whose revision is only in the file would get false conflicts, plugins stored the old way would stop working, and a rebuilt list would leave them out.
 
-**Updating the wiki engine:** upload the new `index.html` to R2. The next admin page load rebuilds `baked.html` and purges the public page. If a TiddlyWiki upgrade changes the filter in `tiddlers.json?filter=…`, add the new filter to `SKINNY_LIST_FILTERS`, or the public tiddler list won't be purged after saves. You'll see the exact URL in the browser's Network tab. Plugins installed through the wiki override the copies in `index.html`: after an upgrade, update the version in the plugin library's URL (`$:/config/OfficialPluginLibrary`) and update your plugins from its Updates tab.
+**Updating the wiki engine:** upload the new `index.html` (a regular, full TiddlyWiki) to R2. The next admin page load rebuilds `baked.html` from it and purges the public page, then publishes the core file and the page for the new version by itself (4.9). If a TiddlyWiki upgrade changes the filter in `tiddlers.json?filter=…`, add the new filter to `SKINNY_LIST_FILTERS`, or the public tiddler list won't be purged after saves. You'll see the exact URL in the browser's Network tab. Plugins installed through the wiki override the copies in `index.html`: after an upgrade, update the version in the plugin library's URL (`$:/config/OfficialPluginLibrary`) and update your plugins from its Updates tab.
 
 **Plugins:** install, update, disable or delete them from the wiki (drag and drop, the plugin library, the Control Panel). When TiddlyWiki asks you to reload, wait until the save has finished, then reload. The public site gets the same plugins.
+
+**The published page:** nothing to do. After this version is deployed, the first admin page load publishes the core file and the page; after that, every save that changes the page publishes it (4.9). If a raw markup tiddler stops the wiki from starting:
+1. In R2, delete `_page/shell.html` and `baked.html`.
+2. Open the admin wiki: the page is built from `index.html` again.
+3. Fix or delete the tiddler in that tab before reloading. The tab publishes the broken page again once loaded, but it keeps running the page it has, and saving the fix publishes the fixed one.
 
 **If a plugin breaks the page** (the wiki doesn't start), on both sites:
 1. In R2, delete `_plugins/<plugin title>.js`.
@@ -580,6 +637,9 @@ If the page is rebuilt before step 4 (by a deploy, or by saving another plugin, 
 | Alert "Edit conflict: … was changed in another tab or browser" | Another tab, device or script saved that tiddler after you started editing | Compare the tiddler with its `(conflict …)` copy, keep what you want and delete the copy. |
 | Console shows "blocked by CORS policy" for `my-tiddlywiki…` | The transform rule is missing or scoped wrong | Add or fix it (3.5). Until then, tiddlers simply load through the worker. |
 | The public site shows an old version | Browser TTL, or a failed purge | Check the cache rule's Browser TTL; look for `Cache purge failed` in the logs; purge manually. |
+| Link previews or the tab show "My TiddlyWiki", or raw markup (yours or a plugin's) has no effect | The page hasn't been published since the change (4.9); for a plugin with JavaScript, the admin wiki hasn't been reloaded since installing it | Open or reload the admin wiki: it publishes once loaded. A notification says if it can't. |
+| "Page not published: …" notification | The worker refused the page, or couldn't be reached | The message says why. It's tried again at the next save or load; "index.html has changed" means reload the admin wiki. |
+| Console shows a failed `_plugins/tiddlywikicore.js` request | The core file is missing from R2 | Delete `_page/shell.html` and `baked.html` in R2 and open the admin wiki: it publishes both again. |
 | The admin page downloads in full at every load | Neither `ETag` nor `Last-Modified` reaches the browser (look at the page's response headers), or "Disable cache" is ticked in DevTools | Without `Last-Modified`: check that the deployed worker is current (its pages carry it since `bakeVersion` 5). Cloudflare removing the `ETag` alone is expected (4.3). |
 | The admin page reads a tiddler from the public site and then again from the worker | The public copy is out of date, often one cached before a worker that purges the admin page's copy (4.6) | Nothing breaks, only a request more. It clears up when that tiddler is saved, or when the cached copy expires (Edge TTL). To clear everything at once: Purge Cache → Custom Purge → Hostname `my-tiddlywiki.theophile.dev`. |
 | No commits on GitHub | `GITHUB_REPO` or `GITHUB_TOKEN` not set (backups are then skipped without a log line), no queue consumer, or a GitHub token problem | Check 3.2 and 3.4, and look for `[Backup]` lines in the logs. Queued backups go through once fixed, if that's within the queue's retention (24 hours on the free plan). A direct backup logged as "could not be backed up" isn't retried. |
@@ -597,7 +657,9 @@ If the page is rebuilt before step 4 (by a deploy, or by saving another plugin, 
 - **A plugin that breaks at boot breaks both sites** until you remove it (6).
 - **A damaged or missing list is rebuilt only while the admin wiki is open** (4.2): the worker's requests do the work, and public visitors don't use the worker. Until then the public site keeps what its cache holds; a visitor who gets the damaged list or the stand-in sees no tiddlers until it's done.
 - **A rebuild step's CPU** stays around a normal save's, but a single stored tiddler with several megabytes in fields other than its text (rare: plugins keep their content in the text) is read in one step, and could take that step over the limit each time.
-- **`$:/tags/RawMarkup…` tiddlers do nothing.** TiddlyWiki only inserts them when it saves a single-file wiki; here they work only if they're in `index.html`.
+- **An installed plugin's raw markup reaches the page after a reload if the plugin has JavaScript** (4.9): TiddlyWiki only starts such a plugin then. And plugins with raw markup are in the page as well as in their file, so a big one makes the page bigger (the worker refuses a page over 2 MB).
+- **Both sites depend on the core file on the public site,** as they already do on plugin files. If it can't be loaded, the wiki doesn't start (TiddlyWiki shows an alert).
+- **The page follows the admin wiki.** A change made elsewhere (a tiddler edited in R2) reaches the page at the next admin page load. Raw markup that depends on being logged in is rendered as the admin sees it.
 - **Conflict copies are merged by hand.** That's by design: you get both versions and decide.
 - **Old tabs aren't protected.** A tab opened before the module was deployed saves without conflict protection until reloaded.
 - **A short window at page load.** A tiddler that's part of `index.html` itself, edited before the first sync finishes, is saved without a version check.
@@ -617,19 +679,20 @@ Requirements: Node.js 20 or newer and a Chromium for the browser tests.
 ```bash
 npm install
 npx playwright install chromium      # or: export CHROMIUM_PATH=/path/to/chrome
-npm test                             # build, make the test wiki, run all six suites
+npm test                             # build, make the test wiki, run all seven suites
 ```
 
 | Command | What it runs |
 |---|---|
 | `npm run build` | Writes `worker.js`. |
 | `npm run fixture` | Builds `test/fixtures/index.html`, an empty TiddlyWiki with the TiddlyWeb plugin. It skips an existing file: after upgrading the `tiddlywiki` package, run `npm run fixture -- --force`. |
-| `npm run test:bake` | Page serving: rebuild on an outdated bake or a new `index.html`, the `304` for an unchanged page (also with a weakened ETag, and by date alone, including two pages built within the same second), a byte order mark; CORS, a bad `PUT` path, and `/status`, also baked into the page. |
+| `npm run test:bake` | Page serving: rebuild on an outdated bake or a new `index.html`, the `304` for an unchanged page (also with a weakened ETag, and by date alone, including two pages built within the same second), a byte order mark; CORS, a bad `PUT` path, and `/status`, also baked into the page. The published page: the core file stored and each kind refused, each kind of shell refused, a shell kept and the page built from it, the same again, plugin tags before the core, a new `index.html` built from until a shell is published for it. |
 | `npm run test:integrity` | The tiddler list's integrity, draft-like titles and `.gitignore` (see below). |
 | `npm run test:r2` | R2 calls per kind of request, against a budget (see below). |
 | `npm run test:backup` | Queue backup against an imitation of GitHub's Contents API (see below). |
 | `npm run test:tabs` | Real TiddlyWiki in Chromium with several tabs (see below). |
 | `npm run test:plugins` | Real plugins in Chromium, on the admin site and a stand-in for the public site (see below). |
+| `npm run test:publish` | The page published from a real TiddlyWiki in Chromium (see below). |
 
 The tests run the real worker in Cloudflare's local runtime (workerd, through Miniflare) with a local R2 bucket and queue. Outgoing calls to GitHub and Cloudflare's API are answered by imitations, so nothing touches your accounts. They use local ports 8790–8800.
 
@@ -687,6 +750,12 @@ Backups don't appear here: with the queue bound, as deployed, they run later in 
 - **Update, disable and re-enable, a theme, a standalone module, delete,** and a plugin turned back into an ordinary tiddler.
 - **Edge cases:** a body containing `,"text":` in a field and in the text, a tiddler without text, a field called `fields` (stored nested, and read back after a reload, on an ordinary tiddler and on a startup tiddler and a module loaded at boot), "flat" bodies that aren't and a save in TiddlyWeb's layout (both stored flat), a title with spaces, `#` and non-ASCII, a stored plugin whose file is missing, the order of a save's purge, overlapping page builds, a tiddler list replaced by hand, and the recovery steps.
 - **A public tab while the tiddler list is missing or damaged:** it keeps its tiddlers and doesn't crash, asks again at a URL no cache holds, and catches up by itself once the worker has rebuilt the list; after a damaged list, its next sync bypasses caches too, and a damaged copy its browser kept is passed over quietly.
+
+`test:publish` starts from the full test wiki as `index.html` and covers:
+- **The first admin load** publishing the core file (TiddlyWiki's, without the snapshot setting) and the shell (TiddlyWiki's external-core page, a fraction of the size), `index.html` untouched; the next load getting the light page with the core from the public site, at 2 worker requests, publishing nothing.
+- **A plugin installed from the wiki** staying a file, loaded before the core; **one with raw markup** also written into the page with its markup, published once when it's installed, updated or deleted (one with JavaScript at the next load, then running its markup first), nothing published at a reload; **the title and raw markup** published once per burst, each where TiddlyWiki puts it, the Open Graph tags with your title, the copies in the page with the worker's revisions; **the public site** running from the page, splash screen removed once started.
+- **Nothing published** for a save that doesn't change the page (not even a list request) or typing in a draft; **another tab** not publishing at load or for changes it receives, and a tab publishing after another including that one's change.
+- **An edit made in R2** published at the next admin load once its slow-loading text has arrived; **a failed publish** reported and retried; **a new `index.html`** used at once, then published for (the core file not sent again); **safe mode** neither publishing nor syncing.
 
 To run the browser tests against your own wiki file, download `index.html` from the bucket and run `WIKI_HTML=/path/to/index.html npm run test:tabs` (or `test:plugins`).
 

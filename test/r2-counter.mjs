@@ -12,7 +12,9 @@ const running = new Map();  // call -> how many are running
 function kind(key) {
   if (key === "recipes/default/tiddlers.json") return "list";
   if (key.startsWith("recipes/default/tiddlers/")) return "tiddler";
+  if (key === "_plugins/tiddlywikicore.js") return "core file";
   if (key.startsWith("_plugins/")) return "plugin file";
+  if (key === "_page/shell.html") return "page shell";
   if (key.startsWith("_repair/")) return "repair";
   if (key.startsWith("_backup/")) return "backup copy";
   return key;   // baked.html, index.html, status...
