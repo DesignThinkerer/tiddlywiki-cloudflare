@@ -17,6 +17,8 @@ const BUDGETS = {
   "page load, browser has the page (304 by date)": { "get baked.html": 1, "head index.html": 1 },
   "tiddler list, first fetch": { "get list": 1 },
   "tiddler list, unchanged (304)": { "get list": 1 },
+  "tiddler list, asking how backups go (page load, then hourly)": { "get list": 1, "get backup status": 1 },
+  "tiddler list, unchanged (304), asking how backups go": { "get list": 1, "get backup status": 1 },
   "save a new tiddler": { "head tiddler": 1, "get list": 1, "put tiddler": 1, "put list": 1 },
   "save an update": { "head tiddler": 1, "get list": 1, "put tiddler": 1, "put list": 1 },
   // Different content, so different bytes: the stored tiddler isn't read to compare them. (The list
@@ -104,6 +106,11 @@ check("...answered 304", byDate.status === 304, `status ${byDate.status}`);
 const first = await measure("tiddler list, first fetch", () => mf.dispatchFetch(`${base}/${LIST}`));
 const listEtag = first.headers.get("ETag");
 await measure("tiddler list, unchanged (304)", () => mf.dispatchFetch(`${base}/${LIST}`, { headers: { "If-None-Match": listEtag } }));
+const asked = await measure("tiddler list, asking how backups go (page load, then hourly)", () => mf.dispatchFetch(`${base}/${LIST}`, { headers: { "X-Backup-Status": "ask" } }));
+check("...the list and the backup status read at the same time, and the answer says how backups go",
+  asked.overlaps.includes("get backup status + get list") && asked.headers.get("X-Backup-Status") === "ok", `${JSON.stringify(asked.overlaps)} ${asked.headers.get("X-Backup-Status")}`);
+const askedUnchanged = await measure("tiddler list, unchanged (304), asking how backups go", () => mf.dispatchFetch(`${base}/${LIST}`, { headers: { "If-None-Match": listEtag, "X-Backup-Status": "ask" } }));
+check("...answered 304, with the backup status", askedUnchanged.status === 304 && askedUnchanged.headers.get("X-Backup-Status") === "ok", `${askedUnchanged.status} ${askedUnchanged.headers.get("X-Backup-Status")}`);
 
 let res = await measure("save a new tiddler", () => save("Note", { text: "v1" }, { "If-None-Match": "*" }));
 check("...the lookup and the list read run at the same time", res.overlaps.includes("get list + head tiddler"), JSON.stringify(res.overlaps));

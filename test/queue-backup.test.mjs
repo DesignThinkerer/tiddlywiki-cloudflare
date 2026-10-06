@@ -4,7 +4,7 @@ import { Miniflare } from "miniflare";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 
-const WORKER = fileURLToPath(new URL("../worker.js", import.meta.url));
+const ROOT = fileURLToPath(new URL("..", import.meta.url));
 
 // ---- Fake GitHub Contents API ------------------------------------------------------------------
 const sha1 = b => crypto.createHash("sha1").update(b).digest("hex");
@@ -12,7 +12,7 @@ const blobSha = buf => sha1(Buffer.concat([Buffer.from(`blob ${buf.length}\0`), 
 const files = new Map();      // decoded path -> { sha, text }
 const commits = [];           // { message, path, text|null }
 let inFlight = 0, maxInFlight = 0, latencyMs = 50;
-const faults = { rateLimitPuts: 0, outage: false, failOnce: new Set(), refuse: new Set(), failPutOnceOfText: new Map(), garbleContent: new Set() };
+const faults = { badCredentials: false, rateLimitPuts: 0, outage: false, failOnce: new Set(), refuse: new Set(), failPutOnceOfText: new Map(), garbleContent: new Set() };
 const ghCalls = [];
 const json = (obj, status = 200, headers = {}) => new Response(JSON.stringify(obj), { status, headers: { "Content-Type": "application/json", ...headers } });
 
@@ -24,6 +24,7 @@ async function fakeGitHub(req) {
   const body = req.method === "GET" ? null : await req.json();
   ghCalls.push(`${req.method} ${path}`);
   if (req.headers.get("authorization") !== "Bearer ghtoken") return json({ message: "Bad credentials" }, 401);
+  if (faults.badCredentials) return json({ message: "Bad credentials", documentation_url: "https://docs.github.com/rest" }, 401);
   if (faults.outage) return json({ message: "Server Error" }, 502);
   if (req.method !== "GET") {
     const key = `${req.method} ${path}`;
@@ -69,14 +70,16 @@ async function fakeGitHub(req) {
 }
 
 // ---- Worker with a queue -----------------------------------------------------------------------
+// (Behind test/r2-counter.mjs, which can make chosen R2 calls fail)
 const workerLog = [];   // what the worker printed (console.error included)
-function makeWorker(port, withQueue) {
+function makeWorker(port, withQueue, bindings = {}) {
   return new Miniflare({
     handleRuntimeStdio(stdout, stderr) {
       for (const stream of [stdout, stderr]) stream.on("data", chunk => { workerLog.push(String(chunk)); process.stdout.write(chunk); });
     },
-    modules: true, scriptPath: WORKER, compatibilityDate: "2024-09-23", r2Buckets: ["WIKI_BUCKET"], port,
-    bindings: { GITHUB_REPO: "o/r", GITHUB_TOKEN: "ghtoken", BACKUP_RETRY_SECONDS: "1" },
+    modules: true, scriptPath: "test/r2-counter.mjs", modulesRoot: ROOT, modulesRules: [{ type: "ESModule", include: ["**/*.js", "**/*.mjs"] }],
+    compatibilityDate: "2024-09-23", r2Buckets: ["WIKI_BUCKET"], port,
+    bindings: { GITHUB_REPO: "o/r", GITHUB_TOKEN: "ghtoken", BACKUP_RETRY_SECONDS: "1", ...bindings },
     ...(withQueue ? {
       queueProducers: { BACKUP_QUEUE: "wiki-backup" },
       queueConsumers: { "wiki-backup": { maxBatchSize: 10, maxBatchTimeout: 0.2, maxRetries: 3 } },
@@ -84,7 +87,7 @@ function makeWorker(port, withQueue) {
     outboundService: async req => req.url.startsWith("https://api.github.com/") ? fakeGitHub(req) : new Response("{}"),
   });
 }
-const mf = makeWorker(0, true);   // (port 0: any free one)
+const mf = makeWorker(0, true, { BACKUP_ALERT_MINUTES: "0" });   // (port 0: any free one; failures reported at once)
 const base = (await mf.ready).toString().replace(/\/$/, "");
 const bucket = await mf.getR2Bucket("WIKI_BUCKET");
 await bucket.put("recipes/default/tiddlers.json", "[]");
@@ -97,6 +100,14 @@ const del = (title, b = base, m = mf) => m.dispatchFetch(`${b}/bags/default/tidd
 const r2Text = async title => (await bucket.get(`recipes/default/tiddlers/${title}`))?.text();
 const repoText = title => files.get(`tiddlers/${title}.json`)?.text;          // decoded path
 const textOf = s => s && JSON.parse(s).text;
+// What the admin wiki is told about backups when it asks with the tiddler list: "ok", the problem, or
+// null when the answer doesn't say
+async function backupStatus(b = base, m = mf, ask = true) {
+  const res = await m.dispatchFetch(`${b}/recipes/default/tiddlers.json`, ask ? { headers: { "X-Backup-Status": "ask" } } : undefined);
+  await res.arrayBuffer();
+  const value = res.headers.get("X-Backup-Status");
+  return value === null || value === "ok" ? value : JSON.parse(decodeURIComponent(value));
+}
 async function until(cond, ms = 60000) {
   const end = Date.now() + ms;
   while (Date.now() < end) { if (await cond()) return true; await new Promise(r => setTimeout(r, 100)); }
@@ -130,6 +141,9 @@ check("rapid edits: every version committed in order", JSON.stringify(rapid) ===
 // 4. Secondary rate limit: backups wait and then go through, in order
 faults.rateLimitPuts = 4;
 for (const t of ["RL a", "RL b", "RL c"]) await put(t, t);
+await until(async () => faults.rateLimitPuts <= 2);
+await new Promise(r => setTimeout(r, 300));
+check("a rate limit isn't a failure to report: GitHub only asks to wait", !(await bucket.head("_backup/status.json")) && await backupStatus() === "ok");
 const rlDone = await until(async () => ["RL a", "RL b", "RL c"].every(t => repoText(t) !== undefined));
 const rlOrder = commits.filter(c => c.path.startsWith("tiddlers/RL ")).map(c => c.path);
 check("rate limited: all committed after waiting, in save order", rlDone && JSON.stringify(rlOrder) === JSON.stringify(["tiddlers/RL a.json", "tiddlers/RL b.json", "tiddlers/RL c.json"]), JSON.stringify(rlOrder));
@@ -269,8 +283,29 @@ const othersIn = await until(async () => repoText("After refused 1") !== undefin
 await until(async () => refusedTries() >= 2, 20000);
 check("a file GitHub keeps refusing doesn't hold up the backups after it, and is still retried",
   othersIn && repoText("Refused") === undefined && refusedTries() >= 2, `others in ${othersIn}, refused tries ${refusedTries()}`);
+const refusedStatus = await backupStatus();
+check("...and the admin wiki is told that file isn't backed up, and why", refusedStatus?.count === 1 && refusedStatus.title === "Refused" &&
+  refusedStatus.status === 422 && refusedStatus.error === "This path isn't allowed", JSON.stringify(refusedStatus));
 faults.refuse.clear();
 check("...and goes through once GitHub accepts it", await until(async () => textOf(repoText("Refused")) === "never accepted", 30000));
+check("...after which there's nothing to report", await until(async () => await backupStatus() === "ok" && !(await bucket.head("_backup/status.json")), 10000));
+
+// 16. Every backup failing (here a token GitHub no longer accepts): reported with the oldest one and
+// how many are waiting, only to a request that asks; cleared once they go through
+faults.badCredentials = true;
+const tokenSaved = Date.now();
+await put("Token 1", "t1");
+await put("Token 2", "t2");
+await until(async () => ghCalls.filter(c => c.startsWith("GET tiddlers/Token ")).length >= 2);
+await until(async () => (await backupStatus())?.count === 2, 10000);
+const tokenStatus = await backupStatus();
+check("all backups failing (a token GitHub refuses): reported with how many wait, the oldest, its time and GitHub's answer",
+  tokenStatus?.count === 2 && tokenStatus.title === "Token 1" && tokenStatus.status === 401 && tokenStatus.error === "Bad credentials" &&
+  tokenStatus.since >= tokenSaved - 1000 && tokenStatus.since <= Date.now(), JSON.stringify(tokenStatus));
+check("...not in a tiddler list request that doesn't ask (no extra R2 read there)", await backupStatus(base, mf, false) === null);
+faults.badCredentials = false;
+check("...and cleared once they go through", await until(async () => repoText("Token 1") !== undefined && repoText("Token 2") !== undefined &&
+  await backupStatus() === "ok" && !(await bucket.head("_backup/status.json")), 30000));
 
 // 10. Without a queue binding, it commits directly like before
 const mf2 = makeWorker(0, false);
@@ -278,6 +313,26 @@ const base2 = (await mf2.ready).toString().replace(/\/$/, "");
 await (await mf2.getR2Bucket("WIKI_BUCKET")).put("recipes/default/tiddlers.json", "[]");
 await put("No queue", "direct", base2, mf2);
 check("no queue bound: direct commit as before", await until(async () => textOf(repoText("No queue")) === "direct", 10000));
+// Recording how backups go is never part of the backup: an R2 error there doesn't make a backup that
+// went through count as failed (and be run again)
+const bucket2 = await mf2.getR2Bucket("WIKI_BUCKET");
+await bucket2.put("_backup/status.json", JSON.stringify({ failing: { "Recorded or not": { since: Date.now() - 1000, last: Date.now(), error: "x", status: 500 } } }));
+await mf2.dispatchFetch(`${base2}/__r2fail`, { method: "POST", body: JSON.stringify({ call: "delete backup status", times: 3 }) });
+await put("Recorded or not", "r", base2, mf2);
+await until(async () => textOf(repoText("Recorded or not")) === "r", 10000);
+await new Promise(r => setTimeout(r, 4000));   // long enough for the retries a failure would bring
+const recordedRuns = ghCalls.filter(c => c === "GET tiddlers/Recorded or not.json").length;
+check("an R2 error while recording how backups go doesn't make a backup that went through count as failed",
+  textOf(repoText("Recorded or not")) === "r" && recordedRuns === 1, `${recordedRuns} runs`);
+await bucket2.delete("_backup/status.json");
+// A direct backup that fails for good is recorded too; it's reported once it has failed for an hour
+faults.badCredentials = true;
+await put("No queue failing", "x", base2, mf2);
+const recorded = await until(async () => !!(await bucket2.head("_backup/status.json")), 15000);
+check("no queue bound: a backup that fails for good is recorded, and reported only after an hour",
+  recorded && JSON.parse(await (await bucket2.get("_backup/status.json")).text()).failing?.["No queue failing"]?.status === 401 && await backupStatus(base2, mf2) === "ok",
+  recorded ? await (await bucket2.get("_backup/status.json")).text() : "not recorded");
+faults.badCredentials = false;
 await mf2.dispose();
 
 console.log(`\n${results.filter(Boolean).length}/${results.length} passed; ${commits.length} commits, ${ghCalls.length} GitHub calls`);

@@ -31,6 +31,7 @@ GITHUB_BRANCH = "main"
 CF_ZONE_ID = "YOUR-ZONE-ID"
 # PUBLIC_WIKI_URL = "https://my-tiddlywiki.theophile.dev"   # the default
 # CONFLICT_GUARD = "off"                                     # stop baking the browser module
+# BACKUP_ALERT_MINUTES = "60"                                # the default: show backups failing for an hour
 
 # Secrets: set with `npx wrangler secret put NAME`, never in this file
 #   GITHUB_TOKEN   fine-grained token with Contents: read and write on the backup repository

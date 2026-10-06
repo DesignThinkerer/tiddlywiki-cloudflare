@@ -515,6 +515,36 @@ check("...when the original was deleted in another tab, it says to rename the co
   /inactive/.test(goneAlert) && /rename it/.test(goneAlert) && /module-type/.test(goneAlert) && !/copy its text/.test(goneAlert), goneAlert);
 await other.close();
 
+// --- 16. Backups failing are shown in the admin wiki ---------------------------------------------
+// The worker records backups GitHub keeps refusing (_backup/status.json, written by the queue
+// consumer; stored here directly). A page load asks with its first tiddler list request, and the
+// problem appears as an alert, which goes once the backups get through.
+const BACKUP_ALERT = "$:/temp/cfworker/backup-alert";
+const hourAgo = Date.now() - 2 * 3600 * 1000;
+await bucket.put("_backup/status.json", JSON.stringify({ failing: {
+  "Alpha": { since: hourAgo, last: Date.now(), error: "Bad credentials", status: 401 },
+  "Beta": { since: hourAgo + 60000, last: Date.now(), error: "Bad credentials", status: 401 } } }));
+let reqMark16 = requests.length;
+const K = await openTab("K");
+const firstListAsk = requests.slice(reqMark16).find(r => r.tag === "K" && r.url.includes("tiddlers.json"))?.headers["x-backup-status"];
+await K.waitForFunction(t => $tw.wiki.tiddlerExists(t), BACKUP_ALERT, { timeout: 10000 }).catch(() => {});
+const backupAlert = await K.evaluate(t => { const a = $tw.wiki.getTiddler(t); return a ? { tags: a.fields.tags, text: a.fields.text } : null; }, BACKUP_ALERT);
+check("a page load asks how backups go with its first tiddler list request", firstListAsk === "ask", String(firstListAsk));
+check("...and failing backups show as an alert: since when, how many, the oldest, GitHub's answer, what to do",
+  !!backupAlert && (backupAlert.tags || []).includes("$:/tags/Alert") && /2 tiddlers/.test(backupAlert.text) && backupAlert.text.includes("[[Alpha]]") &&
+  backupAlert.text.includes("Bad credentials") && backupAlert.text.includes("GITHUB_TOKEN"), JSON.stringify(backupAlert));
+reqMark16 = requests.length;
+await bucket.delete("_backup/status.json");
+await sync(K);
+const askedWhileShown = requests.slice(reqMark16).some(r => r.tag === "K" && r.url.includes("tiddlers.json") && r.headers["x-backup-status"] === "ask");
+check("...while it shows, each tiddler list request asks again, and the alert goes once backups get through",
+  askedWhileShown && !(await K.evaluate(t => $tw.wiki.tiddlerExists(t), BACKUP_ALERT)));
+reqMark16 = requests.length;
+await sync(K);
+check("...after that, the next requests don't ask (once an hour)", !requests.slice(reqMark16).some(r => r.tag === "K" && r.headers["x-backup-status"]),
+  JSON.stringify(requests.slice(reqMark16).filter(r => r.tag === "K").map(r => r.url)));
+await K.close();
+
 // --- Summary --------------------------------------------------------------------------------
 const bad = net.filter(x => x.status === 428 || x.status >= 500);
 check("no 428/5xx responses anywhere", bad.length === 0, JSON.stringify(bad));

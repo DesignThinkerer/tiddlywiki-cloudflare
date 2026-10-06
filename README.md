@@ -81,12 +81,12 @@ flowchart LR
 ├── package.json              build and test scripts
 └── test/
     ├── make-fixture.mjs      builds a test TiddlyWiki (test/fixtures/index.html)
-    ├── two-tabs.test.mjs     real TiddlyWiki in Chromium, several tabs (77 checks)
-    ├── plugins.test.mjs      real plugins on the admin and public sites (66 checks)
+    ├── two-tabs.test.mjs     real TiddlyWiki in Chromium, several tabs (81 checks)
+    ├── plugins.test.mjs      real plugins on the admin and public sites (67 checks)
     ├── page-publish.test.mjs the page published from a real TiddlyWiki (48 checks)
-    ├── queue-backup.test.mjs queue backup against an imitation of GitHub (22 checks)
+    ├── queue-backup.test.mjs queue backup against an imitation of GitHub (30 checks)
     ├── integrity.test.mjs    the tiddler list's integrity, a failed page build, draft-like titles, .gitignore (60 checks)
-    ├── r2-ops.test.mjs       R2 calls per kind of request, against a budget (25 checks)
+    ├── r2-ops.test.mjs       R2 calls per kind of request, against a budget (29 checks)
     ├── r2-counter.mjs        test-only wrapper that counts the worker's R2 calls
     ├── browser-harness.mjs   the browser suites' shared setup (worker, public site stand-in, Chromium, helpers)
     └── bake.test.mjs         page serving and rebuilding, the published page (46 checks)
@@ -149,6 +149,7 @@ Everything in the bucket is public through the custom domain, including tiddlers
    | `PUBLIC_WIKI_URL` | variable, optional | public address (default `https://my-tiddlywiki.theophile.dev`) |
    | `CONFLICT_GUARD` | variable, optional | `off` stops building the browser module into the page |
    | `BACKUP_RETRY_SECONDS` | variable, optional | first retry delay for failed backups (default 60) |
+   | `BACKUP_ALERT_MINUTES` | variable, optional | how long a backup has to keep failing before the admin wiki shows it (default 60, 4.7) |
 
    The worker doesn't check who's saving: Cloudflare Access protects the admin host (3.3).
 
@@ -231,7 +232,7 @@ This lets the admin wiki read tiddler contents from the public site (see 4.5 and
 | `OPTIONS *` | CORS headers (allows `If-Match`, `If-None-Match`, `X-Tiddler-Layout`, exposes `ETag`, `X-Tiddler-List` and `Retry-After`). |
 | `GET /status` | TiddlyWeb status: user `admin`, writable, recipe `default`. Kept by the browser for a week (`Cache-Control: private, max-age=604800`), so admin pages rarely ask (4.5). |
 | `GET /`, `/index.html`, `/baked.html` | The wiki page, rebuilt first if outdated, or `304 Not Modified` when the browser has it (4.3). |
-| `GET recipes/default/tiddlers.json` | The tiddler list, or `304 Not Modified` when unchanged (4.5), or `503` while it's being rebuilt (4.2). |
+| `GET recipes/default/tiddlers.json` | The tiddler list, or `304 Not Modified` when unchanged (4.5), or `503` while it's being rebuilt (4.2). With `X-Backup-Status: ask`, also how backups go, in the `X-Backup-Status` header (4.7). |
 | `GET recipes/default/tiddlers/<title>` | One tiddler as JSON (a flat one exactly as stored, see 4.2), with its revision in the body and the `ETag`. |
 | `GET <any other key>` | That R2 object as is. |
 | `PUT recipes/default/tiddlers/<title>` | Save (4.4): precondition check, conditional write, list update, purge, backup; for a plugin, its file and the page (4.8). Stored flat, whatever layout it arrives in (4.2). A body that isn't a tiddler (a JSON object whose `title` is text, the same as in the URL), or with a value that isn't text, gets `400`, and so does a title over 999 bytes of UTF-8 (an R2 key holds 1,024 with `recipes/default/tiddlers/`). |
@@ -259,6 +260,7 @@ R2 layout:
 | `recipes/default/tiddlers/<title>` | One tiddler as JSON, flat (below), under its raw title. |
 | `_plugins/<title>.js` | Generated: the script that loads a plugin or JavaScript module into the page (4.8). |
 | `_backup/versions/…` | Temporary copies of large versions waiting to be backed up (4.7). |
+| `_backup/status.json` | The backups GitHub keeps refusing, while there are any (4.7). |
 | `_repair/…` | Left by a rebuild of the tiddler list: the damaged copy, and the progress of a rebuild that takes several requests (below). |
 
 **Revisions.** Each save gets a new revision, `Date.now()` in milliseconds. It's stored in three places that always agree: the object's custom metadata, the `revision` field inside the tiddler JSON, and the tiddler list. `GET`, `PUT` and `DELETE` all read it from the metadata, which avoids false conflicts.
@@ -414,6 +416,11 @@ sequenceDiagram
 6. **On any GitHub error** (rate limit, outage, bad token, conflict, a path GitHub refuses), the failing message is sent to the queue again as a fresh message, with a delay. On a rate limit, every later message in the batch waits with it, in order. On any other error only that tiddler's later versions do, so they stay in order, while other tiddlers' backups go ahead: a file GitHub keeps refusing can't hold up the rest. The delay starts at `BACKUP_RETRY_SECONDS` (60), doubles each time up to 6 hours, and honours GitHub's `retry-after` / `x-ratelimit-reset` when given. Re-sending, instead of using the queue's own retry, means neither the queue's retry limit nor its message lifetime (24 hours on the free plan) can drop a backup: a failure only delays it. Only if re-sending itself fails does the worker fall back to the queue's own retry, where the retry limit applies.
 
 Commit messages: `✏️ Save: <title>`, `🗑️ Delete: <title>`, and `✏️ Save: <title> (newer version restored)` for the case in point 4.
+
+**Failing backups show in the admin wiki.** Retrying means nothing is lost, but also that a token GitHub no longer accepts (an expired one, say) would otherwise only show in the worker's logs, for months. So:
+- **The queue handler records each tiddler GitHub keeps refusing** in `_backup/status.json`: since when (the save of its oldest waiting version), GitHub's answer and its HTTP status. (Readable on the public site like everything in the bucket, it shows nothing new: the titles are in the public tiddler list already, and GitHub's answers hold no secret.) Rate limits aren't recorded: they only make backups wait, for hours during a big import. The entry goes once that tiddler's backup gets through, and the file once none is left. The file is written only when something changes, and read only by a run with a failure or a retry; a direct backup (no queue) records its failures too.
+- **The admin wiki asks with its tiddler list request** (header `X-Backup-Status: ask`): when the page loads, then once an hour, and at each request while the alert shows. Only then does the worker read the file, at the same time as the list, and answer in a header of that response, a `304` included. No extra request.
+- **An alert** ("GitHub backup") then says since when backups fail, how many tiddlers wait and the oldest, GitHub's answer, and what to do: for a `401`, make a new token and update the `GITHUB_TOKEN` secret. Only backups failing for at least `BACKUP_ALERT_MINUTES` (60) are reported, so a short GitHub outage doesn't raise one. It goes away by itself once they get through. Dismissed, it stays away for that problem; a reload shows it again if it's still there.
 
 File paths are the ones the original worker used: the Contents API URL `…/contents/tiddlers/<encodeURIComponent(title)>.json`. History therefore continues in the same files.
 
@@ -656,6 +663,7 @@ If the page is rebuilt before step 4 (by a deploy, or by saving another plugin, 
 | Console shows "blocked by CORS policy" for `my-tiddlywiki…` | The transform rule is missing or scoped wrong | Add or fix it (3.5). Until then, tiddlers simply load through the worker. |
 | The public site shows an old version | Browser TTL, or a failed purge | Check the cache rule's Browser TTL; look for `Cache purge failed` in the logs; purge manually. |
 | Link previews or the tab show "My TiddlyWiki", or raw markup (yours or a plugin's) has no effect | The page hasn't been published since the change (4.9); for a plugin with JavaScript, the admin wiki hasn't been reloaded since installing it | Open or reload the admin wiki: it publishes once loaded. A notification says if it can't. |
+| "GitHub backup: Backups to GitHub have been failing since …" alert | GitHub refuses the backups; the alert gives its answer | `Bad credentials` (`401`): the token has expired or was revoked. Make a new one (3.6) and put it in the `GITHUB_TOKEN` secret; the waiting backups then go through by themselves, and the alert goes. For other answers, the alert says what to check. |
 | "Page not published: …" notification | The worker refused the page, or couldn't be reached | The message says why. It's tried again at the next save or load (a refused page once it changes); "index.html has changed" means reload the admin wiki. |
 | "Page not published: The core file still switches the save template…" | A new TiddlyWiki version (a new `index.html`) writes the line the publisher takes out of the core file differently. | The site keeps working, built from `index.html` (heavier). Update the worker to a version that knows that TiddlyWiki, or go back to the previous `index.html`. |
 | "Page not published: The page doesn't contain the TiddlyWeb plugin…" | TiddlyWeb was installed or updated from the wiki (the library, or a file dropped in), separately from `index.html`. It's then loaded as a file and left out of the page, and a page without it couldn't sync. TiddlyWeb is meant to match the core's version. | Delete it in the wiki and reload: the page still holds the one from `index.html`, and that load publishes. To move to a newer TiddlyWeb, upload an `index.html` of that TiddlyWiki version instead. |
@@ -731,13 +739,14 @@ The tests run the real worker in Cloudflare's local runtime (workerd, through Mi
 - tiddlers titled `Draft of '…'` saved and deleted like any other, while real drafts still aren't stored;
 - `.gitignore` covering `wrangler.toml`, `.dev.vars` and `.wrangler/`.
 
-`test:r2` runs the worker unchanged behind `test/r2-counter.mjs`, which counts every R2 call it makes, including work left running after the answer (and can make chosen calls fail, which `test:integrity` uses). Each kind of request has a budget, and a change that makes more calls fails. It also checks that a save reads the stored tiddler and the list at the same time. These are the counts now:
+`test:r2` runs the worker unchanged behind `test/r2-counter.mjs`, which counts every R2 call it makes, including work left running after the answer (and can make chosen calls fail, which `test:integrity` and `test:backup` use). Each kind of request has a budget, and a change that makes more calls fails. It also checks that a save reads the stored tiddler and the list at the same time. These are the counts now:
 
 | Request | R2 calls |
 |---|---|
 | Admin page load, page up to date | 2: read `baked.html`, check `index.html` |
 | Admin page load, the browser has the page (`304`) | 2: check `baked.html` (its body isn't read), check `index.html` |
 | Tiddler list, first fetch or unchanged (`304`) | 1 |
+| Tiddler list asking how backups go (page load, then hourly) | 2, at the same time: the list and `_backup/status.json` |
 | Save a new tiddler, or an update | 4: look it up and read the list (both at once), write the tiddler, write the list |
 | Save refused (`412`) | 2: look it up and read the list, both at once (the stored tiddler itself is read only if it's the same size as the save, to recognise a save sent again) |
 | Save sent again, already stored | 4: look it up, read it to compare, read and write the list |
@@ -760,6 +769,7 @@ Backups don't appear here: with the queue bound, as deployed, they run later in 
 - non-ASCII text;
 - a duplicate delivery;
 - a file GitHub keeps refusing: the backups after it go through, it keeps being retried, and goes through once accepted;
+- what the admin wiki is told: a refused file (with GitHub's answer), every backup failing with a token GitHub refuses (how many, the oldest, since when; only to a request that asks), cleared once they go through; a rate limit not reported; a direct backup that fails for good recorded, and reported only after `BACKUP_ALERT_MINUTES`; an R2 error while recording that doesn't make a backup that went through count as failed;
 - GitHub's copy not decoded (only its `sha` used), and a late version whose "newer version restored" step fails, put back by the retry;
 - the fallback without a queue.
 
@@ -769,6 +779,7 @@ Backups don't appear here: with the queue bound, as deployed, they run later in 
 - **Public cache:** exact purge URLs (also the admin page's copy, purged with its `Origin` header, on a save and a delete) and the `304`.
 - **Request savings:** `/status` asked from the worker once by the first page load in a browser, then answered from the browser's cache: a 2-request page load (TiddlyWiki still knows it's logged in), a reload that downloads none of the page (`304`), also through a stand-in for Cloudflare that removes the page's ETag (the browser asks by date), the stale-public-copy fallback, a missing CORS header, the hidden-tab pause.
 - **A damaged tiddler list** rebuilt over several requests while a tab is open: the tab keeps its tiddlers and shows no error; a save answered "rebuilding" is sent again quietly, and any other `503` is reported as before.
+- **Failing backups:** a page load asks how backups go with its first tiddler list request, shows an alert (since when, how many, the oldest, GitHub's answer, what to do), asks at each request while it shows, removes it once backups get through, then asks no more than hourly.
 - **Leaving with an editor open:** the browser asks before closing a tab whose editor holds changes, not one left unchanged.
 
 `test:plugins` uses the markdown and KaTeX plugins shipped with TiddlyWiki and covers:
@@ -777,7 +788,7 @@ Backups don't appear here: with the queue bound, as deployed, they run later in 
 - **The public site:** the plugin works, with no worker request.
 - **Update, disable and re-enable, a theme, the sync settings, a standalone module, delete,** and a plugin turned back into an ordinary tiddler.
 - **Edge cases:** a body containing `,"text":` in a field and in the text, a tiddler without text, a field called `fields` (stored nested, and read back after a reload, on an ordinary tiddler and on a startup tiddler and a module loaded at boot), "flat" bodies that aren't and a save in TiddlyWeb's layout (both stored flat), a title with spaces, `#` and non-ASCII, a stored plugin whose file is missing, the order of a save's purge, overlapping page builds, a tiddler list replaced by hand, and the recovery steps.
-- **A public tab while the tiddler list is missing or damaged:** it keeps its tiddlers and doesn't crash, asks again at a URL no cache holds, and catches up by itself once the worker has rebuilt the list; after a damaged list, its next sync bypasses caches too, and a damaged copy its browser kept is passed over quietly.
+- **A public tab while the tiddler list is missing or damaged:** it keeps its tiddlers and doesn't crash, asks again at a URL no cache holds, and catches up by itself once the worker has rebuilt the list; after a damaged list, its next sync bypasses caches too, and a damaged copy its browser kept is passed over quietly; it never asks how backups go (only the admin site does).
 
 `test:publish` starts from the full test wiki as `index.html` and covers:
 - **The first admin load** publishing the core file (TiddlyWiki's, without the snapshot setting, which the worker checks) and the shell (TiddlyWiki's external-core page, a fraction of the size), `index.html` untouched; the next load getting the light page with the core from the public site, at 2 worker requests, publishing nothing.

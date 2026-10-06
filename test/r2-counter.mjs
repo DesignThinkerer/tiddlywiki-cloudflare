@@ -3,7 +3,7 @@
 // chosen calls fail. GET /__r2ops returns { calls, overlaps } since the last time and starts a new
 // count; POST /__r2fail with { call: "put baked.html", times: 1 } makes the next such calls throw
 // (or, with delay: milliseconds, makes them wait that long first).
-// Used by test/r2-ops.test.mjs and test/integrity.test.mjs; never deployed.
+// Used by test/r2-ops.test.mjs, test/integrity.test.mjs and test/queue-backup.test.mjs; never deployed.
 import worker from "../worker.js";
 
 let calls = [];
@@ -19,6 +19,7 @@ function kind(key) {
   if (key.startsWith("_plugins/")) return "plugin file";
   if (key === "_page/shell.html") return "page shell";
   if (key.startsWith("_repair/")) return "repair";
+  if (key === "_backup/status.json") return "backup status";
   if (key.startsWith("_backup/")) return "backup copy";
   return key;   // baked.html, index.html, status...
 }
