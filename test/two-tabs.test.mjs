@@ -342,6 +342,57 @@ await new Promise(r => setTimeout(r, 800));
 const shownPolls = requests.slice(reqMark).filter(r => r.tag === "C" && r.url.includes("tiddlers.json")).length;
 check("hidden tab does not poll; shown tab syncs at once", hiddenPolls === 0 && shownPolls >= 1, `hidden ${hiddenPolls}, on show ${shownPolls}`);
 
+// --- 14. A damaged tiddler list is rebuilt while a tab is open ------------------------------------
+await B.close();
+await C.close();
+// Enough tiddlers that the worker rebuilds the list over several requests
+for (let i = 0; i < 400; i += 50) {
+  await Promise.all(Array.from({ length: 50 }, (_, j) => {
+    const title = `$:/filler/${i + j}`, revision = String(1600000000000 + i + j);
+    return bucket.put(`recipes/default/tiddlers/${title}`,
+      `{"title":"${title}","type":"text/vnd.tiddlywiki","text":"f${i + j}","revision":"${revision}","bag":"default","recipe":"default"}`,
+      { customMetadata: { revision, layout: "flat" } });
+  }));
+}
+await clearAlerts(A);
+await bucket.put("recipes/default/tiddlers.json", "[{\"title\": \"Alpha\", ");
+reqMark = requests.length;
+let settled = true;
+try { await sync(A); } catch (e) { settled = false; }
+const listGets = requests.slice(reqMark).filter(r => r.tag === "A" && r.url.includes("tiddlers.json")).length;
+check("the tab's sync waits while the worker rebuilds a damaged list over several requests, then completes",
+  settled && listGets >= 3, `${listGets} list requests${settled ? "" : ", the sync never completed"}`);
+check("...keeps its tiddlers and gets the ones the damaged list was missing",
+  (await localText(A, "Note 2")) === "note text 2" && (await localText(A, "$:/filler/7")) === "f7");
+check("...and shows no error", (await alerts(A)).length === 0, JSON.stringify(await alerts(A)));
+// Any other 503 (Cloudflare's own, when a request runs out of CPU, say) is reported as usual
+await A.route("**/recipes/default/tiddlers.json*", route => route.fulfill({ status: 503, body: "Worker exceeded resource limits" }));
+reqMark = requests.length;
+await A.evaluate(() => $tw.syncer.syncFromServer());
+await new Promise(r => setTimeout(r, 2500));
+const plainRetries = requests.slice(reqMark).filter(r => r.tag === "A" && r.url.includes("tiddlers.json")).length;
+check("another 503 isn't retried quietly: TiddlyWiki reports it as before",
+  plainRetries <= 2 && (await alerts(A)).some(text => text.includes("503")), `${plainRetries} list requests, alerts ${JSON.stringify(await alerts(A))}`);
+await A.unroute("**/recipes/default/tiddlers.json*");
+await clearAlerts(A);
+await settle(A);
+// A save answered "rebuilding" (another tab's page load is rebuilding the list) is sent again quietly
+let rebuildingAnswers = 2;
+await A.route("**/recipes/default/tiddlers/QuietSave", route => {
+  if (route.request().method() === "PUT" && rebuildingAnswers-- > 0) {
+    return route.fulfill({ status: 503, headers: { "X-Tiddler-List": "rebuilding" }, body: "rebuilding" });
+  }
+  return route.continue();
+});
+const netBefore = net.length;
+await create(A, "QuietSave", "sent three times");
+await settle(A);
+check("a save answered \"rebuilding\" is sent again quietly and goes through",
+  rebuildingAnswers === -1 && (await server("QuietSave"))?.text === "sent three times" && (await alerts(A)).length === 0,
+  `${2 - rebuildingAnswers} sends, alerts ${JSON.stringify(await alerts(A))}`);
+await A.unroute("**/recipes/default/tiddlers/QuietSave");
+net.splice(netBefore, net.length - netBefore, ...net.slice(netBefore).filter(x => x.status !== 503));   // expected, not failures
+
 // --- Summary --------------------------------------------------------------------------------
 const bad = net.filter(x => x.status === 428 || x.status >= 500);
 check("no 428/5xx responses anywhere", bad.length === 0, JSON.stringify(bad));

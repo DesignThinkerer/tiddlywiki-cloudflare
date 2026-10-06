@@ -18,6 +18,9 @@ It also keeps worker requests down:
 - Drafts and $:/StoryList, which the worker never stores, are not sent to it, and the "put" saver
   no longer probes the page URL on every load.
 - Background tabs stop polling for changes and catch up as soon as they are shown again.
+- While the worker rebuilds a damaged or missing tiddler list, requests it answers "rebuilding"
+  are sent again quietly, and a list that can't be read is a sync error: TiddlyWiki would
+  otherwise remove every tiddler it doesn't find in it, or stop with an "Internal JavaScript Error".
 
 And it sends saves in the layout the worker stores (X-Tiddler-Layout: flat): every field at the
 top level, compact JSON, "text" last, no revision/bag/recipe. The worker then only parses the
@@ -81,7 +84,8 @@ exports.startup = function() {
 		// Base revisions. A string is the server revision the content was derived from, null means
 		// "must not exist on the server yet", undefined means unknown (the save is sent unconditionally).
 		draftBases = Object.create(null),   // draft title -> {of: title, base: revision}
-		pendingBases = Object.create(null); // title -> {base: revision} for a confirmed draft not yet uploaded
+		pendingBases = Object.create(null), // title -> {base: revision} for a confirmed draft not yet uploaded
+		listBypassCache = false;            // the last list was the stand-in or unreadable (isListStandIn)
 	proto.conflictGuardInstalled = true;
 
 	if(publicBase && publicBase.charAt(publicBase.length - 1) !== "/") {
@@ -164,6 +168,39 @@ exports.startup = function() {
 		if(pendingBases[title] && pendingBases[title].base === oldBase) {
 			pendingBases[title].base = newBase;
 		}
+	}
+
+	// While the worker rebuilds a damaged tiddler list (a step per request), it answers the list,
+	// saves and deletes with 503 and "X-Tiddler-List: rebuilding", without changing anything: the
+	// request is simply sent again, quietly (TiddlyWiki would show an error and wait 5 seconds).
+	// Any other error is reported as usual.
+	var REBUILD_RETRIES = 200;
+	function isRebuilding(request) {
+		return !!request && request.status === 503 && request.getResponseHeader("X-Tiddler-List") === "rebuilding";
+	}
+	// Public tabs read the list straight from R2, so while the worker rebuilds a missing list they
+	// get the text standing in for it (the worker's listStandIn: keep the two in step). It isn't
+	// JSON, so TiddlyWiki can't take it for a list. It's fetched again a little later (only the
+	// worker's own requests move the rebuild on). After the stand-in or a list that can't be read,
+	// the list is fetched at a URL no cache holds until a good one comes back: a cached copy (the
+	// browser keeps one for a few minutes) could otherwise outlive the rebuild.
+	var LIST_STAND_IN_MARK = "Tiddler list being rebuilt";
+	function isListStandIn(request) {
+		return !!request && request.status === 200 && typeof request.responseText === "string" &&
+			request.responseText.indexOf(LIST_STAND_IN_MARK) === 0;
+	}
+	// TiddlyWiki removes every tiddler that isn't in the list it gets, so anything that isn't a list
+	// of tiddlers (a damaged upload, say) must be an error, not an empty list
+	function isTiddlerList(tiddlers) {
+		if(!$tw.utils.isArray(tiddlers)) {
+			return false;
+		}
+		for(var i = 0; i < tiddlers.length; i++) {
+			if(!tiddlers[i] || typeof tiddlers[i].title !== "string") {
+				return false;
+			}
+		}
+		return true;
 	}
 
 	function hasUnsavedChanges(title) {
@@ -311,39 +348,46 @@ exports.startup = function() {
 			return callback(null);
 		}
 		var body = flatBody(tiddler),
-			headers = {"Content-type": "application/json"};
+			headers = {"Content-type": "application/json"},
+			tries = 0;
 		if(body === null) {
 			body = this.convertTiddlerToTiddlyWebFormat(tiddler);
 		} else {
 			headers["X-Tiddler-Layout"] = "flat";
 		}
-		$tw.utils.httpRequest({
-			url: this.host + "recipes/" + encodeURIComponent(this.recipe) + "/tiddlers/" + encodeURIComponent(title),
-			type: "PUT",
-			headers: addPreconditions(headers,title,base,info),
-			data: body,
-			callback: function(err,data,request) {
-				if(err) {
-					if(request && request.status === 412) {
-						return resolveConflict(self,title,"save",callback);
+		function send() {
+			$tw.utils.httpRequest({
+				url: self.host + "recipes/" + encodeURIComponent(self.recipe) + "/tiddlers/" + encodeURIComponent(title),
+				type: "PUT",
+				headers: addPreconditions(headers,title,base,info),
+				data: body,
+				callback: function(err,data,request) {
+					if(err) {
+						if(isRebuilding(request) && ++tries <= REBUILD_RETRIES) {
+							return setTimeout(send,1000);
+						}
+						if(request && request.status === 412) {
+							return resolveConflict(self,title,"save",callback);
+						}
+						return callback(err);
 					}
-					return callback(err);
+					if($tw.browserStorage && $tw.browserStorage.isEnabled()) {
+						$tw.browserStorage.removeTiddlerFromLocalStorage(title);
+					}
+					var etag = request.getResponseHeader("Etag"),
+						etagInfo = etag && self.parseEtag(etag);
+					if(!etagInfo) {
+						return callback("Response from server is missing required ETag header");
+					}
+					if(pending && pendingBases[title] === pending) {
+						delete pendingBases[title];
+					}
+					rebase(title,base,etagInfo.revision);
+					callback(null,{bag: etagInfo.bag},etagInfo.revision);
 				}
-				if($tw.browserStorage && $tw.browserStorage.isEnabled()) {
-					$tw.browserStorage.removeTiddlerFromLocalStorage(title);
-				}
-				var etag = request.getResponseHeader("Etag"),
-					etagInfo = etag && self.parseEtag(etag);
-				if(!etagInfo) {
-					return callback("Response from server is missing required ETag header");
-				}
-				if(pending && pendingBases[title] === pending) {
-					delete pendingBases[title];
-				}
-				rebase(title,base,etagInfo.revision);
-				callback(null,{bag: etagInfo.bag},etagInfo.revision);
-			}
-		});
+			});
+		}
+		send();
 	};
 
 	proto.deleteTiddler = function(title,callback,options) {
@@ -357,37 +401,106 @@ exports.startup = function() {
 		if(!bag) {
 			return callback(null,info && info.adaptorInfo);
 		}
-		$tw.utils.httpRequest({
-			url: this.host + "bags/" + encodeURIComponent(bag) + "/tiddlers/" + encodeURIComponent(title),
-			type: "DELETE",
-			headers: addPreconditions({},title,baseFromInfo(info) || undefined,info),
-			callback: function(err,data,request) {
-				if(err) {
-					if(request && request.status === 412) {
-						return resolveConflict(self,title,"delete",callback);
+		var tries = 0;
+		function send() {
+			$tw.utils.httpRequest({
+				url: self.host + "bags/" + encodeURIComponent(bag) + "/tiddlers/" + encodeURIComponent(title),
+				type: "DELETE",
+				headers: addPreconditions({},title,baseFromInfo(info) || undefined,info),
+				callback: function(err,data,request) {
+					if(err) {
+						if(isRebuilding(request) && ++tries <= REBUILD_RETRIES) {
+							return setTimeout(send,1000);
+						}
+						if(request && request.status === 412) {
+							return resolveConflict(self,title,"delete",callback);
+						}
+						return callback(err);
 					}
-					return callback(err);
+					delete pendingBases[title];
+					callback(null,null);
 				}
-				delete pendingBases[title];
-				callback(null,null);
-			}
-		});
+			});
+		}
+		send();
 	};
 
-	// Remember which revision the worker currently lists for each tiddler
+	// Remember which revision the worker currently lists for each tiddler, fetch the list again while
+	// it's being rebuilt (isRebuilding, isListStandIn), and never pass on a list that isn't one
 	proto.getSkinnyTiddlers = function(callback) {
-		return originalGetSkinnyTiddlers.call(this,function(err,tiddlers) {
-			if(!err && $tw.utils.isArray(tiddlers)) {
-				listedRevisions = Object.create(null);
-				$tw.utils.each(tiddlers,function(fields) {
-					if(fields && typeof fields.title === "string" && fields.revision !== undefined && fields.revision !== null) {
-						listedRevisions[fields.title] = String(fields.revision);
+		var self = this,
+			tries = 0;
+		function fetchList() {
+			// The adaptor passes on only the error text: catch the request it makes, to read its header.
+			// It makes it straight away, so the wrapper is in place only during this call.
+			var request = null,
+				delivered = false,
+				unreadable = false,
+				bypassed = listBypassCache,
+				httpRequest = $tw.utils.httpRequest;
+			$tw.utils.httpRequest = function(options) {
+				var done = options.callback;
+				if(listBypassCache) {
+					options.data = $tw.utils.extend({},options.data,{"cfworker-retry": String(Date.now())});
+				}
+				options.callback = function(err,data,xhr) {
+					request = xhr;
+					try {
+						return done.apply(this,arguments);
+					} catch(e) {
+						// The adaptor parses the list itself and throws if it isn't JSON, which would stop
+						// syncing with an "Internal JavaScript Error": reported as a sync error instead
+						if(err || delivered) {
+							throw e;
+						}
+						unreadable = true;
+						return done.call(this,"the tiddler list can't be read (" + e.message + ")",null,xhr);
 					}
-				});
-				lastListFetch = Date.now();
+				};
+				return httpRequest.apply(this,arguments);
+			};
+			try {
+				originalGetSkinnyTiddlers.call(self,listFetched);
+			} finally {
+				$tw.utils.httpRequest = httpRequest;
 			}
-			return callback.apply(this,arguments);
-		});
+			function listFetched(err,tiddlers) {
+				delivered = true;
+				if(!err && !isTiddlerList(tiddlers)) {
+					err = "the tiddler list can't be read (it isn't a list of tiddlers)";
+					tiddlers = null;
+					unreadable = true;
+				}
+				if(unreadable || isListStandIn(request)) {
+					listBypassCache = true;
+					// Maybe only a copy the browser kept: asked again at once, past it, before reporting
+					if(unreadable && !bypassed && !isListStandIn(request)) {
+						return setTimeout(fetchList,0);
+					}
+				} else if(!err) {
+					listBypassCache = false;
+				}
+				if(err && ++tries <= REBUILD_RETRIES) {
+					if(isRebuilding(request)) {
+						return setTimeout(fetchList,500);
+					}
+					if(isListStandIn(request)) {
+						return setTimeout(fetchList,tries === 1 ? 1000 : 5000);
+					}
+				}
+				if(!err) {
+					listedRevisions = Object.create(null);
+					$tw.utils.each(tiddlers,function(fields) {
+						if(fields.revision !== undefined && fields.revision !== null) {
+							listedRevisions[fields.title] = String(fields.revision);
+						}
+					});
+					lastListFetch = Date.now();
+				}
+				return callback(err,tiddlers);
+			}
+		}
+		fetchList();
 	};
 
 	// Fetch a tiddler from the public copy of the wiki (R2 + Cloudflare's cache, no worker request).

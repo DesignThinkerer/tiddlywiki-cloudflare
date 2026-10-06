@@ -2,7 +2,7 @@
 
 **Status: implemented and deployed (October 2026).** These are the design notes behind README section 4.8: the problem, the design and why it was chosen over baking plugins into the page, what it costs, the change step by step, and how to operate it.
 
-The change is covered by the tests: `test/plugins.test.mjs` (57 checks) runs real plugins shipped with TiddlyWiki, markdown and KaTeX, on the admin site and on a stand-in for the public site. All five suites pass (`npm test`).
+The change is covered by the tests: `test/plugins.test.mjs` (63 checks) runs real plugins shipped with TiddlyWiki, markdown and KaTeX, on the admin site and on a stand-in for the public site. All five suites pass (`npm test`).
 
 "The external-plugins plugin" below is `$:/plugins/theophile.dev/external-plugins`, which exports plugins as standalone `.js` files for single-file wikis. The plugin files here use the same format as its export template.
 
@@ -271,17 +271,19 @@ In `proto.saveTiddler`, the `headers` and `data` of the `$tw.utils.httpRequest({
 
 ```js
 var body = flatBody(tiddler),
-	headers = {"Content-type": "application/json"};
+	headers = {"Content-type": "application/json"},
+	tries = 0;
 if(body === null) {
 	body = this.convertTiddlerToTiddlyWebFormat(tiddler);
 } else {
 	headers["X-Tiddler-Layout"] = "flat";
 }
-$tw.utils.httpRequest({
-	url: this.host + "recipes/" + encodeURIComponent(this.recipe) + "/tiddlers/" + encodeURIComponent(title),
-	type: "PUT",
-	headers: addPreconditions(headers,title,base,info),
-	data: body,
+function send() {
+	$tw.utils.httpRequest({
+		url: self.host + "recipes/" + encodeURIComponent(self.recipe) + "/tiddlers/" + encodeURIComponent(title),
+		type: "PUT",
+		headers: addPreconditions(headers,title,base,info),
+		data: body,
 ```
 
 A paragraph in the header comment says the module sends saves in the flat layout.
@@ -370,8 +372,25 @@ function textKeyOffset(bytes) {
   return -1;
 }
 
+// A save whose body isn't a tiddler: answered 400, nothing stored
+class BadSave extends Error {}
+
+function isTiddlerObject(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value) && typeof value.title === "string";
+}
+
+function parseJsonBody(text) {
+  try {
+    return JSON.parse(text);
+  } catch (e) {
+    throw new BadSave(`the body is not JSON (${e.message})`);
+  }
+}
+
 // A save in TiddlyWeb's layout, or any other JSON: parsed, stamped and re-serialized
 function parsedSave(tiddler) {
+  // A title that isn't text would make the tiddler list unreadable (and no browser sends one)
+  if (!isTiddlerObject(tiddler)) throw new BadSave("the body is not a tiddler (a JSON object with a text title)");
   const fields = { ...tiddler };
   delete fields.text;
   return {
@@ -384,7 +403,7 @@ function parsedSave(tiddler) {
 // stored(revision) = the bytes to store, with the worker's revision, bag and recipe
 async function readSave(request) {
   if (request.headers.get("X-Tiddler-Layout") !== FLAT_LAYOUT) {
-    return parsedSave(JSON.parse(await request.text()));
+    return parsedSave(parseJsonBody(await request.text()));
   }
   const bytes = new Uint8Array(await request.arrayBuffer());
   let end = bytes.length;
@@ -392,14 +411,12 @@ async function readSave(request) {
   let cut = textKeyOffset(bytes);
   if (cut === -1) cut = end - 1;   // no text: the fields run up to the closing brace
   const fields = bytes[0] === 0x7b && bytes[end - 1] === 0x7d && cut > 0
-    ? JSON.parse(decoder.decode(bytes.subarray(0, cut)) + "}") : null;
-  if (!fields || typeof fields !== "object" || Array.isArray(fields) || typeof fields.title !== "string") {
-    throw new Error("the body is not a tiddler in the flat layout");
-  }
+    ? parseJsonBody(decoder.decode(bytes.subarray(0, cut)) + "}") : null;
+  if (!isTiddlerObject(fields)) throw new BadSave("the body is not a tiddler in the flat layout");
   // Not what the browser module sends (pretty-printed, or with these fields before "text"):
   // handled like any other save
   if (["text", "revision", "bag", "recipe"].some(name => name in fields)) {
-    return parsedSave(JSON.parse(decoder.decode(bytes)));
+    return parsedSave(parseJsonBody(decoder.decode(bytes)));
   }
   return {
     fields, layout: FLAT_LAYOUT,
@@ -426,10 +443,13 @@ function untilDone(ctx, promise) {
 
 ### 5.4 Saving
 
-In the `PUT` handler, `const tiddler = JSON.parse(await request.text());` and the draft check became:
+In the `PUT` handler, `const tiddler = JSON.parse(await request.text());` and the draft check became the lines below. (The title check came later, with the rebuild of the tiddler list, README 4.2, which lists every tiddler under the title it's stored under. So did `const list = await readableList(env, ctx);` after the precondition check: it reads the list before the tiddler is written, and while a damaged list is being rebuilt it answers `503` before anything is written.)
 
 ```js
 const save = await readSave(request);
+// Stored and listed under the title in the URL: a different one in the body would make the
+// list disagree with the stored tiddlers (the browser always sends the same one)
+if (save.fields.title !== title) throw new BadSave("the title in the body isn't the one in the URL");
 
 if (isEphemeralTitle(title) || isDraft(save.fields)) {
 ```
@@ -450,15 +470,16 @@ The three `env.WIKI_BUCKET.put(tiddlerKey, …)` calls write `body` instead of `
 
 ```js
 ctx.waitUntil(queueBackup(env, { action: "save", title, revision: newRevision, content: body }));
-await untilDone(ctx, finishSave(env, ctx, title, save.fields, newRevision));
+await untilDone(ctx, finishSave(env, ctx, title, save.fields, newRevision, list));
 ```
 
 The rest of the save is in `finishSave`, which a retried save that's already stored also runs (README 4.4):
 
 ```js
-// The rest of a save once the tiddler is stored: the tiddler list, the public cache and the page
-async function finishSave(env, ctx, title, fields, revision) {
-  const previous = await updateManifest(env, title, fields, revision);
+// The rest of a save once the tiddler is stored: the tiddler list, the public cache and the page.
+// list: the list as read before the tiddler was stored (readableList), or null to read it here.
+async function finishSave(env, ctx, title, fields, revision, list = null) {
+  const previous = await updateManifest(env, ctx, title, fields, revision, list);
   // Only once the new list is in R2: a public request between the purge and the list update
   // would put the old list back in Cloudflare's cache
   ctx.waitUntil(purgePublicCache(env, tiddlerPurgeUrls(env, title)));
@@ -496,16 +517,16 @@ const text = await object.text();
 
 ### 5.6 Deleting
 
-In the `DELETE` handler, the lines from `// If it was neither stored nor listed…` to the end of the `rebakeHtml` block became:
+In the `DELETE` handler, the lines from the backup to the end of the `rebakeHtml` block became the following. The backup of a stored tiddler is now queued before the list update: if that update fails, the browser's retry finds nothing left to delete and wouldn't queue it. (Since then, the handler also starts with `const list = await readableList(env, ctx);`, which reads the tiddler list before the precondition check, and passes it to `removeFromManifest`.)
 
 ```js
+// Queued before the list update, which may fail (the retry then finds nothing to delete)
+if (found) ctx.waitUntil(queueBackup(env, { action: "delete", title, revision: currentRevision }));
 await untilDone(ctx, (async () => {
   // If it was neither stored nor listed, there is nothing to back up or purge
-  const removed = await removeFromManifest(env, title);
-  if (found || removed) {
-    ctx.waitUntil(queueBackup(env, { action: "delete", title, revision: currentRevision }));
-    ctx.waitUntil(purgePublicCache(env, tiddlerPurgeUrls(env, title)));
-  }
+  const removed = await removeFromManifest(env, ctx, title, list);
+  if (!found && removed) ctx.waitUntil(queueBackup(env, { action: "delete", title, revision: currentRevision }));
+  if (found || removed) ctx.waitUntil(purgePublicCache(env, tiddlerPurgeUrls(env, title)));
   // The list entry says what it was; if it wasn't listed, delete any plugin file anyway
   // (deleting a missing object is free) and rebuild the page for system tiddlers
   if (removed ? needsPluginFile(removed) : found) {
@@ -648,13 +669,9 @@ async function rebakeHtml(env, ctx) {
     if (!htmlObj) return null;
     let html = new Uint8Array(await htmlObj.arrayBuffer());
 
-    let manifest = [];
-    const manifestObj = await env.WIKI_BUCKET.get(MANIFEST_KEY);
-    if (manifestObj) {
-      try { manifest = JSON.parse(await manifestObj.text()); } catch (e) { manifest = null; }
-      // Building from an empty list would drop every plugin and startup tiddler: keep the page
-      if (!Array.isArray(manifest)) throw new Error(UNREADABLE_LIST);
-    }
+    // A missing or damaged list is rebuilt first (a page built without it would have no plugins).
+    // While that takes more requests, this throws and the page stays as it is.
+    const { object: manifestObj, entries: manifest } = await readableList(env, ctx, { pageBuild: true });
     // Every stored tiddler is listed, so only listed startup tiddlers are read
     const startupTitles = manifest.filter(t => t.title && isStartupTiddler(t)).map(t => t.title);
 
@@ -716,46 +733,57 @@ The comment above `toPreloadFields` now says stored tiddlers *may* use TiddlyWeb
 
 ### 5.8 The tiddler list helpers return what they replaced
 
-`updateManifest` and `removeFromManifest` now return the entry as it was before:
+`updateManifest` and `removeFromManifest` now return the entry as it was before. (`listEntry` builds an entry; the rebuild of a damaged list, README 4.2, uses it too.)
 
 ```js
-// tiddler: everything but the text, in either layout. Returns the entry it replaced, or null.
-async function updateManifest(env, title, tiddler, revisionStr) {
-  const fields = { ...tiddler };
-  delete fields.revision;
-  delete fields.bag;
-  delete fields.recipe;
-  const skinny = {
-    ...fields,
-    title: tiddler.title ?? title,
+// A tiddler's entry in the list: every field but the text. title: the title it's stored under
+// (always text, whatever the body says); fields: the tiddler without its text, in either layout.
+// date fills in a missing modified or created date.
+function listEntry(title, fields, revision, date = getTwTimestamp()) {
+  const rest = { ...fields };
+  delete rest.text;
+  delete rest.revision;
+  delete rest.bag;
+  delete rest.recipe;
+  return {
+    ...rest,
+    title,
     bag: "default",
     recipe: "default",
-    modified: tiddler.modified || getTwTimestamp(),
-    created: tiddler.created || getTwTimestamp(),
-    tags: tiddler.tags || [],
-    type: tiddler.type || "text/vnd.tiddlywiki",
-    revision: revisionStr,
+    modified: fields.modified || date,
+    created: fields.created || date,
+    tags: fields.tags || [],
+    type: fields.type || "text/vnd.tiddlywiki",
+    revision: String(revision),
     _is_skinny: ""
   };
+}
 
+// Returns the entry it replaced, or null
+async function updateManifest(env, ctx, title, fields, revision, list = null) {
+  const entry = listEntry(title, fields, revision);
   let previous = null;
-  await mutateManifest(env, (manifest) => {
+  await mutateManifest(env, ctx, (manifest) => {
     const idx = manifest.findIndex(t => t.title === title);
     previous = idx >= 0 ? manifest[idx] : null;
-    if (idx >= 0) manifest[idx] = skinny;
-    else manifest.push(skinny);
-    return manifest;
-  });
+    if (idx < 0) {
+      manifest.push(entry);
+      return manifest;
+    }
+    manifest[idx] = entry;
+    // Listed twice (a hand edit, say): listed once from now on
+    return manifest.some((t, i) => i > idx && t.title === title) ? manifest.filter((t, i) => i <= idx || t.title !== title) : manifest;
+  }, list);
   return previous;
 }
 
 // Returns the entry it removed, or null if the title wasn't listed
-async function removeFromManifest(env, title) {
+async function removeFromManifest(env, ctx, title, list = null) {
   let removed = null;
-  await mutateManifest(env, (manifest) => {
+  await mutateManifest(env, ctx, (manifest) => {
     removed = manifest.find(t => t.title === title) || null;
     return removed ? manifest.filter(t => t.title !== title) : null;
-  });
+  }, list);
   return removed;
 }
 ```
@@ -854,7 +882,8 @@ writeFileSync(new URL("./worker.js", import.meta.url), banner + source.replace(P
 12. **No longer needed:** a plugin turned into an ordinary tiddler, a startup action losing its tag, a deleted plugin.
 13. **Overlapping builds:** a build doesn't replace a page built from a newer tiddler list, or a file holding a newer version; and a tiddler list replaced by hand doesn't stop the page from being rebuilt.
 14. **Recovery:** with the file deleted, the wiki starts without the plugin; deleting the plugin then removes its tag.
-15. **No page errors** throughout.
+15. **A public tab while the tiddler list is missing or damaged** (not about plugins, but this suite has the public site): it keeps its tiddlers, doesn't crash, asks again at a URL no cache holds, and catches up by itself once the worker has rebuilt the list; after a damaged list, its next sync bypasses caches too, and a damaged copy its browser kept is passed over quietly.
+16. **No page errors** throughout.
 
 `test/queue-backup.test.mjs` also checks flat saves, and a tiddler over 1 MB saved twice with a later backup behind it.
 

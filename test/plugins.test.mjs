@@ -363,6 +363,93 @@ await remove(ML);
 await settle();
 check("recovery: deleting the plugin removes its tag", !(await bakedPage()).includes(encodeURIComponent(ML)));
 
+// --- 15. A public tab while the tiddler list is missing or damaged -----------------------------------
+// The public site reads the list straight from R2. While the worker rebuilds a missing list over
+// several requests, R2 holds a stand-in; a damaged list is whatever was uploaded. Either way an open
+// public tab must keep its tiddlers, and catch up once the list is back.
+await add({ title: "Public note", text: "on the public site" });
+await settle();
+for (let i = 0; i < 250; i += 50) {   // enough tiddlers that the rebuild takes several requests
+  await Promise.all(Array.from({ length: 50 }, (_, j) => {
+    const title = `Filler ${i + j}`, revision = String(1600000000000 + i + j);
+    return bucket.put(`recipes/default/tiddlers/${title}`,
+      `{"title":"${title}","type":"text/vnd.tiddlywiki","text":"f","revision":"${revision}","bag":"default","recipe":"default"}`,
+      { customMetadata: { revision, layout: "flat" } });
+  }));
+}
+await page.goto("about:blank");   // only this test drives the rebuild
+// The public site answers /status from R2 too (a file uploaded once), so its tabs know the recipe
+await bucket.put("status", JSON.stringify({ username: "GUEST", anonymous: true, read_only: true, space: { recipe: "default" } }), { httpMetadata: { contentType: "application/json" } });
+const tab = await context.newPage();
+watch(tab, "public tab");
+await tab.goto(PUB + "/");
+await tab.waitForFunction(() => window.$tw && $tw.syncer && $tw.wiki.tiddlerExists("Public note"), null, { timeout: 30000 });
+await settle(tab);   // every tiddler loaded (a load still queued would bring back a tiddler the sync deleted)
+await tab.evaluate(() => {
+  window.__deleted = [];
+  $tw.wiki.addEventListener("change", changes => {
+    for (const title in changes) if (changes[title].deleted) window.__deleted.push(title);
+  });
+});
+await tab.evaluate(() => $tw.wiki.filterTiddlers("[tag[$:/tags/Alert]]").forEach(t => $tw.wiki.deleteTiddler(t)));
+const tabState = () => tab.evaluate(() => ({
+  note: $tw.wiki.tiddlerExists("Public note"),
+  filler: $tw.wiki.tiddlerExists("Filler 7"),
+  deleted: window.__deleted.slice(),
+  crashed: !!document.querySelector(".tc-error-form"),
+  alerts: $tw.wiki.filterTiddlers("[tag[$:/tags/Alert]]").map(t => $tw.wiki.getTiddlerText(t))
+}));
+const rebuildList = async () => {
+  for (let i = 0; i < 20; i++) if ((await mf.dispatchFetch(BASE + "/recipes/default/tiddlers.json")).status === 200) return true;
+  return false;
+};
+const tabErrors = pageErrors.length;
+const tabListGets = () => requests.filter(r => r.tag === "public tab" && r.path.startsWith("/recipes/default/tiddlers.json")).length;
+const listGetsBefore = tabListGets();
+await bucket.delete("recipes/default/tiddlers.json");
+await mf.dispatchFetch(BASE + "/recipes/default/tiddlers.json");   // an admin request: the first step
+await tab.evaluate(() => $tw.syncer.syncFromServer());
+await new Promise(r => setTimeout(r, 1500));
+let state = await tabState();
+check("a missing list being rebuilt: an open public tab keeps its tiddlers, with no error",
+  tabListGets() > listGetsBefore && state.note && state.deleted.length === 0 && !state.crashed && state.alerts.length === 0 && pageErrors.length === tabErrors,
+  `${tabListGets() - listGetsBefore} list requests ` + JSON.stringify(state) + " " + pageErrors.slice(tabErrors).join(" | "));
+const retries = requests.filter(r => r.tag === "public tab" && r.path.startsWith("/recipes/default/tiddlers.json") && r.path.includes("cfworker-retry="));
+check("...and asks again a second later, at a URL no cache holds (a cached stand-in can't outlive the rebuild)", retries.length >= 1,
+  requests.filter(r => r.tag === "public tab" && r.path.startsWith("/recipes/default/tiddlers.json")).slice(-3).map(r => r.path.slice(0, 60) + "…" + r.path.slice(-30)).join(" | "));
+const rebuiltInTime = await rebuildList();
+await tab.waitForFunction(() => $tw.wiki.tiddlerExists("Filler 7"), null, { timeout: 15000 }).catch(() => {});
+state = await tabState();
+check("...and catches up by itself once the list is rebuilt", rebuiltInTime && state.note && state.filler && state.deleted.length === 0, JSON.stringify(state));
+// Served the way the public site serves it: browsers keep it for 5 minutes (the cache rule's Browser TTL)
+await bucket.put("recipes/default/tiddlers.json", '[{"title": "Public note", "rev', { httpMetadata: { contentType: "application/json", cacheControl: "max-age=300" } });
+await tab.evaluate(() => $tw.syncer.syncFromServer());
+await new Promise(r => setTimeout(r, 1500));
+state = await tabState();
+check("a damaged list: the tab keeps its tiddlers, with a sync error at most (no crash)",
+  state.note && state.filler && state.deleted.length === 0 && !state.crashed && pageErrors.length === tabErrors, JSON.stringify(state) + " " + pageErrors.slice(tabErrors).join(" | "));
+pageErrors.splice(tabErrors);   // reported above
+await rebuildList();
+// Its browser may keep the damaged copy for a few minutes: the next sync asks at a URL no cache holds
+await tab.evaluate(() => $tw.wiki.filterTiddlers("[tag[$:/tags/Alert]]").forEach(t => $tw.wiki.deleteTiddler(t)));
+const beforeResync = tabListGets();
+await tab.evaluate(() => $tw.syncer.syncFromServer());
+await new Promise(r => setTimeout(r, 1500));
+state = await tabState();
+const resync = requests.filter(r => r.tag === "public tab" && r.path.startsWith("/recipes/default/tiddlers.json")).slice(beforeResync);
+check("...and once the list is repaired, its next sync bypasses caches and goes through",
+  resync.length >= 1 && resync.every(r => r.path.includes("cfworker-retry=")) && state.alerts.length === 0 && state.note && state.filler,
+  `${resync.length} requests ` + JSON.stringify(state));
+const beforeCached = tabListGets();
+await tab.evaluate(() => $tw.syncer.syncFromServer());   // the usual URL: the browser still has the damaged copy
+await new Promise(r => setTimeout(r, 1500));
+state = await tabState();
+const cachedRound = requests.filter(r => r.tag === "public tab" && r.path.startsWith("/recipes/default/tiddlers.json")).slice(beforeCached);
+check("...and a damaged copy the browser kept is passed over quietly (asked again at once, past it)",
+  cachedRound.some(r => r.path.includes("cfworker-retry=")) && state.alerts.length === 0 && state.note && state.filler,
+  `${cachedRound.length} requests ` + JSON.stringify(state));
+await tab.close();
+
 check("no page errors", pageErrors.length === 0, pageErrors.join(" | "));
 console.log(`\n${results.filter(Boolean).length}/${results.length} passed`);
 await browser.close();
