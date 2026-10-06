@@ -307,11 +307,18 @@ check("new tab loads every tiddler correctly", texts.every((t, i) => t === `note
 check("page load fetches tiddlers from the public site, not the worker",
   workerTiddlerGets(cReqs).length === 0 && publicTiddlerGets(cReqs).length >= 5,
   `worker ${workerTiddlerGets(cReqs).length}, public ${publicTiddlerGets(cReqs).length}`);
-check("page load makes only 2 worker requests (page, tiddler list): the module answers /status itself",
-  cReqs.filter(r => r.url.startsWith(base)).length === 2 && !cReqs.some(r => r.url === base + "/status"));
+// /status: asked from the worker by the first page load in this browser (tab A), then kept by the browser
+const reachedWorker = rs => rs.filter(r => r.url.startsWith(base) && !r.cached);
+const statusAsked = requests.filter(r => r.url === base + "/status");
+check("the first page load in a browser asks the worker for /status, once",
+  statusAsked.filter(r => !r.cached).length === 1 && statusAsked.find(r => !r.cached)?.tag === "A",
+  JSON.stringify(statusAsked.map(r => `${r.tag}${r.cached ? " (cache)" : ""}`)));
+check("later page loads make only 2 worker requests (page, tiddler list): /status comes from the browser's cache",
+  reachedWorker(cReqs).length === 2 && cReqs.some(r => r.url === base + "/status" && r.cached),
+  reachedWorker(cReqs).map(r => r.method + " " + new URL(r.url).pathname).join(", "));
 check("...and TiddlyWiki still knows it's logged in as admin, writable", JSON.stringify(await C.evaluate(() =>
   ["$:/status/IsLoggedIn", "$:/status/UserName", "$:/status/IsReadOnly"].map(t => $tw.wiki.getTiddlerText(t)))) === '["yes","admin","no"]');
-console.log("      worker requests during C's page load:", cReqs.filter(r => r.url.startsWith(base)).map(r => r.method + " " + decodeURIComponent(new URL(r.url).pathname)).join(", "));
+console.log("      worker requests during C's page load:", reachedWorker(cReqs).map(r => r.method + " " + decodeURIComponent(new URL(r.url).pathname)).join(", "));
 check("no $:/StoryList or draft writes reach the worker", !net.some(x => x.path.includes("$:/StoryList") || x.path.includes("Draft of")));
 
 // public copy is stale -> falls back to the worker

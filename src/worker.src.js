@@ -339,9 +339,9 @@ export default {
 
     if (request.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
-    // 1. STATUS ENDPOINT (the browser module usually answers it from the page: ADMIN_STATUS)
+    // 1. STATUS ENDPOINT: the same answer always, so the browser keeps it (ADMIN_STATUS)
     if (request.method === "GET" && url.pathname === "/status") {
-      return new Response(JSON.stringify(ADMIN_STATUS), { headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "no-store" } });
+      return new Response(JSON.stringify(ADMIN_STATUS), { headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": STATUS_CACHE } });
     }
 
     // 2. SERVE WIKI UI (baked.html is rebuilt automatically when index.html or the conflict guard changes)
@@ -619,11 +619,12 @@ const CONFLICT_GUARD_TITLE = "$:/cfworker/conflict-guard.js";
 // from there (no worker request) and only ask the worker when that copy isn't current
 const PUBLIC_URL_TITLE = "$:/cfworker/public-url";
 
-// What /status answers on the admin site: TiddlyWeb's status. It's also baked into the page, so
-// the browser module answers TiddlyWiki's own request for it without one: the page load then
-// fetches the tiddler list a round trip sooner. (The public site has its own file, README 3.1.)
+// What /status answers on the admin site: TiddlyWeb's status. TiddlyWiki asks for it at every page
+// load, before the tiddler list. It never changes, so the browser keeps it for a week (private: for
+// that browser only): the next loads don't ask the worker, nor wait for its answer. (The public site
+// has its own file, README 3.1.)
 const ADMIN_STATUS = { username: "admin", read_only: false, anonymous: false, logout_is_available: true, space: { recipe: "default" } };
-const STATUS_TITLE = "$:/cfworker/status";
+const STATUS_CACHE = "private, max-age=604800";
 
 const CONFLICT_GUARD_SOURCE = "__CONFLICT_GUARD_SOURCE__";   // replaced by the build
 
@@ -883,7 +884,6 @@ async function rebakeHtml(env, ctx, list = null, source = null) {
         text: CONFLICT_GUARD_SOURCE
       });
       store.push({ title: PUBLIC_URL_TITLE, text: publicUrl(env, "/") });
-      store.push({ title: STATUS_TITLE, type: "application/json", text: JSON.stringify(ADMIN_STATUS) });
       store.push({ title: PAGE_PUBLISHER_TITLE, type: "application/javascript", "module-type": "startup", text: PAGE_PUBLISHER_SOURCE });
       store.push({ title: PAGE_SOURCE_TITLE, type: "application/json", text: JSON.stringify({ index: pageSource.index, fingerprint: pageSource.fingerprint, core: pageSource.core }) });
     }

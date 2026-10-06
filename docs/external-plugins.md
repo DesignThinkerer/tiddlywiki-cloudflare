@@ -116,7 +116,7 @@ The import report is a second, small save that goes through steps 5–9 and 11.
 14. **It runs before TiddlyWiki boots** and adds the plugin to `$tw.preloadTiddlers`. TiddlyWiki registers it and defines its modules.
 15. **No reload loop.** The sync gets the tiddler list and finds the same revision for the plugin as the one in the file, so it doesn't download it again.
 
-The worker sees two requests on that load: the page and the tiddler list. (Three when this change was made; a later one has the module answer `/status` from the page, README 4.5.) The public site serves the same `baked.html`, so visitors get the plugin too.
+The worker sees two requests on that load: the page and the tiddler list. (Three when this change was made; since then the browser keeps `/status` for a week, README 4.5.) The public site serves the same `baked.html`, so visitors get the plugin too.
 
 ---
 
@@ -222,7 +222,7 @@ These figures come from the same test machine as in section 3, so read them as p
 
 **The backup queue consumer** spends about 2.5 ms of CPU on a 254 KB plugin, measured on the test machine (base64 encoding and git's blob hash; GitHub's copy of the previous version is no longer decoded, which took about 14 ms more). Queue consumers share the Workers per-invocation CPU limits ([Queues limits](https://developers.cloudflare.com/queues/platform/limits/)), so on the Free plan count on 10 ms, with some tolerance for occasional overruns; a batch of several plugin updates can still go over. The fallback without a queue runs inside the save request, so keep the queue bound.
 
-**Worker requests:** unchanged by this change: plugin files never reach the worker. (A page load was three requests, and is two since the module answers `/status` from the page, README 4.5.)
+**Worker requests:** unchanged by this change: plugin files never reach the worker. (A page load was three requests, and is two since the browser keeps `/status` for a week, README 4.5.)
 
 **Per plugin save:**
 - **R2 writes (Class A):** the tiddler, the tiddler list, the plugin file, `baked.html`, plus the backup copy for a version over 100 KB.
@@ -752,7 +752,6 @@ async function rebakeHtml(env, ctx, list = null, source = null) {
         text: CONFLICT_GUARD_SOURCE
       });
       store.push({ title: PUBLIC_URL_TITLE, text: publicUrl(env, "/") });
-      store.push({ title: STATUS_TITLE, type: "application/json", text: JSON.stringify(ADMIN_STATUS) });
       store.push({ title: PAGE_PUBLISHER_TITLE, type: "application/javascript", "module-type": "startup", text: PAGE_PUBLISHER_SOURCE });
       store.push({ title: PAGE_SOURCE_TITLE, type: "application/json", text: JSON.stringify({ index: pageSource.index, fingerprint: pageSource.fingerprint, core: pageSource.core }) });
     }
