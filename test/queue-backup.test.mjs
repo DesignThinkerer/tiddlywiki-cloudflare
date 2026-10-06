@@ -12,7 +12,7 @@ const blobSha = buf => sha1(Buffer.concat([Buffer.from(`blob ${buf.length}\0`), 
 const files = new Map();      // decoded path -> { sha, text }
 const commits = [];           // { message, path, text|null }
 let inFlight = 0, maxInFlight = 0, latencyMs = 50;
-const faults = { rateLimitPuts: 0, outage: false, failOnce: new Set() };
+const faults = { rateLimitPuts: 0, outage: false, failOnce: new Set(), refuse: new Set() };
 const ghCalls = [];
 const json = (obj, status = 200, headers = {}) => new Response(JSON.stringify(obj), { status, headers: { "Content-Type": "application/json", ...headers } });
 
@@ -27,6 +27,7 @@ async function fakeGitHub(req) {
   if (faults.outage) return json({ message: "Server Error" }, 502);
   if (req.method !== "GET") {
     const key = `${req.method} ${path}`;
+    if (faults.refuse.has(path)) return json({ message: "This path isn't allowed" }, 422);
     if (faults.failOnce.has(key)) { faults.failOnce.delete(key); return json({ message: "Server Error" }, 500); }
     if (faults.rateLimitPuts > 0) { faults.rateLimitPuts--; return json({ message: "You have exceeded a secondary rate limit" }, 403, { "retry-after": "1" }); }
     inFlight++; maxInFlight = Math.max(maxInFlight, inFlight);
@@ -199,6 +200,25 @@ const producer = await mf.getQueueProducer("BACKUP_QUEUE");
 await producer.send({ action: "save", title: "Imported 5", revision: obj.customMetadata.revision, content: await obj.text(), time: Date.now(), tries: 0 });
 await new Promise(r => setTimeout(r, 2000));
 check("duplicate delivery: no extra commit", commits.length === before, `${commits.length - before} extra`);
+
+// 13. A file GitHub refuses for good doesn't hold up the backups after it: it keeps being retried on
+// its own (nothing is dropped) while the others go through. (A slow commit first keeps the consumer
+// busy, so the next saves arrive in one batch, the refused one first.)
+latencyMs = 1500;
+await put("Slow before", "s");
+await new Promise(r => setTimeout(r, 300));
+latencyMs = 30;
+faults.refuse.add("tiddlers/Refused.json");
+await put("Refused", "never accepted");
+await put("After refused 1", "a1");
+await put("After refused 2", "a2");
+const refusedTries = () => ghCalls.filter(c => c === "PUT tiddlers/Refused.json").length;
+const othersIn = await until(async () => repoText("After refused 1") !== undefined && repoText("After refused 2") !== undefined, 20000);
+await until(async () => refusedTries() >= 2, 20000);
+check("a file GitHub keeps refusing doesn't hold up the backups after it, and is still retried",
+  othersIn && repoText("Refused") === undefined && refusedTries() >= 2, `others in ${othersIn}, refused tries ${refusedTries()}`);
+faults.refuse.clear();
+check("...and goes through once GitHub accepts it", await until(async () => textOf(repoText("Refused")) === "never accepted", 30000));
 
 // 10. Without a queue binding, it commits directly like before
 const mf2 = makeWorker(8793, false);
