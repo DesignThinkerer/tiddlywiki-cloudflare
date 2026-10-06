@@ -589,17 +589,32 @@ function bakeVersion(env) {
   for (let i = 0; i < input.length; i++) {
     hash = ((hash * 33) ^ input.charCodeAt(i)) >>> 0;
   }
-  return "4-" + hash.toString(36);
+  return "5-" + hash.toString(36);
 }
 
 // The page's ETag is "<baked.html's R2 etag>-page". The browser asks with it (If-None-Match, maybe
 // weakened to W/ by Cloudflare's compression), and an unchanged page answers 304: nothing to
 // download, and its body isn't even read from R2.
+// Cloudflare features that rewrite HTML remove the ETag on the way out, and one of them (Replace
+// insecure JavaScript libraries) is on by default on the Free plan and can only be turned off for
+// the whole zone. So the page also has a Last-Modified date, which they keep: the browser then
+// asks with If-Modified-Since. The date is the page's version (pageTime, in seconds, set when it's
+// stored, later than the previous page's even within the same second), and it has to match exactly.
 const PAGE_ETAG_SUFFIX = "-page";
+
+function pageHeaders(htmlHeaders, page) {
+  const headers = { ...htmlHeaders, ETag: `"${page.etag}${PAGE_ETAG_SUFFIX}"` };
+  const time = Number(page.customMetadata?.pageTime);
+  if (time) headers["Last-Modified"] = new Date(time * 1000).toUTCString();
+  return headers;
+}
 
 async function serveWiki(request, env, ctx, corsHeaders) {
   const htmlHeaders = { ...corsHeaders, "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-cache" };
-  const known = parseEtagList(request.headers.get("If-None-Match")).find(token => token.endsWith(PAGE_ETAG_SUFFIX));
+  const ifNoneMatch = request.headers.get("If-None-Match");
+  const known = parseEtagList(ifNoneMatch).find(token => token.endsWith(PAGE_ETAG_SUFFIX));
+  // Only without an ETag, as HTTP says
+  const since = ifNoneMatch ? NaN : Math.floor(Date.parse(request.headers.get("If-Modified-Since") || "") / 1000);
   const [baked, source] = await Promise.all([
     env.WIKI_BUCKET.get("baked.html", known ? { onlyIf: { etagDoesNotMatch: known.slice(0, -PAGE_ETAG_SUFFIX.length) } } : undefined),
     env.WIKI_BUCKET.head("index.html")
@@ -609,14 +624,16 @@ async function serveWiki(request, env, ctx, corsHeaders) {
     // A conditional get whose precondition fails returns the object without a body: the browser has it
     const hasBody = "body" in baked;
     if (!source || (meta.bakeVersion === bakeVersion(env) && meta.sourceEtag === source.etag)) {
-      const headers = { ...htmlHeaders, ETag: `"${baked.etag}${PAGE_ETAG_SUFFIX}"` };
-      return hasBody ? new Response(baked.body, { headers }) : new Response(null, { status: 304, headers });
+      const headers = pageHeaders(htmlHeaders, baked);
+      if (hasBody && since !== Number(meta.pageTime)) return new Response(baked.body, { headers });
+      if (hasBody) await baked.body.cancel();
+      return new Response(null, { status: 304, headers });
     }
     if (hasBody) await baked.body.cancel();
   }
   const rebuilt = await rebakeHtml(env, ctx);
-  // With its ETag, so the next load is already a 304 (unless another build's page was kept)
-  if (rebuilt) return new Response(rebuilt.html, { headers: rebuilt.etag ? { ...htmlHeaders, ETag: `"${rebuilt.etag}${PAGE_ETAG_SUFFIX}"` } : htmlHeaders });
+  // With its ETag and date, so the next load is already a 304 (unless another build's page was kept)
+  if (rebuilt) return new Response(rebuilt.html, { headers: rebuilt.page ? pageHeaders(htmlHeaders, rebuilt.page) : htmlHeaders });
   // The rebuild failed (see the logs): the last page built is better than the bare engine
   const lastPage = baked && await env.WIKI_BUCKET.get("baked.html");
   if (lastPage) return new Response(lastPage.body, { headers: htmlHeaders });
@@ -713,9 +730,9 @@ function insertAfterHead(html, markup) {
 
 // Saves baked.html, unless an overlapping build from a newer tiddler list has already saved one
 // for the same worker and index.html. "Newer" compares when R2 stored each list (listVersion), so
-// a list replaced by hand counts as newer too. Returns the stored page (its R2 object), or null if
-// it kept the other page. The last try writes unconditionally, like the create-only fallback in the
-// PUT handler: best effort.
+// a list replaced by hand counts as newer too. Each page gets its date (pageTime, see serveWiki).
+// Returns the stored page (its R2 object), or null if it kept the other page. The last try writes
+// unconditionally, like the create-only fallback in the PUT handler: best effort.
 async function storePage(env, html, meta) {
   for (let attempt = 1; attempt <= 3; attempt++) {
     const current = await env.WIKI_BUCKET.head("baked.html");
@@ -724,9 +741,10 @@ async function storePage(env, html, meta) {
         Number(theirs.listVersion) > Number(meta.listVersion)) {
       return null;
     }
+    const pageTime = Math.max(Math.floor(Date.now() / 1000), Number(theirs.pageTime || 0) + 1);
     const written = await env.WIKI_BUCKET.put("baked.html", html, {
       httpMetadata: { contentType: "text/html; charset=utf-8" },
-      customMetadata: meta,
+      customMetadata: { ...meta, pageTime: String(pageTime) },
       ...(current && attempt < 3 ? { onlyIf: { etagMatches: current.etag } } : {})
     });
     if (written) return written;
@@ -735,8 +753,8 @@ async function storePage(env, html, meta) {
 }
 
 // Builds baked.html = index.html + startup tiddlers + conflict guard + plugin <script> tags, then
-// purges the public copy. Returns { html (bytes), etag: the stored page's, or null if an overlapping
-// build's page was kept }, or null.
+// purges the public copy. Returns { html (bytes), page: the stored page's R2 object, or null if an
+// overlapping build's page was kept }, or null.
 async function rebakeHtml(env, ctx, list = null) {
   try {
     const htmlObj = await env.WIKI_BUCKET.get("index.html");
@@ -795,7 +813,7 @@ async function rebakeHtml(env, ctx, list = null) {
       listVersion: String(manifestObj ? manifestObj.uploaded.getTime() : 0)
     });
     if (stored) ctx.waitUntil(purgePublicCache(env, PUBLIC_PAGE_PATHS.map(path => publicUrl(env, path))));
-    return { html, etag: stored ? stored.etag : null };
+    return { html, page: stored };
   } catch (err) {
     console.error("Failed to rebake HTML:", err);
     return null;

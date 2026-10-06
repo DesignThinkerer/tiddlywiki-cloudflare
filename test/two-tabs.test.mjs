@@ -358,6 +358,35 @@ const asked = (await reloaded.request().allHeaders())["if-none-match"] || "";
 const transferred = (await reloaded.request().sizes()).responseBodySize;
 check("a reload asks whether the page changed and downloads none of it (304)", /-page"$/.test(asked) && transferred === 0,
   `If-None-Match ${asked}, ${transferred} bytes`);
+// The same behind Cloudflare, whose features that rewrite HTML remove the page's ETag: a stand-in
+// proxy does that, and the browser asks by date instead (If-Modified-Since)
+const PROXY = "http://127.0.0.1:8801";
+const proxy = http.createServer(async (req, res) => {
+  const chunks = [];
+  for await (const chunk of req) chunks.push(chunk);
+  const headers = { ...req.headers };
+  delete headers.host;
+  const upstream = await mf.dispatchFetch(base + req.url, { method: req.method, headers, body: chunks.length ? Buffer.concat(chunks) : undefined });
+  const out = {};
+  upstream.headers.forEach((value, name) => { out[name] = value; });
+  if ((out["content-type"] || "").startsWith("text/html")) delete out.etag;
+  res.writeHead(upstream.status, out);
+  res.end(Buffer.from(await upstream.arrayBuffer()));
+});
+await new Promise(r => proxy.listen(8801, "127.0.0.1", r));
+const behindCloudflare = await browser.newContext();
+const tabBehind = await behindCloudflare.newPage();
+const firstLoad = await tabBehind.goto(PROXY + "/");
+await tabBehind.waitForFunction(() => window.$tw && $tw.syncer, null, { timeout: 30000 });
+const noEtag = !(await firstLoad.allHeaders())["etag"];
+const reloadedD = await tabBehind.reload();
+await tabBehind.waitForFunction(() => window.$tw && $tw.syncer, null, { timeout: 30000 });
+const askedByDate = (await reloadedD.request().allHeaders())["if-modified-since"] || "";
+const transferredD = (await reloadedD.request().sizes()).responseBodySize;
+check("...also when the ETag is removed on the way: asked by date, none of it downloaded", noEtag && !!askedByDate && transferredD === 0,
+  `ETag removed: ${noEtag}, If-Modified-Since ${askedByDate}, ${transferredD} bytes`);
+await behindCloudflare.close();
+proxy.close();
 
 // --- 13. A damaged tiddler list is rebuilt while a tab is open ------------------------------------
 await B.close();

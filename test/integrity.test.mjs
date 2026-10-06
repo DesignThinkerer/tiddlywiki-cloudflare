@@ -144,7 +144,7 @@ for (let i = 0; i < 20 && pageMeta?.bakeVersion !== "outdated"; i++) {
 }
 await mf.dispatchFetch(base + "/");
 check("after a rebuild, the page is built again on the next load",
-  pageMeta?.bakeVersion === "outdated" && /^4-/.test((await bucket.head("baked.html"))?.customMetadata?.bakeVersion || ""), JSON.stringify(pageMeta));
+  pageMeta?.bakeVersion === "outdated" && /^\d+-/.test((await bucket.head("baked.html"))?.customMetadata?.bakeVersion || ""), JSON.stringify(pageMeta));
 const withNull = JSON.stringify([...await list(), null]);
 damagedCopies.add(withNull);
 await bucket.put(LIST, withNull);

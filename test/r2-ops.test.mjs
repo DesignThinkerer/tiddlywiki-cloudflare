@@ -13,6 +13,8 @@ const BUDGETS = {
   "page load (page up to date)": { "get baked.html": 1, "head index.html": 1 },
   // The page's body isn't read at all
   "page load, browser has the page (304)": { "get baked.html": 1, "head index.html": 1 },
+  // Asked by date (Cloudflare removed the ETag): the body is read, but not sent
+  "page load, browser has the page (304 by date)": { "get baked.html": 1, "head index.html": 1 },
   "tiddler list, first fetch": { "get list": 1 },
   "tiddler list, unchanged (304)": { "get list": 1 },
   "save a new tiddler": { "head tiddler": 1, "get list": 1, "put tiddler": 1, "put list": 1 },
@@ -81,6 +83,8 @@ await new Promise(r => setTimeout(r, 300));
 const pageLoad = await measure("page load (page up to date)", () => mf.dispatchFetch(base + "/"));
 const notModified = await measure("page load, browser has the page (304)", () => mf.dispatchFetch(base + "/", { headers: { "If-None-Match": pageLoad.headers.get("ETag") || "none" } }));
 check("...answered 304", notModified.status === 304, `status ${notModified.status}`);
+const byDate = await measure("page load, browser has the page (304 by date)", () => mf.dispatchFetch(base + "/", { headers: { "If-Modified-Since": pageLoad.headers.get("Last-Modified") || "none" } }));
+check("...answered 304", byDate.status === 304, `status ${byDate.status}`);
 const first = await measure("tiddler list, first fetch", () => mf.dispatchFetch(`${base}/${LIST}`));
 const listEtag = first.headers.get("ETag");
 await measure("tiddler list, unchanged (304)", () => mf.dispatchFetch(`${base}/${LIST}`, { headers: { "If-None-Match": listEtag } }));

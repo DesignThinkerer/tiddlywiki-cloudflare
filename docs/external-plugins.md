@@ -652,9 +652,9 @@ function insertAfterHead(html, markup) {
 
 // Saves baked.html, unless an overlapping build from a newer tiddler list has already saved one
 // for the same worker and index.html. "Newer" compares when R2 stored each list (listVersion), so
-// a list replaced by hand counts as newer too. Returns the stored page (its R2 object), or null if
-// it kept the other page. The last try writes unconditionally, like the create-only fallback in the
-// PUT handler: best effort.
+// a list replaced by hand counts as newer too. Each page gets its date (pageTime, see serveWiki).
+// Returns the stored page (its R2 object), or null if it kept the other page. The last try writes
+// unconditionally, like the create-only fallback in the PUT handler: best effort.
 async function storePage(env, html, meta) {
   for (let attempt = 1; attempt <= 3; attempt++) {
     const current = await env.WIKI_BUCKET.head("baked.html");
@@ -663,9 +663,10 @@ async function storePage(env, html, meta) {
         Number(theirs.listVersion) > Number(meta.listVersion)) {
       return null;
     }
+    const pageTime = Math.max(Math.floor(Date.now() / 1000), Number(theirs.pageTime || 0) + 1);
     const written = await env.WIKI_BUCKET.put("baked.html", html, {
       httpMetadata: { contentType: "text/html; charset=utf-8" },
-      customMetadata: meta,
+      customMetadata: { ...meta, pageTime: String(pageTime) },
       ...(current && attempt < 3 ? { onlyIf: { etagMatches: current.etag } } : {})
     });
     if (written) return written;
@@ -674,8 +675,8 @@ async function storePage(env, html, meta) {
 }
 
 // Builds baked.html = index.html + startup tiddlers + conflict guard + plugin <script> tags, then
-// purges the public copy. Returns { html (bytes), etag: the stored page's, or null if an overlapping
-// build's page was kept }, or null.
+// purges the public copy. Returns { html (bytes), page: the stored page's R2 object, or null if an
+// overlapping build's page was kept }, or null.
 async function rebakeHtml(env, ctx, list = null) {
   try {
     const htmlObj = await env.WIKI_BUCKET.get("index.html");
@@ -734,7 +735,7 @@ async function rebakeHtml(env, ctx, list = null) {
       listVersion: String(manifestObj ? manifestObj.uploaded.getTime() : 0)
     });
     if (stored) ctx.waitUntil(purgePublicCache(env, PUBLIC_PAGE_PATHS.map(path => publicUrl(env, path))));
-    return { html, etag: stored ? stored.etag : null };
+    return { html, page: stored };
   } catch (err) {
     console.error("Failed to rebake HTML:", err);
     return null;
@@ -837,7 +838,7 @@ function bakeVersion(env) {
   for (let i = 0; i < input.length; i++) {
     hash = ((hash * 33) ^ input.charCodeAt(i)) >>> 0;
   }
-  return "4-" + hash.toString(36);
+  return "5-" + hash.toString(36);
 }
 ```
 
