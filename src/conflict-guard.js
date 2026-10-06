@@ -64,6 +64,12 @@ function flatBody(tiddler) {
 	return JSON.stringify(result);
 }
 
+// The site a URL is on, whatever the protocol: the public site visited over http while its URL says
+// https (or the other way round) is still the public site
+function siteOf(url) {
+	return String(url || "").replace(/^[a-z][a-z0-9+.-]*:/i,"").toLowerCase();
+}
+
 exports.startup = function() {
 	var Adaptor = null;
 	$tw.modules.forEachModuleOfType("syncadaptor",function(title,module) {
@@ -493,7 +499,7 @@ exports.startup = function() {
 	proto.getStatus = function(callback) {
 		var self = this,
 			httpRequest = $tw.utils.httpRequest;
-		if(!adminStatus || !publicBase || self.host === publicBase) {
+		if(!adminStatus || !publicBase || siteOf(self.host) === siteOf(publicBase)) {
 			return originalGetStatus.call(self,callback);
 		}
 		$tw.utils.httpRequest = function(options) {
@@ -614,7 +620,7 @@ exports.startup = function() {
 				callback(fields);
 			},0);
 		}
-		if(!publicBase || publicBase === adaptor.host || !expected || typeof fetch !== "function") {
+		if(!publicBase || siteOf(publicBase) === siteOf(adaptor.host) || !expected || typeof fetch !== "function") {
 			return done(null);
 		}
 		fetch(publicBase + "recipes/default/tiddlers/" + encodeURIComponent(title),{cache: "no-cache", credentials: "omit"})

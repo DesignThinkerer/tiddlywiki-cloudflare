@@ -41,7 +41,12 @@ const publicServer = http.createServer(async (req, res) => {
     return res.end("Not found");
   }
   res.writeHead(200, { "Access-Control-Allow-Origin": "*", "Content-Type": obj.httpMetadata?.contentType || "application/octet-stream" });
-  res.end(Buffer.from(await obj.arrayBuffer()));
+  let body = Buffer.from(await obj.arrayBuffer());
+  // ?https: the page as built for a public URL on https, visited over http
+  if (url.searchParams.has("https")) {
+    body = Buffer.from(body.toString("utf8").replace('"title":"$:/cfworker/public-url","text":"http:', '"title":"$:/cfworker/public-url","text":"https:'));
+  }
+  res.end(body);
 });
 await new Promise(resolve => publicServer.listen(PUBLIC_PORT, "127.0.0.1", resolve));
 
@@ -218,6 +223,20 @@ check("the public site runs from the light page: plugins, raw markup, the splash
   onPublic.splashGone && onPublic.footer && onPublic.hello && onPublic.description === "A test wiki", JSON.stringify(onPublic));
 check("...and never publishes", requests.filter(r => r.tag === "public" && r.method === "PUT").length === 0);
 await contextP.close();
+// The public site visited over http while its URL is set with https (or the other way round): still
+// the public site, read-only, with nothing sent anywhere
+const contextQ = await browser.newContext();
+const Q = await contextQ.newPage();
+watch(Q, "public-http");
+await Q.goto(PUB + "/?https");
+await Q.waitForFunction(() => window.$tw && $tw.syncer && $tw.wiki.tiddlerExists("Splash") && $tw.wiki.tiddlerExists("$:/status/IsReadOnly"), null, { timeout: 30000 });
+await sleep(QUIET_WINDOW);
+const overHttp = await Q.evaluate(() => ({ url: $tw.wiki.getTiddlerText("$:/cfworker/public-url"), readOnly: $tw.wiki.getTiddlerText("$:/status/IsReadOnly") }));
+const httpRequests = requests.filter(r => r.tag === "public-http");
+check("the public site visited over http with its URL set on https is still read-only, and sends nothing",
+  overHttp.url.startsWith("https:") && overHttp.readOnly === "yes" && !httpRequests.some(r => r.method !== "GET" || r.host === "worker"),
+  JSON.stringify({ ...overHttp, sent: httpRequests.filter(r => r.method !== "GET" || r.host === "worker").map(r => r.method + " " + r.host + r.path) }));
+await contextQ.close();
 
 // --- 5. Saves that don't change the page send nothing ----------------------------------------------
 mark = requests.length;

@@ -67,6 +67,12 @@ function fingerprint(text) {
 	return text.length.toString(36) + "-" + hash.toString(36);
 }
 
+// The site a URL is on, whatever the protocol: the public site visited over http while its URL says
+// https (or the other way round) is still the public site
+function siteOf(url) {
+	return String(url || "").replace(/^[a-z][a-z0-9+.-]*:/i,"").toLowerCase();
+}
+
 exports.startup = function() {
 	var wiki = $tw.wiki,
 		adaptor = $tw.syncadaptor,
@@ -80,7 +86,7 @@ exports.startup = function() {
 		publicBase += "/";
 	}
 	// Only on the admin site, with the worker's browser module
-	if($tw.safeMode || !adaptor || !syncer || !source || !publicBase || adaptor.host === publicBase || typeof adaptor.cfworkerListed !== "function") {
+	if($tw.safeMode || !adaptor || !syncer || !source || !publicBase || siteOf(adaptor.host) === siteOf(publicBase) || typeof adaptor.cfworkerListed !== "function") {
 		return;
 	}
 	var coreVersion = $tw.version + "-" + CORE_FORMAT,

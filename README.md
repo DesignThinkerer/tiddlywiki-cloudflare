@@ -83,7 +83,7 @@ flowchart LR
     ├── make-fixture.mjs      builds a test TiddlyWiki (test/fixtures/index.html)
     ├── two-tabs.test.mjs     real TiddlyWiki in Chromium, several tabs (75 checks)
     ├── plugins.test.mjs      real plugins on the admin and public sites (65 checks)
-    ├── page-publish.test.mjs the page published from a real TiddlyWiki (46 checks)
+    ├── page-publish.test.mjs the page published from a real TiddlyWiki (47 checks)
     ├── queue-backup.test.mjs queue backup against an imitation of GitHub (21 checks)
     ├── integrity.test.mjs    the tiddler list's integrity, a failed page build, draft-like titles, .gitignore (53 checks)
     ├── r2-ops.test.mjs       R2 calls per kind of request, against a budget (25 checks)
@@ -285,7 +285,7 @@ TiddlyWiki only runs JavaScript modules, plugins and startup actions that are pr
 - plugin disable flags, `$:/config/Plugins/Disabled/…`: read at boot too
 - every tiddler tagged `$:/tags/StartupAction` or one of its variants (`$:/tags/StartupAction/Browser`, `…/PostRender`)
 - the conflict guard module `$:/cfworker/conflict-guard.js`
-- `$:/cfworker/public-url`: the public address, read by the module
+- `$:/cfworker/public-url`: the public address, read by the module. A page on that site, whatever the protocol (visited over `http` while the address says `https`, say), is the public site: read-only, nothing published
 - `$:/cfworker/status`: the worker's `/status` answer, which the module gives TiddlyWiki on admin pages instead of asking (4.5)
 - the page publisher `$:/cfworker/page-publisher.js`, and `$:/cfworker/page-source`: what the page was built from (the `index.html` ETag, the shell's fingerprint, the stored core file's version), read by the publisher (4.9)
 
@@ -763,7 +763,7 @@ Backups don't appear here: with the queue bound, as deployed, they run later in 
 
 `test:publish` starts from the full test wiki as `index.html` and covers:
 - **The first admin load** publishing the core file (TiddlyWiki's, without the snapshot setting) and the shell (TiddlyWiki's external-core page, a fraction of the size), `index.html` untouched; the next load getting the light page with the core from the public site, at 2 worker requests, publishing nothing.
-- **A plugin installed from the wiki** staying a file, loaded before the core; **one with raw markup** also written into the page with its markup, published once when it's installed, updated or deleted (one with JavaScript at the next load, then running its markup first), nothing published at a reload; **what another tab deleted** (a raw markup tiddler, a plugin) not published again by a tab that still has it, a plugin deleted here and installed again elsewhere taken for an installed one, and a deleted tiddler left in the page by a failed publish taken out at the next admin load; **the title and raw markup** published once per burst, each where TiddlyWiki puts it, the Open Graph tags with your title, the copies in the page with the worker's revisions; **the public site** running from the page, splash screen removed once started.
+- **A plugin installed from the wiki** staying a file, loaded before the core; **one with raw markup** also written into the page with its markup, published once when it's installed, updated or deleted (one with JavaScript at the next load, then running its markup first), nothing published at a reload; **what another tab deleted** (a raw markup tiddler, a plugin) not published again by a tab that still has it, a plugin deleted here and installed again elsewhere taken for an installed one, and a deleted tiddler left in the page by a failed publish taken out at the next admin load; **the title and raw markup** published once per burst, each where TiddlyWiki puts it, the Open Graph tags with your title, the copies in the page with the worker's revisions; **the public site** running from the page, splash screen removed once started, and still read-only and publishing nothing when visited over `http` while its address says `https`.
 - **Nothing published** for a save that doesn't change the page (not even a list request) or typing in a draft; **another tab** not publishing at load or for changes it receives, and a tab publishing after another including that one's change.
 - **An edit made in R2** published at the next admin load once its slow-loading text has arrived; **a failed publish** reported and retried, a refused one sent again only once the page changes, and an error while rendering the page too, without stopping later publishes; **a new `index.html`** used at once, then published for (the core file not sent again); **safe mode** neither publishing nor syncing.
 
