@@ -15,8 +15,9 @@ const BUDGETS = {
   "tiddler list, unchanged (304)": { "get list": 1 },
   "save a new tiddler": { "head tiddler": 1, "get list": 1, "put tiddler": 1, "put list": 1 },
   "save an update": { "head tiddler": 1, "get list": 1, "put tiddler": 1, "put list": 1 },
-  // Different content, so different bytes: the stored tiddler isn't read to compare them
-  "save refused (412)": { "head tiddler": 1 },
+  // Different content, so different bytes: the stored tiddler isn't read to compare them. (The list
+  // is read at the same time as the lookup, for every save: one round trip less when it goes through.)
+  "save refused (412)": { "head tiddler": 1, "get list": 1 },
   // The same bytes as stored: read once to compare, then the list update is finished
   "save sent again, already stored": { "head tiddler": 1, "get tiddler": 1, "get list": 1, "put list": 1 },
   "delete": { "get list": 1, "head tiddler": 1, "delete tiddler": 1, "put list": 1 },
@@ -60,13 +61,14 @@ async function measure(name, request) {
   const res = await request();
   await res.arrayBuffer();
   await new Promise(r => setTimeout(r, 300));
-  const calls = await (await mf.dispatchFetch(base + "/__r2ops")).json();
+  const { calls, overlaps } = await (await mf.dispatchFetch(base + "/__r2ops")).json();
   const counts = {};
   for (const call of calls) counts[call] = (counts[call] || 0) + 1;
   const budget = BUDGETS[name];
   const over = Object.entries(counts).filter(([call, n]) => n > (budget[call] ?? 0)).map(([call, n]) => `${call} ×${n} (budget ${budget[call] ?? 0})`);
   check(`${name}: ${calls.length} R2 calls`, over.length === 0,
     (over.length ? "over budget: " + over.join(", ") + " | " : "") + Object.entries(counts).map(([c, n]) => `${c} ×${n}`).join(", "));
+  res.overlaps = overlaps;
   return res;
 }
 
@@ -80,6 +82,7 @@ const listEtag = first.headers.get("ETag");
 await measure("tiddler list, unchanged (304)", () => mf.dispatchFetch(`${base}/${LIST}`, { headers: { "If-None-Match": listEtag } }));
 
 let res = await measure("save a new tiddler", () => save("Note", { text: "v1" }, { "If-None-Match": "*" }));
+check("...the lookup and the list read run at the same time", res.overlaps.includes("get list + head tiddler"), JSON.stringify(res.overlaps));
 const v1 = etagOf("Note", res);
 res = await measure("save an update", () => save("Note", { text: "v2" }, { "If-Match": v1 }));
 const v2 = etagOf("Note", res);

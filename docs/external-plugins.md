@@ -465,7 +465,7 @@ function untilDone(ctx, promise) {
 
 ### 5.4 Saving
 
-In the `PUT` handler, `const tiddler = JSON.parse(await request.text());` and the draft check became the lines below. (The title check came later, with the rebuild of the tiddler list, README 4.2, which lists every tiddler under the title it's stored under. So did `const list = await readableList(env, ctx);` after the precondition check: it reads the list before the tiddler is written, and while a damaged list is being rebuilt it answers `503` before anything is written.)
+In the `PUT` handler, `const tiddler = JSON.parse(await request.text());` and the draft check became the lines below. (The title check came later, with the rebuild of the tiddler list, README 4.2, which lists every tiddler under the title it's stored under. So did reading the tiddler list with `readableList(env, ctx)`, now at the same time as the lookup of the stored tiddler: the list is read before the tiddler is written, and while a damaged list is being rebuilt the save answers `503` before anything is written.)
 
 ```js
 const save = await readSave(request);
