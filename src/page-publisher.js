@@ -24,7 +24,8 @@ change to a tiddler it transcludes, like $:/SiteTitle in the Open Graph tags.) I
   (the first load after a new index.html, a failed publish, a change made outside the admin wiki).
 Changes that arrive from other tabs aren't published by this one: their tab does it. Nothing is sent
 while a tiddler the page needs is still loading, or in safe mode (#:safe). A failure (also an error
-while preparing the page) is shown in a notification and tried again at the next save or load.
+while preparing the page) is shown in a notification and tried again at the next save or load; a
+page the worker refused (400, 409) only once it changes, or at the next load.
 \*/
 "use strict";
 
@@ -86,6 +87,7 @@ exports.startup = function() {
 		coreUrl = publicBase + "_plugins/tiddlywikicore.js?v=" + encodeURIComponent(coreVersion),
 		published = source.fingerprint || "",   // what the page this tab loaded was built from
 		storedCore = source.core || "",
+		refused = "",                          // the page (fingerprint and core version) the worker refused
 		ownChanges = Object.create(null),      // title -> {stored: saved (true) or deleted (false), time}
 		cameWithPage = null,                   // title -> true, set once the first tiddler list has arrived
 		started = false,
@@ -199,6 +201,23 @@ exports.startup = function() {
 		done();
 	}
 
+	// Whether the page with this fingerprint needs nothing sent: it's the one published, or the worker
+	// refused it (sent again only once it changes: the same page would be refused again)
+	function settled(print) {
+		return (print === published && storedCore === coreVersion) || print + " " + coreVersion === refused;
+	}
+
+	// A failed request: a refusal from the worker (400, or 409 when index.html changed) is final for
+	// this page; anything else (5xx, no connection, signed out) may pass at the next try
+	function rejected(done,print,err,status) {
+		if(status === 400 || status === 409) {
+			refused = print + " " + coreVersion;
+			report("failed","Page not published: " + err + " It will be sent again once it changes, or at the next reload.");
+			return done();
+		}
+		failed(done,err);
+	}
+
 	// Every step of a check runs through this: an error (in rendering the page, say: a raw markup
 	// tiddler with a widget that can't render as text) is reported, and the tab can publish again
 	// at its next save, instead of the check never finishing
@@ -254,8 +273,8 @@ exports.startup = function() {
 			type: "PUT",
 			headers: headers,
 			data: body,
-			callback: function(err,data) {
-				callback(err ? (data || err) : null);
+			callback: function(err,data,xhr) {
+				callback(err ? (data || err) : null,xhr && xhr.status);
 			}
 		});
 	}
@@ -270,9 +289,9 @@ exports.startup = function() {
 				"Content-Type": "text/html; charset=utf-8",
 				"X-Page-Fingerprint": print,
 				"X-Page-Index": source.index
-			},guarded(done,function(err) {
+			},guarded(done,function(err,status) {
 				if(err) {
-					return failed(done,err);
+					return rejected(done,print,err,status);
 				}
 				published = print;
 				report("published","Page published.");
@@ -282,9 +301,9 @@ exports.startup = function() {
 		if(storedCore === coreVersion) {
 			return sendShell();
 		}
-		send("page/core?v=" + encodeURIComponent(coreVersion),coreFile(),{"Content-Type": "application/javascript; charset=utf-8"},guarded(done,function(err) {
+		send("page/core?v=" + encodeURIComponent(coreVersion),coreFile(),{"Content-Type": "application/javascript; charset=utf-8"},guarded(done,function(err,status) {
 			if(err) {
-				return failed(done,err);
+				return rejected(done,print,err,status);
 			}
 			storedCore = coreVersion;
 			sendShell();
@@ -332,10 +351,10 @@ exports.startup = function() {
 			return done();
 		}
 		if(afterSave) {
-			// Nothing to do if the page this tab renders is the one published
+			// Nothing to do if the page this tab renders is the one published (or refused)
 			var loading = [],
 				text = shellNoting(loading);
-			if(!loading.length && fingerprint(text) === published && storedCore === coreVersion) {
+			if(!loading.length && settled(fingerprint(text))) {
 				return done();
 			}
 			syncer.syncFromServer();
@@ -350,7 +369,7 @@ exports.startup = function() {
 						return stillLoading(done,loading);
 					}
 					var print = fingerprint(text);
-					if(print === published && storedCore === coreVersion) {
+					if(settled(print)) {
 						return done();
 					}
 					publish(text,print,done);

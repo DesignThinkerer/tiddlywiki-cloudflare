@@ -479,6 +479,25 @@ await waitFor(async () => (await shell()).includes("after a failure"));
 check("...and tried again at the next save", (await shell()).includes("after a failure") && (await status(A))?.state === "published", JSON.stringify(await status(A)));
 await A.unroute(url => url.pathname === "/page/shell");
 
+// A page the worker refuses (400 or 409: final for that page) isn't sent again at every save, only once
+// the page changes (or after a reload); a 5xx above is still retried at the next save
+const refusing = url => url.pathname === "/page/shell";
+await A.route(refusing, route => route.fulfill({ status: 400, body: "refused for the test" }));
+mark = requests.length;
+await add(A, { title: "$:/SiteSubtitle", text: "refused subtitle" });
+await settle(A);
+await waitFor(async () => (await status(A))?.state === "failed" && /refused for the test/.test((await status(A)).text));
+await add(A, { title: "Unrelated 1", text: "x" }); await settle(A); await sleep(QUIET_WINDOW);
+await add(A, { title: "Unrelated 2", text: "y" }); await settle(A); await sleep(QUIET_WINDOW);
+const afterRefusal = shellPuts("A", mark), listGets = count("A", "GET", "/recipes/default/tiddlers.json", mark);
+check("a refused page isn't sent again at the next saves that don't change it (no list request either)", afterRefusal === 1 && listGets <= 1,
+  `${afterRefusal} shell PUTs, ${listGets} list requests`);
+await add(A, { title: "$:/SiteSubtitle", text: "refused subtitle, changed" }); await settle(A); await sleep(QUIET_WINDOW);
+check("...a change to the page is sent again", shellPuts("A", mark) === 2, `${shellPuts("A", mark)} shell PUTs`);
+await A.unroute(refusing);
+await add(A, { title: "$:/SiteSubtitle", text: "accepted again" }); await settle(A);
+await waitFor(async () => (await shell()).includes("accepted again"));
+
 // An error while rendering the page (here an editor that takes focus, in raw markup: the page is
 // rendered as text, where nothing can) is reported, and doesn't stop later publishes in that tab
 await add(A, { title: "Breaks rendering", tags: "$:/tags/RawMarkupWikified", text: '<$edit-text tiddler="Some note" focus="yes"/>' });
