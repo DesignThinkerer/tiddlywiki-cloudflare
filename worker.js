@@ -610,8 +610,9 @@ async function serveWiki(request, env, ctx, corsHeaders) {
     }
     if (hasBody) await baked.body.cancel();
   }
-  const html = await rebakeHtml(env, ctx);
-  if (html !== null) return new Response(html, { headers: htmlHeaders });
+  const rebuilt = await rebakeHtml(env, ctx);
+  // With its ETag, so the next load is already a 304 (unless another build's page was kept)
+  if (rebuilt) return new Response(rebuilt.html, { headers: rebuilt.etag ? { ...htmlHeaders, ETag: `"${rebuilt.etag}${PAGE_ETAG_SUFFIX}"` } : htmlHeaders });
   // The rebuild failed (see the logs): the last page built is better than the bare engine
   const lastPage = baked && await env.WIKI_BUCKET.get("baked.html");
   if (lastPage) return new Response(lastPage.body, { headers: htmlHeaders });
@@ -708,28 +709,30 @@ function insertAfterHead(html, markup) {
 
 // Saves baked.html, unless an overlapping build from a newer tiddler list has already saved one
 // for the same worker and index.html. "Newer" compares when R2 stored each list (listVersion), so
-// a list replaced by hand counts as newer too. Returns false if it kept the other page. The last
-// try writes unconditionally, like the create-only fallback in the PUT handler: best effort.
+// a list replaced by hand counts as newer too. Returns the stored page (its R2 object), or null if
+// it kept the other page. The last try writes unconditionally, like the create-only fallback in the
+// PUT handler: best effort.
 async function storePage(env, html, meta) {
   for (let attempt = 1; attempt <= 3; attempt++) {
     const current = await env.WIKI_BUCKET.head("baked.html");
     const theirs = current?.customMetadata || {};
     if (current && theirs.bakeVersion === meta.bakeVersion && theirs.sourceEtag === meta.sourceEtag &&
         Number(theirs.listVersion) > Number(meta.listVersion)) {
-      return false;
+      return null;
     }
     const written = await env.WIKI_BUCKET.put("baked.html", html, {
       httpMetadata: { contentType: "text/html; charset=utf-8" },
       customMetadata: meta,
       ...(current && attempt < 3 ? { onlyIf: { etagMatches: current.etag } } : {})
     });
-    if (written) return true;
+    if (written) return written;
   }
-  return false;
+  return null;
 }
 
 // Builds baked.html = index.html + startup tiddlers + conflict guard + plugin <script> tags, then
-// purges the public copy. Returns the page (bytes), or null.
+// purges the public copy. Returns { html (bytes), etag: the stored page's, or null if an overlapping
+// build's page was kept }, or null.
 async function rebakeHtml(env, ctx, list = null) {
   try {
     const htmlObj = await env.WIKI_BUCKET.get("index.html");
@@ -788,7 +791,7 @@ async function rebakeHtml(env, ctx, list = null) {
       listVersion: String(manifestObj ? manifestObj.uploaded.getTime() : 0)
     });
     if (stored) ctx.waitUntil(purgePublicCache(env, PUBLIC_PAGE_PATHS.map(path => publicUrl(env, path))));
-    return html;
+    return { html, etag: stored ? stored.etag : null };
   } catch (err) {
     console.error("Failed to rebake HTML:", err);
     return null;

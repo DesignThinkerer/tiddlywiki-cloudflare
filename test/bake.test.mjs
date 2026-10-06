@@ -39,7 +39,14 @@ await bucket.put("index.html", html("v3"));
 again = await mf.dispatchFetch(base + "/", { headers: { "If-None-Match": pageEtag || "none" } });
 againBody = await again.text();
 check("...but a page that has to be rebuilt is sent in full", again.status === 200 && againBody.includes("v3"), `status ${again.status}`);
-const meta = (await bucket.head("baked.html")).customMetadata;
+// The rebuilt page carries its ETag too, so the very next load (the first after a deploy, say) is a 304
+const rebuiltEtag = again.headers.get("ETag");
+const storedPage = await bucket.head("baked.html");
+check("...with the ETag of the page it stored", rebuiltEtag === `"${storedPage.etag}-page"`, `ETag ${rebuiltEtag}, stored ${storedPage.etag}`);
+again = await mf.dispatchFetch(base + "/", { headers: { "If-None-Match": rebuiltEtag || "none" } });
+againBody = await again.text();
+check("...so the next load is already a 304", again.status === 304 && againBody === "", `status ${again.status}`);
+const meta = storedPage.customMetadata;
 check("bake metadata records the guard version and source etag", /^4-/.test(meta.bakeVersion) && !!meta.sourceEtag, JSON.stringify(meta));
 
 await bucket.put("index.html", "\uFEFF" + html("with a byte order mark"));

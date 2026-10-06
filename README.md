@@ -84,7 +84,7 @@ flowchart LR
     ├── integrity.test.mjs    the tiddler list's integrity, draft-like titles, .gitignore (47 checks)
     ├── r2-ops.test.mjs       R2 calls per kind of request, against a budget (13 checks)
     ├── r2-counter.mjs        test-only wrapper that counts the worker's R2 calls
-    └── bake.test.mjs         page serving and rebuilding (13 checks)
+    └── bake.test.mjs         page serving and rebuilding (15 checks)
 ```
 
 The browser module lives in its own file so it can be read and edited as normal JavaScript. The build embeds it in `worker.js` as a string (`CONFLICT_GUARD_SOURCE`), so only one file is deployed, which you can paste into the dashboard. The string is written as JSON, so the module can contain any character, backticks and `${` included.
@@ -280,7 +280,7 @@ TiddlyWiki only runs JavaScript modules, plugins and startup actions that are pr
 
 followed by one `<script src="…">` per plugin and JavaScript module (4.8). The conflict guard, the public address and the status are left out when `CONFLICT_GUARD` is `off`.
 
-**The browser keeps the page.** The page goes out with an ETag, `"<baked.html's R2 etag>-page"`, and `Cache-Control: no-cache`, so the browser asks at each load whether it changed. If it hasn't, the worker answers `304 Not Modified` without even reading the page's body from R2, and nothing is downloaded; a page that has to be rebuilt is sent in full.
+**The browser keeps the page.** The page goes out with an ETag, `"<baked.html's R2 etag>-page"`, and `Cache-Control: no-cache`, so the browser asks at each load whether it changed. If it hasn't, the worker answers `304 Not Modified` without even reading the page's body from R2, and nothing is downloaded. A page that has to be rebuilt is sent in full, with the ETag of the page it stored, so the load after a rebuild (after a deploy, say) is already a `304`.
 
 Stored tiddlers are baked as they're stored: flat, already the form `preloadTiddlers` expects. (A field called `fields` is unpacked first: TiddlyWiki does that itself only for tiddlers it loads through sync, 4.2.) The page is edited as bytes, without decoding `index.html` (a few MB) into a string and back, which costs about ten times more CPU. Text containing `$&`, `$1` and the like is copied literally.
 
