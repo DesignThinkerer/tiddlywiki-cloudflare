@@ -4,90 +4,29 @@
 // and saves that don't, plugins with raw markup, several tabs, what other tabs deleted, tiddlers still
 // loading, failures, a new index.html and safe mode.
 // Run: npm run test:publish   (WIKI_HTML=path/to/your/index.html to test with your own wiki file)
-import { Miniflare } from "miniflare";
-import { chromium } from "playwright";
-import fs from "node:fs";
-import http from "node:http";
-import { fileURLToPath } from "node:url";
+import { addTiddler, createChecks, createWatcher, finish, launchBrowser, readWikiFile, settle, sleep, startSite, waitFor } from "./browser-harness.mjs";
 
-const WORKER = fileURLToPath(new URL("../worker.js", import.meta.url));
-const WIKI_HTML = process.env.WIKI_HTML || fileURLToPath(new URL("./fixtures/index.html", import.meta.url));
-if (!fs.existsSync(WIKI_HTML)) {
-  console.error(`No wiki file at ${WIKI_HTML}. Run "npm run fixture" first, or set WIKI_HTML.`);
-  process.exit(1);
-}
-const ENGINE = fs.readFileSync(WIKI_HTML, "utf8");
-
-const PORT = 8786, PUBLIC_PORT = 8787;
-const BASE = `http://127.0.0.1:${PORT}`;
-const PUB = `http://127.0.0.1:${PUBLIC_PORT}`;
-const mf = new Miniflare({
-  modules: true, scriptPath: WORKER, compatibilityDate: "2024-09-23", port: PORT, r2Buckets: ["WIKI_BUCKET"],
-  bindings: { PUBLIC_WIKI_URL: PUB },
-  outboundService: async () => new Response('{"success":true}'),
-});
-await mf.ready;
-const bucket = await mf.getR2Bucket("WIKI_BUCKET");
-await bucket.put("index.html", ENGINE);
-await bucket.put("recipes/default/tiddlers.json", "[]");
-await bucket.put("status", JSON.stringify({ username: "GUEST", read_only: true, anonymous: true, logout_is_available: false, space: { recipe: "default" } }), { httpMetadata: { contentType: "application/json" } });
-
-// Stand-in for the public site: the R2 bucket served directly, "/" rewritten to baked.html
-const publicServer = http.createServer(async (req, res) => {
-  const url = new URL(req.url, PUB);
-  const obj = await bucket.get(decodeURIComponent(url.pathname.slice(1)) || "baked.html");
-  if (!obj) {
-    res.writeHead(404, { "Access-Control-Allow-Origin": "*" });
-    return res.end("Not found");
+const ENGINE = readWikiFile();
+const site = await startSite({
+  index: ENGINE, publicStatus: true,
+  publicSite: {
+    // ?https: the page as built for a public URL on https, visited over http
+    rewrite: (url, body) => url.searchParams.has("https")
+      ? Buffer.from(body.toString("utf8").replace('"title":"$:/cfworker/public-url","text":"http:', '"title":"$:/cfworker/public-url","text":"https:'))
+      : body
   }
-  res.writeHead(200, { "Access-Control-Allow-Origin": "*", "Content-Type": obj.httpMetadata?.contentType || "application/octet-stream" });
-  let body = Buffer.from(await obj.arrayBuffer());
-  // ?https: the page as built for a public URL on https, visited over http
-  if (url.searchParams.has("https")) {
-    body = Buffer.from(body.toString("utf8").replace('"title":"$:/cfworker/public-url","text":"http:', '"title":"$:/cfworker/public-url","text":"https:'));
-  }
-  res.end(body);
 });
-await new Promise(resolve => publicServer.listen(PUBLIC_PORT, "127.0.0.1", resolve));
-
-const results = [];
-const check = (name, ok, detail = "") => { results.push(ok); console.log(`${ok ? "PASS" : "FAIL"}  ${name}${detail ? "  — " + detail : ""}`); };
-const sleep = ms => new Promise(r => setTimeout(r, ms));
-
-const browser = await chromium.launch(process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {});
-const pageErrors = [];
-const requests = [];   // { tag, host: "worker" | "public", method, path }
-function watch(p, tag) {
-  p.on("pageerror", e => pageErrors.push(`${tag}: ${e.message}`));
-  p.on("request", q => {
-    const url = new URL(q.url());
-    const host = url.origin === BASE ? "worker" : url.origin === PUB ? "public" : "other";
-    requests.push({ tag, host, method: q.method(), path: url.pathname + url.search });
-  });
-}
-const count = (tag, method, path, from = 0) => requests.slice(from).filter(r => r.tag === tag && r.host === "worker" && r.method === method && r.path.startsWith(path)).length;
+const { base: BASE, pub: PUB, bucket } = site;
+const { check, results } = createChecks();
+const browser = await launchBrowser();
+const { requests, pageErrors, watch } = createWatcher(site);   // requests: those from pages, by tab (tag)
+// Requests from a tab that reached the worker (not answered from the browser's cache)
+const count = (tag, method, path, from = 0) => requests.slice(from).filter(r => r.tag === tag && r.origin === "worker" && !r.cached && r.method === method && r.path.startsWith(path)).length;
 const shellPuts = (tag, from) => count(tag, "PUT", "/page/shell", from);
 const corePuts = (tag, from) => count(tag, "PUT", "/page/core", from);
-async function settle(p) {
-  await p.waitForFunction(() => {
-    const s = window.$tw && $tw.syncer;
-    if (!s) return false;
-    const quiet = !s.isDirty() && s.numTasksInProgress === 0 && Object.keys(s.titlesToBeLoaded).length === 0 && !s.forceSyncFromServer;
-    window.__quiet = quiet ? (window.__quiet || 0) + 1 : 0;
-    return window.__quiet >= 3;
-  }, null, { timeout: 30000, polling: 300 });
-}
-async function waitFor(condition, timeout = 20000) {
-  const end = Date.now() + timeout;
-  while (Date.now() < end) {
-    if (await condition()) return true;
-    await sleep(200);
-  }
-  return false;
-}
 // The admin wiki publishes a moment after a save: long enough for that to have happened
 const QUIET_WINDOW = 3500;
-const add = (p, fields) => p.evaluate(f => $tw.wiki.addTiddler(new $tw.Tiddler(f)), fields);
+const add = addTiddler;
 const status = p => p.evaluate(() => {
   const t = $tw.wiki.getTiddler("$:/temp/cfworker/page-publisher");
   return t ? { state: t.fields.state, text: t.fields.text } : null;
@@ -106,7 +45,7 @@ const between = (html, text, from, to) => {
 };
 async function openAdmin(tag, context, hash = "") {
   const p = await context.newPage();
-  watch(p, tag);
+  await watch(p, tag);
   const response = await p.goto(BASE + "/" + hash);
   await p.waitForFunction(() => window.$tw && $tw.wiki && $tw.rootWidget, null, { timeout: 30000 });
   return { p, response };
@@ -142,9 +81,9 @@ const reloaded = await A.reload();
 await A.waitForFunction(() => window.$tw && $tw.syncer, null, { timeout: 30000 });
 await settle(A);
 const body = await reloaded.body();
-const loadRequests = requests.slice(mark).filter(r => r.tag === "A" && r.host === "worker").map(r => `${r.method} ${r.path.split("?")[0]}`);
+const loadRequests = requests.slice(mark).filter(r => r.tag === "A" && r.origin === "worker" && !r.cached).map(r => `${r.method} ${r.path.split("?")[0]}`);
 check("an admin reload gets the light page, with the core file from the public site", body.length < ENGINE.length / 5 && body.toString().includes(`<script src="${CORE_URL}"`) &&
-  requests.slice(mark).some(r => r.tag === "A" && r.host === "public" && r.path.startsWith("/_plugins/tiddlywikicore.js")), `${body.length} bytes`);
+  requests.slice(mark).some(r => r.tag === "A" && r.origin === "public" && r.path.startsWith("/_plugins/tiddlywikicore.js")), `${body.length} bytes`);
 check("...still 2 worker requests (the page, the tiddler list), and nothing published again", loadRequests.length === 2 && shellPuts("A", mark) === 0 && corePuts("A", mark) === 0, JSON.stringify(loadRequests));
 check("...TiddlyWiki started, with TiddlyWeb's offline snapshot setting unchanged",
   await A.evaluate(() => $tw.wiki.tiddlerExists("$:/core") && !!$tw.syncadaptor && $tw.wiki.getTiddlerText("$:/config/SaveWikiButton/Template") === "$:/plugins/tiddlywiki/tiddlyweb/save/offline"));
@@ -212,7 +151,7 @@ check("...the copies in the shell carry the worker's revision", !!splashCopy && 
 // The public site runs from the same page
 const contextP = await browser.newContext();
 const P = await contextP.newPage();
-watch(P, "public");
+await watch(P, "public");
 await P.goto(PUB + "/");
 await P.waitForFunction(() => window.$tw && $tw.syncer && $tw.wiki.tiddlerExists("Splash"), null, { timeout: 30000 });
 const onPublic = await P.evaluate(() => ({
@@ -227,15 +166,15 @@ await contextP.close();
 // the public site, read-only, with nothing sent anywhere
 const contextQ = await browser.newContext();
 const Q = await contextQ.newPage();
-watch(Q, "public-http");
+await watch(Q, "public-http");
 await Q.goto(PUB + "/?https");
 await Q.waitForFunction(() => window.$tw && $tw.syncer && $tw.wiki.tiddlerExists("Splash") && $tw.wiki.tiddlerExists("$:/status/IsReadOnly"), null, { timeout: 30000 });
 await sleep(QUIET_WINDOW);
 const overHttp = await Q.evaluate(() => ({ url: $tw.wiki.getTiddlerText("$:/cfworker/public-url"), readOnly: $tw.wiki.getTiddlerText("$:/status/IsReadOnly") }));
 const httpRequests = requests.filter(r => r.tag === "public-http");
 check("the public site visited over http with its URL set on https is still read-only, and sends nothing",
-  overHttp.url.startsWith("https:") && overHttp.readOnly === "yes" && !httpRequests.some(r => r.method !== "GET" || r.host === "worker"),
-  JSON.stringify({ ...overHttp, sent: httpRequests.filter(r => r.method !== "GET" || r.host === "worker").map(r => r.method + " " + r.host + r.path) }));
+  overHttp.url.startsWith("https:") && overHttp.readOnly === "yes" && !httpRequests.some(r => r.method !== "GET" || r.origin === "worker"),
+  JSON.stringify({ ...overHttp, sent: httpRequests.filter(r => r.method !== "GET" || r.origin === "worker").map(r => r.method + " " + r.origin + r.path) }));
 await contextQ.close();
 
 // --- 5. Saves that don't change the page send nothing ----------------------------------------------
@@ -577,14 +516,9 @@ const { p: S } = await openAdmin("S", contextS, "#:safe");
 await sleep(QUIET_WINDOW);
 // (TiddlyWiki's "put" saver still probes the page's address there: the browser module doesn't run
 // without TiddlyWeb, which safe mode leaves out)
-check("an admin tab in TiddlyWiki's safe mode doesn't publish or sync", requests.slice(mark).filter(r => r.tag === "S" && r.host === "worker" &&
+check("an admin tab in TiddlyWiki's safe mode doesn't publish or sync", requests.slice(mark).filter(r => r.tag === "S" && r.origin === "worker" &&
   (r.method === "PUT" || r.method === "DELETE" || r.path.startsWith("/recipes/"))).length === 0 && await S.evaluate(() => $tw.safeMode === true),
   JSON.stringify(requests.slice(mark).filter(r => r.tag === "S").map(r => r.method + " " + r.path)));
 await contextS.close();
 
-check("no page errors", pageErrors.length === 0, pageErrors.join(" | "));
-console.log(`\n${results.filter(Boolean).length}/${results.length} passed`);
-await browser.close();
-await mf.dispose();
-publicServer.close();
-process.exit(results.every(Boolean) ? 0 : 1);
+await finish({ check, results, pageErrors, browser, site });

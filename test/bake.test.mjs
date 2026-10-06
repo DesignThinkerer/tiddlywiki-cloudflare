@@ -85,9 +85,12 @@ const options = await mf.dispatchFetch(base + "/recipes/default/tiddlers/x", { m
 check("CORS preflight allows If-Match and If-None-Match", /If-Match/.test(options.headers.get("access-control-allow-headers")) && /If-None-Match/.test(options.headers.get("access-control-allow-headers")));
 const bad = await mf.dispatchFetch(base + "/nope", { method: "PUT", body: "{}" });
 check("bad PUT path answers 400 with CORS headers", bad.status === 400 && bad.headers.get("access-control-allow-origin") === "*");
-const status = await (await mf.dispatchFetch(base + "/status")).json();
+const statusRes = await mf.dispatchFetch(base + "/status");
+const status = await statusRes.json(), statusCache = statusRes.headers.get("Cache-Control") || "";
 check("/status reports a logged-in, writable TiddlyWeb space", status.username === "admin" && status.read_only === false);
-check("...and the same answer is baked into the page, for the browser module", page.includes("$:/cfworker/status") && page.includes('\\"read_only\\":false'));
+check("...and the browser keeps it for a week, for itself only (private)",
+  /\bprivate\b/.test(statusCache) && Number((/max-age=(\d+)/.exec(statusCache) || [])[1]) >= 7 * 24 * 3600, statusCache);
+check("...so it isn't baked into the page", !page.includes("$:/cfworker/status"));
 
 // --- The page shell, published from the admin wiki ------------------------------------------------
 // The admin wiki renders the page with TiddlyWiki's $:/core/templates/tiddlywiki5-external-js.html:
