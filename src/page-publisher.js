@@ -23,8 +23,8 @@ change to a tiddler it transcludes, like $:/SiteTitle in the Open Graph tags.) I
 - when the admin wiki loads, once synced, if it renders something else than the page it loaded
   (the first load after a new index.html, a failed publish, a change made outside the admin wiki).
 Changes that arrive from other tabs aren't published by this one: their tab does it. Nothing is sent
-while a tiddler the page needs is still loading, or in safe mode (#:safe). A failure is shown in a
-notification and tried again at the next save or load.
+while a tiddler the page needs is still loading, or in safe mode (#:safe). A failure (also an error
+while preparing the page) is shown in a notification and tried again at the next save or load.
 \*/
 "use strict";
 
@@ -194,8 +194,27 @@ exports.startup = function() {
 		}
 	}
 
+	function failed(done,message) {
+		report("failed","Page not published: " + message + " It will be tried again at the next save or reload.");
+		done();
+	}
+
+	// Every step of a check runs through this: an error (in rendering the page, say: a raw markup
+	// tiddler with a widget that can't render as text) is reported, and the tab can publish again
+	// at its next save, instead of the check never finishing
+	function guarded(done,step) {
+		return function() {
+			try {
+				return step.apply(this,arguments);
+			} catch(e) {
+				console.error("cfworker page publisher:",e);
+				failed(done,"an error while preparing it (" + (e && e.message || e) + ").");
+			}
+		};
+	}
+
 	// When nothing is being saved or loaded
-	function whenQuiet(callback) {
+	function whenQuiet(done,callback) {
 		var waited = 0;
 		(function poll() {
 			var quiet = !syncer.isDirty() && syncer.numTasksInProgress === 0 && $tw.utils.count(syncer.titlesToBeLoaded) === 0 && !syncer.forceSyncFromServer;
@@ -205,14 +224,14 @@ exports.startup = function() {
 			if((waited += 200) >= QUIET_TIMEOUT) {
 				return callback(false);
 			}
-			setTimeout(poll,200);
+			setTimeout(guarded(done,poll),200);
 		})();
 	}
 
 	// A tiddler this tab saved keeps the revision it had before (TiddlyWiki only records the new one in
 	// the syncer): loaded again, so the shell holds the revision the worker lists, the one every other
 	// tab has, and a page load doesn't take it for a change
-	function refreshRevisions(callback) {
+	function refreshRevisions(done,callback) {
 		var listed = adaptor.cfworkerListed() || {},
 			stale = 0;
 		$tw.utils.each(pageTitles(),function(title) {
@@ -223,7 +242,7 @@ exports.startup = function() {
 			}
 		});
 		if(stale) {
-			whenQuiet(callback);
+			whenQuiet(done,callback);
 		} else {
 			callback(true);
 		}
@@ -246,34 +265,30 @@ exports.startup = function() {
 	}
 
 	function publish(text,print,done) {
-		function failed(message) {
-			report("failed","Page not published: " + message + " It will be tried again at the next save or reload.");
-			done();
-		}
 		function sendShell() {
 			send("page/shell",text,{
 				"Content-Type": "text/html; charset=utf-8",
 				"X-Page-Fingerprint": print,
 				"X-Page-Index": source.index
-			},function(err) {
+			},guarded(done,function(err) {
 				if(err) {
-					return failed(err);
+					return failed(done,err);
 				}
 				published = print;
 				report("published","Page published.");
 				done();
-			});
+			}));
 		}
 		if(storedCore === coreVersion) {
 			return sendShell();
 		}
-		send("page/core?v=" + encodeURIComponent(coreVersion),coreFile(),{"Content-Type": "application/javascript; charset=utf-8"},function(err) {
+		send("page/core?v=" + encodeURIComponent(coreVersion),coreFile(),{"Content-Type": "application/javascript; charset=utf-8"},guarded(done,function(err) {
 			if(err) {
-				return failed(err);
+				return failed(done,err);
 			}
 			storedCore = coreVersion;
 			sendShell();
-		});
+		}));
 	}
 
 	// The shell, noting the tiddlers rendering it needed that hadn't loaded yet (TiddlyWiki starts
@@ -292,7 +307,7 @@ exports.startup = function() {
 
 	// The complete shell, once what it needs has loaded: callback(text), or callback(null) if it
 	// still isn't there after a few rounds
-	function completeShell(callback,round) {
+	function completeShell(done,callback,round) {
 		var loading = [],
 			text = shellNoting(loading);
 		if(!loading.length) {
@@ -301,9 +316,9 @@ exports.startup = function() {
 		if((round || 0) >= 5) {
 			return callback(null,loading);
 		}
-		whenQuiet(function() {
-			completeShell(callback,(round || 0) + 1);
-		});
+		whenQuiet(done,guarded(done,function() {
+			completeShell(done,callback,(round || 0) + 1);
+		}));
 	}
 
 	function stillLoading(done,titles) {
@@ -325,12 +340,12 @@ exports.startup = function() {
 			}
 			syncer.syncFromServer();
 		}
-		whenQuiet(function(quiet) {
+		whenQuiet(done,guarded(done,function(quiet) {
 			if(!quiet) {
 				return stillLoading(done);
 			}
-			refreshRevisions(function() {
-				completeShell(function(text,loading) {
+			refreshRevisions(done,guarded(done,function() {
+				completeShell(done,guarded(done,function(text,loading) {
 					if(text === null) {
 						return stillLoading(done,loading);
 					}
@@ -339,9 +354,9 @@ exports.startup = function() {
 						return done();
 					}
 					publish(text,print,done);
-				});
-			});
-		});
+				}));
+			}));
+		}));
 	}
 
 	function check(afterSave) {
@@ -350,13 +365,20 @@ exports.startup = function() {
 			return;
 		}
 		busy = true;
-		run(afterSave,function() {
+		var finished = false;
+		// Called once, whatever happens (an error after the step that already finished, say)
+		function done() {
+			if(finished) {
+				return;
+			}
+			finished = true;
 			busy = false;
 			if(again) {
 				again = false;
 				check(true);
 			}
-		});
+		}
+		guarded(done,run)(afterSave,done);
 	}
 
 	function schedule() {
@@ -398,7 +420,7 @@ exports.startup = function() {
 			return setTimeout(start,300);
 		}
 		recordWhatCameWithPage(listed);
-		whenQuiet(function() {
+		whenQuiet(function() {},function() {
 			started = true;
 			check(false);
 		});
