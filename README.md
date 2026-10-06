@@ -88,6 +88,7 @@ flowchart LR
     ├── integrity.test.mjs    the tiddler list's integrity, a failed page build, draft-like titles, .gitignore (60 checks)
     ├── r2-ops.test.mjs       R2 calls per kind of request, against a budget (25 checks)
     ├── r2-counter.mjs        test-only wrapper that counts the worker's R2 calls
+    ├── browser-harness.mjs   the browser suites' shared setup (worker, public site stand-in, Chromium, helpers)
     └── bake.test.mjs         page serving and rebuilding, the published page (45 checks)
 ```
 
@@ -706,7 +707,7 @@ npm test                             # build, make the test wiki, run all seven 
 | `npm run test:plugins` | Real plugins in Chromium, on the admin site and a stand-in for the public site (see below). |
 | `npm run test:publish` | The page published from a real TiddlyWiki in Chromium (see below). |
 
-The tests run the real worker in Cloudflare's local runtime (workerd, through Miniflare) with a local R2 bucket and queue. Outgoing calls to GitHub and Cloudflare's API are answered by imitations, so nothing touches your accounts. The browser suites use local ports 8786–8787, 8790–8791 and 8799–8801; the others take any free port, so they can run at the same time. (On a machine too busy to keep up, such as with the browser suites running alongside, the backup suite's "never overlapped" check can fail: Miniflare then starts a second batch before the first ends, which `max_concurrency = 1` prevents on Cloudflare. It passes run on its own.)
+The tests run the real worker in Cloudflare's local runtime (workerd, through Miniflare) with a local R2 bucket and queue. Outgoing calls to GitHub and Cloudflare's API are answered by imitations, so nothing touches your accounts. Every suite takes free local ports, so they can run at the same time. The three browser suites share their setup, `test/browser-harness.mjs`: the worker, the stand-in for the public site, Chromium, and the helpers that wait for TiddlyWiki or record each tab's requests (marking the ones the browser answered from its cache, which never reached a server). (On a machine too busy to keep up, such as with the browser suites running alongside, the backup suite's "never overlapped" check can fail: Miniflare then starts a second batch before the first ends, which `max_concurrency = 1` prevents on Cloudflare. It passes run on its own.)
 
 `test:integrity` covers:
 - a save whose list update failed: its retry completes it, for a new and an existing tiddler, while real conflicts are still refused;

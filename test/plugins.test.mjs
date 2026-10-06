@@ -1,22 +1,14 @@
 // Plugins and JavaScript modules as files in R2, loaded by the page before TiddlyWiki boots, on the
 // admin site and on the public site. Uses real plugins shipped with TiddlyWiki (markdown, KaTeX).
 // Run: npm run test:plugins   (WIKI_HTML=path/to/your/index.html to test with your own wiki file)
-import { Miniflare } from "miniflare";
-import { chromium } from "playwright";
 import fs from "node:fs";
-import http from "node:http";
 import path from "node:path";
 import vm from "node:vm";
 import { createRequire } from "node:module";
-import { fileURLToPath } from "node:url";
+import { addTiddler, createChecks, createWatcher, finish, launchBrowser, readWikiFile, settle as settleTab, startSite } from "./browser-harness.mjs";
 
 const require = createRequire(import.meta.url);
-const WORKER = fileURLToPath(new URL("../worker.js", import.meta.url));
-const WIKI_HTML = process.env.WIKI_HTML || fileURLToPath(new URL("./fixtures/index.html", import.meta.url));
-if (!fs.existsSync(WIKI_HTML)) {
-  console.error(`No wiki file at ${WIKI_HTML}. Run "npm run fixture" first, or set WIKI_HTML.`);
-  process.exit(1);
-}
+const ENGINE = readWikiFile();
 
 // Real plugins, read from the tiddlywiki package the same way TiddlyWiki builds them
 const TW_DIR = path.dirname(require.resolve("tiddlywiki/package.json"));
@@ -26,17 +18,13 @@ await new Promise(resolve => twNode.boot.boot(resolve));
 const MARKDOWN = twNode.loadPluginFolder(path.join(TW_DIR, "plugins/tiddlywiki/markdown"));
 const KATEX = twNode.loadPluginFolder(path.join(TW_DIR, "plugins/tiddlywiki/katex"));
 
-const PORT = 8790, PUBLIC_PORT = 8791;
-const BASE = `http://127.0.0.1:${PORT}`;
-const PUB = `http://127.0.0.1:${PUBLIC_PORT}`;
 let r2Dir = fs.mkdtempSync(path.join(fs.realpathSync(process.env.TMPDIR || "/tmp"), "wiki-r2-"));
-
+let bucket = null;
 const outbound = [];
-const mf = new Miniflare({
-  modules: true, scriptPath: WORKER, compatibilityDate: "2024-09-23", port: PORT,
-  r2Buckets: ["WIKI_BUCKET"], r2Persist: r2Dir,
-  bindings: { PUBLIC_WIKI_URL: PUB, CF_ZONE_ID: "zone123", CF_API_TOKEN: "token" },
-  outboundService: async (req) => {
+const site = await startSite({
+  index: ENGINE, r2Persist: r2Dir,
+  bindings: { CF_ZONE_ID: "zone123", CF_API_TOKEN: "token" },
+  outbound: async (req) => {
     const arrived = Date.now();
     const entry = { url: req.url, body: req.method === "GET" ? "" : await req.text() };
     if (req.url.includes("purge_cache")) {
@@ -46,71 +34,26 @@ const mf = new Miniflare({
     }
     outbound.push(entry);
     return new Response('{"success":true}');
-  },
+  }
 });
-await mf.ready;
-const bucket = await mf.getR2Bucket("WIKI_BUCKET");
-await bucket.put("index.html", fs.readFileSync(WIKI_HTML, "utf8"));
-await bucket.put("recipes/default/tiddlers.json", "[]");
+const { mf, base: BASE, pub: PUB, publicRequests } = site;
+bucket = site.bucket;
 // A purged file is a URL, or { url, headers } for a copy cached with those request headers
 const purgedUrls = () => outbound.filter(o => o.url.includes("purge_cache")).flatMap(o => JSON.parse(o.body).files || []).map(f => typeof f === "string" ? f : f.url);
 
-// Stand-in for the public site: the R2 bucket served directly (custom domain), "/" rewritten to baked.html
-const publicRequests = [];
-const publicServer = http.createServer(async (req, res) => {
-  const url = new URL(req.url, PUB);
-  publicRequests.push(decodeURIComponent(url.pathname) + url.search);
-  try {
-    const key = decodeURIComponent(url.pathname.slice(1)) || "baked.html";
-    const obj = await bucket.get(key);
-    if (!obj) {
-      res.writeHead(404, { "Access-Control-Allow-Origin": "*" });
-      return res.end("Not found");
-    }
-    const headers = { "Access-Control-Allow-Origin": "*", "Content-Type": obj.httpMetadata?.contentType || "application/octet-stream" };
-    if (obj.httpMetadata?.cacheControl) headers["Cache-Control"] = obj.httpMetadata.cacheControl;
-    res.writeHead(200, headers);
-    res.end(Buffer.from(await obj.arrayBuffer()));
-  } catch (e) {
-    console.error("public stand-in:", e.message);
-    res.writeHead(500);
-    res.end();
-  }
-});
-await new Promise(resolve => publicServer.listen(PUBLIC_PORT, "127.0.0.1", resolve));
-
-const results = [];
-const check = (name, ok, detail = "") => { results.push(ok); console.log(`${ok ? "PASS" : "FAIL"}  ${name}${detail ? "  — " + detail : ""}`); };
-
-const browser = await chromium.launch(process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {});
+const { check, results } = createChecks();
+const browser = await launchBrowser();
 let context = await browser.newContext();
-const pageErrors = [];
-const requests = [];   // every request the browser makes: { origin: "worker" | "public", method, path, headers }
-function watch(page, tag) {
-  page.on("pageerror", e => pageErrors.push(`${tag}: ${e.message}`));
-  page.on("request", q => {
-    const url = new URL(q.url());
-    const origin = url.origin === BASE ? "worker" : url.origin === PUB ? "public" : "other";
-    requests.push({ tag, origin, method: q.method(), path: decodeURIComponent(url.pathname) + url.search, headers: q.headers() });
-  });
-}
+const { requests, pageErrors, watch } = createWatcher(site);   // every request the pages make
 let page = await context.newPage();
-watch(page, "admin");
+await watch(page, "admin");
 
-async function settle(p = page) {
-  await p.waitForFunction(() => {
-    const s = window.$tw && $tw.syncer;
-    if (!s) return false;
-    const quiet = !s.isDirty() && s.numTasksInProgress === 0 && Object.keys(s.titlesToBeLoaded).length === 0 && !s.forceSyncFromServer;
-    window.__quiet = quiet ? (window.__quiet || 0) + 1 : 0;
-    return window.__quiet >= 3;
-  }, null, { timeout: 30000, polling: 300 });
-}
+const settle = (p = page) => settleTab(p);
 async function load(url = BASE + "/") {
   await page.goto(url);
   await settle();
 }
-const add = fields => page.evaluate(f => $tw.wiki.addTiddler(new $tw.Tiddler(f)), fields);
+const add = fields => addTiddler(page, fields);
 const remove = title => page.evaluate(t => $tw.wiki.deleteTiddler(t), title);
 const render = (text, type = "text/vnd.tiddlywiki", p = page) =>
   p.evaluate(([t, ty]) => $tw.wiki.renderText("text/html", ty, t), [text, type]);
@@ -182,7 +125,7 @@ check("no reload asked after it", (await reloadAsked()) === "no");
 check("the plugin file came from the public site", requests.some(r => r.origin === "public" && r.path.startsWith("/_plugins/" + ML + ".js?v=")));
 check("the worker never served plugin code", !requests.some(r => r.origin === "worker" && (r.path.includes("_plugins") || r.path.includes(ML))));
 check("the sync didn't download the plugin again", !requests.some(r => r.path.includes("tiddlers/" + ML)));
-const workerOnLoad = requests.filter(r => r.origin === "worker").map(r => r.method + " " + r.path.split("?")[0]);
+const workerOnLoad = requests.filter(r => r.origin === "worker" && !r.cached).map(r => r.method + " " + r.path.split("?")[0]);
 check("page load still costs only the usual worker requests (page, tiddler list)", workerOnLoad.length <= 2, workerOnLoad.join(", "));
 publicRequests.length = 0;
 await load();
@@ -190,7 +133,7 @@ check("next load: the plugin file comes from the browser cache", !publicRequests
 
 // --- 3. The public site ----------------------------------------------------------------------------
 const pub = await context.newPage();
-watch(pub, "public");
+await watch(pub, "public");
 requests.length = 0;
 await pub.goto(PUB + "/");
 await pub.waitForFunction(() => window.$tw && $tw.wiki && $tw.wiki.getTiddler("$:/StoryList"), null, { timeout: 30000 });
@@ -381,7 +324,7 @@ await bucket.delete("_plugins/" + ML + ".js");
 await context.close();
 context = await browser.newContext();   // a hard reload: nothing cached
 page = await context.newPage();
-watch(page, "recovery");
+await watch(page, "recovery");
 const errorsBefore = pageErrors.length;
 await load();
 check("recovery: the wiki starts without the plugin", !(await isMarkdownActive()) && pageErrors.length === errorsBefore);
@@ -407,7 +350,7 @@ await page.goto("about:blank");   // only this test drives the rebuild
 // The public site answers /status from R2 too (the file uploaded once, README 3.1), so its tabs know the recipe
 await bucket.put("status", JSON.stringify({ username: "GUEST", read_only: true, anonymous: true, logout_is_available: false, space: { recipe: "default" } }), { httpMetadata: { contentType: "application/json" } });
 const tab = await context.newPage();
-watch(tab, "public tab");
+await watch(tab, "public tab");
 await tab.goto(PUB + "/");
 await tab.waitForFunction(() => window.$tw && $tw.syncer && $tw.wiki.tiddlerExists("Public note"), null, { timeout: 30000 });
 await settle(tab);   // every tiddler loaded (a load still queued would bring back a tiddler the sync deleted)
@@ -476,10 +419,4 @@ check("...and a damaged copy the browser kept is passed over quietly (asked agai
   `${cachedRound.length} requests ` + JSON.stringify(state));
 await tab.close();
 
-check("no page errors", pageErrors.length === 0, pageErrors.join(" | "));
-console.log(`\n${results.filter(Boolean).length}/${results.length} passed`);
-await browser.close();
-await mf.dispose();
-publicServer.close();
-fs.rmSync(r2Dir, { recursive: true, force: true });
-process.exit(results.every(Boolean) ? 0 : 1);
+await finish({ check, results, pageErrors, browser, site, cleanup: () => fs.rmSync(r2Dir, { recursive: true, force: true }) });

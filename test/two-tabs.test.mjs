@@ -1,73 +1,39 @@
 // End-to-end test: the worker in workerd (Miniflare) with R2, a real TiddlyWiki in Chromium, several tabs.
 // Covers edit-conflict protection, baking, public-cache purges, the 304 and the request savings.
 // Run: npm run test:tabs   (WIKI_HTML=path/to/your/index.html to test with your own wiki file)
-import { Miniflare } from "miniflare";
-import { chromium } from "playwright";
-import fs from "node:fs";
 import http from "node:http";
-import { fileURLToPath } from "node:url";
+import { createChecks, createWatcher, finish, launchBrowser, listen, readWikiFile, settle as settleTab, startSite } from "./browser-harness.mjs";
 
-const WORKER = fileURLToPath(new URL("../worker.js", import.meta.url));
-const WIKI_HTML = process.env.WIKI_HTML || fileURLToPath(new URL("./fixtures/index.html", import.meta.url));
-if (!fs.existsSync(WIKI_HTML)) {
-  console.error(`No wiki file at ${WIKI_HTML}. Run "npm run fixture" first, or set WIKI_HTML.`);
-  process.exit(1);
-}
 const outbound = [];
-const mf = new Miniflare({
-  modules: true,
-  scriptPath: WORKER,
-  compatibilityDate: "2024-09-23",
-  r2Buckets: ["WIKI_BUCKET"],
-  port: 8799,
-  bindings: { CF_ZONE_ID: "zone123", CF_API_TOKEN: "token", PUBLIC_WIKI_URL: "http://127.0.0.1:8800" },
-  outboundService: async (req) => {
+// The public site's stand-in can leave out the CORS header, or serve an older copy of a tiddler
+let publicCors = true;
+const staleOverride = new Map();
+const site = await startSite({
+  index: readWikiFile(),
+  bindings: { CF_ZONE_ID: "zone123", CF_API_TOKEN: "token" },
+  outbound: async (req) => {
     const body = req.method === "GET" ? "" : await req.text();
     outbound.push({ method: req.method, url: req.url, body });
     return new Response(req.url.includes("purge_cache") ? '{"success":true}' : "{}", { status: req.method === "GET" ? 404 : 200 });
   },
+  publicSite: { cors: () => publicCors, override: key => staleOverride.get(key) }
 });
+const { mf, base, pub: PUB, bucket } = site;
 const purged = () => outbound.filter(o => o.url.includes("purge_cache")).map(o => JSON.parse(o.body));
-const base = (await mf.ready).toString().replace(/\/$/, "");
-const bucket = await mf.getR2Bucket("WIKI_BUCKET");
-await bucket.put("index.html", fs.readFileSync(WIKI_HTML, "utf8"));
-await bucket.put("recipes/default/tiddlers.json", "[]");
 
-// Stand-in for the public site: the R2 bucket served directly (custom domain + CORS header rule)
-const PUB = "http://127.0.0.1:8800";
-let publicCors = true;
-const staleOverride = new Map();
-const publicServer = http.createServer(async (req, res) => {
-  const key = decodeURIComponent(new URL(req.url, PUB).pathname.slice(1));
-  let body = staleOverride.get(key);
-  if (body === undefined) {
-    const obj = await bucket.get(key);
-    body = obj ? await obj.text() : null;
-  }
-  const headers = publicCors ? { "Access-Control-Allow-Origin": "*" } : {};
-  if (body === null) { res.writeHead(404, headers); return res.end("Not found"); }
-  res.writeHead(200, { ...headers, "Content-Type": "application/json" });
-  res.end(body);
-});
-await new Promise(r => publicServer.listen(8800, "127.0.0.1", r));
-
-const results = [];
-function check(name, ok, detail = "") {
-  results.push({ name, ok });
-  console.log(`${ok ? "PASS" : "FAIL"}  ${name}${detail ? "  — " + detail : ""}`);
-}
+const { check, results } = createChecks();
 async function server(title) {
   const r = await mf.dispatchFetch(`${base}/recipes/default/tiddlers/${encodeURIComponent(title)}`);
   return r.status === 200 ? await r.json() : null;
 }
 
-const browser = await chromium.launch(process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {});
+const browser = await launchBrowser();
 const context = await browser.newContext();
-const net = [];
-const pageErrors = [];
-const requests = [];
+const net = [];   // saves and deletes, with their answers
+const { requests, pageErrors, watch } = createWatcher(site);
 async function openTab(tag) {
   const page = await context.newPage();
+  await watch(page, tag);
   page.on("response", r => {
     const q = r.request();
     if (q.method() === "PUT" || q.method() === "DELETE") {
@@ -76,22 +42,13 @@ async function openTab(tag) {
         ifMatch: h["if-match"] || "", ifNoneMatch: h["if-none-match"] || "" });
     }
   });
-  page.on("pageerror", e => pageErrors.push(`${tag}: ${e.message}`));
-  page.on("request", q => requests.push({ tag, method: q.method(), url: q.url() }));
   page.on("console", m => { if (m.type() === "error" && !m.text().startsWith("Failed to load resource") && !(tag === "D" && m.text().includes("CORS"))) pageErrors.push(`${tag} console: ${m.text()}`); });
   await page.goto(base + "/");
   await page.waitForFunction(() => window.$tw && $tw.syncer && $tw.syncer.timestampLastSyncFromServer);
   await settle(page);
   return page;
 }
-async function settle(page) {
-  await page.waitForFunction(() => {
-    const s = $tw.syncer;
-    const quiet = !s.isDirty() && s.numTasksInProgress === 0 && Object.keys(s.titlesToBeLoaded).length === 0 && !s.forceSyncFromServer;
-    window.__quiet = quiet ? (window.__quiet || 0) + 1 : 0;
-    return window.__quiet >= 3;
-  }, null, { timeout: 20000, polling: 300 });
-}
+const settle = page => settleTab(page, 20000);
 async function sync(page) {
   await page.evaluate(() => $tw.syncer.syncFromServer());
   await settle(page);
@@ -405,7 +362,6 @@ check("a reload asks whether the page changed and downloads none of it (304)", /
   `If-None-Match ${asked}, ${transferred} bytes`);
 // The same behind Cloudflare, whose features that rewrite HTML remove the page's ETag: a stand-in
 // proxy does that, and the browser asks by date instead (If-Modified-Since)
-const PROXY = "http://127.0.0.1:8801";
 const proxy = http.createServer(async (req, res) => {
   const chunks = [];
   for await (const chunk of req) chunks.push(chunk);
@@ -418,7 +374,7 @@ const proxy = http.createServer(async (req, res) => {
   res.writeHead(upstream.status, out);
   res.end(Buffer.from(await upstream.arrayBuffer()));
 });
-await new Promise(r => proxy.listen(8801, "127.0.0.1", r));
+const PROXY = await listen(proxy);
 const behindCloudflare = await browser.newContext();
 const tabBehind = await behindCloudflare.newPage();
 const firstLoad = await tabBehind.goto(PROXY + "/");
@@ -555,9 +511,4 @@ await other.close();
 // --- Summary --------------------------------------------------------------------------------
 const bad = net.filter(x => x.status === 428 || x.status >= 500);
 check("no 428/5xx responses anywhere", bad.length === 0, JSON.stringify(bad));
-check("no page errors", pageErrors.length === 0, pageErrors.join(" | "));
-console.log(`\n${results.filter(x => x.ok).length}/${results.length} passed; ${net.filter(x => x.status === 412).length} conflicts detected; ${net.length} writes`);
-await browser.close();
-await mf.dispose();
-publicServer.close();
-process.exit(results.every(x => x.ok) ? 0 : 1);
+await finish({ check, results, pageErrors, browser, site, note: `; ${net.filter(x => x.status === 412).length} conflicts detected; ${net.length} writes` });
