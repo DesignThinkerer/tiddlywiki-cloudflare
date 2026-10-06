@@ -494,9 +494,14 @@ async function handleDelete(request, env, ctx, url, corsHeaders) {
     if (found) ctx.waitUntil(queueBackup(env, { action: "delete", title, revision: currentRevision }));
     await untilDone(ctx, (async () => {
       // If it was neither stored nor listed, there is nothing to back up or purge
-      const { removed, list: stored, recreated } = await removeFromManifest(env, ctx, title, list, found ? currentRevision : null);
-      // Saved again since: that save's purge, plugin file and page build are the ones
-      if (recreated) return;
+      let { removed, list: stored, recreated } = await removeFromManifest(env, ctx, title, list, found ? currentRevision : null);
+      if (recreated) {
+        // Saved again since: that save's purge, plugin file and page build are the ones. Unless that
+        // save landed between the check above and the delete, which then removed it too (an R2
+        // delete can't be conditional): nothing is stored, so the entry goes as well
+        if (await env.WIKI_BUCKET.head(tiddlerKey(title))) return;
+        ({ removed, list: stored } = await removeFromManifest(env, ctx, title, stored));
+      }
       if (!found && removed) ctx.waitUntil(queueBackup(env, { action: "delete", title, revision: currentRevision }));
       if (found || removed) ctx.waitUntil(purgePublicCache(env, tiddlerPurgeUrls(env, title, url.origin)));
       // The list entry says what it was; if it wasn't listed, delete any plugin file anyway

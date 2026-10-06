@@ -390,6 +390,18 @@ check("an older save whose list update lands after a newer one's doesn't put its
   (await entry("Twice"))?.revision === newerRevision && await storedRevision("Twice") === newerRevision,
   `listed ${(await entry("Twice"))?.revision}, stored ${await storedRevision("Twice")}, newer ${newerRevision}`);
 
+// A save that lands between a delete's check and its removal: the delete removes that save's
+// version too (R2 deletes can't be conditional), so it doesn't keep the entry as "saved again since"
+res = await save("Squeezed", { text: "v1" });
+await delayNext("delete tiddler", 600);
+const squeezedDelete = del("Squeezed");
+await pause(200);
+res = await save("Squeezed", { text: "v2" }, { "If-Match": res.headers.get("ETag") });
+const squeezedDeleted = await squeezedDelete;
+check("a save landing between a delete's check and its removal: removed with it, so not listed either",
+  res.status === 204 && squeezedDeleted.status === 204 && !(await storedRevision("Squeezed")) === !(await entry("Squeezed")),
+  `save ${res.status}, delete ${squeezedDeleted.status}, stored ${await storedRevision("Squeezed")}, listed ${(await entry("Squeezed"))?.revision}`);
+
 // --- 4b. Overlapping page builds keep the newest shell -----------------------------------------------
 // A save's page build that read the shell before a new one was published, and stores its page after
 // that one's: the page stays built from the new shell (with the save's change, which it read too)
