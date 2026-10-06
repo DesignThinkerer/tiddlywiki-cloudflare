@@ -220,7 +220,7 @@ If it were excluded, updating it from the plugin library would store the new ver
 
 These figures come from the same test machine as in section 3, so read them as proportions. The worker's metrics in the Cloudflare dashboard show its real CPU time per request.
 
-**The backup queue consumer** spends 30–100 ms of CPU on a plugin (base64 encoding, git's blob hash, reading the previous version). That's fine: queue consumers get 30 seconds of CPU by default, on both plans ([Queues limits](https://developers.cloudflare.com/queues/platform/limits/)). The fallback without a queue runs inside the save request, so keep the queue bound.
+**The backup queue consumer** spends about 2.5 ms of CPU on a 254 KB plugin, measured on the test machine (base64 encoding and git's blob hash; GitHub's copy of the previous version is no longer decoded, which took about 14 ms more). Queue consumers share the Workers per-invocation CPU limits ([Queues limits](https://developers.cloudflare.com/queues/platform/limits/)), so on the Free plan count on 10 ms, with some tolerance for occasional overruns; a batch of several plugin updates can still go over. The fallback without a queue runs inside the save request, so keep the queue bound.
 
 **Worker requests:** unchanged by this change: plugin files never reach the worker. (A page load was three requests, and is two since the module answers `/status` from the page, README 4.5.)
 
@@ -861,7 +861,7 @@ const direct = { ...message, content: job.content && decoder.decode(job.content)
 
 The queue consumer receives text, as before. Backups now hold the stored bytes, so each file in the GitHub repository switches to the flat layout on its tiddler's next save, and the repository holds both layouts.
 
-It also reads GitHub's current copy in the "object" format (`Accept: application/vnd.github.object+json`): GitHub doesn't return files between 1 and 100 MB in its default format, so the second backup of a tiddler over 1 MB would fail forever and hold up every later backup. In the object format their content comes back empty, which only means the "newer version restored" step can't run for them.
+It also reads GitHub's current copy in the "object" format (`Accept: application/vnd.github.object+json`): GitHub doesn't return files between 1 and 100 MB in its default format, so the second backup of a tiddler over 1 MB would fail forever and hold up every later backup. In the object format their content comes back empty. (Since then only the `sha` is used, for all sizes: README 4.7.)
 
 ### 5.10 Bake version
 

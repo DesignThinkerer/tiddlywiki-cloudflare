@@ -1410,10 +1410,10 @@ async function requeueBackup(env, msg, delaySeconds, countTry) {
 // Commits one save or delete
 async function backupJob(env, job) {
   const github = githubContents(env);
-  const inWiki = (await env.WIKI_BUCKET.head(tiddlerKey(job.title))) !== null;
+  const current = await env.WIKI_BUCKET.head(tiddlerKey(job.title));   // the version in the wiki now
 
   if (job.action === "delete") {
-    if (inWiki) return; // Recreated since then: its own save message updates GitHub
+    if (current) return; // Recreated since then: its own save message updates GitHub
     const existing = await github.get(job.title);
     if (existing) await github.remove(job.title, existing.sha, `🗑️ Delete: ${job.title}`);
     return;
@@ -1426,23 +1426,38 @@ async function backupJob(env, job) {
   }
   if (content === undefined) return; // Already handled by an earlier delivery of this message
 
+  // GitHub needs the sha of the file it holds to replace it. Its content isn't needed (decoding a
+  // plugin's took more CPU than a run is allowed): whether GitHub already holds a newer version is
+  // told by the sha too, compared with the wiki's current version's
   const existing = await github.get(job.title);
   let sha = existing ? existing.sha : null;
+  const newer = await newerInWiki(env, job, current, sha);
   if (sha !== await gitBlobSha(content)) {
     sha = await github.put(job.title, content, `✏️ Save: ${job.title}`, sha);
   }
-  if (existing && existing.text !== null && isNewerRevision(revisionIn(existing.text), job.revision)) {
-    // This version arrived after a newer one was committed: it is now in the history,
-    // and the newer version goes back on top
-    await github.put(job.title, existing.text, `✏️ Save: ${job.title} (newer version restored)`, sha);
-  } else if (!inWiki) {
+  if (newer) {
+    // This version arrived after a newer one was committed: it is now in the history, and the
+    // newer version goes back on top. (Marked first: if putting it back fails, the retry of this
+    // message, which finds this version already committed, still does it.)
+    job.restore = true;
+    if (sha !== newer.sha) await github.put(job.title, newer.text, `✏️ Save: ${job.title} (newer version restored)`, sha);
+  } else if (!current) {
     // Deleted since this save: keep this version in the history, then delete it again
     await github.remove(job.title, sha, `🗑️ Delete: ${job.title}`);
   }
 }
 
-function revisionIn(text) {
-  try { return String(JSON.parse(text).revision ?? ""); } catch (e) { return ""; }
+// The wiki's current version of a tiddler, { text, sha }, if it's newer than this job's and GitHub
+// already holds it (githubSha), so this job's version arrived late; or if an earlier try of this
+// job found that (job.restore). Otherwise null: a newer version still waiting for its own backup
+// (quick successive edits) is committed by its own message, in order.
+async function newerInWiki(env, job, current, githubSha) {
+  if (!current || !isNewerRevision(revisionOf(current), job.revision) || (!githubSha && !job.restore)) return null;
+  const obj = await env.WIKI_BUCKET.get(tiddlerKey(job.title));
+  if (!obj) return null;
+  const text = await obj.text();
+  const sha = await gitBlobSha(text);
+  return job.restore || sha === githubSha ? { text, sha } : null;
 }
 
 // Revisions written by this worker are millisecond timestamps
@@ -1505,16 +1520,10 @@ function githubContents(env) {
     return res.json();
   }
   return {
-    // { sha, text } of the file on GitHub (text is null for files over 1 MB), or null
+    // { sha } of the file on GitHub, or null. (GitHub sends the content too, up to 1 MB; it isn't used.)
     async get(title) {
       const file = await call("GET", title);
-      if (!file) return null;
-      let text = null;
-      if (file.encoding === "base64" && typeof file.content === "string") {
-        const binary = atob(file.content.replace(/\n/g, ""));
-        text = new TextDecoder().decode(Uint8Array.from(binary, c => c.charCodeAt(0)));
-      }
-      return { sha: file.sha, text };
+      return file ? { sha: file.sha } : null;
     },
     // Returns the new blob sha
     async put(title, content, message, sha) {
