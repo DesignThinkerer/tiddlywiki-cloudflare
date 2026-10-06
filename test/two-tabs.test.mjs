@@ -262,6 +262,22 @@ await new Promise(r => setTimeout(r, 300));
 let bodies = outbound.slice(before).filter(o => o.url.includes("purge_cache")).map(o => JSON.parse(o.body));
 check("save purges the public tiddler URL and the exact public tiddler-list URL",
   bodies.some(b => b.files && b.files.includes(PUB + "/recipes/default/tiddlers/Zeta") && b.files.includes(PUBLIC_LIST)), JSON.stringify(bodies));
+// The admin page reads tiddlers from the public site cross-origin, so its requests carry an Origin
+// header, which is part of Cloudflare's cache key: that copy is purged separately, with the header
+const ADMIN_ORIGIN = new URL(base).origin;
+const purgesWithOrigin = (bs, url) => bs.some(b => (b.files || []).some(f => f && f.url === url && f.headers && f.headers.Origin === ADMIN_ORIGIN));
+check("...and the copy Cloudflare keeps for the admin page's requests (with its Origin header)",
+  purgesWithOrigin(bodies, PUB + "/recipes/default/tiddlers/Zeta"), JSON.stringify(bodies));
+before = outbound.length;
+const doomed = await mf.dispatchFetch(`${base}/recipes/default/tiddlers/Purged%20on%20delete`, {
+  method: "PUT", headers: { "Content-Type": "application/json", "X-Tiddler-Layout": "flat" },
+  body: JSON.stringify({ title: "Purged on delete", text: "x" })
+});
+await doomed.arrayBuffer();
+await (await mf.dispatchFetch(`${base}/bags/default/tiddlers/Purged%20on%20delete`, { method: "DELETE" })).arrayBuffer();
+await new Promise(r => setTimeout(r, 300));
+bodies = outbound.slice(before).filter(o => o.url.includes("purge_cache")).map(o => JSON.parse(o.body));
+check("...also on a delete", purgesWithOrigin(bodies.slice(-1), PUB + "/recipes/default/tiddlers/Purged%20on%20delete"), JSON.stringify(bodies.slice(-1)));
 await create(A, "$:/config/Some Thing", "x"); await settle(A);
 await new Promise(r => setTimeout(r, 300));
 check("system tiddler URL encoded like TiddlyWiki requests it",
@@ -342,6 +358,35 @@ const asked = (await reloaded.request().allHeaders())["if-none-match"] || "";
 const transferred = (await reloaded.request().sizes()).responseBodySize;
 check("a reload asks whether the page changed and downloads none of it (304)", /-page"$/.test(asked) && transferred === 0,
   `If-None-Match ${asked}, ${transferred} bytes`);
+// The same behind Cloudflare, whose features that rewrite HTML remove the page's ETag: a stand-in
+// proxy does that, and the browser asks by date instead (If-Modified-Since)
+const PROXY = "http://127.0.0.1:8801";
+const proxy = http.createServer(async (req, res) => {
+  const chunks = [];
+  for await (const chunk of req) chunks.push(chunk);
+  const headers = { ...req.headers };
+  delete headers.host;
+  const upstream = await mf.dispatchFetch(base + req.url, { method: req.method, headers, body: chunks.length ? Buffer.concat(chunks) : undefined });
+  const out = {};
+  upstream.headers.forEach((value, name) => { out[name] = value; });
+  if ((out["content-type"] || "").startsWith("text/html")) delete out.etag;
+  res.writeHead(upstream.status, out);
+  res.end(Buffer.from(await upstream.arrayBuffer()));
+});
+await new Promise(r => proxy.listen(8801, "127.0.0.1", r));
+const behindCloudflare = await browser.newContext();
+const tabBehind = await behindCloudflare.newPage();
+const firstLoad = await tabBehind.goto(PROXY + "/");
+await tabBehind.waitForFunction(() => window.$tw && $tw.syncer, null, { timeout: 30000 });
+const noEtag = !(await firstLoad.allHeaders())["etag"];
+const reloadedD = await tabBehind.reload();
+await tabBehind.waitForFunction(() => window.$tw && $tw.syncer, null, { timeout: 30000 });
+const askedByDate = (await reloadedD.request().allHeaders())["if-modified-since"] || "";
+const transferredD = (await reloadedD.request().sizes()).responseBodySize;
+check("...also when the ETag is removed on the way: asked by date, none of it downloaded", noEtag && !!askedByDate && transferredD === 0,
+  `ETag removed: ${noEtag}, If-Modified-Since ${askedByDate}, ${transferredD} bytes`);
+await behindCloudflare.close();
+proxy.close();
 
 // --- 13. A damaged tiddler list is rebuilt while a tab is open ------------------------------------
 await B.close();

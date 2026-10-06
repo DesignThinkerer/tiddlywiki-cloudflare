@@ -41,13 +41,41 @@ againBody = await again.text();
 check("...but a page that has to be rebuilt is sent in full", again.status === 200 && againBody.includes("v3"), `status ${again.status}`);
 // The rebuilt page carries its ETag too, so the very next load (the first after a deploy, say) is a 304
 const rebuiltEtag = again.headers.get("ETag");
+const rebuiltDate = again.headers.get("Last-Modified");
 const storedPage = await bucket.head("baked.html");
 check("...with the ETag of the page it stored", rebuiltEtag === `"${storedPage.etag}-page"`, `ETag ${rebuiltEtag}, stored ${storedPage.etag}`);
 again = await mf.dispatchFetch(base + "/", { headers: { "If-None-Match": rebuiltEtag || "none" } });
 againBody = await again.text();
 check("...so the next load is already a 304", again.status === 304 && againBody === "", `status ${again.status}`);
-const meta = storedPage.customMetadata;
-check("bake metadata records the guard version and source etag", /^4-/.test(meta.bakeVersion) && !!meta.sourceEtag, JSON.stringify(meta));
+// Cloudflare features that rewrite HTML (Replace insecure JavaScript libraries is on by default on
+// the Free plan) remove the ETag on the way out, but not Last-Modified: the browser then asks with
+// If-Modified-Since alone
+check("the page also carries a Last-Modified date", !!rebuiltDate && !isNaN(Date.parse(rebuiltDate)), `Last-Modified ${rebuiltDate}`);
+again = await mf.dispatchFetch(base + "/");
+await again.arrayBuffer();
+check("...the same when it's served from the stored page", again.headers.get("Last-Modified") === rebuiltDate, `${again.headers.get("Last-Modified")} vs ${rebuiltDate}`);
+again = await mf.dispatchFetch(base + "/", { headers: { "If-Modified-Since": rebuiltDate || "none" } });
+againBody = await again.text();
+check("an unchanged page answers 304 to If-Modified-Since alone (the ETag removed on the way)", again.status === 304 && againBody === "", `status ${again.status}`);
+// The date is the page's version, so it only goes forward: a page built within the same second as
+// the last one (here: the last one dated ahead) still gets a later date
+const last = await bucket.get("baked.html");
+const ahead = Number(last.customMetadata.pageTime) + 50;
+await bucket.put("baked.html", await last.arrayBuffer(), { httpMetadata: last.httpMetadata, customMetadata: { ...last.customMetadata, pageTime: String(ahead) } });
+const dateA = new Date(ahead * 1000).toUTCString();
+await bucket.put("index.html", html("v5"));
+const buildB = await mf.dispatchFetch(base + "/");
+await buildB.arrayBuffer();
+const dateB = buildB.headers.get("Last-Modified");
+check("a page built within the same second as the last one gets a later date", Date.parse(dateB) === (ahead + 1) * 1000, `${dateA} then ${dateB}`);
+again = await mf.dispatchFetch(base + "/", { headers: { "If-Modified-Since": dateA || "none" } });
+againBody = await again.text();
+check("...so a browser holding the earlier page gets the new one", again.status === 200 && againBody.includes("v5"), `status ${again.status}`);
+again = await mf.dispatchFetch(base + "/", { headers: { "If-Modified-Since": "not a date" } });
+await again.arrayBuffer();
+check("an If-Modified-Since that isn't a date gets the page", again.status === 200, `status ${again.status}`);
+const meta = (await bucket.head("baked.html")).customMetadata;
+check("bake metadata records the guard version, source etag and page date", /^5-/.test(meta.bakeVersion) && !!meta.sourceEtag && !!meta.pageTime, JSON.stringify(meta));
 
 await bucket.put("index.html", "\uFEFF" + html("with a byte order mark"));
 page = await (await mf.dispatchFetch(base + "/")).text();
