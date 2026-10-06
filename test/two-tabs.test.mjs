@@ -508,6 +508,38 @@ await startEdit(looking, "Alpha");
 const unchanged = await leaving(looking);
 check("...but not for an editor opened and left unchanged", !unchanged.asked && unchanged.closed, JSON.stringify(unchanged));
 
+// --- 15. A conflict copy of code doesn't run --------------------------------------------------
+// The copy keeps the losing version's text, but not what would make TiddlyWiki run it: no module, no
+// plugin, no file or script tag in the page. Only the version the server kept takes effect.
+const MOD = "$:/test/marker.js", PLUG = "$:/plugins/test/conflicted";
+const markerModule = v => ({ type: "application/javascript", "module-type": "startup",
+  text: `exports.name='marker';exports.platforms=['browser'];exports.synchronous=true;exports.startup=function(){window.__ran=(window.__ran||[]).concat(${JSON.stringify(v)});};` });
+const valuePlugin = v => ({ "plugin-type": "plugin", type: "application/json", version: "1.0.0",
+  text: JSON.stringify({ tiddlers: { [PLUG + "/value"]: { text: v } } }) });
+const putCode = (page, title, fields) => page.evaluate(([title, fields]) => $tw.wiki.addTiddler(new $tw.Tiddler($tw.wiki.getCreationFields(), fields, { title }, $tw.wiki.getModificationFields())), [title, fields]);
+const other = await openTab("H");             // a second tab (B is closed by now)
+await putCode(A, MOD, markerModule("original")); await putCode(A, PLUG, valuePlugin("original")); await settle(A);
+await sync(other);
+await putCode(A, MOD, markerModule("A's edit")); await putCode(A, PLUG, valuePlugin("A's edit")); await settle(A);
+await putCode(other, MOD, markerModule("B's edit")); await putCode(other, PLUG, valuePlugin("B's edit")); await settle(other);   // it hadn't synced: conflicts
+const codeCopies = [...await conflictCopies(other, MOD), ...await conflictCopies(other, PLUG)];
+const copyFields = await other.evaluate(titles => titles.map(t => $tw.wiki.getTiddler(t).fields), codeCopies);
+check("conflict copies of a module and a plugin keep their text, without module-type or plugin-type (moved aside)",
+  codeCopies.length === 2 && copyFields.every(f => f["module-type"] === undefined && f["plugin-type"] === undefined) &&
+  copyFields.some(f => f["conflict-removed-module-type"] === "startup" && f.text.includes("B's edit")) && copyFields.some(f => f["conflict-removed-plugin-type"] === "plugin" && f.text.includes("B's edit")),
+  JSON.stringify(copyFields.map(f => ({ title: f.title, module: f["module-type"], plugin: f["plugin-type"], removedModule: f["conflict-removed-module-type"], removedPlugin: f["conflict-removed-plugin-type"] }))));
+const pluginFiles = (await bucket.list({ prefix: "_plugins/" })).objects.map(o => o.key);
+const bakedPage = await (await bucket.get("baked.html")).text();
+check("...no file in R2 and no script tag in the page for them", !pluginFiles.some(k => k.includes("(conflict")) && !bakedPage.includes(encodeURIComponent(" (conflict")),
+  JSON.stringify(pluginFiles.filter(k => k.includes("conflict"))));
+const freshLoad = await openTab("G");
+const ran = await freshLoad.evaluate(() => window.__ran);
+const pluginValue = await freshLoad.evaluate(t => $tw.wiki.getTiddlerText(t), PLUG + "/value");
+check("...a fresh load runs only the version the server kept", JSON.stringify(ran) === JSON.stringify(["A's edit"]) && pluginValue === "A's edit",
+  `ran ${JSON.stringify(ran)}, plugin value ${JSON.stringify(pluginValue)}`);
+await freshLoad.close();
+await other.close();
+
 // --- Summary --------------------------------------------------------------------------------
 const bad = net.filter(x => x.status === 428 || x.status >= 500);
 check("no 428/5xx responses anywhere", bad.length === 0, JSON.stringify(bad));

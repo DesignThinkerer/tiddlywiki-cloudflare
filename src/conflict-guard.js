@@ -230,11 +230,14 @@ exports.startup = function() {
 			copyTitle = wiki.generateNewTitle(title + " (conflict " + stamp + ")"),
 			keptTags = [],
 			removedTags = [];
-		// Keep the copy inert: tags such as $:/tags/Stylesheet or $:/tags/Macro would make it take effect
+		// Keep the copy inert: tags such as $:/tags/Stylesheet or $:/tags/Macro would make it take effect,
+		// and so would module-type (a JavaScript module, defined and run at startup) or plugin-type (a
+		// plugin, whose contents would even override the original's). They're moved aside, kept for
+		// putting back by hand.
 		$tw.utils.each(localTiddler.fields.tags || [],function(tag) {
 			(tag.indexOf("$:/tags/") === 0 ? removedTags : keptTags).push(tag);
 		});
-		wiki.addTiddler(new $tw.Tiddler(localTiddler,{
+		var fields = {
 			title: copyTitle,
 			tags: keptTags,
 			revision: undefined,
@@ -243,7 +246,14 @@ exports.startup = function() {
 			permissions: undefined,
 			"conflict-of": title,
 			"conflict-removed-tags": removedTags.length ? $tw.utils.stringifyList(removedTags) : undefined
-		}));
+		};
+		$tw.utils.each(["module-type","plugin-type"],function(field) {
+			if(localTiddler.fields[field] !== undefined) {
+				fields[field] = undefined;
+				fields["conflict-removed-" + field] = localTiddler.fields[field];
+			}
+		});
+		wiki.addTiddler(new $tw.Tiddler(localTiddler,fields));
 		if($tw.Story) {
 			new $tw.Story({wiki: wiki}).addToStory(copyTitle,title);
 		}
