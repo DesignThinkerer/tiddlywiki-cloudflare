@@ -349,6 +349,8 @@ export default {
     }
 
     // 4. WRITES
+    if (request.method === "PUT" && url.pathname === "/page/core") return publishCoreFile(request, env, url, corsHeaders);
+    if (request.method === "PUT" && url.pathname === "/page/shell") return publishShell(request, env, ctx, corsHeaders);
     if (request.method === "PUT") {
       try {
         const match = url.pathname.match(/^\/recipes\/default\/tiddlers\/(.+)$/);
@@ -576,19 +578,25 @@ const STATUS_TITLE = "$:/cfworker/status";
 
 const CONFLICT_GUARD_SOURCE = "__CONFLICT_GUARD_SOURCE__";   // replaced by the build
 
+// The second browser module: publishes the page from the admin wiki (see "The page" below). Baked
+// with the first, with what the page was built from, so it can tell when it needs publishing again.
+const PAGE_PUBLISHER_TITLE = "$:/cfworker/page-publisher.js";
+const PAGE_SOURCE_TITLE = "$:/cfworker/page-source";
+const PAGE_PUBLISHER_SOURCE = "__PAGE_PUBLISHER_SOURCE__";   // replaced by the build
+
 function conflictGuardEnabled(env) {
   return String(env.CONFLICT_GUARD || "").toLowerCase() !== "off";
 }
 
-// Changes whenever the guard code or the public URL changes, so baked.html is rebuilt after a deploy
-// (the number in front changes when the way pages are built changes)
+// Changes whenever the browser modules or the public URL change, so baked.html is rebuilt after a
+// deploy (the number in front changes when the way pages are built changes)
 function bakeVersion(env) {
-  const input = (conflictGuardEnabled(env) ? CONFLICT_GUARD_SOURCE : "off") + "\n" + publicUrl(env, "/");
+  const input = (conflictGuardEnabled(env) ? CONFLICT_GUARD_SOURCE + "\n" + PAGE_PUBLISHER_SOURCE : "off") + "\n" + publicUrl(env, "/");
   let hash = 5381;
   for (let i = 0; i < input.length; i++) {
     hash = ((hash * 33) ^ input.charCodeAt(i)) >>> 0;
   }
-  return "5-" + hash.toString(36);
+  return "7-" + hash.toString(36);
 }
 
 // The page's ETag is "<baked.html's R2 etag>-page". The browser asks with it (If-None-Match, maybe
@@ -727,6 +735,28 @@ function insertAfterHead(html, markup) {
   return html;
 }
 
+// A byte offset moved back to the start of a character, so a window never cuts one in two
+function charStart(bytes, at) {
+  while (at > 0 && at < bytes.length && (bytes[at] & 0xC0) === 0x80) at--;
+  return at;
+}
+
+// Inserts markup right before the last occurrence of marker, looked for in the page's last 64 KB
+// (all of it if it isn't there). Returns the new bytes, or null if the page doesn't have it.
+function insertBeforeLast(html, marker, markup) {
+  for (const length of [65536, html.length]) {
+    const from = charStart(html, Math.max(0, html.length - length));
+    const tail = pageDecoder.decode(html.subarray(from));
+    const index = tail.lastIndexOf(marker);
+    if (index >= 0) {
+      const at = from + encoder.encode(tail.slice(0, index)).length;
+      return concatBytes([html.subarray(0, at), encoder.encode(markup), html.subarray(at)]);
+    }
+    if (from === 0) break;
+  }
+  return null;
+}
+
 // Saves baked.html, unless an overlapping build from a newer tiddler list has already saved one
 // for the same worker and index.html. "Newer" compares when R2 stored each list (listVersion), so
 // a list replaced by hand counts as newer too. Each page gets its date (pageTime, see serveWiki).
@@ -751,14 +781,15 @@ async function storePage(env, html, meta) {
   return null;
 }
 
-// Builds baked.html = index.html + startup tiddlers + conflict guard + plugin <script> tags, then
-// purges the public copy. Returns { html (bytes), page: the stored page's R2 object, or null if an
-// overlapping build's page was kept }, or null.
-async function rebakeHtml(env, ctx, list = null) {
+// Builds baked.html = the page source (the published shell, or index.html, see readPageSource) +
+// startup tiddlers + browser modules + plugin <script> tags, then purges the public copy. source:
+// the page source, if the caller has it. Returns { html (bytes), page: the stored page's R2 object,
+// or null if an overlapping build's page was kept }, or null.
+async function rebakeHtml(env, ctx, list = null, source = null) {
   try {
-    const htmlObj = await env.WIKI_BUCKET.get("index.html");
-    if (!htmlObj) return null;
-    let html = new Uint8Array(await htmlObj.arrayBuffer());
+    const pageSource = source || await readPageSource(env);
+    if (!pageSource) return null;
+    let html = pageSource.html;
 
     // list: the list a save or delete has just written. Otherwise it's read, and a missing or
     // damaged one rebuilt first (a page built without it would have no plugins); while that takes
@@ -790,6 +821,20 @@ async function rebakeHtml(env, ctx, list = null) {
       });
       store.push({ title: PUBLIC_URL_TITLE, text: publicUrl(env, "/") });
       store.push({ title: STATUS_TITLE, type: "application/json", text: JSON.stringify(ADMIN_STATUS) });
+      store.push({ title: PAGE_PUBLISHER_TITLE, type: "application/javascript", "module-type": "startup", text: PAGE_PUBLISHER_SOURCE });
+      store.push({ title: PAGE_SOURCE_TITLE, type: "application/json", text: JSON.stringify({ index: pageSource.index, fingerprint: pageSource.fingerprint, core: pageSource.core }) });
+    }
+
+    // In a shell, plugins load right before the core (they must run before TiddlyWiki starts, which
+    // the core does), so they don't hold up the top of the page (a splash screen). In a full
+    // index.html, where TiddlyWiki starts from code inside the page, from <head>.
+    let pluginsPlaced = false;
+    if (pluginTags) {
+      const placed = insertBeforeLast(html, EXTERNAL_SCRIPTS_MARKER, `${pluginTags}\n`);
+      if (placed) {
+        html = placed;
+        pluginsPlaced = true;
+      }
     }
 
     let injected = "";
@@ -803,12 +848,13 @@ async function rebakeHtml(env, ctx, list = null) {
         </script>
       `;
     }
-    if (pluginTags) injected += `\n${pluginTags}\n`;
+    if (pluginTags && !pluginsPlaced) injected += `\n${pluginTags}\n`;
     if (injected) html = insertAfterHead(html, `\n${injected}\n`);
 
     const stored = await storePage(env, html, {
       bakeVersion: bakeVersion(env),
-      sourceEtag: htmlObj.etag,
+      sourceEtag: pageSource.index,
+      shell: pageSource.fingerprint,
       listVersion: String(manifestObj ? manifestObj.uploaded.getTime() : 0)
     });
     if (stored) ctx.waitUntil(purgePublicCache(env, PUBLIC_PAGE_PATHS.map(path => publicUrl(env, path))));
@@ -817,6 +863,118 @@ async function rebakeHtml(env, ctx, list = null) {
     console.error("Failed to rebake HTML:", err);
     return null;
   }
+}
+
+// --- The page -----------------------------------------------------------------------------------
+// The admin wiki renders the page itself, with TiddlyWiki's own $:/core/templates/tiddlywiki5-external-js.html
+// (src/page-publisher.js): the shell, which is everything TiddlyWiki writes in its file (title,
+// language, raw markup...) but the core, and the core file, loaded at the end of the shell. The shell
+// is kept in _page/shell.html, with the index.html it was rendered for; the page is built from it
+// while that's the current index.html, and from index.html itself otherwise (a new upload, until
+// the admin wiki publishes a shell for it). index.html is never changed. The core file is
+// _plugins/tiddlywikicore.js, served by the public site as ?v=<TiddlyWiki version>-<format> and
+// cached for a year, like plugin files.
+
+const SHELL_KEY = "_page/shell.html";
+const SHELL_LIMIT = 2 * 1024 * 1024;
+const CORE_KEY = "_plugins/tiddlywikicore.js";
+const CORE_LIMIT = 20 * 1024 * 1024;
+const EXTERNAL_SCRIPTS_MARKER = "<!--~~ Load external JavaScripts ~~-->";
+
+function coreFileUrl(env, version) {
+  return publicUrl(env, `/${CORE_KEY}?v=${encodeURIComponent(version)}`);
+}
+
+// What a page is built from: { html (bytes), index: index.html's ETag, fingerprint: the shell's
+// ("" for index.html itself), core: the stored core file's version ("" if none) }, or null if
+// there's no index.html
+async function readPageSource(env) {
+  const [index, shell, coreFile] = await Promise.all([
+    env.WIKI_BUCKET.head("index.html"), env.WIKI_BUCKET.get(SHELL_KEY), env.WIKI_BUCKET.head(CORE_KEY)
+  ]);
+  const core = coreFile?.customMetadata?.v || "";
+  if (shell && index && shell.customMetadata?.index === index.etag) {
+    return { html: new Uint8Array(await shell.arrayBuffer()), index: index.etag, fingerprint: shell.customMetadata.fingerprint || "", core };
+  }
+  if (shell) await shell.body.cancel();
+  const full = await env.WIKI_BUCKET.get("index.html");
+  return full && { html: new Uint8Array(await full.arrayBuffer()), index: full.etag, fingerprint: "", core };
+}
+
+function refusal(message, corsHeaders, status = 400) {
+  return new Response(message, { status, headers: { ...corsHeaders, "Content-Type": "text/plain; charset=utf-8" } });
+}
+
+// PUT /page/core?v=<TiddlyWiki version>-<format>: TiddlyWiki's core file, rendered by the admin wiki
+// (once per version). The same version again isn't rewritten.
+async function publishCoreFile(request, env, url, corsHeaders) {
+  const version = url.searchParams.get("v") || "";
+  if (!/^[0-9A-Za-z.+]+(-[0-9A-Za-z.+]+)*-\d+$/.test(version)) {
+    return refusal(`"${version}" isn't a core file version (<TiddlyWiki version>-<format>).`, corsHeaders);
+  }
+  const current = await env.WIKI_BUCKET.head(CORE_KEY);
+  if (current?.customMetadata?.v === version) return new Response(null, { status: 204, headers: corsHeaders });
+  if (Number(request.headers.get("Content-Length")) > CORE_LIMIT) return refusal("The core file is too big.", corsHeaders);
+  const bytes = new Uint8Array(await request.arrayBuffer());
+  if (bytes.length > CORE_LIMIT) return refusal("The core file is too big.", corsHeaders);
+  // It starts like TiddlyWiki's core file and ends with its boot code
+  const start = pageDecoder.decode(bytes.subarray(0, charStart(bytes, Math.min(bytes.length, 8192))));
+  const end = pageDecoder.decode(bytes.subarray(charStart(bytes, Math.max(0, bytes.length - 524288))));
+  if (!start.startsWith("/*") || !start.includes("$tw.preloadTiddlers") || !end.includes('"$:/boot/boot.js"')) {
+    return refusal("That isn't TiddlyWiki's core file.", corsHeaders);
+  }
+  await env.WIKI_BUCKET.put(CORE_KEY, bytes, {
+    httpMetadata: { contentType: "application/javascript; charset=utf-8", cacheControl: "public, max-age=31536000, immutable" },
+    customMetadata: { v: version }
+  });
+  return new Response(null, { status: 204, headers: corsHeaders });
+}
+
+// PUT /page/shell: the page rendered by the admin wiki, without the core. X-Page-Fingerprint: its
+// fingerprint (computed by the admin wiki); X-Page-Index: the index.html the admin page was built
+// for. Refused unless it's a page that works: TiddlyWiki's tiddler store with the TiddlyWeb plugin,
+// and the stored core file loaded at the end. The same shell again only makes sure the page is
+// built from it.
+async function publishShell(request, env, ctx, corsHeaders) {
+  const fingerprint = request.headers.get("X-Page-Fingerprint") || "";
+  if (!fingerprint || fingerprint.length > 100) return refusal("The shell has no fingerprint (X-Page-Fingerprint).", corsHeaders);
+  if (Number(request.headers.get("Content-Length")) > SHELL_LIMIT) return refusal("The shell is too big.", corsHeaders);
+  const [index, core, kept] = await Promise.all([
+    env.WIKI_BUCKET.head("index.html"), env.WIKI_BUCKET.head(CORE_KEY), env.WIKI_BUCKET.head(SHELL_KEY)
+  ]);
+  if (!index || request.headers.get("X-Page-Index") !== index.etag) {
+    return refusal("index.html has changed since this page was loaded: reload the admin wiki.", corsHeaders, 409);
+  }
+  if (kept?.customMetadata?.index === index.etag && kept.customMetadata.fingerprint === fingerprint) {
+    const page = await env.WIKI_BUCKET.head("baked.html");
+    if (page?.customMetadata?.sourceEtag === index.etag && page.customMetadata.shell === fingerprint) {
+      return new Response(null, { status: 204, headers: corsHeaders });
+    }
+  }
+  const bytes = new Uint8Array(await request.arrayBuffer());
+  if (bytes.length > SHELL_LIMIT) return refusal("The shell is too big.", corsHeaders);
+  const text = pageDecoder.decode(bytes);
+  if (!text.includes("<!--~~ Ordinary tiddlers ~~-->") || !text.includes('<script class="tiddlywiki-tiddler-store"')) {
+    return refusal("The shell has no tiddler store.", corsHeaders);
+  }
+  if (!/"title":"\$:\/plugins\/tiddlywiki\/tiddlyweb"/.test(text)) {
+    return refusal("The shell doesn't contain the TiddlyWeb plugin: the page couldn't sync.", corsHeaders);
+  }
+  if (!text.includes(EXTERNAL_SCRIPTS_MARKER)) return refusal("The shell has no place for the external scripts (TiddlyWiki's marker).", corsHeaders);
+  const version = core?.customMetadata?.v;
+  if (!version) return refusal("There's no core file yet: publish it first.", corsHeaders);
+  if (!text.includes(`<script src="${coreFileUrl(env, version)}"`)) {
+    return refusal(`The shell doesn't load the stored core file (${coreFileUrl(env, version)}).`, corsHeaders);
+  }
+  await env.WIKI_BUCKET.put(SHELL_KEY, bytes, {
+    httpMetadata: { contentType: "text/html; charset=utf-8" },
+    customMetadata: { index: index.etag, fingerprint }
+  });
+  const rebuilt = await untilDone(ctx, rebakeHtml(env, ctx, null, { html: bytes, index: index.etag, fingerprint, core: version }));
+  if (rebuilt) return new Response(null, { status: 204, headers: corsHeaders });
+  // Kept, but the page couldn't be built now (see the logs): the next admin page load builds it
+  ctx.waitUntil(markPageOutdated(env));
+  return refusal("The shell is kept, but the page couldn't be rebuilt now: it will be at the next admin page load.", corsHeaders, 503);
 }
 
 const MANIFEST_KEY = "recipes/default/tiddlers.json";

@@ -25,14 +25,30 @@ const BUDGETS = {
   // The same bytes as stored: read once to compare, then the list update is finished
   "save sent again, already stored": { "head tiddler": 1, "get tiddler": 1, "get list": 1, "put list": 1 },
   "delete": { "get list": 1, "head tiddler": 1, "delete tiddler": 1, "put list": 1 },
-  // The page build reuses the list the save has just written
+  // The page build reuses the list the save has just written. It's built from the published shell
+  // when there is one for the current index.html (looked up at the same time as index.html's
+  // version and the stored core file's), from index.html otherwise.
   "save a plugin (page rebuilt)": {
     "head tiddler": 1, "get list": 1, "put tiddler": 1, "put list": 1,
-    "get index.html": 1, "head plugin file": 1, "get tiddler": 1, "put plugin file": 1, "head baked.html": 1, "put baked.html": 1
+    "head index.html": 1, "get page shell": 1, "head core file": 1, "get index.html": 1, "head plugin file": 1, "get tiddler": 1, "put plugin file": 1, "head baked.html": 1, "put baked.html": 1
   },
   "delete a plugin (page rebuilt)": {
     "get list": 1, "head tiddler": 1, "delete tiddler": 1, "put list": 1, "delete plugin file": 1,
-    "get index.html": 1, "head baked.html": 1, "put baked.html": 1
+    "head index.html": 1, "get page shell": 1, "head core file": 1, "get index.html": 1, "head baked.html": 1, "put baked.html": 1
+  },
+  // The core file: once per TiddlyWiki version
+  "publish the core file": { "head core file": 1, "put core file": 1 },
+  "publish the same core file again": { "head core file": 1 },
+  // A shell: checked against index.html, the core file and the shell already kept, then the page is
+  // built from it (without reading it back)
+  "publish a shell (page rebuilt)": {
+    "head index.html": 1, "head core file": 1, "head page shell": 1, "put page shell": 1, "get list": 1, "head baked.html": 1, "put baked.html": 1
+  },
+  "publish the same shell again": { "head index.html": 1, "head core file": 1, "head page shell": 1, "head baked.html": 1 },
+  // With a shell, index.html itself isn't read
+  "save a plugin, page built from the shell": {
+    "head tiddler": 1, "get list": 1, "put tiddler": 1, "put list": 1,
+    "head index.html": 1, "get page shell": 1, "head core file": 1, "head plugin file": 1, "get tiddler": 1, "put plugin file": 1, "head baked.html": 1, "put baked.html": 1
   },
 };
 
@@ -105,6 +121,29 @@ res = await measure("save a plugin (page rebuilt)", () => save(PLUGIN, {
 }, { "If-None-Match": "*" }));
 const pluginEtag = etagOf(PLUGIN, res);
 await measure("delete a plugin (page rebuilt)", () => del(PLUGIN, { "If-Match": pluginEtag }));
+
+// The page shell and the core file, as the admin wiki publishes them
+const CORE_V = "5.4.1-1";
+const coreBody = "/*\nTiddlyWiki\n*/\n$tw.preloadTiddlers = $tw.preloadTiddlers || [];\n" + "x".repeat(5000) + '\n_load(window,{"title":"$:/boot/boot.js","text":""});';
+const publishCore = () => mf.dispatchFetch(`${base}/page/core?v=${CORE_V}`, { method: "PUT", headers: { "Content-Type": "application/javascript" }, body: coreBody });
+res = await measure("publish the core file", publishCore);
+check("...published", res.status === 204, `status ${res.status}`);
+res = await measure("publish the same core file again", publishCore);
+check("...published", res.status === 204, `status ${res.status}`);
+const shellBody = ["<!doctype html>", '<html lang="en-GB">', "<head>", "<title>Shell</title>", "</head>", '<body class="tc-body">', "<!--~~ Ordinary tiddlers ~~-->",
+  '<script class="tiddlywiki-tiddler-store" type="application/json">[{"title":"$:/plugins/tiddlywiki/tiddlyweb","plugin-type":"plugin","text":"{}"}\n]</script>',
+  "<!--~~ Load external JavaScripts ~~-->", '<script src="https://my-tiddlywiki.theophile.dev/_plugins/tiddlywikicore.js?v=' + CORE_V + '"></script>', "</body>", "</html>"].join("\n");
+const indexEtag = (await bucket.head("index.html")).etag;
+const publishShell = () => mf.dispatchFetch(`${base}/page/shell`, { method: "PUT", headers: { "Content-Type": "text/html", "X-Page-Fingerprint": "counted", "X-Page-Index": indexEtag }, body: shellBody });
+res = await measure("publish a shell (page rebuilt)", publishShell);
+check("...published", res.status === 204, `status ${res.status}`);
+res = await measure("publish the same shell again", publishShell);
+check("...published", res.status === 204, `status ${res.status}`);
+res = await measure("save a plugin, page built from the shell", () => save(PLUGIN, {
+  "plugin-type": "plugin", type: "application/json", version: "1.0.1",
+  text: JSON.stringify({ tiddlers: { "$:/plugins/test/counted/readme": { text: "again" } } })
+}, { "If-None-Match": "*" }));
+check("...saved", res.status === 204, `status ${res.status}`);
 
 console.log(`\n${results.filter(Boolean).length}/${results.length} passed`);
 await mf.dispose();
