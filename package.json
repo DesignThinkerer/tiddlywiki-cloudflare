@@ -5,6 +5,7 @@
   "description": "TiddlyWiki served by a Cloudflare Worker from R2, with edit-conflict protection, a public cached copy and queued GitHub backups",
   "scripts": {
     "build": "node build.mjs",
+    "check:build": "node build.mjs --check",
     "fixture": "node test/make-fixture.mjs",
     "test": "npm run build && npm run fixture && node test/bake.test.mjs && node test/integrity.test.mjs && node test/r2-ops.test.mjs && node test/queue-backup.test.mjs && node test/two-tabs.test.mjs && node test/plugins.test.mjs && node test/page-publish.test.mjs",
     "test:bake": "npm run build && node test/bake.test.mjs",

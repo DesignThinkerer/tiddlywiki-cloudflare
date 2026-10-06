@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 const WORKER = fileURLToPath(new URL("../worker.js", import.meta.url));
 
 const mf = new Miniflare({
-  modules: true, scriptPath: WORKER, compatibilityDate: "2024-09-23", r2Buckets: ["WIKI_BUCKET"], port: 8796,
+  modules: true, scriptPath: WORKER, compatibilityDate: "2024-09-23", r2Buckets: ["WIKI_BUCKET"], port: 0,
   outboundService: async () => new Response("{}", { status: 404 }),
 });
 const base = (await mf.ready).toString().replace(/\/$/, "");

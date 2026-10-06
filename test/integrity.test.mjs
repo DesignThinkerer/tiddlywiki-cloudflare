@@ -14,7 +14,7 @@ const LIST = "recipes/default/tiddlers.json";
 const mf = new Miniflare({
   modules: true, scriptPath: "test/r2-counter.mjs", modulesRoot: ROOT,
   modulesRules: [{ type: "ESModule", include: ["**/*.js", "**/*.mjs"] }],
-  compatibilityDate: "2024-09-23", r2Buckets: ["WIKI_BUCKET"], port: 8797,
+  compatibilityDate: "2024-09-23", r2Buckets: ["WIKI_BUCKET"], port: 0,
   outboundService: async () => new Response('{"success":true}'),
 });
 const base = (await mf.ready).toString().replace(/\/$/, "");

@@ -84,7 +84,7 @@ function makeWorker(port, withQueue) {
     outboundService: async req => req.url.startsWith("https://api.github.com/") ? fakeGitHub(req) : new Response("{}"),
   });
 }
-const mf = makeWorker(8794, true);
+const mf = makeWorker(0, true);   // (port 0: any free one)
 const base = (await mf.ready).toString().replace(/\/$/, "");
 const bucket = await mf.getR2Bucket("WIKI_BUCKET");
 await bucket.put("recipes/default/tiddlers.json", "[]");
@@ -273,7 +273,7 @@ faults.refuse.clear();
 check("...and goes through once GitHub accepts it", await until(async () => textOf(repoText("Refused")) === "never accepted", 30000));
 
 // 10. Without a queue binding, it commits directly like before
-const mf2 = makeWorker(8793, false);
+const mf2 = makeWorker(0, false);
 const base2 = (await mf2.ready).toString().replace(/\/$/, "");
 await (await mf2.getR2Bucket("WIKI_BUCKET")).put("recipes/default/tiddlers.json", "[]");
 await put("No queue", "direct", base2, mf2);

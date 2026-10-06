@@ -7,19 +7,8 @@
 // Queue. See README.md for the full picture.
 //
 // worker.js is generated from src/worker.src.js by `npm run build`, which embeds the browser
-// module src/conflict-guard.js as CONFLICT_GUARD_SOURCE.
-
-// Helper to safely encode UTF-8 strings to Base64 for the GitHub API
-function toBase64(str) {
-  const bytes = new TextEncoder().encode(str);
-  let binary = '';
-  const chunkSize = 8192;
-  for (let i = 0; i < bytes.length; i += chunkSize) {
-    const chunk = bytes.subarray(i, i + chunkSize);
-    binary += String.fromCharCode.apply(null, chunk);
-  }
-  return btoa(binary);
-}
+// modules src/conflict-guard.js and src/page-publisher.js as CONFLICT_GUARD_SOURCE and
+// PAGE_PUBLISHER_SOURCE.
 
 function getTwTimestamp(date = new Date()) {
   return date.toISOString().replace(/\D/g, '').slice(0, 17);
@@ -340,12 +329,13 @@ function untilDone(ctx, promise) {
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
-    // FIX: Bulletproof CORS exposure for ETag capitalization
+    // The admin page reads tiddlers from the public site too, so both answer cross-origin requests.
+    // TiddlyWiki reads the ETag of each save, which a browser only shows a page that's told it may.
     const corsHeaders = {
       "Access-Control-Allow-Origin": "*",
       "Access-Control-Allow-Methods": "GET, PUT, DELETE, OPTIONS, HEAD",
       "Access-Control-Allow-Headers": "Content-Type, X-Requested-With, X-Tiddler-Layout, If-Match, If-None-Match, Accept",
-      "Access-Control-Expose-Headers": "ETag, Etag, etag, X-Tiddler-List, Retry-After",
+      "Access-Control-Expose-Headers": "ETag, X-Tiddler-List, Retry-After",
     };
 
     if (request.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
@@ -384,126 +374,10 @@ export default {
     // 4. WRITES
     if (request.method === "PUT" && url.pathname === "/page/core") return publishCoreFile(request, env, url, corsHeaders);
     if (request.method === "PUT" && url.pathname === "/page/shell") return publishShell(request, env, ctx, corsHeaders);
-    if (request.method === "PUT") {
-      try {
-        const match = url.pathname.match(/^\/recipes\/default\/tiddlers\/(.+)$/);
-        if (!match) return new Response("Invalid PUT path", { status: 400, headers: corsHeaders });
-
-        const title = decodePath(match[1]);
-        if (title === null) return invalidPath(corsHeaders);
-        const save = await readSave(request);
-        // Stored and listed under the title in the URL: a different one in the body would make the
-        // list disagree with the stored tiddlers (the browser always sends the same one)
-        if (save.fields.title !== title) throw new BadSave("the title in the body isn't the one in the URL");
-
-        if (isEphemeralTitle(title) || isDraft(save.fields)) {
-          const etag = tiddlerEtag(title, Date.now().toString());
-          return new Response(null, { status: 204, headers: { ...corsHeaders, ETag: etag } });
-        }
-        if (keyTooLong(tiddlerKey(title))) {
-          throw new BadSave(`the title is too long: R2 keys hold at most ${MAX_KEY_BYTES - TIDDLER_PREFIX.length} bytes of it (UTF-8)`);
-        }
-
-        // The stored tiddler and the tiddler list, read at once (one round trip, not two). While a
-        // damaged list is being rebuilt, readableList throws: the save is refused (503) without
-        // changing anything, so the browser's retry can't conflict with it.
-        const key = tiddlerKey(title);
-        const [current, list] = await Promise.all([env.WIKI_BUCKET.head(key), readableList(env, ctx)]);
-        const currentRevision = current ? revisionOf(current) : null;
-
-        const { conditional, reason } = checkPreconditions(request, currentRevision);
-        if (reason) {
-          // A retry of a save that was stored but whose list update then failed: the stored tiddler
-          // is exactly what this save would store, so finish that save instead of refusing it.
-          // (Otherwise the browser sees the identical copy, adopts it, and the list is never fixed.)
-          if (current && await storesSameContent(env, current, save, currentRevision)) {
-            await untilDone(ctx, finishSave(env, ctx, title, save.fields, currentRevision, list, url.origin));
-            return new Response(null, { status: 204, headers: { ...corsHeaders, ETag: tiddlerEtag(title, currentRevision) } });
-          }
-          return conflictResponse(title, reason, currentRevision, corsHeaders);
-        }
-
-        const newRevision = Date.now().toString();
-        const body = save.stored(newRevision);
-        const putOptions = {
-          httpMetadata: { contentType: "application/json" },
-          customMetadata: { revision: newRevision, layout: FLAT_LAYOUT }
-        };
-
-        if (conditional) {
-          // Only write if the object is still exactly the one we checked (or still absent)
-          let written = await env.WIKI_BUCKET.put(key, body, {
-            ...putOptions,
-            onlyIf: current ? { etagMatches: current.etag } : new Headers({ "If-None-Match": "*" })
-          });
-          if (written === null && !current && !(await env.WIKI_BUCKET.head(key))) {
-            // A create-only write was refused but nothing is there: write it normally
-            written = await env.WIKI_BUCKET.put(key, body, putOptions);
-          }
-          if (written === null) {
-            const latest = await env.WIKI_BUCKET.head(key);
-            return conflictResponse(title, "it was changed in another tab or browser", latest ? revisionOf(latest) : null, corsHeaders);
-          }
-        } else {
-          await env.WIKI_BUCKET.put(key, body, putOptions);
-        }
-
-        ctx.waitUntil(queueBackup(env, { action: "save", title, revision: newRevision, content: body }));
-        await untilDone(ctx, finishSave(env, ctx, title, save.fields, newRevision, list, url.origin));
-
-        return new Response(null, { status: 204, headers: { ...corsHeaders, ETag: tiddlerEtag(title, newRevision) } });
-      } catch (error) {
-        return failureResponse("Save failed", error, corsHeaders);
-      }
-    }
+    if (request.method === "PUT") return handleSave(request, env, ctx, url, corsHeaders);
 
     // 5. DELETES
-    if (request.method === "DELETE") {
-      try {
-        const match = url.pathname.match(/^\/(?:bags|recipes)\/[^\/]+\/tiddlers\/(.+)$/);
-        if (!match) return new Response("Invalid DELETE path", { status: 400, headers: corsHeaders });
-
-        const title = decodePath(match[1]);
-        if (title === null) return invalidPath(corsHeaders);
-        // The story list, state and temp tiddlers are never stored, nor a title too long for a key,
-        // so there is nothing to delete or back up
-        if (isEphemeralTitle(title) || keyTooLong(tiddlerKey(title))) return new Response(null, { status: 204, headers: corsHeaders });
-
-        // Read first, like a save (see there). The check below is then followed at once by the
-        // delete, which can't be made conditional.
-        const list = await readableList(env, ctx);
-        const found = await env.WIKI_BUCKET.head(tiddlerKey(title));
-        let currentRevision;
-        if (found) {
-          currentRevision = revisionOf(found);
-          const { reason } = checkPreconditions(request, currentRevision);
-          if (reason) return conflictResponse(title, reason, currentRevision, corsHeaders);
-          await env.WIKI_BUCKET.delete(found.key);
-        }
-        // Queued before the list update, which may fail (the retry then finds nothing to delete)
-        if (found) ctx.waitUntil(queueBackup(env, { action: "delete", title, revision: currentRevision }));
-        await untilDone(ctx, (async () => {
-          // If it was neither stored nor listed, there is nothing to back up or purge
-          const { removed, list: stored, recreated } = await removeFromManifest(env, ctx, title, list, found ? currentRevision : null);
-          // Saved again since: that save's purge, plugin file and page build are the ones
-          if (recreated) return;
-          if (!found && removed) ctx.waitUntil(queueBackup(env, { action: "delete", title, revision: currentRevision }));
-          if (found || removed) ctx.waitUntil(purgePublicCache(env, tiddlerPurgeUrls(env, title, url.origin)));
-          // The list entry says what it was; if it wasn't listed, delete any plugin file anyway
-          // (deleting a missing object is free) and rebuild the page for system tiddlers
-          if (removed ? needsPluginFile(removed) : found) {
-            await env.WIKI_BUCKET.delete(pluginFileKey(title));
-          }
-          if (removed ? isPageTiddler(removed) : found && title.startsWith("$:/")) {
-            await rebuildPage(env, ctx, stored);
-          }
-        })());
-
-        return new Response(null, { status: 204, headers: corsHeaders });
-      } catch (error) {
-        return failureResponse("Delete failed", error, corsHeaders);
-      }
-    }
+    if (request.method === "DELETE") return handleDelete(request, env, ctx, url, corsHeaders);
 
     return new Response("Method not allowed", { status: 405, headers: corsHeaders });
   },
@@ -514,7 +388,133 @@ export default {
   }
 };
 
-// --- Helper Functions ---
+// --- Saves and deletes ------------------------------------------------------------------------
+
+// PUT recipes/default/tiddlers/<title>: a save (README 4.4)
+async function handleSave(request, env, ctx, url, corsHeaders) {
+  try {
+    const match = url.pathname.match(/^\/recipes\/default\/tiddlers\/(.+)$/);
+    if (!match) return new Response("Invalid PUT path", { status: 400, headers: corsHeaders });
+
+    const title = decodePath(match[1]);
+    if (title === null) return invalidPath(corsHeaders);
+    const save = await readSave(request);
+    // Stored and listed under the title in the URL: a different one in the body would make the
+    // list disagree with the stored tiddlers (the browser always sends the same one)
+    if (save.fields.title !== title) throw new BadSave("the title in the body isn't the one in the URL");
+
+    if (isEphemeralTitle(title) || isDraft(save.fields)) {
+      return savedResponse(title, Date.now().toString(), corsHeaders);
+    }
+    if (keyTooLong(tiddlerKey(title))) {
+      throw new BadSave(`the title is too long: R2 keys hold at most ${MAX_KEY_BYTES - TIDDLER_PREFIX.length} bytes of it (UTF-8)`);
+    }
+
+    // The stored tiddler and the tiddler list, read at once (one round trip, not two). While a
+    // damaged list is being rebuilt, readableList throws: the save is refused (503) without
+    // changing anything, so the browser's retry can't conflict with it.
+    const key = tiddlerKey(title);
+    const [current, list] = await Promise.all([env.WIKI_BUCKET.head(key), readableList(env, ctx)]);
+    const currentRevision = current ? revisionOf(current) : null;
+
+    const { conditional, reason } = checkPreconditions(request, currentRevision);
+    if (reason) {
+      // A retry of a save that was stored but whose list update then failed: the stored tiddler
+      // is exactly what this save would store, so finish that save instead of refusing it.
+      // (Otherwise the browser sees the identical copy, adopts it, and the list is never fixed.)
+      if (current && await storesSameContent(env, current, save, currentRevision)) {
+        await untilDone(ctx, finishSave(env, ctx, title, save.fields, currentRevision, list, url.origin));
+        return savedResponse(title, currentRevision, corsHeaders);
+      }
+      return conflictResponse(title, reason, currentRevision, corsHeaders);
+    }
+
+    const newRevision = Date.now().toString();
+    const body = save.stored(newRevision);
+    const putOptions = {
+      httpMetadata: { contentType: "application/json" },
+      customMetadata: { revision: newRevision, layout: FLAT_LAYOUT }
+    };
+
+    if (conditional) {
+      // Only write if the object is still exactly the one we checked (or still absent)
+      let written = await env.WIKI_BUCKET.put(key, body, {
+        ...putOptions,
+        onlyIf: current ? { etagMatches: current.etag } : new Headers({ "If-None-Match": "*" })
+      });
+      if (written === null && !current && !(await env.WIKI_BUCKET.head(key))) {
+        // A create-only write was refused but nothing is there: write it normally
+        written = await env.WIKI_BUCKET.put(key, body, putOptions);
+      }
+      if (written === null) {
+        const latest = await env.WIKI_BUCKET.head(key);
+        return conflictResponse(title, "it was changed in another tab or browser", latest ? revisionOf(latest) : null, corsHeaders);
+      }
+    } else {
+      await env.WIKI_BUCKET.put(key, body, putOptions);
+    }
+
+    ctx.waitUntil(queueBackup(env, { action: "save", title, revision: newRevision, content: body }));
+    await untilDone(ctx, finishSave(env, ctx, title, save.fields, newRevision, list, url.origin));
+
+    return savedResponse(title, newRevision, corsHeaders);
+  } catch (error) {
+    return failureResponse("Save failed", error, corsHeaders);
+  }
+}
+
+// The answer to a save: TiddlyWiki reads the new revision from the ETag
+function savedResponse(title, revision, corsHeaders) {
+  return new Response(null, { status: 204, headers: { ...corsHeaders, ETag: tiddlerEtag(title, revision) } });
+}
+
+// DELETE bags/<bag>/tiddlers/<title> (or recipes/<recipe>/...): a delete (README 4.4)
+async function handleDelete(request, env, ctx, url, corsHeaders) {
+  try {
+    const match = url.pathname.match(/^\/(?:bags|recipes)\/[^\/]+\/tiddlers\/(.+)$/);
+    if (!match) return new Response("Invalid DELETE path", { status: 400, headers: corsHeaders });
+
+    const title = decodePath(match[1]);
+    if (title === null) return invalidPath(corsHeaders);
+    // The story list, state and temp tiddlers are never stored, nor a title too long for a key,
+    // so there is nothing to delete or back up
+    if (isEphemeralTitle(title) || keyTooLong(tiddlerKey(title))) return new Response(null, { status: 204, headers: corsHeaders });
+
+    // Read first, like a save (see there). The check below is then followed at once by the
+    // delete, which can't be made conditional.
+    const list = await readableList(env, ctx);
+    const found = await env.WIKI_BUCKET.head(tiddlerKey(title));
+    let currentRevision;
+    if (found) {
+      currentRevision = revisionOf(found);
+      const { reason } = checkPreconditions(request, currentRevision);
+      if (reason) return conflictResponse(title, reason, currentRevision, corsHeaders);
+      await env.WIKI_BUCKET.delete(found.key);
+    }
+    // Queued before the list update, which may fail (the retry then finds nothing to delete)
+    if (found) ctx.waitUntil(queueBackup(env, { action: "delete", title, revision: currentRevision }));
+    await untilDone(ctx, (async () => {
+      // If it was neither stored nor listed, there is nothing to back up or purge
+      const { removed, list: stored, recreated } = await removeFromManifest(env, ctx, title, list, found ? currentRevision : null);
+      // Saved again since: that save's purge, plugin file and page build are the ones
+      if (recreated) return;
+      if (!found && removed) ctx.waitUntil(queueBackup(env, { action: "delete", title, revision: currentRevision }));
+      if (found || removed) ctx.waitUntil(purgePublicCache(env, tiddlerPurgeUrls(env, title, url.origin)));
+      // The list entry says what it was; if it wasn't listed, delete any plugin file anyway
+      // (deleting a missing object is free) and rebuild the page for system tiddlers
+      if (removed ? needsPluginFile(removed) : found) {
+        await env.WIKI_BUCKET.delete(pluginFileKey(title));
+      }
+      if (removed ? isPageTiddler(removed) : found && title.startsWith("$:/")) {
+        await rebuildPage(env, ctx, stored);
+      }
+    })());
+
+    return new Response(null, { status: 204, headers: corsHeaders });
+  } catch (error) {
+    return failureResponse("Delete failed", error, corsHeaders);
+  }
+}
 
 // --- Public site cache ----------------------------------------------------------------------
 // The public wiki is served straight from the R2 bucket through Cloudflare's cache, so after a
@@ -1377,6 +1377,17 @@ async function markPageOutdated(env) {
 // failure only that tiddler's versions, so a file GitHub refuses can't hold up the others. Nothing
 // runs while the queue is empty.
 // Without a BACKUP_QUEUE binding (or if the queue is unavailable) the same backup runs directly.
+
+// Text to base64 as UTF-8, for the GitHub API (in chunks: String.fromCharCode takes a limited
+// number of arguments)
+function toBase64(str) {
+  const bytes = encoder.encode(str);
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += 8192) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + 8192));
+  }
+  return btoa(binary);
+}
 
 const QUEUE_MESSAGE_LIMIT = 128000;   // a queue message, as sent; a version that would make it bigger waits in R2
 const BACKUP_PER_RUN = 10;            // keeps one run within Cloudflare's 50-subrequest limit (free plan)
