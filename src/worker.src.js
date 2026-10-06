@@ -265,11 +265,12 @@ async function readSave(request) {
 
 // The rest of a save once the tiddler is stored: the tiddler list, the public cache and the page.
 // list: the list as read before the tiddler was stored (readableList), or null to read it here.
-async function finishSave(env, ctx, title, fields, revision, list = null) {
+// adminOrigin: the admin site's origin (where this request came to), see tiddlerPurgeUrls.
+async function finishSave(env, ctx, title, fields, revision, list, adminOrigin) {
   const { previous, list: stored } = await updateManifest(env, ctx, title, fields, revision, list);
   // Only once the new list is in R2: a public request between the purge and the list update
   // would put the old list back in Cloudflare's cache
-  ctx.waitUntil(purgePublicCache(env, tiddlerPurgeUrls(env, title)));
+  ctx.waitUntil(purgePublicCache(env, tiddlerPurgeUrls(env, title, adminOrigin)));
   const saved = { ...fields, title };
   if (previous && needsPluginFile(previous) && !needsPluginFile(saved)) {
     await env.WIKI_BUCKET.delete(pluginFileKey(title));
@@ -377,7 +378,7 @@ export default {
           // is exactly what this save would store, so finish that save instead of refusing it.
           // (Otherwise the browser sees the identical copy, adopts it, and the list is never fixed.)
           if (current && await storesSameContent(env, current, save, currentRevision)) {
-            await untilDone(ctx, finishSave(env, ctx, title, save.fields, currentRevision, list));
+            await untilDone(ctx, finishSave(env, ctx, title, save.fields, currentRevision, list, url.origin));
             return new Response(null, { status: 204, headers: { ...corsHeaders, ETag: tiddlerEtag(title, currentRevision) } });
           }
           return conflictResponse(title, reason, currentRevision, corsHeaders);
@@ -409,7 +410,7 @@ export default {
         }
 
         ctx.waitUntil(queueBackup(env, { action: "save", title, revision: newRevision, content: body }));
-        await untilDone(ctx, finishSave(env, ctx, title, save.fields, newRevision, list));
+        await untilDone(ctx, finishSave(env, ctx, title, save.fields, newRevision, list, url.origin));
 
         return new Response(null, { status: 204, headers: { ...corsHeaders, ETag: tiddlerEtag(title, newRevision) } });
       } catch (error) {
@@ -444,7 +445,7 @@ export default {
           // If it was neither stored nor listed, there is nothing to back up or purge
           const { removed, list: stored } = await removeFromManifest(env, ctx, title, list);
           if (!found && removed) ctx.waitUntil(queueBackup(env, { action: "delete", title, revision: currentRevision }));
-          if (found || removed) ctx.waitUntil(purgePublicCache(env, tiddlerPurgeUrls(env, title)));
+          if (found || removed) ctx.waitUntil(purgePublicCache(env, tiddlerPurgeUrls(env, title, url.origin)));
           // The list entry says what it was; if it wasn't listed, delete any plugin file anyway
           // (deleting a missing object is free) and rebuild the page for system tiddlers
           if (removed ? needsPluginFile(removed) : found) {
@@ -493,9 +494,12 @@ function publicUrl(env, path) {
   return (env.PUBLIC_WIKI_URL || DEFAULT_PUBLIC_WIKI_URL).replace(/\/+$/, "") + path;
 }
 
-// Encoded the same way TiddlyWiki encodes them when it requests them
-function tiddlerPurgeUrls(env, title) {
-  return [publicUrl(env, `/recipes/default/tiddlers/${encodeURIComponent(title)}`), ...listPurgeUrls(env)];
+// Encoded the same way TiddlyWiki encodes them when it requests them. The admin page reads tiddlers
+// from the public site too, cross-origin: its requests carry an Origin header, which Cloudflare
+// keeps in the cache key, so its copy is a separate cache entry, purged with that header.
+function tiddlerPurgeUrls(env, title, adminOrigin) {
+  const url = publicUrl(env, `/recipes/default/tiddlers/${encodeURIComponent(title)}`);
+  return [url, { url, headers: { Origin: adminOrigin } }, ...listPurgeUrls(env)];
 }
 
 function listPurgeUrls(env) {

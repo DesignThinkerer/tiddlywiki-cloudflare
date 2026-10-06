@@ -262,6 +262,22 @@ await new Promise(r => setTimeout(r, 300));
 let bodies = outbound.slice(before).filter(o => o.url.includes("purge_cache")).map(o => JSON.parse(o.body));
 check("save purges the public tiddler URL and the exact public tiddler-list URL",
   bodies.some(b => b.files && b.files.includes(PUB + "/recipes/default/tiddlers/Zeta") && b.files.includes(PUBLIC_LIST)), JSON.stringify(bodies));
+// The admin page reads tiddlers from the public site cross-origin, so its requests carry an Origin
+// header, which is part of Cloudflare's cache key: that copy is purged separately, with the header
+const ADMIN_ORIGIN = new URL(base).origin;
+const purgesWithOrigin = (bs, url) => bs.some(b => (b.files || []).some(f => f && f.url === url && f.headers && f.headers.Origin === ADMIN_ORIGIN));
+check("...and the copy Cloudflare keeps for the admin page's requests (with its Origin header)",
+  purgesWithOrigin(bodies, PUB + "/recipes/default/tiddlers/Zeta"), JSON.stringify(bodies));
+before = outbound.length;
+const doomed = await mf.dispatchFetch(`${base}/recipes/default/tiddlers/Purged%20on%20delete`, {
+  method: "PUT", headers: { "Content-Type": "application/json", "X-Tiddler-Layout": "flat" },
+  body: JSON.stringify({ title: "Purged on delete", text: "x" })
+});
+await doomed.arrayBuffer();
+await (await mf.dispatchFetch(`${base}/bags/default/tiddlers/Purged%20on%20delete`, { method: "DELETE" })).arrayBuffer();
+await new Promise(r => setTimeout(r, 300));
+bodies = outbound.slice(before).filter(o => o.url.includes("purge_cache")).map(o => JSON.parse(o.body));
+check("...also on a delete", purgesWithOrigin(bodies.slice(-1), PUB + "/recipes/default/tiddlers/Purged%20on%20delete"), JSON.stringify(bodies.slice(-1)));
 await create(A, "$:/config/Some Thing", "x"); await settle(A);
 await new Promise(r => setTimeout(r, 300));
 check("system tiddler URL encoded like TiddlyWiki requests it",

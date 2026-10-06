@@ -78,7 +78,7 @@ flowchart LR
 ├── package.json              build and test scripts
 └── test/
     ├── make-fixture.mjs      builds a test TiddlyWiki (test/fixtures/index.html)
-    ├── two-tabs.test.mjs     real TiddlyWiki in Chromium, several tabs (61 checks)
+    ├── two-tabs.test.mjs     real TiddlyWiki in Chromium, several tabs (63 checks)
     ├── plugins.test.mjs      real plugins on the admin and public sites (65 checks)
     ├── queue-backup.test.mjs queue backup against an imitation of GitHub (17 checks)
     ├── integrity.test.mjs    the tiddler list's integrity, draft-like titles, .gitignore (47 checks)
@@ -202,6 +202,12 @@ A "Bypass cache" rule for the admin host is optional. Cloudflare never caches re
 
 This lets the admin wiki read tiddler contents from the public site (see 4.5 and 5.9). Without it, everything still works, but every tiddler is fetched through the worker.
 
+**Configuration rule "Admin page as is":**
+- **When:** `http.host eq "admin.my-tiddlywiki.theophile.dev"`
+- **Then:** Automatic HTTPS Rewrites off, Email Obfuscation off, Rocket Loader off, Fonts off, Disable Real User Monitoring (RUM), Disable Zaraz.
+
+Cloudflare features that rewrite HTML remove the page's `ETag`, and without it the browser downloads the whole page at every load instead of getting a `304` (4.3). None of them does anything useful for the admin page. Only the HTML is affected: the JSON responses keep their ETags either way.
+
 ### 3.6 GitHub
 
 - **A repository** for the backup. Files go in `tiddlers/`.
@@ -280,7 +286,7 @@ TiddlyWiki only runs JavaScript modules, plugins and startup actions that are pr
 
 followed by one `<script src="…">` per plugin and JavaScript module (4.8). The conflict guard, the public address and the status are left out when `CONFLICT_GUARD` is `off`.
 
-**The browser keeps the page.** The page goes out with an ETag, `"<baked.html's R2 etag>-page"`, and `Cache-Control: no-cache`, so the browser asks at each load whether it changed. If it hasn't, the worker answers `304 Not Modified` without even reading the page's body from R2, and nothing is downloaded. A page that has to be rebuilt is sent in full, with the ETag of the page it stored, so the load after a rebuild (after a deploy, say) is already a `304`.
+**The browser keeps the page.** The page goes out with an ETag, `"<baked.html's R2 etag>-page"`, and `Cache-Control: no-cache`, so the browser asks at each load whether it changed. If it hasn't, the worker answers `304 Not Modified` without even reading the page's body from R2, and nothing is downloaded. A page that has to be rebuilt is sent in full, with the ETag of the page it stored, so the load after a rebuild (after a deploy, say) is already a `304`. Cloudflare features that rewrite HTML remove the ETag; the configuration rule in 3.5 keeps them off for the admin host.
 
 Stored tiddlers are baked as they're stored: flat, already the form `preloadTiddlers` expects. (A field called `fields` is unpacked first: TiddlyWiki does that itself only for tiddlers it loads through sync, 4.2.) The page is edited as bytes, without decoding `index.html` (a few MB) into a string and back, which costs about ten times more CPU. Text containing `$&`, `$1` and the like is copied literally.
 
@@ -353,6 +359,7 @@ After a change, the worker asks Cloudflare to purge exactly these public URLs. I
 
 - **After a save or delete:**
   - the tiddler's URL, `/recipes/default/tiddlers/<title encoded with encodeURIComponent>`, the same way TiddlyWiki requests it;
+  - the same URL again, with the header `Origin: <the admin site>`. The admin page reads tiddlers from the public site cross-origin (5.8), so its requests carry that header, and Cloudflare keeps the `Origin` header in the cache key: the admin page's copy is a separate cache entry, which a purge of the bare URL leaves in place;
   - `/recipes/default/tiddlers.json` without a query string;
   - the same URL with the `?filter=…` query TiddlyWiki adds, for both the 5.4 filter and the filter of earlier versions (`SKINNY_LIST_FILTERS` in the source). The cache key includes the query string, so it has to match exactly.
 - **After `baked.html` is rebuilt:** `/` and `/baked.html`.
@@ -577,6 +584,8 @@ If the page is rebuilt before step 4 (by a deploy, or by saving another plugin, 
 | Alert "Edit conflict: … was changed in another tab or browser" | Another tab, device or script saved that tiddler after you started editing | Compare the tiddler with its `(conflict …)` copy, keep what you want and delete the copy. |
 | Console shows "blocked by CORS policy" for `my-tiddlywiki…` | The transform rule is missing or scoped wrong | Add or fix it (3.5). Until then, tiddlers simply load through the worker. |
 | The public site shows an old version | Browser TTL, or a failed purge | Check the cache rule's Browser TTL; look for `Cache purge failed` in the logs; purge manually. |
+| The admin page downloads in full at every load (no `ETag` on the page's response) | A Cloudflare feature that rewrites HTML is on for the admin host | Add the configuration rule "Admin page as is" (3.5). |
+| The admin page reads a tiddler from the public site and then again from the worker | The public copy is out of date, often one cached before a worker that purges the admin page's copy (4.6) | Nothing breaks, only a request more. It clears up when that tiddler is saved, or when the cached copy expires (Edge TTL). To clear everything at once: Purge Cache → Custom Purge → Hostname `my-tiddlywiki.theophile.dev`. |
 | No commits on GitHub | `GITHUB_REPO` or `GITHUB_TOKEN` not set (backups are then skipped without a log line), no queue consumer, or a GitHub token problem | Check 3.2 and 3.4, and look for `[Backup]` lines in the logs. Queued backups go through once fixed, if that's within the queue's retention (24 hours on the free plan). A direct backup logged as "could not be backed up" isn't retried. |
 | The editor closes by itself after about a minute | The module isn't loaded (`CONFLICT_GUARD=off`, or an old tab) | Reload; check `$tw.syncadaptor.conflictGuardInstalled`. |
 | Changes to `index.html` don't show | You haven't opened the admin wiki since uploading | Open the admin wiki once; it rebuilds `baked.html` and purges the public page. |
@@ -671,7 +680,7 @@ Backups don't appear here: with the queue bound, as deployed, they run later in 
 `test:tabs` covers:
 - **Conflicts:** an editor open while another tab saves, a stale tab, a new title created in two tabs, a stale delete, identical edits, rename, simultaneous saves.
 - **Baking:** startup tiddlers with their custom fields.
-- **Public cache:** exact purge URLs and the `304`.
+- **Public cache:** exact purge URLs (also the admin page's copy, purged with its `Origin` header, on a save and a delete) and the `304`.
 - **Request savings:** a 2-request page load (the module answers `/status`, and TiddlyWiki still knows it's logged in), a reload that downloads none of the page (`304`), the stale-public-copy fallback, a missing CORS header, the hidden-tab pause.
 - **A damaged tiddler list** rebuilt over several requests while a tab is open: the tab keeps its tiddlers and shows no error; a save answered "rebuilding" is sent again quietly, and any other `503` is reported as before.
 

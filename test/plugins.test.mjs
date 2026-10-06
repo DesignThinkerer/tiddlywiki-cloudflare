@@ -52,7 +52,8 @@ await mf.ready;
 const bucket = await mf.getR2Bucket("WIKI_BUCKET");
 await bucket.put("index.html", fs.readFileSync(WIKI_HTML, "utf8"));
 await bucket.put("recipes/default/tiddlers.json", "[]");
-const purgedUrls = () => outbound.filter(o => o.url.includes("purge_cache")).flatMap(o => JSON.parse(o.body).files || []);
+// A purged file is a URL, or { url, headers } for a copy cached with those request headers
+const purgedUrls = () => outbound.filter(o => o.url.includes("purge_cache")).flatMap(o => JSON.parse(o.body).files || []).map(f => typeof f === "string" ? f : f.url);
 
 // Stand-in for the public site: the R2 bucket served directly (custom domain), "/" rewritten to baked.html
 const publicRequests = [];

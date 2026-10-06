@@ -491,7 +491,7 @@ The three `env.WIKI_BUCKET.put(tiddlerKey, …)` calls write `body` instead of `
 
 ```js
 ctx.waitUntil(queueBackup(env, { action: "save", title, revision: newRevision, content: body }));
-await untilDone(ctx, finishSave(env, ctx, title, save.fields, newRevision, list));
+await untilDone(ctx, finishSave(env, ctx, title, save.fields, newRevision, list, url.origin));
 ```
 
 The rest of the save is in `finishSave`, which a retried save that's already stored also runs (README 4.4):
@@ -499,11 +499,12 @@ The rest of the save is in `finishSave`, which a retried save that's already sto
 ```js
 // The rest of a save once the tiddler is stored: the tiddler list, the public cache and the page.
 // list: the list as read before the tiddler was stored (readableList), or null to read it here.
-async function finishSave(env, ctx, title, fields, revision, list = null) {
+// adminOrigin: the admin site's origin (where this request came to), see tiddlerPurgeUrls.
+async function finishSave(env, ctx, title, fields, revision, list, adminOrigin) {
   const { previous, list: stored } = await updateManifest(env, ctx, title, fields, revision, list);
   // Only once the new list is in R2: a public request between the purge and the list update
   // would put the old list back in Cloudflare's cache
-  ctx.waitUntil(purgePublicCache(env, tiddlerPurgeUrls(env, title)));
+  ctx.waitUntil(purgePublicCache(env, tiddlerPurgeUrls(env, title, adminOrigin)));
   const saved = { ...fields, title };
   if (previous && needsPluginFile(previous) && !needsPluginFile(saved)) {
     await env.WIKI_BUCKET.delete(pluginFileKey(title));
@@ -546,7 +547,7 @@ await untilDone(ctx, (async () => {
   // If it was neither stored nor listed, there is nothing to back up or purge
   const { removed, list: stored } = await removeFromManifest(env, ctx, title, list);
   if (!found && removed) ctx.waitUntil(queueBackup(env, { action: "delete", title, revision: currentRevision }));
-  if (found || removed) ctx.waitUntil(purgePublicCache(env, tiddlerPurgeUrls(env, title)));
+  if (found || removed) ctx.waitUntil(purgePublicCache(env, tiddlerPurgeUrls(env, title, url.origin)));
   // The list entry says what it was; if it wasn't listed, delete any plugin file anyway
   // (deleting a missing object is free) and rebuild the page for system tiddlers
   if (removed ? needsPluginFile(removed) : found) {
