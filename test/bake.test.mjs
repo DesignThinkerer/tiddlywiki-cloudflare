@@ -25,6 +25,20 @@ check("the next visit is served from the stored bake", page.includes("v1") && pa
 await bucket.put("index.html", html("v2"));
 page = await (await mf.dispatchFetch(base + "/")).text();
 check("a new index.html is picked up automatically", page.includes("v2") && page.includes("conflict-guard.js"));
+// The browser keeps the page and asks whether it changed: an unchanged page answers 304, no body
+const first = await mf.dispatchFetch(base + "/");
+const pageEtag = first.headers.get("ETag");
+await first.arrayBuffer();
+let again = await mf.dispatchFetch(base + "/", { headers: { "If-None-Match": pageEtag || "none" } });
+let againBody = await again.text();
+check("an unchanged page answers 304 to a browser that has it", !!pageEtag && again.status === 304 && againBody === "", `ETag ${pageEtag}, status ${again.status}`);
+again = await mf.dispatchFetch(base + "/", { headers: { "If-None-Match": "W/" + (pageEtag || "none") } });
+await again.arrayBuffer();
+check("...also when Cloudflare's compression has weakened the ETag (W/)", again.status === 304, `status ${again.status}`);
+await bucket.put("index.html", html("v3"));
+again = await mf.dispatchFetch(base + "/", { headers: { "If-None-Match": pageEtag || "none" } });
+againBody = await again.text();
+check("...but a page that has to be rebuilt is sent in full", again.status === 200 && againBody.includes("v3"), `status ${again.status}`);
 const meta = (await bucket.head("baked.html")).customMetadata;
 check("bake metadata records the guard version and source etag", /^4-/.test(meta.bakeVersion) && !!meta.sourceEtag, JSON.stringify(meta));
 
@@ -38,6 +52,7 @@ const bad = await mf.dispatchFetch(base + "/nope", { method: "PUT", body: "{}" }
 check("bad PUT path answers 400 with CORS headers", bad.status === 400 && bad.headers.get("access-control-allow-origin") === "*");
 const status = await (await mf.dispatchFetch(base + "/status")).json();
 check("/status reports a logged-in, writable TiddlyWeb space", status.username === "admin" && status.read_only === false);
+check("...and the same answer is baked into the page, for the browser module", page.includes("$:/cfworker/status") && page.includes('\\"read_only\\":false'));
 
 console.log(`\n${results.filter(Boolean).length}/${results.length} passed`);
 await mf.dispose();

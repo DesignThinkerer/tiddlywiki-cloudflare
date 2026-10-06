@@ -40,7 +40,7 @@ flowchart LR
     T["Admin wiki tab<br/>TiddlyWiki + conflict guard module"]
     V["Public visitor"]
   end
-  T -- "page, /status, tiddler list,<br/>saves and deletes" --> W["Worker<br/>admin.my-tiddlywiki.theophile.dev<br/>(Cloudflare Access)"]
+  T -- "page, tiddler list,<br/>saves and deletes" --> W["Worker<br/>admin.my-tiddlywiki.theophile.dev<br/>(Cloudflare Access)"]
   T -- "tiddler contents, plugin files<br/>(read-only, cached)" --> P["Public site<br/>my-tiddlywiki.theophile.dev<br/>(R2 custom domain + cache)"]
   V --> P
   W <--> R2[("R2 bucket")]
@@ -78,13 +78,13 @@ flowchart LR
 ├── package.json              build and test scripts
 └── test/
     ├── make-fixture.mjs      builds a test TiddlyWiki (test/fixtures/index.html)
-    ├── two-tabs.test.mjs     real TiddlyWiki in Chromium, several tabs (59 checks)
+    ├── two-tabs.test.mjs     real TiddlyWiki in Chromium, several tabs (61 checks)
     ├── plugins.test.mjs      real plugins on the admin and public sites (65 checks)
     ├── queue-backup.test.mjs queue backup against an imitation of GitHub (17 checks)
     ├── integrity.test.mjs    the tiddler list's integrity, draft-like titles, .gitignore (47 checks)
-    ├── r2-ops.test.mjs       R2 calls per kind of request, against a budget (11 checks)
+    ├── r2-ops.test.mjs       R2 calls per kind of request, against a budget (13 checks)
     ├── r2-counter.mjs        test-only wrapper that counts the worker's R2 calls
-    └── bake.test.mjs         page serving and rebuilding (9 checks)
+    └── bake.test.mjs         page serving and rebuilding (13 checks)
 ```
 
 The browser module lives in its own file so it can be read and edited as normal JavaScript. The build embeds it in `worker.js` as a string (`CONFLICT_GUARD_SOURCE`), so only one file is deployed, which you can paste into the dashboard. The string is written as JSON, so the module can contain any character, backticks and `${` included.
@@ -216,8 +216,8 @@ This lets the admin wiki read tiddler contents from the public site (see 4.5 and
 | Request | What happens |
 |---|---|
 | `OPTIONS *` | CORS headers (allows `If-Match`, `If-None-Match`, `X-Tiddler-Layout`, exposes `ETag`, `X-Tiddler-List` and `Retry-After`). |
-| `GET /status` | TiddlyWeb status: user `admin`, writable, recipe `default`. |
-| `GET /`, `/index.html`, `/baked.html` | The wiki page, rebuilt first if outdated (4.3). |
+| `GET /status` | TiddlyWeb status: user `admin`, writable, recipe `default`. The same answer is baked into the page, so admin pages don't ask (4.5). |
+| `GET /`, `/index.html`, `/baked.html` | The wiki page, rebuilt first if outdated, or `304 Not Modified` when the browser has it (4.3). |
 | `GET recipes/default/tiddlers.json` | The tiddler list, or `304 Not Modified` when unchanged (4.5), or `503` while it's being rebuilt (4.2). |
 | `GET recipes/default/tiddlers/<title>` | One tiddler as JSON (a flat one exactly as stored, see 4.2), with its revision in the body and the `ETag`. |
 | `GET <any other key>` | That R2 object as is. |
@@ -276,8 +276,11 @@ TiddlyWiki only runs JavaScript modules, plugins and startup actions that are pr
 - every tiddler tagged `$:/tags/StartupAction` or one of its variants (`$:/tags/StartupAction/Browser`, `…/PostRender`)
 - the conflict guard module `$:/cfworker/conflict-guard.js`
 - `$:/cfworker/public-url`: the public address, read by the module
+- `$:/cfworker/status`: the worker's `/status` answer, which the module gives TiddlyWiki on admin pages instead of asking (4.5)
 
-followed by one `<script src="…">` per plugin and JavaScript module (4.8). The conflict guard and the public address are left out when `CONFLICT_GUARD` is `off`.
+followed by one `<script src="…">` per plugin and JavaScript module (4.8). The conflict guard, the public address and the status are left out when `CONFLICT_GUARD` is `off`.
+
+**The browser keeps the page.** The page goes out with an ETag, `"<baked.html's R2 etag>-page"`, and `Cache-Control: no-cache`, so the browser asks at each load whether it changed. If it hasn't, the worker answers `304 Not Modified` without even reading the page's body from R2, and nothing is downloaded; a page that has to be rebuilt is sent in full.
 
 Stored tiddlers are baked as they're stored: flat, already the form `preloadTiddlers` expects. (A field called `fields` is unpacked first: TiddlyWiki does that itself only for tiddlers it loads through sync, 4.2.) The page is edited as bytes, without decoding `index.html` (a few MB) into a string and back, which costs about ten times more CPU. Text containing `$&`, `$1` and the like is copied literally.
 
@@ -332,7 +335,7 @@ To find conflict copies later, use the filter `[has[conflict-of]]`.
 
 ### 4.5 Keeping worker requests down
 
-On an admin page load the worker sees only three requests: the page, `/status` and the tiddler list. While a tab is visible it sees one list request a minute, plus your saves.
+On an admin page load the worker sees only two requests: the page (usually a `304`, 4.3) and the tiddler list (often a `304` too). TiddlyWiki also asks for `/status` before it fetches the list; the module answers that from the page (`$:/cfworker/status`, the worker's own answer), which saves a round trip before your tiddlers appear. Public tabs still read their `status` file (3.1). While a tab is visible the worker sees one list request a minute, plus your saves.
 
 | Change | Effect |
 |---|---|
@@ -404,7 +407,7 @@ sequenceDiagram
   B->>W: reload: the page
   B->>P: plugin file ?v=revision, before TiddlyWiki starts
   P->>R: first time only
-  B->>W: /status, tiddler list
+  B->>W: tiddler list
 ```
 
 **What gets a file:** tiddlers with `plugin-type` `plugin`, `theme` or `language` (except `$:/core`, which comes with `index.html`, and plugins marked `platform: server`), and modules: tiddlers with a `module-type` whose type is `application/javascript`, `application/json` or `application/x-tiddler-dictionary`, the types TiddlyWiki defines modules from at boot.
@@ -616,7 +619,7 @@ npm test                             # build, make the test wiki, run all six su
 |---|---|
 | `npm run build` | Writes `worker.js`. |
 | `npm run fixture` | Builds `test/fixtures/index.html`, an empty TiddlyWiki with the TiddlyWeb plugin. It skips an existing file: after upgrading the `tiddlywiki` package, run `npm run fixture -- --force`. |
-| `npm run test:bake` | Page serving: rebuild on an outdated bake or a new `index.html`, a byte order mark; CORS, a bad `PUT` path and `/status`. |
+| `npm run test:bake` | Page serving: rebuild on an outdated bake or a new `index.html`, the `304` for an unchanged page (also with a weakened ETag), a byte order mark; CORS, a bad `PUT` path, and `/status`, also baked into the page. |
 | `npm run test:integrity` | The tiddler list's integrity, draft-like titles and `.gitignore` (see below). |
 | `npm run test:r2` | R2 calls per kind of request, against a budget (see below). |
 | `npm run test:backup` | Queue backup against an imitation of GitHub's Contents API (see below). |
@@ -641,6 +644,7 @@ The tests run the real worker in Cloudflare's local runtime (workerd, through Mi
 | Request | R2 calls |
 |---|---|
 | Admin page load, page up to date | 2: read `baked.html`, check `index.html` |
+| Admin page load, the browser has the page (`304`) | 2: check `baked.html` (its body isn't read), check `index.html` |
 | Tiddler list, first fetch or unchanged (`304`) | 1 |
 | Save a new tiddler, or an update | 4: look it up and read the list (both at once), write the tiddler, write the list |
 | Save refused (`412`) | 2: look it up and read the list, both at once (the stored tiddler itself is read only if it's the same size as the save, to recognise a save sent again) |
@@ -668,12 +672,12 @@ Backups don't appear here: with the queue bound, as deployed, they run later in 
 - **Conflicts:** an editor open while another tab saves, a stale tab, a new title created in two tabs, a stale delete, identical edits, rename, simultaneous saves.
 - **Baking:** startup tiddlers with their custom fields.
 - **Public cache:** exact purge URLs and the `304`.
-- **Request savings:** a 3-request page load, the stale-public-copy fallback, a missing CORS header, the hidden-tab pause.
+- **Request savings:** a 2-request page load (the module answers `/status`, and TiddlyWiki still knows it's logged in), a reload that downloads none of the page (`304`), the stale-public-copy fallback, a missing CORS header, the hidden-tab pause.
 - **A damaged tiddler list** rebuilt over several requests while a tab is open: the tab keeps its tiddlers and shows no error; a save answered "rebuilding" is sent again quietly, and any other `503` is reported as before.
 
 `test:plugins` uses the markdown and KaTeX plugins shipped with TiddlyWiki and covers:
 - **Install** through the import messages a drop sends: the flat save, the stored tiddler, the file (byte for byte the template format), the script tag, no purge of plugin files.
-- **After the reload:** the plugin works, no reload loop, plugin code never comes through the worker, at most three worker requests per page load, the browser cache on the next load.
+- **After the reload:** the plugin works, no reload loop, plugin code never comes through the worker, at most two worker requests per page load, the browser cache on the next load.
 - **The public site:** the plugin works, with no worker request.
 - **Update, disable and re-enable, a theme, a standalone module, delete,** and a plugin turned back into an ordinary tiddler.
 - **Edge cases:** a body containing `,"text":` in a field and in the text, a tiddler without text, a field called `fields` (stored nested, and read back after a reload, on an ordinary tiddler and on a startup tiddler and a module loaded at boot), "flat" bodies that aren't and a save in TiddlyWeb's layout (both stored flat), a title with spaces, `#` and non-ASCII, a stored plugin whose file is missing, the order of a save's purge, overlapping page builds, a tiddler list replaced by hand, and the recovery steps.

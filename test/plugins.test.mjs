@@ -182,7 +182,7 @@ check("the plugin file came from the public site", requests.some(r => r.origin =
 check("the worker never served plugin code", !requests.some(r => r.origin === "worker" && (r.path.includes("_plugins") || r.path.includes(ML))));
 check("the sync didn't download the plugin again", !requests.some(r => r.path.includes("tiddlers/" + ML)));
 const workerOnLoad = requests.filter(r => r.origin === "worker").map(r => r.method + " " + r.path.split("?")[0]);
-check("page load still costs only the usual worker requests", workerOnLoad.length <= 3, workerOnLoad.join(", "));
+check("page load still costs only the usual worker requests (page, tiddler list)", workerOnLoad.length <= 2, workerOnLoad.join(", "));
 publicRequests.length = 0;
 await load();
 check("next load: the plugin file comes from the browser cache", !publicRequests.some(p => p.includes("/_plugins/")), publicRequests.join(", "));

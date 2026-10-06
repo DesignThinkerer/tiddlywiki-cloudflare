@@ -317,17 +317,14 @@ export default {
 
     if (request.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
-    // 1. STATUS ENDPOINT
+    // 1. STATUS ENDPOINT (the browser module usually answers it from the page: ADMIN_STATUS)
     if (request.method === "GET" && url.pathname === "/status") {
-      return new Response(JSON.stringify({
-        username: "admin", read_only: false, anonymous: false,
-        logout_is_available: true, space: { recipe: "default" }
-      }), { headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "no-store" } });
+      return new Response(JSON.stringify(ADMIN_STATUS), { headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "no-store" } });
     }
 
     // 2. SERVE WIKI UI (baked.html is rebuilt automatically when index.html or the conflict guard changes)
     if (request.method === "GET" && (url.pathname === "/" || url.pathname === "/index.html" || url.pathname === "/baked.html")) {
-      return serveWiki(env, ctx, corsHeaders);
+      return serveWiki(request, env, ctx, corsHeaders);
     }
 
     // 3. READS
@@ -567,6 +564,12 @@ const CONFLICT_GUARD_TITLE = "$:/cfworker/conflict-guard.js";
 // from there (no worker request) and only ask the worker when that copy isn't current
 const PUBLIC_URL_TITLE = "$:/cfworker/public-url";
 
+// What /status answers on the admin site: TiddlyWeb's status. It's also baked into the page, so
+// the browser module answers TiddlyWiki's own request for it without one: the page load then
+// fetches the tiddler list a round trip sooner. (The public site has its own file, README 3.1.)
+const ADMIN_STATUS = { username: "admin", read_only: false, anonymous: false, logout_is_available: true, space: { recipe: "default" } };
+const STATUS_TITLE = "$:/cfworker/status";
+
 const CONFLICT_GUARD_SOURCE = "__CONFLICT_GUARD_SOURCE__";   // replaced by the build
 
 function conflictGuardEnabled(env) {
@@ -584,18 +587,27 @@ function bakeVersion(env) {
   return "4-" + hash.toString(36);
 }
 
-async function serveWiki(env, ctx, corsHeaders) {
+// The page's ETag is "<baked.html's R2 etag>-page". The browser asks with it (If-None-Match, maybe
+// weakened to W/ by Cloudflare's compression), and an unchanged page answers 304: nothing to
+// download, and its body isn't even read from R2.
+const PAGE_ETAG_SUFFIX = "-page";
+
+async function serveWiki(request, env, ctx, corsHeaders) {
   const htmlHeaders = { ...corsHeaders, "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-cache" };
+  const known = parseEtagList(request.headers.get("If-None-Match")).find(token => token.endsWith(PAGE_ETAG_SUFFIX));
   const [baked, source] = await Promise.all([
-    env.WIKI_BUCKET.get("baked.html"),
+    env.WIKI_BUCKET.get("baked.html", known ? { onlyIf: { etagDoesNotMatch: known.slice(0, -PAGE_ETAG_SUFFIX.length) } } : undefined),
     env.WIKI_BUCKET.head("index.html")
   ]);
   if (baked) {
     const meta = baked.customMetadata || {};
+    // A conditional get whose precondition fails returns the object without a body: the browser has it
+    const hasBody = "body" in baked;
     if (!source || (meta.bakeVersion === bakeVersion(env) && meta.sourceEtag === source.etag)) {
-      return new Response(baked.body, { headers: htmlHeaders });
+      const headers = { ...htmlHeaders, ETag: `"${baked.etag}${PAGE_ETAG_SUFFIX}"` };
+      return hasBody ? new Response(baked.body, { headers }) : new Response(null, { status: 304, headers });
     }
-    await baked.body.cancel();
+    if (hasBody) await baked.body.cancel();
   }
   const html = await rebakeHtml(env, ctx);
   if (html !== null) return new Response(html, { headers: htmlHeaders });
@@ -752,6 +764,7 @@ async function rebakeHtml(env, ctx, list = null) {
         text: CONFLICT_GUARD_SOURCE
       });
       store.push({ title: PUBLIC_URL_TITLE, text: publicUrl(env, "/") });
+      store.push({ title: STATUS_TITLE, type: "application/json", text: JSON.stringify(ADMIN_STATUS) });
     }
 
     let injected = "";
