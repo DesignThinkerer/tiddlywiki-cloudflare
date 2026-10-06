@@ -272,7 +272,7 @@ async function readSave(request) {
 // The rest of a save once the tiddler is stored: the tiddler list, the public cache and the page.
 // list: the list as read before the tiddler was stored (readableList), or null to read it here.
 async function finishSave(env, ctx, title, fields, revision, list = null) {
-  const previous = await updateManifest(env, ctx, title, fields, revision, list);
+  const { previous, list: stored } = await updateManifest(env, ctx, title, fields, revision, list);
   // Only once the new list is in R2: a public request between the purge and the list update
   // would put the old list back in Cloudflare's cache
   ctx.waitUntil(purgePublicCache(env, tiddlerPurgeUrls(env, title)));
@@ -283,16 +283,18 @@ async function finishSave(env, ctx, title, fields, revision, list = null) {
   // Something the page needs at boot was added, changed or is no longer needed: rebuild the
   // page (which writes the plugin file) before confirming, so a reload right after has it
   if (isPageTiddler(saved) || (previous && isPageTiddler(previous))) {
-    await rebakeHtml(env, ctx);
+    await rebakeHtml(env, ctx, stored);
   }
 }
 
 // Whether the stored object holds exactly what this save would store with that revision
 async function storesSameContent(env, found, save, revision) {
+  const wouldStore = save.stored(revision);
+  // Different sizes, different content: no need to read it (a real conflict, nearly always)
+  if (found.obj.size !== wouldStore.length) return false;
   const obj = await env.WIKI_BUCKET.get(found.key);
   if (!obj) return false;
   const stored = new Uint8Array(await obj.arrayBuffer());
-  const wouldStore = save.stored(revision);
   if (stored.length !== wouldStore.length) return false;
   for (let i = 0; i < stored.length; i++) {
     if (stored[i] !== wouldStore[i]) return false;
@@ -484,7 +486,7 @@ export default {
         if (found) ctx.waitUntil(queueBackup(env, { action: "delete", title, revision: currentRevision }));
         await untilDone(ctx, (async () => {
           // If it was neither stored nor listed, there is nothing to back up or purge
-          const removed = await removeFromManifest(env, ctx, title, list);
+          const { removed, list: stored } = await removeFromManifest(env, ctx, title, list);
           if (!found && removed) ctx.waitUntil(queueBackup(env, { action: "delete", title, revision: currentRevision }));
           if (found || removed) ctx.waitUntil(purgePublicCache(env, tiddlerPurgeUrls(env, title)));
           // The list entry says what it was; if it wasn't listed, delete any plugin file anyway
@@ -493,7 +495,7 @@ export default {
             await env.WIKI_BUCKET.delete(pluginFileKey(title));
           }
           if (removed ? isPageTiddler(removed) : found && title.startsWith("$:/")) {
-            await rebakeHtml(env, ctx);
+            await rebakeHtml(env, ctx, stored);
           }
         })());
 
@@ -777,15 +779,16 @@ async function storePage(env, html, meta) {
 
 // Builds baked.html = index.html + startup tiddlers + conflict guard + plugin <script> tags, then
 // purges the public copy. Returns the page (bytes), or null.
-async function rebakeHtml(env, ctx) {
+async function rebakeHtml(env, ctx, list = null) {
   try {
     const htmlObj = await env.WIKI_BUCKET.get("index.html");
     if (!htmlObj) return null;
     let html = new Uint8Array(await htmlObj.arrayBuffer());
 
-    // A missing or damaged list is rebuilt first (a page built without it would have no plugins).
-    // While that takes more requests, this throws and the page stays as it is.
-    const { object: manifestObj, entries: manifest } = await readableList(env, ctx, { pageBuild: true });
+    // list: the list a save or delete has just written. Otherwise it's read, and a missing or
+    // damaged one rebuilt first (a page built without it would have no plugins); while that takes
+    // more requests, this throws and the page stays as it is.
+    const { object: manifestObj, entries: manifest } = list || await readableList(env, ctx, { pageBuild: true });
     // Every stored tiddler is listed, so only listed startup tiddlers are read
     const startupTitles = manifest.filter(t => t.title && isStartupTiddler(t)).map(t => t.title);
 
@@ -877,23 +880,26 @@ async function readableList(env, ctx, options) {
 }
 
 // mutator returns the new manifest, or null when nothing needs to change. list: the list already
-// read (readableList), used for the first attempt.
+// read (readableList), used for the first attempt. Returns the list as now stored,
+// { object, text, entries }, so a page build right after needn't read it again.
 async function mutateManifest(env, ctx, mutator, list = null, attempts = 5) {
   for (let attempt = 1; attempt <= attempts; attempt++) {
-    const { object: existing, entries } = list || await readableList(env, ctx);
+    const { object: existing, text: existingText, entries } = list || await readableList(env, ctx);
     list = null;
     const etag = existing.etag || existing.httpEtag.replace(/"/g, "");
 
-    const manifest = mutator(scrubManifest(entries));
-    if (manifest === null) return false;
+    const current = scrubManifest(entries);
+    const manifest = mutator(current);
+    if (manifest === null) return { object: existing, text: existingText, entries: current };
 
     // Only if the list is still the one we read
-    const written = await env.WIKI_BUCKET.put(MANIFEST_KEY, JSON.stringify(manifest, null, 2), {
+    const text = JSON.stringify(manifest, null, 2);
+    const written = await env.WIKI_BUCKET.put(MANIFEST_KEY, text, {
       httpMetadata: { contentType: "application/json" },
       onlyIf: { etagMatches: etag }
     });
 
-    if (written !== null) return true;
+    if (written !== null) return { object: written, text, entries: manifest };
 
     console.warn(`[Manifest] Write conflict detected, retrying (${attempt}/${attempts})...`);
     // A short, growing, slightly random pause, so saves that collided don't collide again
@@ -926,11 +932,11 @@ function listEntry(title, fields, revision, date = getTwTimestamp()) {
   };
 }
 
-// Returns the entry it replaced, or null
+// Returns { previous: the entry it replaced, or null; list: the list as now stored }
 async function updateManifest(env, ctx, title, fields, revision, list = null) {
   const entry = listEntry(title, fields, revision);
   let previous = null;
-  await mutateManifest(env, ctx, (manifest) => {
+  const stored = await mutateManifest(env, ctx, (manifest) => {
     const idx = manifest.findIndex(t => t.title === title);
     previous = idx >= 0 ? manifest[idx] : null;
     if (idx < 0) {
@@ -941,17 +947,17 @@ async function updateManifest(env, ctx, title, fields, revision, list = null) {
     // Listed twice (a hand edit, say): listed once from now on
     return manifest.some((t, i) => i > idx && t.title === title) ? manifest.filter((t, i) => i <= idx || t.title !== title) : manifest;
   }, list);
-  return previous;
+  return { previous, list: stored };
 }
 
-// Returns the entry it removed, or null if the title wasn't listed
+// Returns { removed: the entry it removed, or null if the title wasn't listed; list: the list as now stored }
 async function removeFromManifest(env, ctx, title, list = null) {
   let removed = null;
-  await mutateManifest(env, ctx, (manifest) => {
+  const stored = await mutateManifest(env, ctx, (manifest) => {
     removed = manifest.find(t => t.title === title) || null;
     return removed ? manifest.filter(t => t.title !== title) : null;
   }, list);
-  return removed;
+  return { removed, list: stored };
 }
 
 // --- Rebuilding the tiddler list -----------------------------------------------------------------
