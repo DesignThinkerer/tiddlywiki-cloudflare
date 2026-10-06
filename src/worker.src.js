@@ -57,7 +57,9 @@ function isDraft(tiddler) {
 
 const STARTUP_TITLES = ["$:/DefaultTiddlers", "$:/SiteTitle", "$:/SiteSubtitle",
   // read at boot to choose the theme, language and palette
-  "$:/theme", "$:/language", "$:/palette"];
+  "$:/theme", "$:/language", "$:/palette",
+  // read once by TiddlyWiki's syncer, when it starts
+  "$:/config/SyncPollingInterval", "$:/config/SyncThrottleInterval", "$:/config/SyncFilter", "$:/config/SyncDisableLazyLoading"];
 const DISABLED_PLUGIN_PREFIX = "$:/config/Plugins/Disabled/";   // read at boot, when plugins are registered
 const PLUGIN_FILE_TYPES = ["plugin", "theme", "language"];
 const MODULE_TYPES = ["application/javascript", "application/json", "application/x-tiddler-dictionary"];   // TiddlyWiki defines modules from these at boot

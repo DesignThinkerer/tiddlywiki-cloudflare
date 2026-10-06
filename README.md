@@ -82,7 +82,7 @@ flowchart LR
 └── test/
     ├── make-fixture.mjs      builds a test TiddlyWiki (test/fixtures/index.html)
     ├── two-tabs.test.mjs     real TiddlyWiki in Chromium, several tabs (75 checks)
-    ├── plugins.test.mjs      real plugins on the admin and public sites (65 checks)
+    ├── plugins.test.mjs      real plugins on the admin and public sites (66 checks)
     ├── page-publish.test.mjs the page published from a real TiddlyWiki (47 checks)
     ├── queue-backup.test.mjs queue backup against an imitation of GitHub (21 checks)
     ├── integrity.test.mjs    the tiddler list's integrity, a failed page build, draft-like titles, .gitignore (53 checks)
@@ -282,6 +282,7 @@ TiddlyWiki only runs JavaScript modules, plugins and startup actions that are pr
 
 - `$:/DefaultTiddlers`, `$:/SiteTitle`, `$:/SiteSubtitle`
 - `$:/theme`, `$:/language`, `$:/palette`: TiddlyWiki reads them at boot to choose the theme, language and palette
+- the sync settings `$:/config/SyncPollingInterval`, `$:/config/SyncThrottleInterval`, `$:/config/SyncFilter`, `$:/config/SyncDisableLazyLoading`: TiddlyWiki's syncer reads them once, when it starts
 - plugin disable flags, `$:/config/Plugins/Disabled/…`: read at boot too
 - every tiddler tagged `$:/tags/StartupAction` or one of its variants (`$:/tags/StartupAction/Browser`, `…/PostRender`)
 - the conflict guard module `$:/cfworker/conflict-guard.js`
@@ -757,7 +758,7 @@ Backups don't appear here: with the queue bound, as deployed, they run later in 
 - **Install** through the import messages a drop sends: the flat save, the stored tiddler, the file (byte for byte the template format), the script tag, no purge of plugin files.
 - **After the reload:** the plugin works, no reload loop, plugin code never comes through the worker, at most two worker requests per page load, the browser cache on the next load.
 - **The public site:** the plugin works, with no worker request.
-- **Update, disable and re-enable, a theme, a standalone module, delete,** and a plugin turned back into an ordinary tiddler.
+- **Update, disable and re-enable, a theme, the sync settings, a standalone module, delete,** and a plugin turned back into an ordinary tiddler.
 - **Edge cases:** a body containing `,"text":` in a field and in the text, a tiddler without text, a field called `fields` (stored nested, and read back after a reload, on an ordinary tiddler and on a startup tiddler and a module loaded at boot), "flat" bodies that aren't and a save in TiddlyWeb's layout (both stored flat), a title with spaces, `#` and non-ASCII, a stored plugin whose file is missing, the order of a save's purge, overlapping page builds, a tiddler list replaced by hand, and the recovery steps.
 - **A public tab while the tiddler list is missing or damaged:** it keeps its tiddlers and doesn't crash, asks again at a URL no cache holds, and catches up by itself once the worker has rebuilt the list; after a damaged list, its next sync bypasses caches too, and a damaged copy its browser kept is passed over quietly.
 
