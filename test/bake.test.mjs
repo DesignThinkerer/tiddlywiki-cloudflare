@@ -202,12 +202,14 @@ const tagAt = page.indexOf(tag), externalAt = page.indexOf(MARK("Load external J
 check("in a page built from a shell, plugin tags go right before the core, after the tiddlers", res.status === 204 && tagAt > headEnd && tagAt < externalAt && page.indexOf(MARK("Ordinary tiddlers")) < tagAt,
   `tag at ${tagAt}, head ends ${headEnd}, marker at ${externalAt}`);
 
-// A new index.html: the shell is for the old one, so the page is built from the new one until a shell for it is published
-await bucket.put("index.html", html("new engine"));
+// A new index.html: the shell is for the old one, so the page is built from the new one until a shell for it is published.
+// (Plugins go in <head> there, even if raw markup at the bottom has TiddlyWiki's marker for external scripts: TiddlyWiki
+// starts from code inside a full page, before that.)
+await bucket.put("index.html", html(`new engine<script>/* boot */</script>${MARK("Load external JavaScripts")}`));
 page = await (await mf.dispatchFetch(base + "/")).text();
 source = pageSource(page);
 check("a new index.html: the page is built from it, not from the older shell", page.includes("new engine") && !page.includes("With a plugin") && source?.fingerprint === "" && source?.index === await indexEtag(), JSON.stringify(source));
-check("...plugin tags back in <head> for a full index.html", page.indexOf(tag) > -1 && page.indexOf(tag) < page.indexOf("</head>"));
+check("...plugin tags back in <head> for a full index.html", page.indexOf(tag) > -1 && page.indexOf(tag) < page.indexOf("</head>") && page.indexOf(tag) === page.lastIndexOf(tag));
 res = await putShell(fakeShell({ title: "For the new engine" }), { fingerprint: "f3" });
 page = await (await mf.dispatchFetch(base + "/")).text();
 check("...and a shell for it is used once published", res.status === 204 && page.includes("<title>For the new engine</title>") && pageSource(page)?.fingerprint === "f3");

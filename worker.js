@@ -92,6 +92,26 @@ function tiddlerKey(title) {
   return TIDDLER_PREFIX + title;
 }
 
+// R2 keys are at most 1024 bytes of UTF-8: a longer one can't be stored, so it isn't there either
+const MAX_KEY_BYTES = 1024;
+function keyTooLong(key) {
+  // (A character is at most 3 bytes: most keys are cleared without encoding them)
+  return key.length * 3 > MAX_KEY_BYTES && encoder.encode(key).length > MAX_KEY_BYTES;
+}
+
+// A path, or the title in one, decoded; null if it isn't valid percent-encoding
+function decodePath(text) {
+  try {
+    return decodeURIComponent(text);
+  } catch {
+    return null;
+  }
+}
+
+function invalidPath(corsHeaders) {
+  return new Response("Invalid path: it isn't valid percent-encoding", { status: 400, headers: corsHeaders });
+}
+
 // The revision of a stored tiddler, from the object's metadata. (An object without it isn't one
 // the worker stored: its R2 etag stands in, so GET, PUT and DELETE still agree.)
 function revisionOf(obj) {
@@ -342,10 +362,11 @@ export default {
 
     // 3. READS
     if (request.method === "GET" || request.method === "HEAD") {
-      const key = decodeURIComponent(url.pathname.substring(1));
+      const key = decodePath(url.pathname.substring(1));
+      if (key === null) return invalidPath(corsHeaders);
       if (key === MANIFEST_KEY) return serveManifest(request, env, ctx, corsHeaders);
 
-      const object = await env.WIKI_BUCKET.get(key);
+      const object = keyTooLong(key) ? null : await env.WIKI_BUCKET.get(key);
       if (!object) return new Response("Not found", { status: 404, headers: corsHeaders });
       const headers = objectHeaders(object, corsHeaders);
       const body = request.method === "GET" ? object.body : null;
@@ -368,7 +389,8 @@ export default {
         const match = url.pathname.match(/^\/recipes\/default\/tiddlers\/(.+)$/);
         if (!match) return new Response("Invalid PUT path", { status: 400, headers: corsHeaders });
 
-        const title = decodeURIComponent(match[1]);
+        const title = decodePath(match[1]);
+        if (title === null) return invalidPath(corsHeaders);
         const save = await readSave(request);
         // Stored and listed under the title in the URL: a different one in the body would make the
         // list disagree with the stored tiddlers (the browser always sends the same one)
@@ -377,6 +399,9 @@ export default {
         if (isEphemeralTitle(title) || isDraft(save.fields)) {
           const etag = tiddlerEtag(title, Date.now().toString());
           return new Response(null, { status: 204, headers: { ...corsHeaders, ETag: etag } });
+        }
+        if (keyTooLong(tiddlerKey(title))) {
+          throw new BadSave(`the title is too long: R2 keys hold at most ${MAX_KEY_BYTES - TIDDLER_PREFIX.length} bytes of it (UTF-8)`);
         }
 
         // The stored tiddler and the tiddler list, read at once (one round trip, not two). While a
@@ -438,9 +463,11 @@ export default {
         const match = url.pathname.match(/^\/(?:bags|recipes)\/[^\/]+\/tiddlers\/(.+)$/);
         if (!match) return new Response("Invalid DELETE path", { status: 400, headers: corsHeaders });
 
-        const title = decodeURIComponent(match[1]);
-        // The story list, state and temp tiddlers are never stored, so there is nothing to delete or back up
-        if (isEphemeralTitle(title)) return new Response(null, { status: 204, headers: corsHeaders });
+        const title = decodePath(match[1]);
+        if (title === null) return invalidPath(corsHeaders);
+        // The story list, state and temp tiddlers are never stored, nor a title too long for a key,
+        // so there is nothing to delete or back up
+        if (isEphemeralTitle(title) || keyTooLong(tiddlerKey(title))) return new Response(null, { status: 204, headers: corsHeaders });
 
         // Read first, like a save (see there). The check below is then followed at once by the
         // delete, which can't be made conditional.
@@ -553,6 +580,9 @@ async function serveManifest(request, env, ctx, corsHeaders) {
 
   let text = object ? await object.text() : null;
   let manifest = text === null ? null : parseList(text);
+  // Every entry the worker writes has its bag and recipe: then the list is served as stored, not
+  // written out again (which costs about as much CPU as reading it)
+  if (manifest && manifest.every(t => t.bag && t.recipe)) return new Response(text, { headers: listHeaders(object, corsHeaders) });
   if (!manifest) {
     // Missing or damaged: rebuilt from the stored tiddlers. (Answering [] would make every open tab
     // remove all its tiddlers as "missing from the server".)
@@ -563,6 +593,7 @@ async function serveManifest(request, env, ctx, corsHeaders) {
     if (!manifest) return rebuildingResponse(corsHeaders);
     object = rebuilt.object;
   }
+  // Written by hand, say
   manifest = manifest.map(t => ({ ...t, bag: t.bag || "default", recipe: t.recipe || "default" }));
   return new Response(JSON.stringify(manifest), { headers: listHeaders(object, corsHeaders) });
 }
@@ -603,14 +634,21 @@ function conflictGuardEnabled(env) {
 }
 
 // Changes whenever the browser modules or the public URL change, so baked.html is rebuilt after a
-// deploy (the number in front changes when the way pages are built changes)
+// deploy (the number in front changes when the way pages are built changes). Asked at every page
+// load: worked out once while the worker runs (hashing the modules costs about 0.3 ms), again only
+// if its settings change.
+let lastBakeVersion = { settings: null, version: "" };
 function bakeVersion(env) {
-  const input = (conflictGuardEnabled(env) ? CONFLICT_GUARD_SOURCE + "\n" + PAGE_PUBLISHER_SOURCE : "off") + "\n" + publicUrl(env, "/");
-  let hash = 5381;
-  for (let i = 0; i < input.length; i++) {
-    hash = ((hash * 33) ^ input.charCodeAt(i)) >>> 0;
+  const enabled = conflictGuardEnabled(env), settings = enabled + "\n" + publicUrl(env, "/");
+  if (lastBakeVersion.settings !== settings) {
+    const input = (enabled ? CONFLICT_GUARD_SOURCE + "\n" + PAGE_PUBLISHER_SOURCE : "off") + "\n" + publicUrl(env, "/");
+    let hash = 5381;
+    for (let i = 0; i < input.length; i++) {
+      hash = ((hash * 33) ^ input.charCodeAt(i)) >>> 0;
+    }
+    lastBakeVersion = { settings, version: "7-" + hash.toString(36) };
   }
-  return "7-" + hash.toString(36);
+  return lastBakeVersion.version;
 }
 
 // The page's ETag is "<baked.html's R2 etag>-page". The browser asks with it (If-None-Match, maybe
@@ -652,7 +690,8 @@ async function serveWiki(request, env, ctx, corsHeaders) {
     }
     if (hasBody) await baked.body.cancel();
   }
-  const rebuilt = await rebakeHtml(env, ctx);
+  // (Finished even if the browser goes away first: a reload while it builds, say)
+  const rebuilt = await untilDone(ctx, rebakeHtml(env, ctx));
   // With its ETag and date, so the next load is already a 304 (unless another build's page was kept)
   if (rebuilt) return new Response(rebuilt.html, { headers: rebuilt.page ? pageHeaders(htmlHeaders, rebuilt.page) : htmlHeaders });
   // The rebuild failed (see the logs): the last page built is better than the bare engine
@@ -771,23 +810,29 @@ function insertBeforeLast(html, marker, markup) {
   return null;
 }
 
-// Saves baked.html, unless an overlapping build from a newer tiddler list has already saved one
-// for the same worker and index.html. "Newer" compares when R2 stored each list (listVersion), so
-// a list replaced by hand counts as newer too. Each page gets its date (pageTime, see serveWiki).
-// Returns the stored page (its R2 object), or null if it kept the other page. The last try writes
-// unconditionally, like the create-only fallback in the PUT handler: best effort.
+// Saves baked.html, unless an overlapping build has already saved a newer one for the same worker
+// and index.html: from a newer tiddler list or a newer shell, and no older one of the other.
+// "Newer" compares when R2 stored each (listVersion, shellVersion), so a list replaced by hand
+// counts as newer too. If each page has the newer one of the two (a rare three-way overlap), this
+// one is stored as outdated, so the next page load builds it from both. Each page gets its date
+// (pageTime, see serveWiki). Returns the stored page (its R2 object), or null if it kept the other
+// page. The last try writes unconditionally, like the create-only fallback in the PUT handler: best
+// effort.
 async function storePage(env, html, meta) {
   for (let attempt = 1; attempt <= 3; attempt++) {
     const current = await env.WIKI_BUCKET.head("baked.html");
     const theirs = current?.customMetadata || {};
-    if (current && theirs.bakeVersion === meta.bakeVersion && theirs.sourceEtag === meta.sourceEtag &&
-        Number(theirs.listVersion) > Number(meta.listVersion)) {
-      return null;
+    let stored = meta;
+    if (current && theirs.bakeVersion === meta.bakeVersion && theirs.sourceEtag === meta.sourceEtag) {
+      const newerList = Number(theirs.listVersion) - Number(meta.listVersion),
+        newerShell = Number(theirs.shellVersion || 0) - Number(meta.shellVersion);
+      if (newerList >= 0 && newerShell >= 0 && (newerList > 0 || newerShell > 0)) return null;
+      if (newerList > 0 || newerShell > 0) stored = { ...meta, bakeVersion: "outdated" };
     }
     const pageTime = Math.max(Math.floor(Date.now() / 1000), Number(theirs.pageTime || 0) + 1);
     const written = await env.WIKI_BUCKET.put("baked.html", html, {
       httpMetadata: { contentType: "text/html; charset=utf-8" },
-      customMetadata: { ...meta, pageTime: String(pageTime) },
+      customMetadata: { ...stored, pageTime: String(pageTime) },
       ...(current && attempt < 3 ? { onlyIf: { etagMatches: current.etag } } : {})
     });
     if (written) return written;
@@ -842,8 +887,10 @@ async function rebakeHtml(env, ctx, list = null, source = null) {
     // In a shell, plugins load right before the core (they must run before TiddlyWiki starts, which
     // the core does), so they don't hold up the top of the page (a splash screen). In a full
     // index.html, where TiddlyWiki starts from code inside the page, from <head>.
+    // (Only a shell is searched: in index.html, the marker is only in TiddlyWiki's templates, so
+    // the search would decode the whole page for nothing, and one in raw markup isn't the place.)
     let pluginsPlaced = false;
-    if (pluginTags) {
+    if (pluginTags && pageSource.fingerprint) {
       const placed = insertBeforeLast(html, EXTERNAL_SCRIPTS_MARKER, `${pluginTags}\n`);
       if (placed) {
         html = placed;
@@ -869,6 +916,7 @@ async function rebakeHtml(env, ctx, list = null, source = null) {
       bakeVersion: bakeVersion(env),
       sourceEtag: pageSource.index,
       shell: pageSource.fingerprint,
+      shellVersion: String(pageSource.shellVersion || 0),
       listVersion: String(manifestObj ? manifestObj.uploaded.getTime() : 0)
     });
     if (stored) ctx.waitUntil(purgePublicCache(env, PUBLIC_PAGE_PATHS.map(path => publicUrl(env, path))));
@@ -908,7 +956,7 @@ async function readPageSource(env) {
   ]);
   const core = coreFile?.customMetadata?.v || "";
   if (shell && index && shell.customMetadata?.index === index.etag) {
-    return { html: new Uint8Array(await shell.arrayBuffer()), index: index.etag, fingerprint: shell.customMetadata.fingerprint || "", core };
+    return { html: new Uint8Array(await shell.arrayBuffer()), index: index.etag, fingerprint: shell.customMetadata.fingerprint || "", core, shellVersion: shell.uploaded.getTime() };
   }
   if (shell) await shell.body.cancel();
   const full = await env.WIKI_BUCKET.get("index.html");
@@ -981,11 +1029,11 @@ async function publishShell(request, env, ctx, corsHeaders) {
   if (!text.includes(`<script src="${coreFileUrl(env, version)}"`)) {
     return refusal(`The shell doesn't load the stored core file (${coreFileUrl(env, version)}).`, corsHeaders);
   }
-  await env.WIKI_BUCKET.put(SHELL_KEY, bytes, {
+  const storedShell = await env.WIKI_BUCKET.put(SHELL_KEY, bytes, {
     httpMetadata: { contentType: "text/html; charset=utf-8" },
     customMetadata: { index: index.etag, fingerprint }
   });
-  const rebuilt = await untilDone(ctx, rebakeHtml(env, ctx, null, { html: bytes, index: index.etag, fingerprint, core: version }));
+  const rebuilt = await untilDone(ctx, rebakeHtml(env, ctx, null, { html: bytes, index: index.etag, fingerprint, core: version, shellVersion: storedShell.uploaded.getTime() }));
   if (rebuilt) return new Response(null, { status: 204, headers: corsHeaders });
   // Kept, but the page couldn't be built now (see the logs): the next admin page load builds it
   ctx.waitUntil(markPageOutdated(env));
@@ -1320,9 +1368,20 @@ async function markPageOutdated(env) {
 // runs while the queue is empty.
 // Without a BACKUP_QUEUE binding (or if the queue is unavailable) the same backup runs directly.
 
-const BACKUP_INLINE_LIMIT = 100000;   // queue messages are limited to 128 KB; bigger versions wait in R2
+const QUEUE_MESSAGE_LIMIT = 128000;   // a queue message, as sent; a version that would make it bigger waits in R2
 const BACKUP_PER_RUN = 10;            // keeps one run within Cloudflare's 50-subrequest limit (free plan)
 const BACKUP_MAX_DELAY = 6 * 3600;    // longest wait between retries (seconds)
+
+// About the size of a message as the queue measures it: V8-serialized, where a string takes one
+// byte a character if they're all Latin-1, two otherwise (so a text under 100 KB can be over 128 KB),
+// with room for the other fields
+function queueMessageSize(message) {
+  let size = 200;
+  for (const value of [message.title, message.content]) {
+    if (typeof value === "string") size += value.length * (/[^\x00-\xff]/.test(value) ? 2 : 1);
+  }
+  return size;
+}
 
 // Called after a save or delete has been stored; job.content is the stored bytes
 async function queueBackup(env, job) {
@@ -1331,11 +1390,14 @@ async function queueBackup(env, job) {
   if (env.BACKUP_QUEUE) {
     try {
       if (job.action === "save") {
-        if (job.content.length <= BACKUP_INLINE_LIMIT) {
-          message.content = decoder.decode(job.content);
+        // (Decoded only if it may fit: a character is at least one byte of UTF-8)
+        const content = job.content.length < QUEUE_MESSAGE_LIMIT ? decoder.decode(job.content) : null;
+        if (content !== null && queueMessageSize({ ...message, content }) <= QUEUE_MESSAGE_LIMIT) {
+          message.content = content;
         } else {
-          // Keep this exact version until it is committed (R2 itself only holds the latest one)
-          message.contentKey = `_backup/versions/${message.time}-${encodeURIComponent(job.title)}.json`;
+          // Keep this exact version until it is committed (R2 itself only holds the latest one).
+          // Not named after the title, which can be too long for a key (or guessed: the copy is public)
+          message.contentKey = `_backup/versions/${message.time}-${crypto.randomUUID()}.json`;
           await env.WIKI_BUCKET.put(message.contentKey, job.content, { httpMetadata: { contentType: "application/json" } });
         }
       }

@@ -69,8 +69,12 @@ async function fakeGitHub(req) {
 }
 
 // ---- Worker with a queue -----------------------------------------------------------------------
+const workerLog = [];   // what the worker printed (console.error included)
 function makeWorker(port, withQueue) {
   return new Miniflare({
+    handleRuntimeStdio(stdout, stderr) {
+      for (const stream of [stdout, stderr]) stream.on("data", chunk => { workerLog.push(String(chunk)); process.stdout.write(chunk); });
+    },
     modules: true, scriptPath: WORKER, compatibilityDate: "2024-09-23", r2Buckets: ["WIKI_BUCKET"], port,
     bindings: { GITHUB_REPO: "o/r", GITHUB_TOKEN: "ghtoken", BACKUP_RETRY_SECONDS: "1" },
     ...(withQueue ? {
@@ -165,6 +169,26 @@ await put("Big", big);
 await until(async () => textOf(repoText("Big")) === big);
 const leftovers = (await bucket.list({ prefix: "_backup/versions/" })).objects.length;
 check("200 KB tiddler committed, temporary copy removed", textOf(repoText("Big")) === big && leftovers === 0, `leftovers ${leftovers}`);
+
+// 8a. The queue's 128 KB limit is on the message as sent, V8-serialized: a text with a character
+// past Latin-1 takes two bytes a character, so one under 100 KB can be over the limit. It waits in
+// R2 like a big one (not sent straight to GitHub from the save), and so does a big one with a title
+// too long to be part of an R2 key. Held up by an outage here, to see the copies waiting.
+const logMark = workerLog.length;
+const wide = "€" + "w".repeat(99000), longTitle = "Long " + "t".repeat(990), latin = "é" + "l".repeat(110000);
+faults.outage = true;
+await put("Wide", wide);
+await put(longTitle, "a".repeat(95000) + "😀".repeat(10000));
+await put("Latin", latin);
+await new Promise(r => setTimeout(r, 1500));
+const waiting = (await bucket.list({ prefix: "_backup/versions/" })).objects.length;
+faults.outage = false;
+await until(async () => textOf(repoText("Wide")) === wide && repoText(longTitle) !== undefined && textOf(repoText("Latin")) === latin);
+const notQueued = workerLog.slice(logMark).join("").match(/Could not queue[^\n]*/g) || [];
+const leftAfter = (await bucket.list({ prefix: "_backup/versions/" })).objects.length;
+check("a text sent as two bytes a character, and a big one with a long title, wait in R2 for the queue; a Latin-1 one fits in the message",
+  waiting === 2 && leftAfter === 0 && notQueued.length === 0 && textOf(repoText("Wide")) === wide && repoText(longTitle) === await r2Text(longTitle) && textOf(repoText("Latin")) === latin,
+  `waiting ${waiting}, left ${leftAfter}${notQueued.length ? ", " + notQueued.join(" | ").slice(0, 200) : ""}`);
 
 // 8b. Saves in the browser module's flat layout are committed exactly as stored, small or large
 const putFlat = (title, text) => mf.dispatchFetch(`${base}/recipes/default/tiddlers/${encodeURIComponent(title)}`,

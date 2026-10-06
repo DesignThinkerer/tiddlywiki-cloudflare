@@ -678,23 +678,29 @@ function insertBeforeLast(html, marker, markup) {
   return null;
 }
 
-// Saves baked.html, unless an overlapping build from a newer tiddler list has already saved one
-// for the same worker and index.html. "Newer" compares when R2 stored each list (listVersion), so
-// a list replaced by hand counts as newer too. Each page gets its date (pageTime, see serveWiki).
-// Returns the stored page (its R2 object), or null if it kept the other page. The last try writes
-// unconditionally, like the create-only fallback in the PUT handler: best effort.
+// Saves baked.html, unless an overlapping build has already saved a newer one for the same worker
+// and index.html: from a newer tiddler list or a newer shell, and no older one of the other.
+// "Newer" compares when R2 stored each (listVersion, shellVersion), so a list replaced by hand
+// counts as newer too. If each page has the newer one of the two (a rare three-way overlap), this
+// one is stored as outdated, so the next page load builds it from both. Each page gets its date
+// (pageTime, see serveWiki). Returns the stored page (its R2 object), or null if it kept the other
+// page. The last try writes unconditionally, like the create-only fallback in the PUT handler: best
+// effort.
 async function storePage(env, html, meta) {
   for (let attempt = 1; attempt <= 3; attempt++) {
     const current = await env.WIKI_BUCKET.head("baked.html");
     const theirs = current?.customMetadata || {};
-    if (current && theirs.bakeVersion === meta.bakeVersion && theirs.sourceEtag === meta.sourceEtag &&
-        Number(theirs.listVersion) > Number(meta.listVersion)) {
-      return null;
+    let stored = meta;
+    if (current && theirs.bakeVersion === meta.bakeVersion && theirs.sourceEtag === meta.sourceEtag) {
+      const newerList = Number(theirs.listVersion) - Number(meta.listVersion),
+        newerShell = Number(theirs.shellVersion || 0) - Number(meta.shellVersion);
+      if (newerList >= 0 && newerShell >= 0 && (newerList > 0 || newerShell > 0)) return null;
+      if (newerList > 0 || newerShell > 0) stored = { ...meta, bakeVersion: "outdated" };
     }
     const pageTime = Math.max(Math.floor(Date.now() / 1000), Number(theirs.pageTime || 0) + 1);
     const written = await env.WIKI_BUCKET.put("baked.html", html, {
       httpMetadata: { contentType: "text/html; charset=utf-8" },
-      customMetadata: { ...meta, pageTime: String(pageTime) },
+      customMetadata: { ...stored, pageTime: String(pageTime) },
       ...(current && attempt < 3 ? { onlyIf: { etagMatches: current.etag } } : {})
     });
     if (written) return written;
@@ -749,8 +755,10 @@ async function rebakeHtml(env, ctx, list = null, source = null) {
     // In a shell, plugins load right before the core (they must run before TiddlyWiki starts, which
     // the core does), so they don't hold up the top of the page (a splash screen). In a full
     // index.html, where TiddlyWiki starts from code inside the page, from <head>.
+    // (Only a shell is searched: in index.html, the marker is only in TiddlyWiki's templates, so
+    // the search would decode the whole page for nothing, and one in raw markup isn't the place.)
     let pluginsPlaced = false;
-    if (pluginTags) {
+    if (pluginTags && pageSource.fingerprint) {
       const placed = insertBeforeLast(html, EXTERNAL_SCRIPTS_MARKER, `${pluginTags}\n`);
       if (placed) {
         html = placed;
@@ -776,6 +784,7 @@ async function rebakeHtml(env, ctx, list = null, source = null) {
       bakeVersion: bakeVersion(env),
       sourceEtag: pageSource.index,
       shell: pageSource.fingerprint,
+      shellVersion: String(pageSource.shellVersion || 0),
       listVersion: String(manifestObj ? manifestObj.uploaded.getTime() : 0)
     });
     if (stored) ctx.waitUntil(purgePublicCache(env, PUBLIC_PAGE_PATHS.map(path => publicUrl(env, path))));
@@ -863,8 +872,10 @@ async function removeFromManifest(env, ctx, title, list = null, deletedRevision 
 In `queueBackup`, the content is now bytes:
 
 ```js
-if (job.content.length <= BACKUP_INLINE_LIMIT) {
-  message.content = decoder.decode(job.content);
+// (Decoded only if it may fit: a character is at least one byte of UTF-8)
+const content = job.content.length < QUEUE_MESSAGE_LIMIT ? decoder.decode(job.content) : null;
+if (content !== null && queueMessageSize({ ...message, content }) <= QUEUE_MESSAGE_LIMIT) {
+  message.content = content;
 ```
 
 and for the fallback without a queue:
@@ -873,7 +884,7 @@ and for the fallback without a queue:
 const direct = { ...message, content: job.content && decoder.decode(job.content), contentKey: undefined };
 ```
 
-The queue consumer receives text, as before. Backups now hold the stored bytes, so each file in the GitHub repository switches to the flat layout on its tiddler's next save, and the repository holds both layouts.
+The queue consumer receives text, as before. (Since then, whether the text fits in the message is decided on the message as the queue measures it, not on the bytes: README 4.7.) Backups now hold the stored bytes, so each file in the GitHub repository switches to the flat layout on its tiddler's next save, and the repository holds both layouts.
 
 It also reads GitHub's current copy in the "object" format (`Accept: application/vnd.github.object+json`): GitHub doesn't return files between 1 and 100 MB in its default format, so the second backup of a tiddler over 1 MB would fail forever and hold up every later backup. In the object format their content comes back empty. (Since then only the `sha` is used, for all sizes: README 4.7.)
 
@@ -883,14 +894,21 @@ The version was bumped to `4-`, so the first page load after deploying rebuilt t
 
 ```js
 // Changes whenever the browser modules or the public URL change, so baked.html is rebuilt after a
-// deploy (the number in front changes when the way pages are built changes)
+// deploy (the number in front changes when the way pages are built changes). Asked at every page
+// load: worked out once while the worker runs (hashing the modules costs about 0.3 ms), again only
+// if its settings change.
+let lastBakeVersion = { settings: null, version: "" };
 function bakeVersion(env) {
-  const input = (conflictGuardEnabled(env) ? CONFLICT_GUARD_SOURCE + "\n" + PAGE_PUBLISHER_SOURCE : "off") + "\n" + publicUrl(env, "/");
-  let hash = 5381;
-  for (let i = 0; i < input.length; i++) {
-    hash = ((hash * 33) ^ input.charCodeAt(i)) >>> 0;
+  const enabled = conflictGuardEnabled(env), settings = enabled + "\n" + publicUrl(env, "/");
+  if (lastBakeVersion.settings !== settings) {
+    const input = (enabled ? CONFLICT_GUARD_SOURCE + "\n" + PAGE_PUBLISHER_SOURCE : "off") + "\n" + publicUrl(env, "/");
+    let hash = 5381;
+    for (let i = 0; i < input.length; i++) {
+      hash = ((hash * 33) ^ input.charCodeAt(i)) >>> 0;
+    }
+    lastBakeVersion = { settings, version: "7-" + hash.toString(36) };
   }
-  return "7-" + hash.toString(36);
+  return lastBakeVersion.version;
 }
 ```
 
