@@ -479,6 +479,19 @@ await waitFor(async () => (await shell()).includes("after a failure"));
 check("...and tried again at the next save", (await shell()).includes("after a failure") && (await status(A))?.state === "published", JSON.stringify(await status(A)));
 await A.unroute(url => url.pathname === "/page/shell");
 
+// An error while rendering the page (here an editor that takes focus, in raw markup: the page is
+// rendered as text, where nothing can) is reported, and doesn't stop later publishes in that tab
+await add(A, { title: "Breaks rendering", tags: "$:/tags/RawMarkupWikified", text: '<$edit-text tiddler="Some note" focus="yes"/>' });
+await settle(A);
+await waitFor(async () => (await status(A))?.state === "failed");
+const broken = await status(A);
+check("an error while rendering the page is reported", broken?.state === "failed" && /Page not published/.test(broken?.text || ""), JSON.stringify(broken));
+await A.evaluate(() => $tw.wiki.deleteTiddler("Breaks rendering"));
+await add(A, { title: "$:/SiteSubtitle", text: "after a rendering error" });
+await settle(A);
+await waitFor(async () => (await shell()).includes("after a rendering error"));
+check("...and the tab publishes again at its next save", (await shell()).includes("after a rendering error") && (await status(A))?.state === "published", JSON.stringify(await status(A)));
+
 // --- 11. A new index.html: the page is built from it, then published again ----------------------------
 await bucket.put("index.html", ENGINE.replace("</head>", "<!-- new upload -->\n</head>"));
 const contextD = await browser.newContext();
