@@ -516,6 +516,33 @@ check("...a change to the page is sent again", shellPuts("A", mark) === 2, `${sh
 await A.unroute(refusing);
 await add(A, { title: "$:/SiteSubtitle", text: "accepted again" }); await settle(A);
 await waitFor(async () => (await shell()).includes("accepted again"));
+// A core file the worker refuses isn't sent again at the next page changes either (no page can be
+// published without it), only after a reload. (A tab that has to send the core: the stored one
+// relabelled, and the page rebuilt so it says so.)
+const CORE_KEY = "_plugins/tiddlywikicore.js";
+const storedCoreFile = await bucket.get(CORE_KEY);
+const storedCoreBytes = await storedCoreFile.arrayBuffer();
+const relabel = v => bucket.put(CORE_KEY, storedCoreBytes, { httpMetadata: storedCoreFile.httpMetadata, customMetadata: { ...storedCoreFile.customMetadata, v } });
+const markPageOutdated = async () => {
+  const page = await bucket.get("baked.html");
+  await bucket.put("baked.html", await page.arrayBuffer(), { httpMetadata: page.httpMetadata, customMetadata: { ...page.customMetadata, bakeVersion: "outdated" } });
+};
+await relabel("0.0.0-1");
+await markPageOutdated();
+const contextR = await browser.newContext();
+await contextR.route(url => url.pathname === "/page/core", route => route.fulfill({ status: 400, body: "core refused for the test" }));
+mark = requests.length;
+const { p: R } = await openAdmin("R", contextR);
+await settle(R);
+await waitFor(async () => (await status(R))?.state === "failed" && /core refused for the test/.test((await status(R)).text));
+await add(R, { title: "$:/SiteSubtitle", text: "while the core is refused" }); await settle(R); await sleep(QUIET_WINDOW);
+await add(R, { title: "$:/SiteSubtitle", text: "while the core is refused, again" }); await settle(R); await sleep(QUIET_WINDOW);
+check("a refused core file isn't sent again at the next page changes (nor the shell, which needs it)",
+  corePuts("R", mark) === 1 && shellPuts("R", mark) === 0, `${corePuts("R", mark)} core PUTs, ${shellPuts("R", mark)} shell PUTs, ${JSON.stringify(await status(R))}`);
+await contextR.close();
+await relabel(CORE_V);
+await add(A, { title: "$:/SiteSubtitle", text: "accepted again" }); await settle(A);
+await markPageOutdated();
 
 // An error while rendering the page (here an editor that takes focus, in raw markup: the page is
 // rendered as text, where nothing can) is reported, and doesn't stop later publishes in that tab

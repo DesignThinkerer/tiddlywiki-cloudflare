@@ -25,7 +25,8 @@ change to a tiddler it transcludes, like $:/SiteTitle in the Open Graph tags.) I
 Changes that arrive from other tabs aren't published by this one: their tab does it. Nothing is sent
 while a tiddler the page needs is still loading, or in safe mode (#:safe). A failure (also an error
 while preparing the page) is shown in a notification and tried again at the next save or load; a
-page the worker refused (400, 409) only once it changes, or at the next load.
+page the worker refused (400, 409) only once it changes, or at the next load, and after a refused
+core file, only at the next load.
 \*/
 "use strict";
 
@@ -94,6 +95,7 @@ exports.startup = function() {
 		published = source.fingerprint || "",   // what the page this tab loaded was built from
 		storedCore = source.core || "",
 		refused = "",                          // the page (fingerprint and core version) the worker refused
+		refusedCore = "",                      // the core file version the worker refused
 		ownChanges = Object.create(null),      // title -> {stored: saved (true) or deleted (false), time}
 		cameWithPage = null,                   // title -> true, set once the first tiddler list has arrived
 		started = false,
@@ -208,17 +210,24 @@ exports.startup = function() {
 	}
 
 	// Whether the page with this fingerprint needs nothing sent: it's the one published, or the worker
-	// refused it (sent again only once it changes: the same page would be refused again)
+	// refused it (sent again only once it changes: the same page would be refused again), or this
+	// TiddlyWiki's core file (no page can be published without it, until a reload)
 	function settled(print) {
-		return (print === published && storedCore === coreVersion) || print + " " + coreVersion === refused;
+		return (print === published && storedCore === coreVersion) || print + " " + coreVersion === refused ||
+			(refusedCore === coreVersion && storedCore !== coreVersion);
 	}
 
 	// A failed request: a refusal from the worker (400, or 409 when index.html changed) is final for
-	// this page; anything else (5xx, no connection, signed out) may pass at the next try
-	function rejected(done,print,err,status) {
+	// this page, or for this core file; anything else (5xx, no connection, signed out) may pass at the
+	// next try
+	function rejected(done,print,err,status,core) {
 		if(status === 400 || status === 409) {
-			refused = print + " " + coreVersion;
-			report("failed","Page not published: " + err + " It will be sent again once it changes, or at the next reload.");
+			if(core) {
+				refusedCore = coreVersion;
+			} else {
+				refused = print + " " + coreVersion;
+			}
+			report("failed","Page not published: " + err + (core ? " It will be sent again at the next reload." : " It will be sent again once it changes, or at the next reload."));
 			return done();
 		}
 		failed(done,err);
@@ -309,7 +318,7 @@ exports.startup = function() {
 		}
 		send("page/core?v=" + encodeURIComponent(coreVersion),coreFile(),{"Content-Type": "application/javascript; charset=utf-8"},guarded(done,function(err,status) {
 			if(err) {
-				return rejected(done,print,err,status);
+				return rejected(done,print,err,status,true);
 			}
 			storedCore = coreVersion;
 			sendShell();
