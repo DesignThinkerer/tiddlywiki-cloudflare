@@ -1,13 +1,14 @@
 // Test-only wrapper around the built worker: the same worker, given an R2 bucket that records every
 // call it makes ("get list", "put tiddler"...) and which calls ran at the same time, and that can make
 // chosen calls fail. GET /__r2ops returns { calls, overlaps } since the last time and starts a new
-// count; POST /__r2fail with { call: "put baked.html", times: 1 } makes the next such calls throw.
+// count; POST /__r2fail with { call: "put baked.html", times: 1 } makes the next such calls throw
+// (or, with delay: milliseconds, makes them wait that long first).
 // Used by test/r2-ops.test.mjs and test/integrity.test.mjs; never deployed.
 import worker from "../worker.js";
 
 let calls = [];
 let overlaps = [];          // "get list + head tiddler": a call that started while the others were running
-let failures = [];          // { call, times }: calls to make fail
+let failures = [];          // { call, times, delay }: calls to make fail, or wait first
 const running = new Map();  // call -> how many are running
 
 // What a key is, in the words the test uses
@@ -34,6 +35,7 @@ function counted(bucket) {
         const failure = failures.find(f => f.call === call && f.times > 0);
         if (failure) {
           failure.times--;
+          if (failure.delay) return new Promise(r => setTimeout(r, failure.delay)).then(() => value.apply(target, args));
           return Promise.reject(new Error(`R2 ${call} failed (test)`));
         }
         if (running.size > 0) overlaps.push([...running.keys(), call].sort().join(" + "));
@@ -50,8 +52,8 @@ function counted(bucket) {
 export default {
   async fetch(request, env, ctx) {
     if (new URL(request.url).pathname === "/__r2fail") {
-      const { call, times = 1 } = await request.json();
-      failures.push({ call, times });
+      const { call, times = 1, delay = 0 } = await request.json();
+      failures.push({ call, times, delay });
       return new Response(null, { status: 204 });
     }
     if (new URL(request.url).pathname === "/__r2ops") {

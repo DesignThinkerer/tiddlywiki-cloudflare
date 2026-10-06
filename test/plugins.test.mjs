@@ -243,6 +243,23 @@ await load();
 check("theme is applied at boot", (await page.evaluate(() => getComputedStyle(document.body).backgroundColor)) === "rgb(255, 0, 0)");
 await add({ title: "$:/theme", text: "$:/themes/tiddlywiki/vanilla" });
 await settle();
+// The syncer reads its settings once, when it starts: they have to be in the page
+const SYNC_SETTINGS = { "$:/config/SyncPollingInterval": "7000", "$:/config/SyncThrottleInterval": "1500",
+  "$:/config/SyncFilter": "[all[tiddlers]!prefix[$:/temp/]!prefix[$:/state/]!prefix[$:/status/]!is[draft]!prefix[Local/]]",
+  "$:/config/SyncDisableLazyLoading": "yes" };
+for (const [title, text] of Object.entries(SYNC_SETTINGS)) await add({ title, text });
+await settle();
+await load();
+await add({ title: "Local/note", text: "kept in this tab" });
+await settle();
+await new Promise(r => setTimeout(r, 2000));
+const syncer = { ...await page.evaluate(() => ({ poll: $tw.syncer.pollTimerInterval, throttle: $tw.syncer.throttleInterval,
+  lazyListeners: (($tw.wiki.eventListeners || {}).lazyLoad || []).length })), localSaved: !!(await stored("Local/note")) };
+check("the sync settings are in the page, so the syncer starts with them",
+  syncer.poll === 7000 && syncer.throttle === 1500 && !syncer.localSaved && syncer.lazyListeners === 0, JSON.stringify(syncer));
+for (const title of ["Local/note", ...Object.keys(SYNC_SETTINGS)]) await remove(title);
+await settle();
+await load();
 
 // --- 8. A standalone JavaScript module, with characters JSON and JavaScript treat differently ------
 const MACRO = "$:/test/greet.js";

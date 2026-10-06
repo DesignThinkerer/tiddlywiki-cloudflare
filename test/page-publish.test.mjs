@@ -41,7 +41,12 @@ const publicServer = http.createServer(async (req, res) => {
     return res.end("Not found");
   }
   res.writeHead(200, { "Access-Control-Allow-Origin": "*", "Content-Type": obj.httpMetadata?.contentType || "application/octet-stream" });
-  res.end(Buffer.from(await obj.arrayBuffer()));
+  let body = Buffer.from(await obj.arrayBuffer());
+  // ?https: the page as built for a public URL on https, visited over http
+  if (url.searchParams.has("https")) {
+    body = Buffer.from(body.toString("utf8").replace('"title":"$:/cfworker/public-url","text":"http:', '"title":"$:/cfworker/public-url","text":"https:'));
+  }
+  res.end(body);
 });
 await new Promise(resolve => publicServer.listen(PUBLIC_PORT, "127.0.0.1", resolve));
 
@@ -218,6 +223,20 @@ check("the public site runs from the light page: plugins, raw markup, the splash
   onPublic.splashGone && onPublic.footer && onPublic.hello && onPublic.description === "A test wiki", JSON.stringify(onPublic));
 check("...and never publishes", requests.filter(r => r.tag === "public" && r.method === "PUT").length === 0);
 await contextP.close();
+// The public site visited over http while its URL is set with https (or the other way round): still
+// the public site, read-only, with nothing sent anywhere
+const contextQ = await browser.newContext();
+const Q = await contextQ.newPage();
+watch(Q, "public-http");
+await Q.goto(PUB + "/?https");
+await Q.waitForFunction(() => window.$tw && $tw.syncer && $tw.wiki.tiddlerExists("Splash") && $tw.wiki.tiddlerExists("$:/status/IsReadOnly"), null, { timeout: 30000 });
+await sleep(QUIET_WINDOW);
+const overHttp = await Q.evaluate(() => ({ url: $tw.wiki.getTiddlerText("$:/cfworker/public-url"), readOnly: $tw.wiki.getTiddlerText("$:/status/IsReadOnly") }));
+const httpRequests = requests.filter(r => r.tag === "public-http");
+check("the public site visited over http with its URL set on https is still read-only, and sends nothing",
+  overHttp.url.startsWith("https:") && overHttp.readOnly === "yes" && !httpRequests.some(r => r.method !== "GET" || r.host === "worker"),
+  JSON.stringify({ ...overHttp, sent: httpRequests.filter(r => r.method !== "GET" || r.host === "worker").map(r => r.method + " " + r.host + r.path) }));
+await contextQ.close();
 
 // --- 5. Saves that don't change the page send nothing ----------------------------------------------
 mark = requests.length;
@@ -478,6 +497,52 @@ await settle(A);
 await waitFor(async () => (await shell()).includes("after a failure"));
 check("...and tried again at the next save", (await shell()).includes("after a failure") && (await status(A))?.state === "published", JSON.stringify(await status(A)));
 await A.unroute(url => url.pathname === "/page/shell");
+
+// A page the worker refuses (400 or 409: final for that page) isn't sent again at every save, only once
+// the page changes (or after a reload); a 5xx above is still retried at the next save
+const refusing = url => url.pathname === "/page/shell";
+await A.route(refusing, route => route.fulfill({ status: 400, body: "refused for the test" }));
+mark = requests.length;
+await add(A, { title: "$:/SiteSubtitle", text: "refused subtitle" });
+await settle(A);
+await waitFor(async () => (await status(A))?.state === "failed" && /refused for the test/.test((await status(A)).text));
+await add(A, { title: "Unrelated 1", text: "x" }); await settle(A); await sleep(QUIET_WINDOW);
+await add(A, { title: "Unrelated 2", text: "y" }); await settle(A); await sleep(QUIET_WINDOW);
+const afterRefusal = shellPuts("A", mark), listGets = count("A", "GET", "/recipes/default/tiddlers.json", mark);
+check("a refused page isn't sent again at the next saves that don't change it (no list request either)", afterRefusal === 1 && listGets <= 1,
+  `${afterRefusal} shell PUTs, ${listGets} list requests`);
+await add(A, { title: "$:/SiteSubtitle", text: "refused subtitle, changed" }); await settle(A); await sleep(QUIET_WINDOW);
+check("...a change to the page is sent again", shellPuts("A", mark) === 2, `${shellPuts("A", mark)} shell PUTs`);
+await A.unroute(refusing);
+await add(A, { title: "$:/SiteSubtitle", text: "accepted again" }); await settle(A);
+await waitFor(async () => (await shell()).includes("accepted again"));
+// A core file the worker refuses isn't sent again at the next page changes either (no page can be
+// published without it), only after a reload. (A tab that has to send the core: the stored one
+// relabelled, and the page rebuilt so it says so.)
+const CORE_KEY = "_plugins/tiddlywikicore.js";
+const storedCoreFile = await bucket.get(CORE_KEY);
+const storedCoreBytes = await storedCoreFile.arrayBuffer();
+const relabel = v => bucket.put(CORE_KEY, storedCoreBytes, { httpMetadata: storedCoreFile.httpMetadata, customMetadata: { ...storedCoreFile.customMetadata, v } });
+const markPageOutdated = async () => {
+  const page = await bucket.get("baked.html");
+  await bucket.put("baked.html", await page.arrayBuffer(), { httpMetadata: page.httpMetadata, customMetadata: { ...page.customMetadata, bakeVersion: "outdated" } });
+};
+await relabel("0.0.0-1");
+await markPageOutdated();
+const contextR = await browser.newContext();
+await contextR.route(url => url.pathname === "/page/core", route => route.fulfill({ status: 400, body: "core refused for the test" }));
+mark = requests.length;
+const { p: R } = await openAdmin("R", contextR);
+await settle(R);
+await waitFor(async () => (await status(R))?.state === "failed" && /core refused for the test/.test((await status(R)).text));
+await add(R, { title: "$:/SiteSubtitle", text: "while the core is refused" }); await settle(R); await sleep(QUIET_WINDOW);
+await add(R, { title: "$:/SiteSubtitle", text: "while the core is refused, again" }); await settle(R); await sleep(QUIET_WINDOW);
+check("a refused core file isn't sent again at the next page changes (nor the shell, which needs it)",
+  corePuts("R", mark) === 1 && shellPuts("R", mark) === 0, `${corePuts("R", mark)} core PUTs, ${shellPuts("R", mark)} shell PUTs, ${JSON.stringify(await status(R))}`);
+await contextR.close();
+await relabel(CORE_V);
+await add(A, { title: "$:/SiteSubtitle", text: "accepted again" }); await settle(A);
+await markPageOutdated();
 
 // An error while rendering the page (here an editor that takes focus, in raw markup: the page is
 // rendered as text, where nothing can) is reported, and doesn't stop later publishes in that tab

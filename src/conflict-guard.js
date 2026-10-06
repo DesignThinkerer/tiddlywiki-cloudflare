@@ -64,6 +64,12 @@ function flatBody(tiddler) {
 	return JSON.stringify(result);
 }
 
+// The site a URL is on, whatever the protocol: the public site visited over http while its URL says
+// https (or the other way round) is still the public site
+function siteOf(url) {
+	return String(url || "").replace(/^[a-z][a-z0-9+.-]*:/i,"").toLowerCase();
+}
+
 exports.startup = function() {
 	var Adaptor = null;
 	$tw.modules.forEachModuleOfType("syncadaptor",function(title,module) {
@@ -260,6 +266,21 @@ exports.startup = function() {
 		return copyTitle;
 	}
 
+	// For a copy of code (see makeConflictCopy): it doesn't run, and how to use that version
+	// deleted: the original was deleted elsewhere, so there's nothing to copy the text into
+	function inactiveNote(localTiddler,title,deleted) {
+		var moved = ["module-type","plugin-type"].filter(function(field) {
+			return localTiddler.fields[field] !== undefined;
+		});
+		if(!moved.length) {
+			return "";
+		}
+		var note = " The copy is inactive (its " + moved.join(" and ") + " moved to " + moved.map(function(field) {
+			return "conflict-removed-" + field;
+		}).join(" and ") + "): to use your version, ";
+		return note + (deleted ? "rename it " + link(title) + " and give it back its " + moved.join(" and ") + "." : "copy its text into " + link(title) + ".");
+	}
+
 	// The server rejected our write because its copy changed. Keep our version, adopt the server's.
 	function resolveConflict(adaptor,title,operation,callback) {
 		$tw.utils.httpRequest({
@@ -297,7 +318,7 @@ exports.startup = function() {
 					return;
 				}
 				var copyTitle = localTiddler ? makeConflictCopy(localTiddler) : null,
-					kept = copyTitle ? " Your version has been kept as " + link(copyTitle) + "." : "";
+					kept = copyTitle ? " Your version has been kept as " + link(copyTitle) + "." + inactiveNote(localTiddler,title,!serverFields) : "";
 				if(serverFields) {
 					s.storeTiddler(serverFields);
 					callback("Edit conflict: " + link(title) + " was changed in another tab or browser before your save reached the server." + kept + " " + link(title) + " now shows the server version.");
@@ -480,7 +501,7 @@ exports.startup = function() {
 	proto.getStatus = function(callback) {
 		var self = this,
 			httpRequest = $tw.utils.httpRequest;
-		if(!adminStatus || !publicBase || self.host === publicBase) {
+		if(!adminStatus || !publicBase || siteOf(self.host) === siteOf(publicBase)) {
 			return originalGetStatus.call(self,callback);
 		}
 		$tw.utils.httpRequest = function(options) {
@@ -601,7 +622,7 @@ exports.startup = function() {
 				callback(fields);
 			},0);
 		}
-		if(!publicBase || publicBase === adaptor.host || !expected || typeof fetch !== "function") {
+		if(!publicBase || siteOf(publicBase) === siteOf(adaptor.host) || !expected || typeof fetch !== "function") {
 			return done(null);
 		}
 		fetch(publicBase + "recipes/default/tiddlers/" + encodeURIComponent(title),{cache: "no-cache", credentials: "omit"})

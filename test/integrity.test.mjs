@@ -14,7 +14,7 @@ const LIST = "recipes/default/tiddlers.json";
 const mf = new Miniflare({
   modules: true, scriptPath: "test/r2-counter.mjs", modulesRoot: ROOT,
   modulesRules: [{ type: "ESModule", include: ["**/*.js", "**/*.mjs"] }],
-  compatibilityDate: "2024-09-23", r2Buckets: ["WIKI_BUCKET"], port: 8797,
+  compatibilityDate: "2024-09-23", r2Buckets: ["WIKI_BUCKET"], port: 0,
   outboundService: async () => new Response('{"success":true}'),
 });
 const base = (await mf.ready).toString().replace(/\/$/, "");
@@ -189,6 +189,25 @@ check("a save in TiddlyWeb's layout keeps fields named like built-in properties,
 res = await mf.dispatchFetch(url("Object field"), { method: "PUT", headers: { "Content-Type": "application/json" },
   body: JSON.stringify({ title: "Object field", text: "t", fields: { meta: { text: "inside" } } }) });
 check("a field whose value isn't text (an object) is refused (400)", res.status === 400 && !(await storedRevision("Object field")), `status ${res.status}`);
+// R2 keys are at most 1024 bytes: a longer title is refused, not an error; up to that, stored
+const LONGEST = "x".repeat(1024 - "recipes/default/tiddlers/".length), TOO_LONG = "é".repeat(500);
+res = await save(TOO_LONG, { text: "t" });
+got = await getList();
+check("a title too long for an R2 key is refused (400) with a reason, and the list keeps working",
+  res.status === 400 && /too long/.test(await res.text()) && got.status === 200 && !JSON.parse(got.text).some(e => e.title === TOO_LONG), `save ${res.status}, list ${got.status}`);
+res = await save(LONGEST, { text: "t" });
+const longestStored = res.status === 204 && !!(await storedRevision(LONGEST));
+res = await del(LONGEST);
+check("...the longest title that fits is stored and deleted", longestStored && res.status === 204 && !(await storedRevision(LONGEST)), `stored ${longestStored}, delete ${res.status}`);
+res = await del(TOO_LONG);
+const read = await mf.dispatchFetch(url(TOO_LONG));
+check("...deleting one too long answers 204, reading it 404: it can't be there", res.status === 204 && read.status === 404, `delete ${res.status}, read ${read.status}`);
+// A path that isn't valid percent-encoding is refused, not an exception
+const BROKEN = `${base}/recipes/default/tiddlers/%E0%A4%A`;
+const broken = [await mf.dispatchFetch(BROKEN), await mf.dispatchFetch(BROKEN, { method: "PUT", headers: { "Content-Type": "application/json" }, body: '{"title":"x"}' }),
+  await mf.dispatchFetch(BROKEN.replace("/recipes/", "/bags/"), { method: "DELETE" })];
+check("a path that isn't valid percent-encoding is refused (400) by reads, saves and deletes, with CORS headers",
+  broken.every(r => r.status === 400 && r.headers.get("access-control-allow-origin") === "*"), broken.map(r => r.status).join(", "));
 const flatMeta = revision => ({ customMetadata: { revision, layout: "flat" } });
 await bucket.put("recipes/default/tiddlers/67890", '{"title":67890,"text":"uploaded by hand","revision":"77","bag":"default","recipe":"default"}', flatMeta("77"));
 await bucket.put("recipes/default/tiddlers/Key title", '{"title":"Body title","text":"uploaded by hand","revision":"78","bag":"default","recipe":"default"}', flatMeta("78"));
@@ -296,6 +315,19 @@ twice.push({ ...twice.find(e => e.title === "Old note"), revision: "1" });
 await bucket.put(LIST, JSON.stringify(twice));
 res = await save("Old note", { text: "saved again" });
 check("a title listed twice is listed once after its next save", (await list()).filter(e => e.title === "Old note").length === 1, `status ${res.status}`);
+// The list is served as stored when every entry has its bag and recipe (the worker writes them),
+// not parsed and written out again; entries without them (a list written by hand) get them
+const asStored = JSON.stringify(await list(), null, 1);
+await bucket.put(LIST, asStored);
+got = await getList();
+const handWritten = (await list()).map(({ bag, recipe, ...rest }, i) => i === 0 ? rest : { ...rest, bag, recipe });
+await bucket.put(LIST, JSON.stringify(handWritten));
+const patched = await getList();
+const firstServed = JSON.parse(patched.text)[0];
+check("a list whose entries all have bag and recipe is served byte for byte as stored; one without them gets them",
+  got.status === 200 && got.text === asStored && patched.status === 200 && firstServed.bag === "default" && firstServed.recipe === "default",
+  `${got.text === asStored ? "as stored" : "rewritten"}, first entry ${JSON.stringify(firstServed).slice(0, 80)}`);
+await bucket.put(LIST, JSON.stringify(JSON.parse(asStored)));
 const leftovers = await Promise.all((await repairFiles()).map(async key => (await bucket.get(key)).text()));
 check("no rebuild progress is left behind in _repair/", leftovers.every(text => damagedCopies.has(text)), (await repairFiles()).join(", "));
 
@@ -333,7 +365,69 @@ text = await loadPage();
 check("a plugin delete whose page build failed: the next page load builds the page without it",
   res.status === 204 && outdated && !text.includes(tagOf(P1)), `status ${res.status}, outdated ${outdated}`);
 
-// --- 4. A tiddler whose title only looks like a draft is saved like any other ---------------------
+// --- 4. List updates follow revisions --------------------------------------------------------------
+// Two requests for the same title can update the list in the other order (a list write retried after
+// another one): the list keeps the newer version
+const delayNext = (call, delay) => mf.dispatchFetch(`${base}/__r2fail`, { method: "POST", body: JSON.stringify({ call, delay }) });
+const pause = ms => new Promise(r => setTimeout(r, ms));
+await save("Raced", { text: "first" });
+await delayNext("put list", 600);
+const deleting = del("Raced");
+await pause(200);
+res = await save("Raced", { text: "again" }, { "If-None-Match": "*" });
+const againRevision = etagRevision(res);
+const deleted = await deleting;
+check("a delete whose list update lands after the title was created again leaves the new tiddler listed",
+  deleted.status === 204 && res.status === 204 && (await entry("Raced"))?.revision === againRevision && await storedRevision("Raced") === againRevision,
+  `listed ${JSON.stringify((await entry("Raced"))?.revision)}, stored ${await storedRevision("Raced")}, created ${againRevision}`);
+await delayNext("put list", 600);
+const older = save("Twice", { text: "older" });
+await pause(200);
+res = await save("Twice", { text: "newer" });
+const newerRevision = etagRevision(res);
+await older;
+check("an older save whose list update lands after a newer one's doesn't put its revision back in the list",
+  (await entry("Twice"))?.revision === newerRevision && await storedRevision("Twice") === newerRevision,
+  `listed ${(await entry("Twice"))?.revision}, stored ${await storedRevision("Twice")}, newer ${newerRevision}`);
+
+// A save that lands between a delete's check and its removal: the delete removes that save's
+// version too (R2 deletes can't be conditional), so it doesn't keep the entry as "saved again since"
+res = await save("Squeezed", { text: "v1" });
+await delayNext("delete tiddler", 600);
+const squeezedDelete = del("Squeezed");
+await pause(200);
+res = await save("Squeezed", { text: "v2" }, { "If-Match": res.headers.get("ETag") });
+const squeezedDeleted = await squeezedDelete;
+check("a save landing between a delete's check and its removal: removed with it, so not listed either",
+  res.status === 204 && squeezedDeleted.status === 204 && !(await storedRevision("Squeezed")) === !(await entry("Squeezed")),
+  `save ${res.status}, delete ${squeezedDeleted.status}, stored ${await storedRevision("Squeezed")}, listed ${(await entry("Squeezed"))?.revision}`);
+
+// --- 4b. Overlapping page builds keep the newest shell -----------------------------------------------
+// A save's page build that read the shell before a new one was published, and stores its page after
+// that one's: the page stays built from the new shell (with the save's change, which it read too)
+const PUBLIC = "https://my-tiddlywiki.theophile.dev", CORE_V = "5.4.1-1";
+const coreSrc = `${PUBLIC}/_plugins/tiddlywikicore.js?v=${CORE_V}`;
+const MARK = name => `<!--~~ ${name} ~~-->`;
+const shellNamed = name => ["<!doctype html>", "<html>", "<head>", `<title>${name}</title>`, "</head>", "<body>", MARK("Ordinary tiddlers"),
+  '<script class="tiddlywiki-tiddler-store" type="application/json">[{"title":"$:/plugins/tiddlywiki/tiddlyweb","plugin-type":"plugin","text":"{}"}\n]</script>',
+  MARK("Load external JavaScripts"), `<script src="${coreSrc}"></script>`, "</body>", "</html>"].join("\n");
+const indexEtag = async () => (await bucket.head("index.html")).etag;
+const putShell = async (text, fingerprint) => mf.dispatchFetch(`${base}/page/shell`, { method: "PUT", body: text,
+  headers: { "Content-Type": "text/html", "X-Page-Fingerprint": fingerprint, "X-Page-Index": await indexEtag() } });
+res = await mf.dispatchFetch(`${base}/page/core?v=${CORE_V}`, { method: "PUT", headers: { "Content-Type": "application/javascript" }, body: [
+  "/*\nTiddlyWiki\n*/", "$tw.preloadTiddlers = $tw.preloadTiddlers || [];", '_load(window,{"title":"$:/boot/boot.js","text":""});'].join("\n") });
+const firstShell = await putShell(shellNamed("Shell one"), "s1");
+await delayNext("put baked.html", 800);
+const titleSave = save("$:/SiteTitle", { text: "Raced title" });
+await pause(300);
+const secondShell = await putShell(shellNamed("Shell two"), "s2");
+await titleSave;
+text = await (await bucket.get("baked.html")).text();
+check("a page build that read the shell before a new one was published doesn't put the old shell back",
+  res.status === 204 && firstShell.status === 204 && secondShell.status === 204 && text.includes("<title>Shell two</title>") && text.includes("Raced title"),
+  `core ${res.status}, shells ${firstShell.status} ${secondShell.status}, page from ${(/<title>(.*?)<\/title>/.exec(text) || [])[1]}, title ${text.includes("Raced title")}`);
+
+// --- 5. A tiddler whose title only looks like a draft is saved like any other ---------------------
 const NOT_A_DRAFT = "Draft of 'Chapter 1'";
 res = await save(NOT_A_DRAFT, { text: "my chapter" });
 check("a tiddler titled \"Draft of '…'\" is stored", !!(await storedRevision(NOT_A_DRAFT)) && !!(await entry(NOT_A_DRAFT)), `status ${res.status}`);
@@ -346,7 +440,7 @@ await bucket.put(LIST, JSON.stringify(withIdeas));
 res = await del("Draft 2 of 'Ideas'");
 check("deleting a tiddler titled \"Draft 2 of '…'\" deletes it", !(await storedRevision("Draft 2 of 'Ideas'")) && !(await entry("Draft 2 of 'Ideas'")), `status ${res.status}`);
 
-// --- 5. Local secrets and Wrangler's files stay out of git ---------------------------------------
+// --- 6. Local secrets and Wrangler's files stay out of git ---------------------------------------
 const ignored = fs.readFileSync(path.join(ROOT, ".gitignore"), "utf8").split(/\r?\n/).map(l => l.trim());
 const missing = ["wrangler.toml", ".dev.vars", ".wrangler/"].filter(p => !ignored.includes(p));
 check(".gitignore covers wrangler.toml, .dev.vars and .wrangler/", missing.length === 0, missing.length ? "missing: " + missing.join(", ") : "");

@@ -538,6 +538,18 @@ const pluginValue = await freshLoad.evaluate(t => $tw.wiki.getTiddlerText(t), PL
 check("...a fresh load runs only the version the server kept", JSON.stringify(ran) === JSON.stringify(["A's edit"]) && pluginValue === "A's edit",
   `ran ${JSON.stringify(ran)}, plugin value ${JSON.stringify(pluginValue)}`);
 await freshLoad.close();
+const codeAlerts = await alerts(other);
+check("...and the alert says the copy is inactive, and how to use that version",
+  codeAlerts.filter(t => t.includes("inactive") && t.includes("conflict-removed-")).length === 2, JSON.stringify(codeAlerts));
+// Deleted in another tab: there's no original to copy the text into, so the advice is to rename the copy
+const GONE = "$:/test/gone-marker.js";
+await putCode(A, GONE, markerModule("before the delete")); await settle(A);
+await sync(other);
+await A.evaluate(t => $tw.wiki.deleteTiddler(t), GONE); await settle(A);
+await putCode(other, GONE, markerModule("edited after the delete")); await settle(other);
+const goneAlert = (await alerts(other)).find(t => t.includes("was deleted") && t.includes(GONE)) || "";
+check("...when the original was deleted in another tab, it says to rename the copy and give its module-type back",
+  /inactive/.test(goneAlert) && /rename it/.test(goneAlert) && /module-type/.test(goneAlert) && !/copy its text/.test(goneAlert), goneAlert);
 await other.close();
 
 // --- Summary --------------------------------------------------------------------------------

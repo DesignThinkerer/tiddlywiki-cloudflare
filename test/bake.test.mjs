@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 const WORKER = fileURLToPath(new URL("../worker.js", import.meta.url));
 
 const mf = new Miniflare({
-  modules: true, scriptPath: WORKER, compatibilityDate: "2024-09-23", r2Buckets: ["WIKI_BUCKET"], port: 8796,
+  modules: true, scriptPath: WORKER, compatibilityDate: "2024-09-23", r2Buckets: ["WIKI_BUCKET"], port: 0,
   outboundService: async () => new Response("{}", { status: 404 }),
 });
 const base = (await mf.ready).toString().replace(/\/$/, "");
@@ -97,9 +97,13 @@ check("...and the same answer is baked into the page, for the browser module", p
 const PUB = "https://my-tiddlywiki.theophile.dev";
 const CORE_V = "5.4.1-1";
 const coreUrl = v => `${PUB}/_plugins/tiddlywikicore.js?v=${v}`;
-const fakeCore = (v = CORE_V) => [
+// (The core plugin mentions the save template setting, escaped; snapshot: with TiddlyWiki's line that
+// switches it to the external-core one, which the admin wiki takes out)
+const fakeCore = (v = CORE_V, { snapshot = false } = {}) => [
   "/*\nTiddlyWiki created by Jeremy Ruston\n*/", "$tw = (typeof $tw === 'undefined') ? Object.create(null) : $tw;",
   "$tw.preloadTiddlers = $tw.preloadTiddlers || [];", `// core ${v} `.padEnd(5000, "x"),
+  '$tw.preloadTiddlerArray([{"title":"$:/core","text":"{\\"tiddlers\\":{\\"$:/config/SaveWikiButton/Template\\":{\\"title\\":\\"$:/config/SaveWikiButton/Template\\"}}}"}]);',
+  snapshot ? '$tw.preloadTiddlerArray([{\n\ttitle: "$:/config/SaveWikiButton/Template",\n\ttext: "$:/core/save/offline-external-js"\n}]);' : "",
   '_load(window,{"title":"$:/boot/boot.js","type":"application/javascript","text":"/* boot */"});'
 ].join("\n");
 const MARK = name => `<!--~~ ${name} ~~-->`;
@@ -150,14 +154,15 @@ const coreEtag = core?.etag;
 res = await putCore(fakeCore());
 await res.arrayBuffer();
 check("...the same version again isn't rewritten", res.status === 204 && (await bucket.head("_plugins/tiddlywikicore.js"))?.etag === coreEtag, `status ${res.status}`);
-for (const [what, body, v] of [
+for (const [what, body, v, says] of [
   ["a version that isn't <version>-<format>", fakeCore(), "latest"],
   ["something that isn't TiddlyWiki's core file", "console.log('hi')", "5.4.2-1"],
-  ["too big", fakeCore("5.4.2-1") + "x".repeat(21 * 1024 * 1024), "5.4.2-1"]
+  ["too big", fakeCore("5.4.2-1") + "x".repeat(21 * 1024 * 1024), "5.4.2-1"],
+  ["still switching the save template (a TiddlyWiki this worker can't publish yet), saying so", fakeCore("5.4.2-1", { snapshot: true }), "5.4.2-1", /save template.*update the worker/is]
 ]) {
   res = await putCore(body, v);
   const text = await res.text();
-  check(`core file refused (400): ${what}`, res.status === 400 && text.length > 0 && (await bucket.head("_plugins/tiddlywikicore.js"))?.customMetadata?.v === CORE_V, `${res.status} ${text}`);
+  check(`core file refused (400): ${what}`, res.status === 400 && text.length > 0 && (!says || says.test(text)) && (await bucket.head("_plugins/tiddlywikicore.js"))?.customMetadata?.v === CORE_V, `${res.status} ${text}`);
 }
 
 // The shell: refused unless it's a page that works
@@ -202,12 +207,14 @@ const tagAt = page.indexOf(tag), externalAt = page.indexOf(MARK("Load external J
 check("in a page built from a shell, plugin tags go right before the core, after the tiddlers", res.status === 204 && tagAt > headEnd && tagAt < externalAt && page.indexOf(MARK("Ordinary tiddlers")) < tagAt,
   `tag at ${tagAt}, head ends ${headEnd}, marker at ${externalAt}`);
 
-// A new index.html: the shell is for the old one, so the page is built from the new one until a shell for it is published
-await bucket.put("index.html", html("new engine"));
+// A new index.html: the shell is for the old one, so the page is built from the new one until a shell for it is published.
+// (Plugins go in <head> there, even if raw markup at the bottom has TiddlyWiki's marker for external scripts: TiddlyWiki
+// starts from code inside a full page, before that.)
+await bucket.put("index.html", html(`new engine<script>/* boot */</script>${MARK("Load external JavaScripts")}`));
 page = await (await mf.dispatchFetch(base + "/")).text();
 source = pageSource(page);
 check("a new index.html: the page is built from it, not from the older shell", page.includes("new engine") && !page.includes("With a plugin") && source?.fingerprint === "" && source?.index === await indexEtag(), JSON.stringify(source));
-check("...plugin tags back in <head> for a full index.html", page.indexOf(tag) > -1 && page.indexOf(tag) < page.indexOf("</head>"));
+check("...plugin tags back in <head> for a full index.html", page.indexOf(tag) > -1 && page.indexOf(tag) < page.indexOf("</head>") && page.indexOf(tag) === page.lastIndexOf(tag));
 res = await putShell(fakeShell({ title: "For the new engine" }), { fingerprint: "f3" });
 page = await (await mf.dispatchFetch(base + "/")).text();
 check("...and a shell for it is used once published", res.status === 204 && page.includes("<title>For the new engine</title>") && pageSource(page)?.fingerprint === "f3");
