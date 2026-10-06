@@ -97,9 +97,13 @@ check("...and the same answer is baked into the page, for the browser module", p
 const PUB = "https://my-tiddlywiki.theophile.dev";
 const CORE_V = "5.4.1-1";
 const coreUrl = v => `${PUB}/_plugins/tiddlywikicore.js?v=${v}`;
-const fakeCore = (v = CORE_V) => [
+// (The core plugin mentions the save template setting, escaped; snapshot: with TiddlyWiki's line that
+// switches it to the external-core one, which the admin wiki takes out)
+const fakeCore = (v = CORE_V, { snapshot = false } = {}) => [
   "/*\nTiddlyWiki created by Jeremy Ruston\n*/", "$tw = (typeof $tw === 'undefined') ? Object.create(null) : $tw;",
   "$tw.preloadTiddlers = $tw.preloadTiddlers || [];", `// core ${v} `.padEnd(5000, "x"),
+  '$tw.preloadTiddlerArray([{"title":"$:/core","text":"{\\"tiddlers\\":{\\"$:/config/SaveWikiButton/Template\\":{\\"title\\":\\"$:/config/SaveWikiButton/Template\\"}}}"}]);',
+  snapshot ? '$tw.preloadTiddlerArray([{\n\ttitle: "$:/config/SaveWikiButton/Template",\n\ttext: "$:/core/save/offline-external-js"\n}]);' : "",
   '_load(window,{"title":"$:/boot/boot.js","type":"application/javascript","text":"/* boot */"});'
 ].join("\n");
 const MARK = name => `<!--~~ ${name} ~~-->`;
@@ -150,14 +154,15 @@ const coreEtag = core?.etag;
 res = await putCore(fakeCore());
 await res.arrayBuffer();
 check("...the same version again isn't rewritten", res.status === 204 && (await bucket.head("_plugins/tiddlywikicore.js"))?.etag === coreEtag, `status ${res.status}`);
-for (const [what, body, v] of [
+for (const [what, body, v, says] of [
   ["a version that isn't <version>-<format>", fakeCore(), "latest"],
   ["something that isn't TiddlyWiki's core file", "console.log('hi')", "5.4.2-1"],
-  ["too big", fakeCore("5.4.2-1") + "x".repeat(21 * 1024 * 1024), "5.4.2-1"]
+  ["too big", fakeCore("5.4.2-1") + "x".repeat(21 * 1024 * 1024), "5.4.2-1"],
+  ["still switching the save template (a TiddlyWiki this worker can't publish yet), saying so", fakeCore("5.4.2-1", { snapshot: true }), "5.4.2-1", /save template.*update the worker/is]
 ]) {
   res = await putCore(body, v);
   const text = await res.text();
-  check(`core file refused (400): ${what}`, res.status === 400 && text.length > 0 && (await bucket.head("_plugins/tiddlywikicore.js"))?.customMetadata?.v === CORE_V, `${res.status} ${text}`);
+  check(`core file refused (400): ${what}`, res.status === 400 && text.length > 0 && (!says || says.test(text)) && (await bucket.head("_plugins/tiddlywikicore.js"))?.customMetadata?.v === CORE_V, `${res.status} ${text}`);
 }
 
 // The shell: refused unless it's a page that works

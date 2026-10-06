@@ -942,6 +942,10 @@ const CORE_KEY = "_plugins/tiddlywikicore.js";
 const CORE_LIMIT = 20 * 1024 * 1024;
 const EXTERNAL_SCRIPTS_MARKER = "<!--~~ Load external JavaScripts ~~-->";
 
+// An unescaped "$:/config/SaveWikiButton/Template": TiddlyWiki's own line in the core file, not a
+// mention inside the core plugin's JSON
+const SAVE_TEMPLATE_SETTING = /[^\\]"\$:\/config\/SaveWikiButton\/Template"/;
+
 function coreFileUrl(env, version) {
   return publicUrl(env, `/${CORE_KEY}?v=${encodeURIComponent(version)}`);
 }
@@ -983,6 +987,12 @@ async function publishCoreFile(request, env, url, corsHeaders) {
   const end = pageDecoder.decode(bytes.subarray(charStart(bytes, Math.max(0, bytes.length - 524288))));
   if (!start.startsWith("/*") || !start.includes("$tw.preloadTiddlers") || !end.includes('"$:/boot/boot.js"')) {
     return refusal("That isn't TiddlyWiki's core file.", corsHeaders);
+  }
+  // The admin wiki takes out TiddlyWiki's line switching the save template to the external-core one
+  // (just before the boot code; the core plugin's mentions of the setting are escaped JSON). Still
+  // there, TiddlyWiki has changed it: refused, so it shows, and the page stays built from index.html
+  if (SAVE_TEMPLATE_SETTING.test(end)) {
+    return refusal("The core file still switches the save template to the external-core one: this version of TiddlyWiki writes it in a way the page publisher doesn't know. Update the worker. Meanwhile the page is built from index.html.", corsHeaders);
   }
   await env.WIKI_BUCKET.put(CORE_KEY, bytes, {
     httpMetadata: { contentType: "application/javascript; charset=utf-8", cacheControl: "public, max-age=31536000, immutable" },
