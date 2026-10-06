@@ -81,8 +81,8 @@ flowchart LR
     ├── two-tabs.test.mjs     real TiddlyWiki in Chromium, several tabs (59 checks)
     ├── plugins.test.mjs      real plugins on the admin and public sites (65 checks)
     ├── queue-backup.test.mjs queue backup against an imitation of GitHub (17 checks)
-    ├── integrity.test.mjs    the tiddler list's integrity, draft-like titles, .gitignore (46 checks)
-    ├── r2-ops.test.mjs       R2 calls per kind of request, against a budget (10 checks)
+    ├── integrity.test.mjs    the tiddler list's integrity, draft-like titles, .gitignore (47 checks)
+    ├── r2-ops.test.mjs       R2 calls per kind of request, against a budget (11 checks)
     ├── r2-counter.mjs        test-only wrapper that counts the worker's R2 calls
     └── bake.test.mjs         page serving and rebuilding (9 checks)
 ```
@@ -236,7 +236,7 @@ R2 layout:
 | `index.html` | The wiki engine you uploaded. |
 | `status` | The public site's TiddlyWeb status, uploaded once (3.1). |
 | `baked.html` | Generated: `index.html` plus the tiddlers needed at startup (4.3). |
-| `recipes/default/tiddlers.json` | The "skinny" tiddler list: title, tags, type, dates, custom fields and revision for every tiddler, but no text. If it's ever missing or damaged, the worker rebuilds it from the stored tiddlers (below). |
+| `recipes/default/tiddlers.json` | The "skinny" tiddler list, as compact JSON: title, tags, type, dates, custom fields and revision for every tiddler, but no text. If it's ever missing or damaged, the worker rebuilds it from the stored tiddlers (below). |
 | `recipes/default/tiddlers/<title>` | One tiddler as JSON, flat (below), under its raw title. |
 | `_plugins/<title>.js` | Generated: the script that loads a plugin or JavaScript module into the page (4.8). |
 | `_backup/versions/…` | Temporary copies of large versions waiting to be backed up (4.7). |
@@ -636,14 +636,14 @@ The tests run the real worker in Cloudflare's local runtime (workerd, through Mi
 - tiddlers titled `Draft of '…'` saved and deleted like any other, while real drafts still aren't stored;
 - `.gitignore` covering `wrangler.toml`, `.dev.vars` and `.wrangler/`.
 
-`test:r2` runs the worker unchanged behind `test/r2-counter.mjs`, which counts every R2 call it makes, including work left running after the answer. Each kind of request has a budget, and a change that makes more calls fails. These are the counts now:
+`test:r2` runs the worker unchanged behind `test/r2-counter.mjs`, which counts every R2 call it makes, including work left running after the answer. Each kind of request has a budget, and a change that makes more calls fails. It also checks that a save reads the stored tiddler and the list at the same time. These are the counts now:
 
 | Request | R2 calls |
 |---|---|
 | Admin page load, page up to date | 2: read `baked.html`, check `index.html` |
 | Tiddler list, first fetch or unchanged (`304`) | 1 |
-| Save a new tiddler, or an update | 4: look it up, read the list, write the tiddler, write the list |
-| Save refused (`412`) | 1: look it up (the stored tiddler is read only if it's the same size as the save, to recognise a save sent again) |
+| Save a new tiddler, or an update | 4: look it up and read the list (both at once), write the tiddler, write the list |
+| Save refused (`412`) | 2: look it up and read the list, both at once (the stored tiddler itself is read only if it's the same size as the save, to recognise a save sent again) |
 | Save sent again, already stored | 4: look it up, read it to compare, read and write the list |
 | Delete | 4: read the list, look it up, delete it, write the list |
 | Save a plugin | 10: the save's 4, and the page build: read `index.html`, check and write the plugin file, read the stored plugin, check and write `baked.html`. The page build reuses the list the save wrote. |

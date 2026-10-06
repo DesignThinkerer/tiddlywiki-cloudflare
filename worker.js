@@ -368,8 +368,11 @@ export default {
           return new Response(null, { status: 204, headers: { ...corsHeaders, ETag: etag } });
         }
 
+        // The stored tiddler and the tiddler list, read at once (one round trip, not two). While a
+        // damaged list is being rebuilt, readableList throws: the save is refused (503) without
+        // changing anything, so the browser's retry can't conflict with it.
         const key = tiddlerKey(title);
-        const current = await env.WIKI_BUCKET.head(key);
+        const [current, list] = await Promise.all([env.WIKI_BUCKET.head(key), readableList(env, ctx)]);
         const currentRevision = current ? revisionOf(current) : null;
 
         const { conditional, reason } = checkPreconditions(request, currentRevision);
@@ -378,15 +381,11 @@ export default {
           // is exactly what this save would store, so finish that save instead of refusing it.
           // (Otherwise the browser sees the identical copy, adopts it, and the list is never fixed.)
           if (current && await storesSameContent(env, current, save, currentRevision)) {
-            await untilDone(ctx, finishSave(env, ctx, title, save.fields, currentRevision));
+            await untilDone(ctx, finishSave(env, ctx, title, save.fields, currentRevision, list));
             return new Response(null, { status: 204, headers: { ...corsHeaders, ETag: tiddlerEtag(title, currentRevision) } });
           }
           return conflictResponse(title, reason, currentRevision, corsHeaders);
         }
-
-        // Read before the tiddler is written: while a damaged list is being rebuilt, the save is
-        // refused (503) without changing anything, so the browser's retry can't conflict with it
-        const list = await readableList(env, ctx);
 
         const newRevision = Date.now().toString();
         const body = save.stored(newRevision);
@@ -833,7 +832,7 @@ async function mutateManifest(env, ctx, mutator, list = null, attempts = 5) {
     if (manifest === null) return { object: existing, text: existingText, entries: current };
 
     // Only if the list is still the one we read
-    const text = JSON.stringify(manifest, null, 2);
+    const text = JSON.stringify(manifest);   // compact: a third smaller than indented, cheaper to write and read
     const written = await env.WIKI_BUCKET.put(MANIFEST_KEY, text, {
       httpMetadata: { contentType: "application/json" },
       onlyIf: { etagMatches: etag }

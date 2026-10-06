@@ -51,6 +51,7 @@ await undoListUpdate("New note", null);
 res = await save("New note", { text: "hello" }, { "If-None-Match": "*" });
 check("retry of a new tiddler's save succeeds instead of 412", res.status === 204 && etagRevision(res) === newRevision, `status ${res.status}`);
 check("...and puts it in the tiddler list", (await entry("New note"))?.revision === newRevision);
+check("the tiddler list is written as compact JSON", !(await (await bucket.get(LIST)).text()).includes("\n"));
 res = await save("New note", { text: "something else" }, { "If-None-Match": "*" });
 check("a different tiddler with that title is still refused (412)", res.status === 412);
 
