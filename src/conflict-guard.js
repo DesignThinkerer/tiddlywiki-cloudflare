@@ -18,6 +18,7 @@ It also keeps worker requests down:
 - Drafts and $:/StoryList, which the worker never stores, are not sent to it, and the "put" saver
   no longer probes the page URL on every load.
 - Background tabs stop polling for changes and catch up as soon as they are shown again.
+- On the admin site, the /status request at startup is answered from the page.
 - While the worker rebuilds a damaged or missing tiddler list, requests it answers "rebuilding"
   are sent again quietly, and a list that can't be read is a sync error: TiddlyWiki would
   otherwise remove every tiddler it doesn't find in it, or stop with an "Internal JavaScript Error".
@@ -417,6 +418,33 @@ exports.startup = function() {
 			});
 		}
 		send();
+	};
+
+	// On the admin site, TiddlyWiki's request for /status is answered here, from the worker's own
+	// answer baked into the page ($:/cfworker/status): the page load then fetches the tiddler list a
+	// round trip sooner. The adaptor still parses it as usual. Public tabs read their status file.
+	var adminStatus = wiki.getTiddlerText("$:/cfworker/status",""),
+		originalGetStatus = proto.getStatus;
+	proto.getStatus = function(callback) {
+		var self = this,
+			httpRequest = $tw.utils.httpRequest;
+		if(!adminStatus || !publicBase || self.host === publicBase) {
+			return originalGetStatus.call(self,callback);
+		}
+		$tw.utils.httpRequest = function(options) {
+			if(options.url !== self.host + "status") {
+				return httpRequest.apply(this,arguments);
+			}
+			setTimeout(function() {
+				options.callback(null,adminStatus);
+			},0);
+			return null;
+		};
+		try {
+			return originalGetStatus.call(self,callback);
+		} finally {
+			$tw.utils.httpRequest = httpRequest;
+		}
 	};
 
 	// Remember which revision the worker currently lists for each tiddler, fetch the list again while

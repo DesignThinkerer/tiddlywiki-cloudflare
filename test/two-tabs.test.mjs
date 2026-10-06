@@ -289,7 +289,10 @@ check("new tab loads every tiddler correctly", texts.every((t, i) => t === `note
 check("page load fetches tiddlers from the public site, not the worker",
   workerTiddlerGets(cReqs).length === 0 && publicTiddlerGets(cReqs).length >= 5,
   `worker ${workerTiddlerGets(cReqs).length}, public ${publicTiddlerGets(cReqs).length}`);
-check("page load makes only 3 worker requests (page, status, tiddler list)", cReqs.filter(r => r.url.startsWith(base)).length === 3);
+check("page load makes only 2 worker requests (page, tiddler list): the module answers /status itself",
+  cReqs.filter(r => r.url.startsWith(base)).length === 2 && !cReqs.some(r => r.url === base + "/status"));
+check("...and TiddlyWiki still knows it's logged in as admin, writable", JSON.stringify(await C.evaluate(() =>
+  ["$:/status/IsLoggedIn", "$:/status/UserName", "$:/status/IsReadOnly"].map(t => $tw.wiki.getTiddlerText(t)))) === '["yes","admin","no"]');
 console.log("      worker requests during C's page load:", cReqs.filter(r => r.url.startsWith(base)).map(r => r.method + " " + decodeURIComponent(new URL(r.url).pathname)).join(", "));
 check("no $:/StoryList or draft writes reach the worker", !net.some(x => x.path.includes("$:/StoryList") || x.path.includes("Draft of")));
 
@@ -331,6 +334,14 @@ await C.evaluate(() => { window.__hidden = false; document.dispatchEvent(new Eve
 await new Promise(r => setTimeout(r, 800));
 const shownPolls = requests.slice(reqMark).filter(r => r.tag === "C" && r.url.includes("tiddlers.json")).length;
 check("hidden tab does not poll; shown tab syncs at once", hiddenPolls === 0 && shownPolls >= 1, `hidden ${hiddenPolls}, on show ${shownPolls}`);
+// Reloading: the browser asks whether the page changed (If-None-Match) and keeps its copy. The
+// worker answers 304; Chromium then reports the page as 200, but nothing of it crossed the network.
+const reloaded = await C.reload();
+await settle(C);
+const asked = (await reloaded.request().allHeaders())["if-none-match"] || "";
+const transferred = (await reloaded.request().sizes()).responseBodySize;
+check("a reload asks whether the page changed and downloads none of it (304)", /-page"$/.test(asked) && transferred === 0,
+  `If-None-Match ${asked}, ${transferred} bytes`);
 
 // --- 13. A damaged tiddler list is rebuilt while a tab is open ------------------------------------
 await B.close();

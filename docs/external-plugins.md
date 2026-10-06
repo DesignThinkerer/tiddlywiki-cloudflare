@@ -75,7 +75,7 @@ sequenceDiagram
   B->>W: reload: the page
   B->>P: plugin file ?v=revision, before TiddlyWiki starts
   P->>R: first request for this version only
-  B->>W: /status, tiddler list
+  B->>W: tiddler list
 ```
 
 **In the browser**
@@ -116,7 +116,7 @@ The import report is a second, small save that goes through steps 5–9 and 11.
 14. **It runs before TiddlyWiki boots** and adds the plugin to `$tw.preloadTiddlers`. TiddlyWiki registers it and defines its modules.
 15. **No reload loop.** The sync gets the tiddler list and finds the same revision for the plugin as the one in the file, so it doesn't download it again.
 
-The worker sees three requests on that load (page, `/status`, tiddler list), as before. The public site serves the same `baked.html`, so visitors get the plugin too.
+The worker sees two requests on that load: the page and the tiddler list. (Three when this change was made; a later one has the module answer `/status` from the page, README 4.5.) The public site serves the same `baked.html`, so visitors get the plugin too.
 
 ---
 
@@ -222,7 +222,7 @@ These figures come from the same test machine as in section 3, so read them as p
 
 **The backup queue consumer** spends 30–100 ms of CPU on a plugin (base64 encoding, git's blob hash, reading the previous version). That's fine: queue consumers get 30 seconds of CPU by default, on both plans ([Queues limits](https://developers.cloudflare.com/queues/platform/limits/)). The fallback without a queue runs inside the save request, so keep the queue bound.
 
-**Worker requests:** unchanged. A page load is still three requests; plugin files never reach the worker.
+**Worker requests:** unchanged by this change: plugin files never reach the worker. (A page load was three requests, and is two since the module answers `/status` from the page, README 4.5.)
 
 **Per plugin save:**
 - **R2 writes (Class A):** the tiddler, the tiddler list, the plugin file, `baked.html`, plus the backup copy for a version over 100 KB.
@@ -708,6 +708,7 @@ async function rebakeHtml(env, ctx, list = null) {
         text: CONFLICT_GUARD_SOURCE
       });
       store.push({ title: PUBLIC_URL_TITLE, text: publicUrl(env, "/") });
+      store.push({ title: STATUS_TITLE, type: "application/json", text: JSON.stringify(ADMIN_STATUS) });
     }
 
     let injected = "";
@@ -880,7 +881,7 @@ writeFileSync(new URL("./worker.js", import.meta.url), banner + source.replace(P
 `test/plugins.test.mjs` runs the worker locally (Miniflare), a stand-in for the public site that serves the R2 bucket directly, and a real TiddlyWiki in Chromium. It checks:
 
 1. **Install** of the markdown plugin through the import messages a drop sends: two saves (plugin and import report); the save is flat; the stored tiddler is the received bytes with the worker's revision appended, and its text is byte for byte the plugin's; the file is exactly the template around the stored bytes, served as JavaScript with a one-year cache; running it preloads exactly the stored tiddler; the page has the script tag with `?v=<revision>`; no plugin file is purged.
-2. **After the reload:** markdown renders; no reload is asked; the file came from the public site; the worker never served plugin code; the sync didn't download the plugin; the worker saw at most three requests; on the next load the file comes from the browser cache.
+2. **After the reload:** markdown renders; no reload is asked; the file came from the public site; the worker never served plugin code; the sync didn't download the plugin; the worker saw at most two requests; on the next load the file comes from the browser cache.
 3. **The public site:** markdown renders, with no request to the worker.
 4. **A big plugin:** KaTeX (735 KB) is stored intact and its widget works.
 5. **Update:** the page points to the new `?v=`, the same file is overwritten, and the new version is active.
