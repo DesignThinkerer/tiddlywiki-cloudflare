@@ -7,8 +7,8 @@ Publishes the page from the admin wiki (served by the Cloudflare worker), the wa
 its own file, but with the core in a separate file:
 
 - The shell: TiddlyWiki's own $:/core/templates/tiddlywiki5-external-js.html, with the tiddlers that
-  came with the page (the themes, TiddlyWeb: plugins the worker doesn't list), installed plugins that
-  have raw markup, and your raw markup tiddlers. TiddlyWiki writes everything else: the title, the
+  came with the page (the themes, TiddlyWeb: plugins the worker doesn't store), installed plugins that
+  have raw markup, and your raw markup tiddlers; never one that was deleted, here or in another tab. TiddlyWiki writes everything else: the title, the
   language, the raw markup, the content for browsers without JavaScript. The core is loaded at the
   end, from the public site.
 - The core file: TiddlyWiki's own $:/core/templates/tiddlywiki5.js (boot code, library modules,
@@ -86,14 +86,43 @@ exports.startup = function() {
 		coreUrl = publicBase + "_plugins/tiddlywikicore.js?v=" + encodeURIComponent(coreVersion),
 		published = source.fingerprint || "",   // what the page this tab loaded was built from
 		storedCore = source.core || "",
-		ownChanges = Object.create(null),      // title -> true (saved by this tab) or false (deleted)
+		ownChanges = Object.create(null),      // title -> {stored: saved (true) or deleted (false), time}
+		cameWithPage = null,                   // title -> true, set once the first tiddler list has arrived
 		started = false,
 		timer = null,
 		busy = false,
 		again = false;
 
-	function onServer(title,listed) {
-		return title in ownChanges ? ownChanges[title] : $tw.utils.hop(listed,title);
+	// Whether the worker stores the tiddler: the latest tiddler list says, unless this tab saved or
+	// deleted it after that list was requested
+	function onServer(title,listed,since) {
+		var own = ownChanges[title];
+		if(own && own.time >= since) {
+			return own.stored;
+		}
+		return $tw.utils.hop(listed,title);
+	}
+
+	// A revision the worker gave (tiddlers that came with the page have none, or "0" in a published
+	// page, or a count of changes in a TiddlyWeb offline snapshot)
+	function hasStoredRevision(title) {
+		var tiddler = wiki.getTiddler(title),
+			revision = tiddler && tiddler.fields.revision;
+		return revision !== undefined && revision !== null && revision !== "" && !/^\d{1,9}$/.test(String(revision));
+	}
+
+	// The plugins and raw markup tiddlers in the page this tab loaded, before anything else happened:
+	// those the worker doesn't store came with the page (from index.html: the themes, TiddlyWeb...).
+	// Anything else not stored was deleted, here or in another tab: TiddlyWiki keeps $:/ tiddlers that
+	// disappear from the server in tabs already open, and the page mustn't bring them back. (A copy of
+	// a stored tiddler, left in the page by a publish that failed, isn't taken for one either.)
+	function recordWhatCameWithPage(listed) {
+		cameWithPage = Object.create(null);
+		$tw.utils.each(candidates(),function(title) {
+			if(!$tw.utils.hop(listed,title) && !(title in ownChanges) && !hasStoredRevision(title)) {
+				cameWithPage[title] = true;
+			}
+		});
 	}
 
 	// Whether a plugin has raw markup the template would render: a tiddler of the plugin, as TiddlyWiki
@@ -109,21 +138,38 @@ exports.startup = function() {
 		});
 	}
 
-	// The shell's tiddlers, without drafts:
-	// - the plugins that came with the page (the worker lists everything stored, installed plugins
-	//   included), and installed plugins that have raw markup: the template only renders the markup
-	//   of plugins in the page (they're still loaded as files too, which hold the same plugin);
-	// - the raw markup tiddlers.
-	// Like TiddlyWiki's own save filters, without $:/temp/ (its $:/temp/info-plugin, made at each
-	// startup) and pending imports.
-	function pageTitles() {
-		var listed = adaptor.cfworkerListed() || {},
-			titles = wiki.filterTiddlers("[all[tiddlers]has[plugin-type]!is[draft]] -[[$:/core]] -[prefix[$:/temp/]] -[prefix[$:/state/]] -[plugin-type[import]] -[has[plugin-type]field:platform[server]]").filter(function(title) {
-				return !onServer(title,listed) || hasRawMarkup(title);
-			});
+	// The plugins (like TiddlyWiki's own save filters, without $:/temp/: its $:/temp/info-plugin, made at
+	// each startup; and without pending imports) and the raw markup tiddlers, without drafts
+	function plugins() {
+		return wiki.filterTiddlers("[all[tiddlers]has[plugin-type]!is[draft]] -[[$:/core]] -[prefix[$:/temp/]] -[prefix[$:/state/]] -[plugin-type[import]] -[has[plugin-type]field:platform[server]]");
+	}
+	function rawMarkupTiddlers() {
+		var titles = [];
 		$tw.utils.each(RAW_MARKUP_TAGS,function(tag) {
 			$tw.utils.pushTop(titles,wiki.filterTiddlers("[all[tiddlers]tag[" + tag + "]!is[draft]]"));
 		});
+		return titles;
+	}
+	function candidates() {
+		return plugins().concat(rawMarkupTiddlers());
+	}
+
+	// The shell's tiddlers:
+	// - the plugins that came with the page, and stored plugins that have raw markup: the template only
+	//   renders the markup of plugins in the page (they're still loaded as files too, which hold the
+	//   same plugin). Other stored plugins are only files;
+	// - the raw markup tiddlers, stored or that came with the page.
+	// Nothing deleted, here or in another tab (see recordWhatCameWithPage).
+	function pageTitles() {
+		var listed = adaptor.cfworkerListed() || {},
+			since = adaptor.cfworkerListedSince ? adaptor.cfworkerListedSince() : 0,
+			came = cameWithPage || {},
+			titles = plugins().filter(function(title) {
+				return onServer(title,listed,since) ? hasRawMarkup(title) : !!came[title];
+			});
+		$tw.utils.pushTop(titles,rawMarkupTiddlers().filter(function(title) {
+			return onServer(title,listed,since) || !!came[title];
+		}));
 		return titles.sort();
 	}
 
@@ -329,7 +375,7 @@ exports.startup = function() {
 		var title = tiddler.fields.title;
 		return saveTiddler.call(this,tiddler,function(err) {
 			if(!err) {
-				ownChanges[title] = true;
+				ownChanges[title] = {stored: true, time: Date.now()};
 				schedule();
 			}
 			return callback.apply(this,arguments);
@@ -338,7 +384,7 @@ exports.startup = function() {
 	adaptor.deleteTiddler = function(title,callback,options) {
 		return deleteTiddler.call(this,title,function(err) {
 			if(!err) {
-				ownChanges[title] = false;
+				ownChanges[title] = {stored: false, time: Date.now()};
 				schedule();
 			}
 			return callback.apply(this,arguments);
@@ -347,9 +393,11 @@ exports.startup = function() {
 
 	// Once the worker's tiddler list has arrived and everything has loaded
 	(function start() {
-		if(!adaptor.cfworkerListed()) {
+		var listed = adaptor.cfworkerListed();
+		if(!listed) {
 			return setTimeout(start,300);
 		}
+		recordWhatCameWithPage(listed);
 		whenQuiet(function() {
 			started = true;
 			check(false);

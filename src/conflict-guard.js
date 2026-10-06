@@ -81,6 +81,7 @@ exports.startup = function() {
 		publicBase = (wiki.getTiddlerText("$:/cfworker/public-url","") || "").trim(),
 		listedRevisions = Object.create(null), // title -> revision in the worker's latest tiddler list
 		lastListFetch = 0,
+		listRequested = 0,                     // when the request for that list was sent
 		// Base revisions. A string is the server revision the content was derived from, null means
 		// "must not exist on the server yet", undefined means unknown (the save is sent unconditionally).
 		draftBases = Object.create(null),   // draft title -> {of: title, base: revision}
@@ -455,7 +456,8 @@ exports.startup = function() {
 		function fetchList() {
 			// The adaptor passes on only the error text: catch the request it makes, to read its header.
 			// It makes it straight away, so the wrapper is in place only during this call.
-			var request = null,
+			var requested = Date.now(),
+				request = null,
 				delivered = false,
 				unreadable = false,
 				bypassed = listBypassCache,
@@ -518,6 +520,7 @@ exports.startup = function() {
 						}
 					});
 					lastListFetch = Date.now();
+					listRequested = requested;
 				}
 				return callback(err,tiddlers);
 			}
@@ -530,6 +533,12 @@ exports.startup = function() {
 	// stored ones
 	proto.cfworkerListed = function() {
 		return lastListFetch ? listedRevisions : null;
+	};
+
+	// When the request for that list was sent: a save or delete this tab finished after that may not
+	// be in it yet
+	proto.cfworkerListedSince = function() {
+		return listRequested;
 	};
 
 	// Fetch a tiddler from the public copy of the wiki (R2 + Cloudflare's cache, no worker request).
