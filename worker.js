@@ -279,8 +279,15 @@ async function finishSave(env, ctx, title, fields, revision, list, adminOrigin) 
   // Something the page needs at boot was added, changed or is no longer needed: rebuild the
   // page (which writes the plugin file) before confirming, so a reload right after has it
   if (isPageTiddler(saved) || (previous && isPageTiddler(previous))) {
-    await rebakeHtml(env, ctx, stored);
+    await rebuildPage(env, ctx, stored);
   }
+}
+
+// Rebuilds the page after a save or delete. If that fails (an R2 error), the change itself is
+// stored: the page is marked outdated instead, so the next page load builds it (and writes any
+// missing plugin file) rather than keep serving it without the change.
+async function rebuildPage(env, ctx, list) {
+  if (!(await rebakeHtml(env, ctx, list))) await markPageOutdated(env);
 }
 
 // Whether the stored object holds exactly what this save would store with that revision
@@ -455,7 +462,7 @@ export default {
             await env.WIKI_BUCKET.delete(pluginFileKey(title));
           }
           if (removed ? isPageTiddler(removed) : found && title.startsWith("$:/")) {
-            await rebakeHtml(env, ctx, stored);
+            await rebuildPage(env, ctx, stored);
           }
         })());
 
@@ -1277,8 +1284,9 @@ async function rebuildList(env, ctx, damaged, { pageBuild = false } = {}) {
   return { object: written, text, fresh: true, get entries() { return parseList(text); } };
 }
 
-// The page may have been built from a list that missed a plugin (a save whose list update failed
-// and was never retried): it's built again on the next page load, rather than in this request
+// The page is built again on the next page load, rather than in this request: it may have been built
+// from a list that missed a plugin (a save whose list update failed and was never retried), or a
+// build after a change failed
 async function markPageOutdated(env) {
   const page = await env.WIKI_BUCKET.get("baked.html");
   if (!page) return;

@@ -1,4 +1,5 @@
-// The tiddler list's integrity, tiddlers whose title looks like a draft, and files git must not commit.
+// The tiddler list's integrity, the page after a failed build, tiddlers whose title looks like a draft,
+// and files git must not commit.
 // Run: npm run test:integrity
 import { Miniflare } from "miniflare";
 import fs from "node:fs";
@@ -9,8 +10,11 @@ const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const WORKER = path.join(ROOT, "worker.js");
 const LIST = "recipes/default/tiddlers.json";
 
+// The worker behind test/r2-counter.mjs, which can make chosen R2 calls fail
 const mf = new Miniflare({
-  modules: true, scriptPath: WORKER, compatibilityDate: "2024-09-23", r2Buckets: ["WIKI_BUCKET"], port: 8797,
+  modules: true, scriptPath: "test/r2-counter.mjs", modulesRoot: ROOT,
+  modulesRules: [{ type: "ESModule", include: ["**/*.js", "**/*.mjs"] }],
+  compatibilityDate: "2024-09-23", r2Buckets: ["WIKI_BUCKET"], port: 8797,
   outboundService: async () => new Response('{"success":true}'),
 });
 const base = (await mf.ready).toString().replace(/\/$/, "");
@@ -295,7 +299,41 @@ check("a title listed twice is listed once after its next save", (await list()).
 const leftovers = await Promise.all((await repairFiles()).map(async key => (await bucket.get(key)).text()));
 check("no rebuild progress is left behind in _repair/", leftovers.every(text => damagedCopies.has(text)), (await repairFiles()).join(", "));
 
-// --- 3. A tiddler whose title only looks like a draft is saved like any other ---------------------
+// --- 3. A page build that fails after a save or delete is done again at the next page load --------
+// The save or delete is stored and confirmed; the page it needed rebuilt (with or without a plugin's
+// script tag) mustn't stay as it was
+const failNext = call => mf.dispatchFetch(`${base}/__r2fail`, { method: "POST", body: JSON.stringify({ call }) });
+const pagePlugin = title => ({ "plugin-type": "plugin", type: "application/json", version: "1.0.0",
+  text: JSON.stringify({ tiddlers: { [title + "/readme"]: { text: "readme" } } }) });
+const storedPageMeta = async () => (await bucket.head("baked.html"))?.customMetadata || {};
+const waitForOutdated = async () => {
+  for (let i = 0; i < 40 && (await storedPageMeta()).bakeVersion !== "outdated"; i++) await new Promise(r => setTimeout(r, 50));
+  return (await storedPageMeta()).bakeVersion === "outdated";
+};
+const loadPage = async () => (await mf.dispatchFetch(base + "/")).text();
+const tagOf = title => `/_plugins/${encodeURIComponent(title)}.js?v=`;
+await loadPage();   // the page exists
+const P1 = "$:/plugins/test/page-one", P2 = "$:/plugins/test/page-two";
+await failNext("put baked.html");
+res = await save(P1, pagePlugin(P1));
+let outdated = await waitForOutdated();
+let text = await loadPage();
+check("a plugin save whose page build failed is still confirmed, and the page is marked outdated", res.status === 204 && outdated, `status ${res.status}, page ${JSON.stringify(await storedPageMeta())}`);
+check("...so the next page load builds it again, with the plugin", text.includes(tagOf(P1)));
+await failNext("put plugin file");
+res = await save(P2, pagePlugin(P2));
+outdated = await waitForOutdated();
+text = await loadPage();
+check("a plugin save whose file couldn't be written: the next page load writes it and loads it",
+  res.status === 204 && outdated && text.includes(tagOf(P2)) && !!(await bucket.head(`_plugins/${P2}.js`)), `status ${res.status}, outdated ${outdated}`);
+await failNext("put baked.html");
+res = await del(P1);
+outdated = await waitForOutdated();
+text = await loadPage();
+check("a plugin delete whose page build failed: the next page load builds the page without it",
+  res.status === 204 && outdated && !text.includes(tagOf(P1)), `status ${res.status}, outdated ${outdated}`);
+
+// --- 4. A tiddler whose title only looks like a draft is saved like any other ---------------------
 const NOT_A_DRAFT = "Draft of 'Chapter 1'";
 res = await save(NOT_A_DRAFT, { text: "my chapter" });
 check("a tiddler titled \"Draft of '…'\" is stored", !!(await storedRevision(NOT_A_DRAFT)) && !!(await entry(NOT_A_DRAFT)), `status ${res.status}`);
@@ -308,7 +346,7 @@ await bucket.put(LIST, JSON.stringify(withIdeas));
 res = await del("Draft 2 of 'Ideas'");
 check("deleting a tiddler titled \"Draft 2 of '…'\" deletes it", !(await storedRevision("Draft 2 of 'Ideas'")) && !(await entry("Draft 2 of 'Ideas'")), `status ${res.status}`);
 
-// --- 4. Local secrets and Wrangler's files stay out of git ---------------------------------------
+// --- 5. Local secrets and Wrangler's files stay out of git ---------------------------------------
 const ignored = fs.readFileSync(path.join(ROOT, ".gitignore"), "utf8").split(/\r?\n/).map(l => l.trim());
 const missing = ["wrangler.toml", ".dev.vars", ".wrangler/"].filter(p => !ignored.includes(p));
 check(".gitignore covers wrangler.toml, .dev.vars and .wrangler/", missing.length === 0, missing.length ? "missing: " + missing.join(", ") : "");
