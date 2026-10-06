@@ -82,6 +82,8 @@ flowchart LR
     ├── plugins.test.mjs      real plugins on the admin and public sites (63 checks)
     ├── queue-backup.test.mjs queue backup against an imitation of GitHub (17 checks)
     ├── integrity.test.mjs    the tiddler list's integrity, draft-like titles, .gitignore (45 checks)
+    ├── r2-ops.test.mjs       R2 calls per kind of request, against a budget (10 checks)
+    ├── r2-counter.mjs        test-only wrapper that counts the worker's R2 calls
     └── bake.test.mjs         page serving and rebuilding (9 checks)
 ```
 
@@ -97,7 +99,21 @@ Everything below can be done in the Cloudflare dashboard. `wrangler.example.toml
 
 1. **Create a bucket** and upload:
    - **`index.html`:** a TiddlyWiki file that includes the TiddlyWeb plugin (`$:/plugins/tiddlywiki/tiddlyweb`). This is the wiki "engine"; your content lives in the tiddler files.
-   - **`recipes/default/tiddlers.json`** containing `[]`, if you're starting from scratch. The worker maintains it afterwards.
+   - **`status`**, with this content. It's the TiddlyWeb status for the public site, which serves R2 directly: without it, public tabs don't know the recipe and can't load the tiddler list. (The admin site gets its own from the worker.)
+
+     ```json
+     {
+       "username": "GUEST",
+       "read_only": true,
+       "anonymous": true,
+       "logout_is_available": false,
+       "space": {
+         "recipe": "default"
+       }
+     }
+     ```
+
+   The tiddler list (`recipes/default/tiddlers.json`) isn't needed: if it's missing, the worker creates it from the stored tiddlers, an empty list for a new wiki (4.2).
 2. **Turn on public access:**
    - **Custom Domains:** connect `my-tiddlywiki.theophile.dev`.
    - **Public Development URL (`r2.dev`):** keep it disabled. It's a second public address that skips the zone's cache and rules.
@@ -219,6 +235,7 @@ R2 layout:
 | Key | Content |
 |---|---|
 | `index.html` | The wiki engine you uploaded. |
+| `status` | The public site's TiddlyWeb status, uploaded once (3.1). |
 | `baked.html` | Generated: `index.html` plus the tiddlers needed at startup (4.3). |
 | `recipes/default/tiddlers.json` | The "skinny" tiddler list: title, tags, type, dates, custom fields and revision for every tiddler, but no text. If it's ever missing or damaged, the worker rebuilds it from the stored tiddlers (below). |
 | `recipes/default/tiddlers/<title>` | One tiddler as JSON, in one of two layouts (below). The key uses the raw title, though older objects may sit under the URL-encoded title, and both are looked up. |
@@ -575,7 +592,7 @@ If the page is rebuilt before step 4 (by a deploy, or by saving another plugin, 
 - **Old tabs aren't protected.** A tab opened before the module was deployed saves without conflict protection until reloaded.
 - **A short window at page load.** A tiddler that's part of `index.html` itself, edited before the first sync finishes, is saved without a version check.
 - **Big imports take a while to back up.** GitHub allows about 500 commits an hour, so 1,000 tiddlers take a little over two hours. Nothing is lost while they wait.
-- **Free-plan quotas** (October 2026, see 10): 100,000 worker requests a day; 10,000 queue operations a day, about 3 per backup or retry, so roughly 3,300 saves a day; 10 ms of CPU per request, with some flexibility for occasional overruns. Each save reads and rewrites the whole tiddler list, about 1 ms of CPU per 400–500 tiddlers, which is now the largest cost of a save. At several thousand tiddlers, saves could start hitting that limit. Saving a plugin also rebuilds the page, which reads the list once more.
+- **Free-plan quotas** (October 2026, see 10): 100,000 worker requests a day; 10,000 queue operations a day, about 3 per backup or retry, so roughly 3,300 saves a day; 10 ms of CPU per request, with some flexibility for occasional overruns. Each save reads and rewrites the whole tiddler list, about 1 ms of CPU per 400–500 tiddlers, which is now the largest cost of a save. At several thousand tiddlers, saves could start hitting that limit. Saving a plugin also rebuilds the page, from the list the save has just written.
 - **A tab closed right after a failed list update.** The worker stores a tiddler, then updates the tiddler list. If that update fails, the browser's retry completes it (4.4), but if the tab is closed first, the tiddler stays out of the list until the list is rebuilt (7).
 - **Waiting backup copies are public.** Versions over 100,000 bytes wait in `_backup/versions/` until committed, which is usually seconds, and that path is public like the rest of the bucket.
 - **Files over 1 MB on GitHub:** they're backed up like any other, but the "newer version restored" step (4.7) can't run for them.
@@ -590,7 +607,7 @@ Requirements: Node.js 20 or newer and a Chromium for the browser tests.
 ```bash
 npm install
 npx playwright install chromium      # or: export CHROMIUM_PATH=/path/to/chrome
-npm test                             # build, make the test wiki, run all five suites
+npm test                             # build, make the test wiki, run all six suites
 ```
 
 | Command | What it runs |
@@ -599,6 +616,7 @@ npm test                             # build, make the test wiki, run all five s
 | `npm run fixture` | Builds `test/fixtures/index.html`, an empty TiddlyWiki with the TiddlyWeb plugin. It skips an existing file: after upgrading the `tiddlywiki` package, run `npm run fixture -- --force`. |
 | `npm run test:bake` | Page serving: rebuild on an outdated bake or a new `index.html`, a byte order mark; CORS, a bad `PUT` path and `/status`. |
 | `npm run test:integrity` | The tiddler list's integrity, draft-like titles and `.gitignore` (see below). |
+| `npm run test:r2` | R2 calls per kind of request, against a budget (see below). |
 | `npm run test:backup` | Queue backup against an imitation of GitHub's Contents API (see below). |
 | `npm run test:tabs` | Real TiddlyWiki in Chromium with several tabs (see below). |
 | `npm run test:plugins` | Real plugins in Chromium, on the admin site and a stand-in for the public site (see below). |
@@ -615,6 +633,21 @@ The tests run the real worker in Cloudflare's local runtime (workerd, through Mi
 - titles: a save whose title isn't text, or isn't the one in its URL, is refused (`400`), and such tiddlers stored by hand are listed under their key instead of stopping the rebuild or being listed under the wrong title;
 - tiddlers titled `Draft of '…'` saved and deleted like any other, while real drafts still aren't stored;
 - `.gitignore` covering `wrangler.toml`, `.dev.vars` and `.wrangler/`.
+
+`test:r2` runs the worker unchanged behind `test/r2-counter.mjs`, which counts every R2 call it makes, including work left running after the answer. Each kind of request has a budget, and a change that makes more calls fails. These are the counts now:
+
+| Request | R2 calls |
+|---|---|
+| Admin page load, page up to date | 2: read `baked.html`, check `index.html` |
+| Tiddler list, first fetch or unchanged (`304`) | 1 |
+| Save a new tiddler, or an update | 4: look it up, read the list, write the tiddler, write the list |
+| Save refused (`412`) | 1: look it up (the stored tiddler is read only if it's the same size as the save, to recognise a save sent again) |
+| Save sent again, already stored | 4: look it up, read it to compare, read and write the list |
+| Delete | 4: read the list, look it up, delete it, write the list |
+| Save a plugin | 11: the save's 4, a second lookup (a title like `$:/…` has two possible keys), and the page build: read `index.html`, check and write the plugin file, read the stored plugin, check and write `baked.html`. The page build reuses the list the save wrote. |
+| Delete a plugin | 9 |
+
+Backups don't appear here: with the queue bound, as deployed, they run later in the queue consumer.
 
 `test:backup` covers:
 - a 150-tiddler import (one commit each, never two at once, byte-identical content);

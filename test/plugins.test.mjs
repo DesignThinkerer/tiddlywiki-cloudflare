@@ -378,8 +378,8 @@ for (let i = 0; i < 250; i += 50) {   // enough tiddlers that the rebuild takes 
   }));
 }
 await page.goto("about:blank");   // only this test drives the rebuild
-// The public site answers /status from R2 too (a file uploaded once), so its tabs know the recipe
-await bucket.put("status", JSON.stringify({ username: "GUEST", anonymous: true, read_only: true, space: { recipe: "default" } }), { httpMetadata: { contentType: "application/json" } });
+// The public site answers /status from R2 too (the file uploaded once, README 3.1), so its tabs know the recipe
+await bucket.put("status", JSON.stringify({ username: "GUEST", read_only: true, anonymous: true, logout_is_available: false, space: { recipe: "default" } }), { httpMetadata: { contentType: "application/json" } });
 const tab = await context.newPage();
 watch(tab, "public tab");
 await tab.goto(PUB + "/");

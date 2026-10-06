@@ -2,7 +2,7 @@
 
 **Status: implemented and deployed (October 2026).** These are the design notes behind README section 4.8: the problem, the design and why it was chosen over baking plugins into the page, what it costs, the change step by step, and how to operate it.
 
-The change is covered by the tests: `test/plugins.test.mjs` (63 checks) runs real plugins shipped with TiddlyWiki, markdown and KaTeX, on the admin site and on a stand-in for the public site. All five suites pass (`npm test`).
+The change is covered by the tests: `test/plugins.test.mjs` (63 checks) runs real plugins shipped with TiddlyWiki, markdown and KaTeX, on the admin site and on a stand-in for the public site. All six suites pass (`npm test`).
 
 "The external-plugins plugin" below is `$:/plugins/theophile.dev/external-plugins`, which exports plugins as standalone `.js` files for single-file wikis. The plugin files here use the same format as its export template.
 
@@ -216,7 +216,7 @@ If it were excluded, updating it from the plugin library would store the new ver
 |---|---|---|
 | Saving a 945 KB plugin | about 10 ms for the body alone | about 0.4 ms for the body, plus about 2 ms for the page build |
 | Saving an ordinary tiddler | small | the same, slightly less |
-| Any save | the tiddler list: about 1 ms per 400–500 tiddlers | the same; a plugin save reads the list once more for the page build |
+| Any save | the tiddler list: about 1 ms per 400–500 tiddlers | the same; after a plugin save, the page build reuses the list the save wrote |
 
 These figures come from the same test machine as in section 3, so read them as proportions. The worker's metrics in the Cloudflare dashboard show its real CPU time per request.
 
@@ -479,7 +479,7 @@ The rest of the save is in `finishSave`, which a retried save that's already sto
 // The rest of a save once the tiddler is stored: the tiddler list, the public cache and the page.
 // list: the list as read before the tiddler was stored (readableList), or null to read it here.
 async function finishSave(env, ctx, title, fields, revision, list = null) {
-  const previous = await updateManifest(env, ctx, title, fields, revision, list);
+  const { previous, list: stored } = await updateManifest(env, ctx, title, fields, revision, list);
   // Only once the new list is in R2: a public request between the purge and the list update
   // would put the old list back in Cloudflare's cache
   ctx.waitUntil(purgePublicCache(env, tiddlerPurgeUrls(env, title)));
@@ -490,7 +490,7 @@ async function finishSave(env, ctx, title, fields, revision, list = null) {
   // Something the page needs at boot was added, changed or is no longer needed: rebuild the
   // page (which writes the plugin file) before confirming, so a reload right after has it
   if (isPageTiddler(saved) || (previous && isPageTiddler(previous))) {
-    await rebakeHtml(env, ctx);
+    await rebakeHtml(env, ctx, stored);
   }
 }
 ```
@@ -524,7 +524,7 @@ In the `DELETE` handler, the lines from the backup to the end of the `rebakeHtml
 if (found) ctx.waitUntil(queueBackup(env, { action: "delete", title, revision: currentRevision }));
 await untilDone(ctx, (async () => {
   // If it was neither stored nor listed, there is nothing to back up or purge
-  const removed = await removeFromManifest(env, ctx, title, list);
+  const { removed, list: stored } = await removeFromManifest(env, ctx, title, list);
   if (!found && removed) ctx.waitUntil(queueBackup(env, { action: "delete", title, revision: currentRevision }));
   if (found || removed) ctx.waitUntil(purgePublicCache(env, tiddlerPurgeUrls(env, title)));
   // The list entry says what it was; if it wasn't listed, delete any plugin file anyway
@@ -533,7 +533,7 @@ await untilDone(ctx, (async () => {
     await env.WIKI_BUCKET.delete(pluginFileKey(title));
   }
   if (removed ? isPageTiddler(removed) : found && title.startsWith("$:/")) {
-    await rebakeHtml(env, ctx);
+    await rebakeHtml(env, ctx, stored);
   }
 })());
 ```
@@ -663,15 +663,16 @@ async function storePage(env, html, meta) {
 
 // Builds baked.html = index.html + startup tiddlers + conflict guard + plugin <script> tags, then
 // purges the public copy. Returns the page (bytes), or null.
-async function rebakeHtml(env, ctx) {
+async function rebakeHtml(env, ctx, list = null) {
   try {
     const htmlObj = await env.WIKI_BUCKET.get("index.html");
     if (!htmlObj) return null;
     let html = new Uint8Array(await htmlObj.arrayBuffer());
 
-    // A missing or damaged list is rebuilt first (a page built without it would have no plugins).
-    // While that takes more requests, this throws and the page stays as it is.
-    const { object: manifestObj, entries: manifest } = await readableList(env, ctx, { pageBuild: true });
+    // list: the list a save or delete has just written. Otherwise it's read, and a missing or
+    // damaged one rebuilt first (a page built without it would have no plugins); while that takes
+    // more requests, this throws and the page stays as it is.
+    const { object: manifestObj, entries: manifest } = list || await readableList(env, ctx, { pageBuild: true });
     // Every stored tiddler is listed, so only listed startup tiddlers are read
     const startupTitles = manifest.filter(t => t.title && isStartupTiddler(t)).map(t => t.title);
 
@@ -733,7 +734,7 @@ The comment above `toPreloadFields` now says stored tiddlers *may* use TiddlyWeb
 
 ### 5.8 The tiddler list helpers return what they replaced
 
-`updateManifest` and `removeFromManifest` now return the entry as it was before. (`listEntry` builds an entry; the rebuild of a damaged list, README 4.2, uses it too.)
+`updateManifest` and `removeFromManifest` now return the entry as it was before, and the list as now stored, which the page build then reuses instead of reading it again. (`listEntry` builds an entry; the rebuild of a damaged list, README 4.2, uses it too.)
 
 ```js
 // A tiddler's entry in the list: every field but the text. title: the title it's stored under
@@ -759,11 +760,11 @@ function listEntry(title, fields, revision, date = getTwTimestamp()) {
   };
 }
 
-// Returns the entry it replaced, or null
+// Returns { previous: the entry it replaced, or null; list: the list as now stored }
 async function updateManifest(env, ctx, title, fields, revision, list = null) {
   const entry = listEntry(title, fields, revision);
   let previous = null;
-  await mutateManifest(env, ctx, (manifest) => {
+  const stored = await mutateManifest(env, ctx, (manifest) => {
     const idx = manifest.findIndex(t => t.title === title);
     previous = idx >= 0 ? manifest[idx] : null;
     if (idx < 0) {
@@ -774,17 +775,17 @@ async function updateManifest(env, ctx, title, fields, revision, list = null) {
     // Listed twice (a hand edit, say): listed once from now on
     return manifest.some((t, i) => i > idx && t.title === title) ? manifest.filter((t, i) => i <= idx || t.title !== title) : manifest;
   }, list);
-  return previous;
+  return { previous, list: stored };
 }
 
-// Returns the entry it removed, or null if the title wasn't listed
+// Returns { removed: the entry it removed, or null if the title wasn't listed; list: the list as now stored }
 async function removeFromManifest(env, ctx, title, list = null) {
   let removed = null;
-  await mutateManifest(env, ctx, (manifest) => {
+  const stored = await mutateManifest(env, ctx, (manifest) => {
     removed = manifest.find(t => t.title === title) || null;
     return removed ? manifest.filter(t => t.title !== title) : null;
   }, list);
-  return removed;
+  return { removed, list: stored };
 }
 ```
 
