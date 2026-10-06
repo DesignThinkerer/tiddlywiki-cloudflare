@@ -1,8 +1,8 @@
 // The page, published from the admin wiki: a real TiddlyWiki in Chromium renders the shell (TiddlyWiki's
 // $:/core/templates/tiddlywiki5-external-js.html) and the core file, sends them to the worker by
 // itself, and both sites then run from them. Covers the first publish, saves that change the page
-// and saves that don't, plugins with raw markup, several tabs, tiddlers still loading, failures, a new
-// index.html and safe mode.
+// and saves that don't, plugins with raw markup, several tabs, what other tabs deleted, tiddlers still
+// loading, failures, a new index.html and safe mode.
 // Run: npm run test:publish   (WIKI_HTML=path/to/your/index.html to test with your own wiki file)
 import { Miniflare } from "miniflare";
 import { chromium } from "playwright";
@@ -352,7 +352,87 @@ check("a tab that publishes after another includes that tab's change (it syncs f
   html.includes("subtitle from A") && html.includes("window.__footerRan = 'B'"), `B had "${bBefore}"`);
 await contextB.close();
 
-// --- 8. A tiddler whose text hasn't arrived yet is waited for ----------------------------------------
+// --- 8. What was deleted stays deleted ----------------------------------------------------------------
+// TiddlyWiki keeps $:/ tiddlers that disappear from the server in the tabs already open: the page
+// mustn't bring them back. A plugin this tab deleted and another tab installed again is an installed
+// plugin, not one that came with the page. And a page left with a deleted tiddler by a failed publish
+// is corrected by the next admin load.
+const GONE_MARKUP = "$:/cfw-test/gone-markup", GONE_PLUGIN = "$:/plugins/test/gone", AGAIN = "$:/plugins/test/again";
+const plainPlugin = (title, v) => ({ title, "plugin-type": "plugin", type: "application/json", version: v,
+  text: JSON.stringify({ tiddlers: { [title + "/readme"]: { text: "A plugin without raw markup, " + v } } }) });
+const inStore = (text, title) => storeOf(text).some(t => t.title === title);
+// This tab saves the raw markup tiddler and installs a plugin; another tab installs a second plugin
+mark = requests.length;
+await add(A, { title: GONE_MARKUP, tags: "$:/tags/RawMarkup", type: "text/plain", text: '<meta name="cfw-gone" content="1">' });
+await add(A, plainPlugin(AGAIN, "1.0.0"));
+await settle(A);
+await waitFor(async () => shellPuts("A", mark) > 0);
+await sleep(QUIET_WINDOW);
+const markupPublished = (await shell()).includes('<meta name="cfw-gone" content="1">');
+await A.evaluate(t => $tw.wiki.deleteTiddler(t), AGAIN);
+await settle(A);
+const contextE = await browser.newContext();
+const { p: E } = await openAdmin("E", contextE);
+await settle(E);
+await add(E, plainPlugin(GONE_PLUGIN, "1.0.0"));
+await settle(E);
+await A.evaluate(() => $tw.syncer.syncFromServer());
+await settle(A);
+mark = requests.length;
+await E.evaluate(titles => titles.forEach(t => $tw.wiki.deleteTiddler(t)), [GONE_MARKUP, GONE_PLUGIN]);
+await add(E, plainPlugin(AGAIN, "2.0.0"));
+await settle(E);
+await waitFor(async () => shellPuts("E", mark) > 0);
+await sleep(QUIET_WINDOW);
+await A.evaluate(() => $tw.syncer.syncFromServer());
+await settle(A);
+const leftInA = await A.evaluate(titles => titles.map(t => $tw.wiki.tiddlerExists(t)), [GONE_MARKUP, GONE_PLUGIN, AGAIN]);
+mark = requests.length;
+await add(A, { title: "$:/SiteSubtitle", text: "after deletes in another tab" });
+await settle(A);
+await waitFor(async () => shellPuts("A", mark) > 0);
+await sleep(QUIET_WINDOW);
+html = await shell();
+check("a raw markup tiddler and a plugin deleted in another tab, still in this one, aren't published again by it",
+  markupPublished && leftInA[0] && leftInA[1] && html.includes("after deletes in another tab") &&
+  !html.includes('<meta name="cfw-gone" content="1">') && !inStore(html, GONE_MARKUP) && !inStore(html, GONE_PLUGIN),
+  `published before ${markupPublished}, still in A ${JSON.stringify(leftInA)}, in the shell: markup ${html.includes('cfw-gone')}, plugin ${inStore(html, GONE_PLUGIN)}`);
+check("...a plugin this tab deleted and another installed again is an installed plugin (a file), not part of the page",
+  leftInA[2] && !inStore(html, AGAIN), `loaded again in A ${leftInA[2]}, in the shell ${inStore(html, AGAIN)}`);
+check("...what came with the page is still in it", inStore(html, "$:/plugins/tiddlywiki/tiddlyweb") && inStore(html, "$:/themes/tiddlywiki/vanilla"));
+await contextE.close();
+
+// A failed publish leaves a deleted raw markup tiddler in the page: the next admin load takes it out
+const STALE = "$:/cfw-test/stale-markup";
+mark = requests.length;
+await add(A, { title: STALE, tags: "$:/tags/RawMarkup", type: "text/plain", text: '<meta name="cfw-stale" content="1">' });
+await settle(A);
+await waitFor(async () => shellPuts("A", mark) > 0);
+await sleep(QUIET_WINDOW);
+const stalePublished = (await shell()).includes('<meta name="cfw-stale" content="1">');
+const refuse = url => url.pathname === "/page/shell";
+await A.route(refuse, route => route.fulfill({ status: 500, body: "unavailable" }));
+await A.evaluate(t => $tw.wiki.deleteTiddler(t), STALE);
+await settle(A);
+await waitFor(async () => (await status(A))?.state === "failed");
+await A.unroute(refuse);
+const staleLeft = (await shell()).includes('<meta name="cfw-stale" content="1">');
+const contextF = await browser.newContext();
+mark = requests.length;
+await openAdmin("F", contextF);
+await waitFor(async () => shellPuts("F", mark) > 0, 30000);
+await sleep(QUIET_WINDOW);
+html = await shell();
+check("a page that kept a deleted tiddler after a failed publish is corrected by the next admin load",
+  stalePublished && staleLeft && shellPuts("F", mark) === 1 && !html.includes('<meta name="cfw-stale" content="1">') && !inStore(html, STALE),
+  `published before ${stalePublished}, left by the failure ${staleLeft}, publishes ${shellPuts("F", mark)}, still there ${html.includes("cfw-stale")}`);
+await contextF.close();
+// (tab A publishes again at its next save)
+await add(A, { title: "A note after the failure", text: "publishes again" });
+await settle(A);
+await waitFor(async () => (await status(A))?.state === "published");
+
+// --- 9. A tiddler whose text hasn't arrived yet is waited for ----------------------------------------
 // Edited outside the admin wiki (in R2): the next admin load publishes it, once its text is there
 const splashKey = "recipes/default/tiddlers/Splash";
 const storedSplash = JSON.parse(await (await bucket.get(splashKey)).text());
@@ -378,7 +458,7 @@ check("an edit made outside the admin wiki is published at the next admin load, 
   shellPuts("C", mark) === 1 && after(html, "Raw markup for the top of the body section").includes("Edited outside"), `${shellPuts("C", mark)} publishes`);
 await contextC.close();
 
-// --- 9. A failed publish is reported and tried again -----------------------------------------------
+// --- 10. A failed publish is reported and tried again -----------------------------------------------
 let failNext = true;
 await A.route(url => url.pathname === "/page/shell", async route => {
   if (failNext) {
@@ -399,7 +479,7 @@ await waitFor(async () => (await shell()).includes("after a failure"));
 check("...and tried again at the next save", (await shell()).includes("after a failure") && (await status(A))?.state === "published", JSON.stringify(await status(A)));
 await A.unroute(url => url.pathname === "/page/shell");
 
-// --- 10. A new index.html: the page is built from it, then published again ----------------------------
+// --- 11. A new index.html: the page is built from it, then published again ----------------------------
 await bucket.put("index.html", ENGINE.replace("</head>", "<!-- new upload -->\n</head>"));
 const contextD = await browser.newContext();
 mark = requests.length;
@@ -412,7 +492,7 @@ check("...and that load publishes a shell for it (the stored core file reused, n
   (await bucket.head("_page/shell.html"))?.customMetadata?.index === (await bucket.head("index.html")).etag);
 await contextD.close();
 
-// --- 11. Safe mode publishes nothing --------------------------------------------------------------
+// --- 12. Safe mode publishes nothing --------------------------------------------------------------
 const contextS = await browser.newContext();
 mark = requests.length;
 const { p: S } = await openAdmin("S", contextS, "#:safe");
