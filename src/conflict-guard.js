@@ -86,6 +86,7 @@ exports.startup = function() {
 		// "must not exist on the server yet", undefined means unknown (the save is sent unconditionally).
 		draftBases = Object.create(null),   // draft title -> {of: title, base: revision}
 		pendingBases = Object.create(null), // title -> {base: revision} for a confirmed draft not yet uploaded
+		deleteBases = Object.create(null),  // title -> revision its editor started from, for the delete a rename or a delete from the editor makes
 		listBypassCache = false;            // the last list was the stand-in or unreadable (isListStandIn)
 	proto.conflictGuardInstalled = true;
 
@@ -168,6 +169,9 @@ exports.startup = function() {
 		});
 		if(pendingBases[title] && pendingBases[title].base === oldBase) {
 			pendingBases[title].base = newBase;
+		}
+		if(deleteBases[title] === oldBase) {
+			deleteBases[title] = newBase;
 		}
 	}
 
@@ -308,6 +312,8 @@ exports.startup = function() {
 				}
 				return;
 			}
+			// There again (restored, or made again before the delete went out): nothing to delete
+			delete deleteBases[title];
 			if(draftBases[title]) {
 				return;
 			}
@@ -327,15 +333,31 @@ exports.startup = function() {
 		});
 	});
 
-	// When a draft is confirmed, the saved tiddler inherits the draft's base revision
+	// When a draft is confirmed, the saved tiddler inherits the draft's base revision. A rename then
+	// deletes the old title: that delete is from the version the editor started from too, so it's
+	// refused (a delete conflict) if another tab saved a newer one meanwhile, which this tab may even
+	// have loaded behind the editor
 	$tw.hooks.addHook("th-saving-tiddler",function(newTiddler,draftTiddler) {
 		if(newTiddler && draftTiddler) {
 			var record = draftBases[draftTiddler.fields.title];
 			if(record && record.of === newTiddler.fields.title) {
 				pendingBases[record.of] = {base: record.base};
+			} else if(record && typeof record.base === "string") {
+				deleteBases[record.of] = record.base;
 			}
 		}
 		return newTiddler;
+	});
+
+	// Deleting from an open editor deletes the tiddler too: the same applies
+	$tw.hooks.addHook("th-deleting-tiddler",function(tiddler) {
+		var title = tiddler && tiddler.fields.title;
+		$tw.utils.each(draftBases,function(record) {
+			if(title && record.of === title && typeof record.base === "string") {
+				deleteBases[title] = record.base;
+			}
+		});
+		return tiddler;
 	});
 
 	proto.saveTiddler = function(tiddler,callback,options) {
@@ -395,25 +417,29 @@ exports.startup = function() {
 		}
 		// No bag means the server has never seen this tiddler, so there is nothing to delete
 		if(!bag) {
+			delete deleteBases[title];
 			return callback(null,info && info.adaptorInfo);
 		}
-		var tries = 0;
+		var tries = 0,
+			base = title in deleteBases ? deleteBases[title] : (baseFromInfo(info) || undefined);
 		function send() {
 			$tw.utils.httpRequest({
 				url: self.host + "bags/" + encodeURIComponent(bag) + "/tiddlers/" + encodeURIComponent(title),
 				type: "DELETE",
-				headers: addPreconditions({},title,baseFromInfo(info) || undefined,info),
+				headers: addPreconditions({},title,base,info),
 				callback: function(err,data,request) {
 					if(err) {
 						if(isRebuilding(request) && ++tries <= REBUILD_RETRIES) {
 							return setTimeout(send,1000);
 						}
 						if(request && request.status === 412) {
+							delete deleteBases[title];
 							return resolveConflict(self,title,"delete",callback);
 						}
 						return callback(err);
 					}
 					delete pendingBases[title];
+					delete deleteBases[title];
 					callback(null,null);
 				}
 			});
