@@ -43,17 +43,16 @@ function link(title) {
 	return (title.indexOf("]]") === -1 && title.indexOf("|") === -1) ? "[[" + title + "]]" : "'" + title + "'";
 }
 
-// The body of a save in the worker's "flat" layout; the worker appends its own revision, bag and
-// recipe. Returns null for a tiddler with a field called "fields", which this layout can't
-// represent (TiddlyWeb's loader would take it for its nested field list).
+// The body of a save in the worker's "flat" layout, the only one it stores; the worker appends its
+// own revision, bag and recipe. A field called "fields" stays nested as {fields: value}, the way
+// TiddlyWeb's layout has it: a flat "fields" is where TiddlyWeb's loader looks for nested fields.
 function flatBody(tiddler) {
 	var result = {},
 		fields = tiddler.fields;
-	if($tw.utils.hop(fields,"fields")) {
-		return null;
-	}
 	$tw.utils.each(fields,function(value,name) {
-		if(name !== "text" && name !== "revision" && name !== "bag" && name !== "recipe") {
+		if(name === "fields") {
+			result.fields = {fields: tiddler.getFieldString(name)};
+		} else if(name !== "text" && name !== "revision" && name !== "bag" && name !== "recipe") {
 			result[name] = name === "tags" ? value : tiddler.getFieldString(name);
 		}
 	});
@@ -348,13 +347,8 @@ exports.startup = function() {
 			return callback(null);
 		}
 		var body = flatBody(tiddler),
-			headers = {"Content-type": "application/json"},
+			headers = {"Content-type": "application/json", "X-Tiddler-Layout": "flat"},
 			tries = 0;
-		if(body === null) {
-			body = this.convertTiddlerToTiddlyWebFormat(tiddler);
-		} else {
-			headers["X-Tiddler-Layout"] = "flat";
-		}
 		function send() {
 			$tw.utils.httpRequest({
 				url: self.host + "recipes/" + encodeURIComponent(self.recipe) + "/tiddlers/" + encodeURIComponent(title),

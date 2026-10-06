@@ -25,19 +25,11 @@ function getTwTimestamp(date = new Date()) {
   return date.toISOString().replace(/\D/g, '').slice(0, 17);
 }
 
-// Security check for mutations
-function isAuthorized(request, env) {
-  if (!env.API_KEY) return true;
-  const authHeader = request.headers.get("Authorization");
-  return authHeader === `Bearer ${env.API_KEY}` || authHeader === env.API_KEY;
-}
-
 // --- Edit-conflict protection ---------------------------------------------------------------
 //
 // How it works:
-//  * Every tiddler has a revision: customMetadata.revision (a millisecond timestamp set on each
-//    save), else the revision stored in the tiddler JSON, else one derived from the R2 etag.
-//    GET returns it in the body and in the ETag "default/<title>/<revision>:auto".
+//  * Every tiddler has a revision: customMetadata.revision, a millisecond timestamp set on each
+//    save. GET returns it in the body and in the ETag "default/<title>/<revision>:auto".
 //  * The browser module below (baked into the wiki page) sends the revision its edit is based on
 //    as If-Match, or If-None-Match: * for a brand new tiddler.
 //  * PUT/DELETE answer 412 when that revision is no longer current, and the R2 write itself is
@@ -54,10 +46,8 @@ function isEphemeralTitle(title) {
          title.startsWith("$:/status/");
 }
 
-// TiddlyWeb JSON puts non-standard fields such as draft.of under "fields"
 function isDraft(tiddler) {
-  return tiddler["draft.of"] !== undefined ||
-         (tiddler.fields !== null && typeof tiddler.fields === "object" && tiddler.fields["draft.of"] !== undefined);
+  return tiddler["draft.of"] !== undefined;
 }
 
 // --- What the page needs at boot ---------------------------------------------------------------
@@ -73,12 +63,6 @@ const DISABLED_PLUGIN_PREFIX = "$:/config/Plugins/Disabled/";   // read at boot,
 const PLUGIN_FILE_TYPES = ["plugin", "theme", "language"];
 const MODULE_TYPES = ["application/javascript", "application/json", "application/x-tiddler-dictionary"];   // TiddlyWiki defines modules from these at boot
 
-// A field of a tiddler in either layout: TiddlyWeb's (custom fields under "fields") or flat
-function fieldOf(tiddler, name) {
-  if (tiddler[name] !== undefined) return tiddler[name];
-  return tiddler.fields !== null && typeof tiddler.fields === "object" ? tiddler.fields[name] : undefined;
-}
-
 // These take a saved tiddler or an entry of the tiddler list
 function isStartupTiddler(tiddler) {
   const title = tiddler.title || "", tags = tiddler.tags;
@@ -89,50 +73,27 @@ function isStartupTiddler(tiddler) {
 
 // Plugins (but not the core: it comes with index.html and is never synced) and JavaScript modules
 function needsPluginFile(tiddler) {
-  const pluginType = fieldOf(tiddler, "plugin-type");
+  const pluginType = tiddler["plugin-type"];
   if (pluginType) {
-    return PLUGIN_FILE_TYPES.includes(pluginType) && tiddler.title !== "$:/core" && fieldOf(tiddler, "platform") !== "server";
+    return PLUGIN_FILE_TYPES.includes(pluginType) && tiddler.title !== "$:/core" && tiddler.platform !== "server";
   }
-  return MODULE_TYPES.includes(tiddler.type) && Boolean(fieldOf(tiddler, "module-type"));
+  return MODULE_TYPES.includes(tiddler.type) && Boolean(tiddler["module-type"]);
 }
 
 function isPageTiddler(tiddler) {
   return isStartupTiddler(tiddler) || needsPluginFile(tiddler);
 }
 
-function tiddlerKeys(title) {
-  const raw = `recipes/default/tiddlers/${title}`;
-  const encoded = `recipes/default/tiddlers/${encodeURIComponent(title)}`;
-  return raw === encoded ? [raw] : [raw, encoded];
+// Each tiddler is stored under its title
+const TIDDLER_PREFIX = "recipes/default/tiddlers/";
+function tiddlerKey(title) {
+  return TIDDLER_PREFIX + title;
 }
 
-// Finds the stored object for a title (older objects may live under the URL-encoded key)
-async function findTiddler(env, title) {
-  for (const key of tiddlerKeys(title)) {
-    const obj = await env.WIKI_BUCKET.head(key);
-    if (obj) return { key, obj };
-  }
-  return null;
-}
-
-// The revision the wiki sees for a stored object. GET, PUT and DELETE must all agree on it:
-// the worker's own metadata, else the revision stored in the tiddler itself (objects written by
-// other tools), else one derived from the R2 etag.
-function revisionOf(obj, body) {
-  if (obj.customMetadata?.revision) return obj.customMetadata.revision;
-  if (body && body.revision !== undefined && body.revision !== null && body.revision !== "") return String(body.revision);
-  return obj.httpEtag.replace(/[^a-zA-Z0-9]/g, "");
-}
-
-// revisionOf() for an object found with head(); reads the body only if the metadata is missing
-async function storedRevision(env, found) {
-  if (found.obj.customMetadata?.revision) return found.obj.customMetadata.revision;
-  const full = await env.WIKI_BUCKET.get(found.key);
-  let body = null;
-  if (full) {
-    try { body = JSON.parse(await full.text()); } catch (e) {}
-  }
-  return revisionOf(found.obj, body);
+// The revision of a stored tiddler, from the object's metadata. (An object without it isn't one
+// the worker stored: its R2 etag stands in, so GET, PUT and DELETE still agree.)
+function revisionOf(obj) {
+  return obj.customMetadata?.revision || obj.etag;
 }
 
 function tiddlerEtag(title, revision) {
@@ -184,11 +145,13 @@ function conflictResponse(title, reason, currentRevision, corsHeaders) {
 }
 
 // --- Reading a save ---------------------------------------------------------------------------
-// The browser module sends tiddlers "flat" (header X-Tiddler-Layout: flat): every field at the top
-// level, compact JSON, "text" last, without revision, bag or recipe. The worker parses only the
-// fields before "text" and appends its revision, bag and recipe, working on the raw bytes: the
-// text itself (a whole plugin, an image...) is never decoded, parsed or re-encoded.
-// Other clients send TiddlyWeb JSON (custom fields under "fields"), parsed and re-serialized.
+// Every tiddler is stored "flat": every field at the top level, compact JSON, "text" last, then the
+// worker's revision, bag and recipe; customMetadata { revision, layout: "flat" }. The browser module
+// sends exactly that, without revision, bag or recipe (header X-Tiddler-Layout: flat): the worker
+// parses only the fields before "text" and appends its own, working on the raw bytes, so the text
+// itself (a whole plugin, an image...) is never decoded, parsed or re-encoded. Anything else, such
+// as TiddlyWeb JSON (custom fields under "fields", the text anywhere) from a tab without the module,
+// is parsed and turned into the flat layout first.
 
 const FLAT_LAYOUT = "flat";
 const encoder = new TextEncoder();
@@ -229,39 +192,71 @@ function parseJsonBody(text) {
   }
 }
 
-// A save in TiddlyWeb's layout, or any other JSON: parsed, stamped and re-serialized
-function parsedSave(tiddler) {
-  // A title that isn't text would make the tiddler list unreadable (and no browser sends one)
-  if (!isTiddlerObject(tiddler)) throw new BadSave("the body is not a tiddler (a JSON object with a text title)");
-  const fields = { ...tiddler };
-  delete fields.text;
-  return {
-    fields, layout: "tiddlyweb",
-    stored: revision => encoder.encode(JSON.stringify({ ...tiddler, revision, bag: "default", recipe: "default" }))
-  };
+// TiddlyWiki's field values are text, or lists of text (tags). An object can't be stored flat (a
+// "text" key inside it would be taken for the tiddler's text), with one exception: a field called
+// "fields" stays nested as { fields: value }, the way TiddlyWeb's layout has it, because a flat
+// "fields" is where TiddlyWiki's loader looks for nested custom fields.
+function isFieldValue(value) {
+  return value === null || typeof value !== "object" || (Array.isArray(value) && value.every(item => item === null || typeof item !== "object"));
+}
+function isStorable(name, value) {
+  if (name !== "fields") return isFieldValue(value);
+  return value !== null && typeof value === "object" && !Array.isArray(value) && Object.keys(value).length === 1 &&
+    Object.hasOwn(value, "fields") && (value.fields === null || typeof value.fields !== "object");
 }
 
-// Returns { fields, layout, stored(revision) }: fields = the tiddler without its text,
-// stored(revision) = the bytes to store, with the worker's revision, bag and recipe
-async function readSave(request) {
-  if (request.headers.get("X-Tiddler-Layout") !== FLAT_LAYOUT) {
-    return parsedSave(parseJsonBody(await request.text()));
-  }
-  const bytes = new Uint8Array(await request.arrayBuffer());
-  let end = bytes.length;
-  while (end > 0 && bytes[end - 1] <= 0x20) end--;
+// TiddlyWiki unpacks that nested "fields" when it loads a tiddler through sync, but not the tiddlers
+// the page hands it at boot (preloadTiddlers): the page build unpacks those
+function hasNestedFields(tiddler) {
+  return isStorable("fields", tiddler.fields);
+}
+
+const BOOKKEEPING = ["text", "revision", "bag", "recipe"];
+
+// The fields before "text" of a body in the flat layout, or null if it isn't one
+function flatFields(bytes, end) {
   let cut = textKeyOffset(bytes);
   if (cut === -1) cut = end - 1;   // no text: the fields run up to the closing brace
-  const fields = bytes[0] === 0x7b && bytes[end - 1] === 0x7d && cut > 0
-    ? parseJsonBody(decoder.decode(bytes.subarray(0, cut)) + "}") : null;
-  if (!isTiddlerObject(fields)) throw new BadSave("the body is not a tiddler in the flat layout");
-  // Not what the browser module sends (pretty-printed, or with these fields before "text"):
-  // handled like any other save
-  if (["text", "revision", "bag", "recipe"].some(name => name in fields)) {
-    return parsedSave(parseJsonBody(decoder.decode(bytes)));
+  if (bytes[0] !== 0x7b || bytes[end - 1] !== 0x7d || cut <= 0) return null;
+  let fields = null;
+  try { fields = JSON.parse(decoder.decode(bytes.subarray(0, cut)) + "}"); } catch (e) { return null; }
+  // Pretty-printed, with these before "text", or with a value that isn't text: not the flat layout after all
+  if (!isTiddlerObject(fields) || BOOKKEEPING.some(name => Object.hasOwn(fields, name)) ||
+      !Object.entries(fields).every(([name, value]) => isStorable(name, value))) return null;
+  return fields;
+}
+
+// Any other tiddler JSON, TiddlyWeb's layout included, turned into the flat layout
+function toFlat(tiddler) {
+  // A title that isn't text would make the tiddler list unreadable (and no browser sends one)
+  if (!isTiddlerObject(tiddler)) throw new BadSave("the body is not a tiddler (a JSON object with a text title)");
+  let { fields: custom = {}, text, revision, bag, recipe, ...fields } = tiddler;
+  // In TiddlyWeb's layout, "fields" holds the custom fields (text there is a field called "fields")
+  if (custom === null) custom = {};
+  else if (typeof custom !== "object") custom = { fields: custom };
+  else if (Array.isArray(custom)) throw new BadSave('"fields" must hold the custom fields');
+  for (const [name, value] of Object.entries(custom)) {
+    if (!Object.hasOwn(fields, name) && !BOOKKEEPING.includes(name)) fields[name] = value;
+  }
+  if (Object.hasOwn(fields, "fields")) fields.fields = { fields: fields.fields };   // see isStorable
+  const notText = Object.keys(fields).find(name => !isStorable(name, fields[name]));
+  if (notText !== undefined) throw new BadSave(`the field "${notText}" isn't text`);
+  return { fields, bytes: encoder.encode(JSON.stringify(text === undefined ? fields : { ...fields, text })) };
+}
+
+// Returns { fields, stored(revision) }: fields = the tiddler without its text, stored(revision) =
+// the bytes to store, with the worker's revision, bag and recipe
+async function readSave(request) {
+  let bytes = new Uint8Array(await request.arrayBuffer());
+  let end = bytes.length;
+  while (end > 0 && bytes[end - 1] <= 0x20) end--;
+  let fields = request.headers.get("X-Tiddler-Layout") === FLAT_LAYOUT ? flatFields(bytes, end) : null;
+  if (!fields) {
+    ({ fields, bytes } = toFlat(parseJsonBody(decoder.decode(bytes))));
+    end = bytes.length;
   }
   return {
-    fields, layout: FLAT_LAYOUT,
+    fields,
     stored: revision => concatBytes([
       bytes.subarray(0, end - 1),
       encoder.encode(`,"revision":"${revision}","bag":"default","recipe":"default"}`)
@@ -288,11 +283,12 @@ async function finishSave(env, ctx, title, fields, revision, list = null) {
 }
 
 // Whether the stored object holds exactly what this save would store with that revision
-async function storesSameContent(env, found, save, revision) {
+// (current: the object as head() returned it)
+async function storesSameContent(env, current, save, revision) {
   const wouldStore = save.stored(revision);
   // Different sizes, different content: no need to read it (a real conflict, nearly always)
-  if (found.obj.size !== wouldStore.length) return false;
-  const obj = await env.WIKI_BUCKET.get(found.key);
+  if (current.size !== wouldStore.length) return false;
+  const obj = await env.WIKI_BUCKET.get(current.key);
   if (!obj) return false;
   const stored = new Uint8Array(await obj.arrayBuffer());
   if (stored.length !== wouldStore.length) return false;
@@ -316,7 +312,7 @@ export default {
     const corsHeaders = {
       "Access-Control-Allow-Origin": "*",
       "Access-Control-Allow-Methods": "GET, PUT, DELETE, OPTIONS, HEAD",
-      "Access-Control-Allow-Headers": "Content-Type, X-Requested-With, X-Tiddler-Layout, If-Match, If-None-Match, Authorization, Accept",
+      "Access-Control-Allow-Headers": "Content-Type, X-Requested-With, X-Tiddler-Layout, If-Match, If-None-Match, Accept",
       "Access-Control-Expose-Headers": "ETag, Etag, etag, X-Tiddler-List, Retry-After",
     };
 
@@ -337,51 +333,22 @@ export default {
 
     // 3. READS
     if (request.method === "GET" || request.method === "HEAD") {
-      const rawKey = url.pathname.substring(1);
-      const decodedKey = decodeURIComponent(rawKey);
+      const key = decodeURIComponent(url.pathname.substring(1));
+      if (key === MANIFEST_KEY) return serveManifest(request, env, ctx, corsHeaders);
 
-      if (decodedKey === MANIFEST_KEY) return serveManifest(request, env, ctx, corsHeaders);
-
-      let object = await env.WIKI_BUCKET.get(decodedKey);
-      if (!object && rawKey !== decodedKey) {
-        object = await env.WIKI_BUCKET.get(rawKey);
-      }
-
+      const object = await env.WIKI_BUCKET.get(key);
       if (!object) return new Response("Not found", { status: 404, headers: corsHeaders });
-
       const headers = objectHeaders(object, corsHeaders);
+      const body = request.method === "GET" ? object.body : null;
 
-      if (decodedKey.startsWith("recipes/default/tiddlers/") || decodedKey.startsWith("bags/default/tiddlers/")) {
-        const title = decodedKey.replace(/^(recipes|bags)\/default\/tiddlers\//, "");
+      if (key.startsWith(TIDDLER_PREFIX)) {
+        // Stored with its revision, bag and recipe already in place: served as is
         headers.set("Cache-Control", "no-cache");
-        if (object.customMetadata?.layout === FLAT_LAYOUT) {
-          // Stored with its revision, bag and recipe already in place: served as is
-          headers.set("ETag", tiddlerEtag(title, object.customMetadata.revision));
-          return new Response(request.method === "GET" ? object.body : null, { headers });
-        }
-        const text = await object.text();
-        let tiddlerData = null;
-        try { tiddlerData = JSON.parse(text); } catch (e) {}
-        // Always report the same revision that PUT/DELETE check against
-        const revision = revisionOf(object, tiddlerData);
-
-        headers.set("ETag", tiddlerEtag(title, revision));
-
-        if (request.method !== "GET") return new Response(null, { headers });
-        if (!tiddlerData) return new Response(text, { headers });
-        tiddlerData.bag = "default";
-        tiddlerData.recipe = "default";
-        tiddlerData.revision = revision;
-        return new Response(JSON.stringify(tiddlerData), { headers });
+        headers.set("ETag", tiddlerEtag(key.slice(TIDDLER_PREFIX.length), revisionOf(object)));
+        return new Response(body, { headers });
       }
-      
       headers.set("ETag", object.httpEtag);
-      return new Response(object.body, { headers });
-    }
-
-    // MUTATIONS
-    if ((request.method === "PUT" || request.method === "DELETE") && !isAuthorized(request, env)) {
-      return new Response("Unauthorized", { status: 401, headers: corsHeaders });
+      return new Response(body, { headers });
     }
 
     // 4. WRITES
@@ -401,16 +368,16 @@ export default {
           return new Response(null, { status: 204, headers: { ...corsHeaders, ETag: etag } });
         }
 
-        const tiddlerKey = `recipes/default/tiddlers/${title}`;
-        const found = await findTiddler(env, title);
-        const currentRevision = found ? await storedRevision(env, found) : null;
+        const key = tiddlerKey(title);
+        const current = await env.WIKI_BUCKET.head(key);
+        const currentRevision = current ? revisionOf(current) : null;
 
         const { conditional, reason } = checkPreconditions(request, currentRevision);
         if (reason) {
           // A retry of a save that was stored but whose list update then failed: the stored tiddler
           // is exactly what this save would store, so finish that save instead of refusing it.
           // (Otherwise the browser sees the identical copy, adopts it, and the list is never fixed.)
-          if (found && await storesSameContent(env, found, save, currentRevision)) {
+          if (current && await storesSameContent(env, current, save, currentRevision)) {
             await untilDone(ctx, finishSave(env, ctx, title, save.fields, currentRevision));
             return new Response(null, { status: 204, headers: { ...corsHeaders, ETag: tiddlerEtag(title, currentRevision) } });
           }
@@ -425,27 +392,25 @@ export default {
         const body = save.stored(newRevision);
         const putOptions = {
           httpMetadata: { contentType: "application/json" },
-          // "layout" tells readers the revision, bag and recipe are already in the stored JSON
-          customMetadata: save.layout === FLAT_LAYOUT ? { revision: newRevision, layout: FLAT_LAYOUT } : { revision: newRevision }
+          customMetadata: { revision: newRevision, layout: FLAT_LAYOUT }
         };
 
         if (conditional) {
           // Only write if the object is still exactly the one we checked (or still absent)
-          const replacesCurrent = found !== null && found.key === tiddlerKey;
-          let written = await env.WIKI_BUCKET.put(tiddlerKey, body, {
+          let written = await env.WIKI_BUCKET.put(key, body, {
             ...putOptions,
-            onlyIf: replacesCurrent ? { etagMatches: found.obj.etag } : new Headers({ "If-None-Match": "*" })
+            onlyIf: current ? { etagMatches: current.etag } : new Headers({ "If-None-Match": "*" })
           });
-          if (written === null && !replacesCurrent && !(await env.WIKI_BUCKET.head(tiddlerKey))) {
+          if (written === null && !current && !(await env.WIKI_BUCKET.head(key))) {
             // A create-only write was refused but nothing is there: write it normally
-            written = await env.WIKI_BUCKET.put(tiddlerKey, body, putOptions);
+            written = await env.WIKI_BUCKET.put(key, body, putOptions);
           }
           if (written === null) {
-            const latest = await findTiddler(env, title);
-            return conflictResponse(title, "it was changed in another tab or browser", latest ? await storedRevision(env, latest) : null, corsHeaders);
+            const latest = await env.WIKI_BUCKET.head(key);
+            return conflictResponse(title, "it was changed in another tab or browser", latest ? revisionOf(latest) : null, corsHeaders);
           }
         } else {
-          await env.WIKI_BUCKET.put(tiddlerKey, body, putOptions);
+          await env.WIKI_BUCKET.put(key, body, putOptions);
         }
 
         ctx.waitUntil(queueBackup(env, { action: "save", title, revision: newRevision, content: body }));
@@ -470,17 +435,13 @@ export default {
         // Read first, like a save (see there). The check below is then followed at once by the
         // delete, which can't be made conditional.
         const list = await readableList(env, ctx);
-        const found = await findTiddler(env, title);
+        const found = await env.WIKI_BUCKET.head(tiddlerKey(title));
         let currentRevision;
         if (found) {
-          currentRevision = await storedRevision(env, found);
+          currentRevision = revisionOf(found);
           const { reason } = checkPreconditions(request, currentRevision);
           if (reason) return conflictResponse(title, reason, currentRevision, corsHeaders);
-        }
-        if (found) {
-          for (const key of tiddlerKeys(title)) {
-            await env.WIKI_BUCKET.delete(key);
-          }
+          await env.WIKI_BUCKET.delete(found.key);
         }
         // Queued before the list update, which may fail (the retry then finds nothing to delete)
         if (found) ctx.waitUntil(queueBackup(env, { action: "delete", title, revision: currentRevision }));
@@ -608,7 +569,7 @@ const CONFLICT_GUARD_TITLE = "$:/cfworker/conflict-guard.js";
 // from there (no worker request) and only ask the worker when that copy isn't current
 const PUBLIC_URL_TITLE = "$:/cfworker/public-url";
 
-const CONFLICT_GUARD_SOURCE = "/*\\\ntitle: $:/cfworker/conflict-guard.js\ntype: application/javascript\nmodule-type: startup\n\nEdit-conflict protection for the TiddlyWeb sync adaptor (served by the Cloudflare worker).\n\n- Every save says which server revision it is based on (If-Match), or If-None-Match: * for a new tiddler.\n- A draft remembers the revision it was opened from, so an edit started before another tab saved\n  is still caught even if this tab has re-synced in the meantime.\n- When the server answers 412, your version is kept as \"<title> (conflict <date>)\", the server\n  version is loaded, and an alert explains what happened. Deletes are protected the same way.\n\nIt also keeps worker requests down:\n- Tiddler contents are fetched from the public copy of the wiki ($:/cfworker/public-url, served by\n  R2/Cloudflare without the worker) when it holds exactly the revision the worker listed;\n  otherwise from the worker as usual.\n- Drafts and $:/StoryList, which the worker never stores, are not sent to it, and the \"put\" saver\n  no longer probes the page URL on every load.\n- Background tabs stop polling for changes and catch up as soon as they are shown again.\n- While the worker rebuilds a damaged or missing tiddler list, requests it answers \"rebuilding\"\n  are sent again quietly, and a list that can't be read is a sync error: TiddlyWiki would\n  otherwise remove every tiddler it doesn't find in it, or stop with an \"Internal JavaScript Error\".\n\nAnd it sends saves in the layout the worker stores (X-Tiddler-Layout: flat): every field at the\ntop level, compact JSON, \"text\" last, no revision/bag/recipe. The worker then only parses the\nfields before \"text\" and never has to decode or re-encode the text itself, however big it is.\n\\*/\n(function(){\n\n\"use strict\";\n\nexports.name = \"cfworker-conflict-guard\";\nexports.platforms = [\"browser\"];\nexports.after = [\"load-modules\"];\nexports.before = [\"startup\"];\nexports.synchronous = true;\n\n// Fields that don't count as \"content\" when deciding whether two versions really differ\nvar BOOKKEEPING_FIELDS = [\"revision\",\"bag\",\"recipe\",\"permissions\",\"modified\",\"modifier\"];\n\nfunction link(title) {\n\treturn (title.indexOf(\"]]\") === -1 && title.indexOf(\"|\") === -1) ? \"[[\" + title + \"]]\" : \"'\" + title + \"'\";\n}\n\n// The body of a save in the worker's \"flat\" layout; the worker appends its own revision, bag and\n// recipe. Returns null for a tiddler with a field called \"fields\", which this layout can't\n// represent (TiddlyWeb's loader would take it for its nested field list).\nfunction flatBody(tiddler) {\n\tvar result = {},\n\t\tfields = tiddler.fields;\n\tif($tw.utils.hop(fields,\"fields\")) {\n\t\treturn null;\n\t}\n\t$tw.utils.each(fields,function(value,name) {\n\t\tif(name !== \"text\" && name !== \"revision\" && name !== \"bag\" && name !== \"recipe\") {\n\t\t\tresult[name] = name === \"tags\" ? value : tiddler.getFieldString(name);\n\t\t}\n\t});\n\tresult.type = result.type || \"text/vnd.tiddlywiki\";\n\tif(fields.text !== undefined) {\n\t\tresult.text = tiddler.getFieldString(\"text\");\n\t}\n\treturn JSON.stringify(result);\n}\n\nexports.startup = function() {\n\tvar Adaptor = null;\n\t$tw.modules.forEachModuleOfType(\"syncadaptor\",function(title,module) {\n\t\tif(module.adaptorClass && module.adaptorClass.prototype.name === \"tiddlyweb\") {\n\t\t\tAdaptor = module.adaptorClass;\n\t\t}\n\t});\n\tif(!Adaptor || Adaptor.prototype.conflictGuardInstalled) {\n\t\treturn;\n\t}\n\tvar proto = Adaptor.prototype,\n\t\twiki = $tw.wiki,\n\t\toriginalLoadTiddler = proto.loadTiddler,\n\t\toriginalGetSkinnyTiddlers = proto.getSkinnyTiddlers,\n\t\tpublicBase = (wiki.getTiddlerText(\"$:/cfworker/public-url\",\"\") || \"\").trim(),\n\t\tlistedRevisions = Object.create(null), // title -> revision in the worker's latest tiddler list\n\t\tlastListFetch = 0,\n\t\t// Base revisions. A string is the server revision the content was derived from, null means\n\t\t// \"must not exist on the server yet\", undefined means unknown (the save is sent unconditionally).\n\t\tdraftBases = Object.create(null),   // draft title -> {of: title, base: revision}\n\t\tpendingBases = Object.create(null), // title -> {base: revision} for a confirmed draft not yet uploaded\n\t\tlistBypassCache = false;            // the last list was the stand-in or unreadable (isListStandIn)\n\tproto.conflictGuardInstalled = true;\n\n\tif(publicBase && publicBase.charAt(publicBase.length - 1) !== \"/\") {\n\t\tpublicBase += \"/\";\n\t}\n\n\t// The \"put\" saver probes the page URL (OPTIONS + HEAD) on every load, but it can't save to the\n\t// worker (saving goes through the sync adaptor), so switch it off\n\t$tw.modules.forEachModuleOfType(\"saver\",function(title,module) {\n\t\tif(title === \"$:/core/modules/savers/put.js\") {\n\t\t\tmodule.canSave = function() {\n\t\t\t\treturn false;\n\t\t\t};\n\t\t}\n\t});\n\n\tif($tw.Syncer && !$tw.Syncer.prototype.cfworkerPatched) {\n\t\tvar originalGetSyncedTiddlers = $tw.Syncer.prototype.getSyncedTiddlers,\n\t\t\toriginalChooseNextTask = $tw.Syncer.prototype.chooseNextTask;\n\t\t$tw.Syncer.prototype.cfworkerPatched = true;\n\t\t// Keep drafts and the story list out of syncing: the worker never stores them. For drafts it\n\t\t// also matters because after the next poll the syncer would see them as \"missing from the\n\t\t// server\" and delete the open draft, closing the editor.\n\t\t$tw.Syncer.prototype.getSyncedTiddlers = function(source) {\n\t\t\tvar syncerWiki = this.wiki;\n\t\t\treturn originalGetSyncedTiddlers.call(this,source).filter(function(title) {\n\t\t\t\tvar tiddler = syncerWiki.getTiddler(title);\n\t\t\t\treturn title !== \"$:/StoryList\" && !(tiddler && tiddler.fields[\"draft.of\"]);\n\t\t\t});\n\t\t};\n\t\t// Don't poll for changes while the tab is in the background (saves still go out)\n\t\t$tw.Syncer.prototype.chooseNextTask = function() {\n\t\t\tif(document.hidden && !this.forceSyncFromServer && this.timestampLastSyncFromServer) {\n\t\t\t\tthis.timestampLastSyncFromServer = new Date();\n\t\t\t}\n\t\t\treturn originalChooseNextTask.call(this);\n\t\t};\n\t\t// ...and catch up as soon as it is shown again\n\t\tdocument.addEventListener(\"visibilitychange\",function() {\n\t\t\tvar s = $tw.syncer;\n\t\t\tif(!document.hidden && s && s.syncadaptor && s.syncadaptor.conflictGuardInstalled && Date.now() - lastListFetch > 10000) {\n\t\t\t\ts.syncFromServer();\n\t\t\t}\n\t\t});\n\t}\n\n\tfunction baseFromInfo(info) {\n\t\tif(!info) {\n\t\t\treturn null;\n\t\t}\n\t\tvar revision = info.revision;\n\t\treturn (revision === undefined || revision === null || revision === \"\") ? undefined : String(revision);\n\t}\n\n\tfunction currentBase(title) {\n\t\tif(pendingBases[title]) {\n\t\t\treturn pendingBases[title].base;\n\t\t}\n\t\tvar s = $tw.syncer;\n\t\treturn baseFromInfo(s && s.tiddlerInfo[title]);\n\t}\n\n\tfunction addPreconditions(headers,title,base,info) {\n\t\tif(typeof base === \"string\") {\n\t\t\tvar bag = (info && info.adaptorInfo && info.adaptorInfo.bag) || \"default\";\n\t\t\theaders[\"If-Match\"] = \"\\\"\" + bag + \"/\" + encodeURIComponent(title) + \"/\" + base + \":auto\\\"\";\n\t\t} else if(base === null) {\n\t\t\theaders[\"If-None-Match\"] = \"*\";\n\t\t}\n\t\treturn headers;\n\t}\n\n\t// After our own successful write, anything based on the old revision is now based on the new one\n\tfunction rebase(title,oldBase,newBase) {\n\t\t$tw.utils.each(draftBases,function(record) {\n\t\t\tif(record.of === title && record.base === oldBase) {\n\t\t\t\trecord.base = newBase;\n\t\t\t}\n\t\t});\n\t\tif(pendingBases[title] && pendingBases[title].base === oldBase) {\n\t\t\tpendingBases[title].base = newBase;\n\t\t}\n\t}\n\n\t// While the worker rebuilds a damaged tiddler list (a step per request), it answers the list,\n\t// saves and deletes with 503 and \"X-Tiddler-List: rebuilding\", without changing anything: the\n\t// request is simply sent again, quietly (TiddlyWiki would show an error and wait 5 seconds).\n\t// Any other error is reported as usual.\n\tvar REBUILD_RETRIES = 200;\n\tfunction isRebuilding(request) {\n\t\treturn !!request && request.status === 503 && request.getResponseHeader(\"X-Tiddler-List\") === \"rebuilding\";\n\t}\n\t// Public tabs read the list straight from R2, so while the worker rebuilds a missing list they\n\t// get the text standing in for it (the worker's listStandIn: keep the two in step). It isn't\n\t// JSON, so TiddlyWiki can't take it for a list. It's fetched again a little later (only the\n\t// worker's own requests move the rebuild on). After the stand-in or a list that can't be read,\n\t// the list is fetched at a URL no cache holds until a good one comes back: a cached copy (the\n\t// browser keeps one for a few minutes) could otherwise outlive the rebuild.\n\tvar LIST_STAND_IN_MARK = \"Tiddler list being rebuilt\";\n\tfunction isListStandIn(request) {\n\t\treturn !!request && request.status === 200 && typeof request.responseText === \"string\" &&\n\t\t\trequest.responseText.indexOf(LIST_STAND_IN_MARK) === 0;\n\t}\n\t// TiddlyWiki removes every tiddler that isn't in the list it gets, so anything that isn't a list\n\t// of tiddlers (a damaged upload, say) must be an error, not an empty list\n\tfunction isTiddlerList(tiddlers) {\n\t\tif(!$tw.utils.isArray(tiddlers)) {\n\t\t\treturn false;\n\t\t}\n\t\tfor(var i = 0; i < tiddlers.length; i++) {\n\t\t\tif(!tiddlers[i] || typeof tiddlers[i].title !== \"string\") {\n\t\t\t\treturn false;\n\t\t\t}\n\t\t}\n\t\treturn true;\n\t}\n\n\tfunction hasUnsavedChanges(title) {\n\t\tvar s = $tw.syncer;\n\t\tif(!s || !wiki.tiddlerExists(title)) {\n\t\t\treturn false;\n\t\t}\n\t\tvar info = s.tiddlerInfo[title];\n\t\tif(info) {\n\t\t\treturn wiki.getChangeCount(title) > info.changeCount;\n\t\t}\n\t\treturn s.getSyncedTiddlers([title]).length > 0;\n\t}\n\n\tfunction sameContent(localTiddler,serverFields) {\n\t\treturn !!serverFields && localTiddler.isEqual(new $tw.Tiddler(serverFields),BOOKKEEPING_FIELDS);\n\t}\n\n\tfunction makeConflictCopy(localTiddler) {\n\t\tvar title = localTiddler.fields.title,\n\t\t\tstamp = $tw.utils.formatDateString(new Date(),\"YYYY-0MM-0DD 0hh.0mm.0ss\"),\n\t\t\tcopyTitle = wiki.generateNewTitle(title + \" (conflict \" + stamp + \")\"),\n\t\t\tkeptTags = [],\n\t\t\tremovedTags = [];\n\t\t// Keep the copy inert: tags such as $:/tags/Stylesheet or $:/tags/Macro would make it take effect\n\t\t$tw.utils.each(localTiddler.fields.tags || [],function(tag) {\n\t\t\t(tag.indexOf(\"$:/tags/\") === 0 ? removedTags : keptTags).push(tag);\n\t\t});\n\t\twiki.addTiddler(new $tw.Tiddler(localTiddler,{\n\t\t\ttitle: copyTitle,\n\t\t\ttags: keptTags,\n\t\t\trevision: undefined,\n\t\t\tbag: undefined,\n\t\t\trecipe: undefined,\n\t\t\tpermissions: undefined,\n\t\t\t\"conflict-of\": title,\n\t\t\t\"conflict-removed-tags\": removedTags.length ? $tw.utils.stringifyList(removedTags) : undefined\n\t\t}));\n\t\tif($tw.Story) {\n\t\t\tnew $tw.Story({wiki: wiki}).addToStory(copyTitle,title);\n\t\t}\n\t\treturn copyTitle;\n\t}\n\n\t// The server rejected our write because its copy changed. Keep our version, adopt the server's.\n\tfunction resolveConflict(adaptor,title,operation,callback) {\n\t\t$tw.utils.httpRequest({\n\t\t\turl: adaptor.host + \"recipes/\" + encodeURIComponent(adaptor.recipe) + \"/tiddlers/\" + encodeURIComponent(title),\n\t\t\tcallback: function(err,data,request) {\n\t\t\t\tvar serverFields = null,\n\t\t\t\t\ts = $tw.syncer;\n\t\t\t\tif(err) {\n\t\t\t\t\tif(!request || request.status !== 404) {\n\t\t\t\t\t\treturn callback(err); // The syncer will retry, and we'll get here again\n\t\t\t\t\t}\n\t\t\t\t} else {\n\t\t\t\t\ttry {\n\t\t\t\t\t\tserverFields = adaptor.convertTiddlerFromTiddlyWebFormat(JSON.parse(data));\n\t\t\t\t\t} catch(e) {\n\t\t\t\t\t\treturn callback(\"Could not read the server copy of '\" + title + \"': \" + e);\n\t\t\t\t\t}\n\t\t\t\t}\n\t\t\t\tvar localTiddler = wiki.tiddlerExists(title) && wiki.getTiddler(title);\n\t\t\t\tdelete pendingBases[title];\n\t\t\t\tif(operation === \"delete\") {\n\t\t\t\t\tif(!serverFields) {\n\t\t\t\t\t\treturn callback(null,null); // It has been deleted in the meantime anyway\n\t\t\t\t\t}\n\t\t\t\t\ts.storeTiddler(serverFields);\n\t\t\t\t\treturn callback(\"Delete conflict: \" + link(title) + \" was changed in another tab or browser, so it was not deleted. The latest version has been restored.\");\n\t\t\t\t}\n\t\t\t\tif(localTiddler && sameContent(localTiddler,serverFields)) {\n\t\t\t\t\t// Someone else saved exactly what we were saving: nothing to keep\n\t\t\t\t\ts.storeTiddler(serverFields);\n\t\t\t\t\tcallback(null,{bag: serverFields.bag || \"default\"},serverFields.revision);\n\t\t\t\t\tif(s.tiddlerInfo[title]) {\n\t\t\t\t\t\ts.tiddlerInfo[title].changeCount = wiki.getChangeCount(title);\n\t\t\t\t\t}\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tvar copyTitle = localTiddler ? makeConflictCopy(localTiddler) : null,\n\t\t\t\t\tkept = copyTitle ? \" Your version has been kept as \" + link(copyTitle) + \".\" : \"\";\n\t\t\t\tif(serverFields) {\n\t\t\t\t\ts.storeTiddler(serverFields);\n\t\t\t\t\tcallback(\"Edit conflict: \" + link(title) + \" was changed in another tab or browser before your save reached the server.\" + kept + \" \" + link(title) + \" now shows the server version.\");\n\t\t\t\t} else {\n\t\t\t\t\tdelete s.tiddlerInfo[title];\n\t\t\t\t\tif(localTiddler) {\n\t\t\t\t\t\twiki.deleteTiddler(title);\n\t\t\t\t\t}\n\t\t\t\t\tcallback(\"Edit conflict: \" + link(title) + \" was deleted in another tab or browser.\" + kept);\n\t\t\t\t}\n\t\t\t}\n\t\t});\n\t}\n\n\t// Remember which revision each draft was opened from\n\twiki.addEventListener(\"change\",function(changes) {\n\t\t$tw.utils.each(changes,function(change,title) {\n\t\t\tif(change.deleted) {\n\t\t\t\tdelete draftBases[title];\n\t\t\t\tif(!wiki.tiddlerExists(title)) {\n\t\t\t\t\tdelete pendingBases[title];\n\t\t\t\t}\n\t\t\t\treturn;\n\t\t\t}\n\t\t\tif(draftBases[title]) {\n\t\t\t\treturn;\n\t\t\t}\n\t\t\tvar draft = wiki.getTiddler(title),\n\t\t\t\tof = draft && draft.fields[\"draft.of\"];\n\t\t\tif(!of) {\n\t\t\t\treturn;\n\t\t\t}\n\t\t\tvar original = wiki.getTiddler(of),\n\t\t\t\tbase = currentBase(of);\n\t\t\t// If the original was reloaded from the server between the draft being made and now,\n\t\t\t// the draft still carries the older revision it was copied from\n\t\t\tif(original && draft.fields.revision !== undefined && original.fields.revision !== draft.fields.revision) {\n\t\t\t\tbase = String(draft.fields.revision);\n\t\t\t}\n\t\t\tdraftBases[title] = {of: of, base: base};\n\t\t});\n\t});\n\n\t// When a draft is confirmed, the saved tiddler inherits the draft's base revision\n\t$tw.hooks.addHook(\"th-saving-tiddler\",function(newTiddler,draftTiddler) {\n\t\tif(newTiddler && draftTiddler) {\n\t\t\tvar record = draftBases[draftTiddler.fields.title];\n\t\t\tif(record && record.of === newTiddler.fields.title) {\n\t\t\t\tpendingBases[record.of] = {base: record.base};\n\t\t\t}\n\t\t}\n\t\treturn newTiddler;\n\t});\n\n\tproto.saveTiddler = function(tiddler,callback,options) {\n\t\tvar self = this,\n\t\t\ttitle = tiddler.fields.title,\n\t\t\ts = $tw.syncer,\n\t\t\tinfo = (options && options.tiddlerInfo) || (s && s.tiddlerInfo[title]),\n\t\t\tpending = pendingBases[title],\n\t\t\tbase = pending ? pending.base : baseFromInfo(info);\n\t\tif(this.isReadOnly) {\n\t\t\treturn callback(null);\n\t\t}\n\t\tvar body = flatBody(tiddler),\n\t\t\theaders = {\"Content-type\": \"application/json\"},\n\t\t\ttries = 0;\n\t\tif(body === null) {\n\t\t\tbody = this.convertTiddlerToTiddlyWebFormat(tiddler);\n\t\t} else {\n\t\t\theaders[\"X-Tiddler-Layout\"] = \"flat\";\n\t\t}\n\t\tfunction send() {\n\t\t\t$tw.utils.httpRequest({\n\t\t\t\turl: self.host + \"recipes/\" + encodeURIComponent(self.recipe) + \"/tiddlers/\" + encodeURIComponent(title),\n\t\t\t\ttype: \"PUT\",\n\t\t\t\theaders: addPreconditions(headers,title,base,info),\n\t\t\t\tdata: body,\n\t\t\t\tcallback: function(err,data,request) {\n\t\t\t\t\tif(err) {\n\t\t\t\t\t\tif(isRebuilding(request) && ++tries <= REBUILD_RETRIES) {\n\t\t\t\t\t\t\treturn setTimeout(send,1000);\n\t\t\t\t\t\t}\n\t\t\t\t\t\tif(request && request.status === 412) {\n\t\t\t\t\t\t\treturn resolveConflict(self,title,\"save\",callback);\n\t\t\t\t\t\t}\n\t\t\t\t\t\treturn callback(err);\n\t\t\t\t\t}\n\t\t\t\t\tif($tw.browserStorage && $tw.browserStorage.isEnabled()) {\n\t\t\t\t\t\t$tw.browserStorage.removeTiddlerFromLocalStorage(title);\n\t\t\t\t\t}\n\t\t\t\t\tvar etag = request.getResponseHeader(\"Etag\"),\n\t\t\t\t\t\tetagInfo = etag && self.parseEtag(etag);\n\t\t\t\t\tif(!etagInfo) {\n\t\t\t\t\t\treturn callback(\"Response from server is missing required ETag header\");\n\t\t\t\t\t}\n\t\t\t\t\tif(pending && pendingBases[title] === pending) {\n\t\t\t\t\t\tdelete pendingBases[title];\n\t\t\t\t\t}\n\t\t\t\t\trebase(title,base,etagInfo.revision);\n\t\t\t\t\tcallback(null,{bag: etagInfo.bag},etagInfo.revision);\n\t\t\t\t}\n\t\t\t});\n\t\t}\n\t\tsend();\n\t};\n\n\tproto.deleteTiddler = function(title,callback,options) {\n\t\tvar self = this,\n\t\t\tinfo = options && options.tiddlerInfo,\n\t\t\tbag = info && info.adaptorInfo && info.adaptorInfo.bag;\n\t\tif(this.isReadOnly) {\n\t\t\treturn callback(null);\n\t\t}\n\t\t// No bag means the server has never seen this tiddler, so there is nothing to delete\n\t\tif(!bag) {\n\t\t\treturn callback(null,info && info.adaptorInfo);\n\t\t}\n\t\tvar tries = 0;\n\t\tfunction send() {\n\t\t\t$tw.utils.httpRequest({\n\t\t\t\turl: self.host + \"bags/\" + encodeURIComponent(bag) + \"/tiddlers/\" + encodeURIComponent(title),\n\t\t\t\ttype: \"DELETE\",\n\t\t\t\theaders: addPreconditions({},title,baseFromInfo(info) || undefined,info),\n\t\t\t\tcallback: function(err,data,request) {\n\t\t\t\t\tif(err) {\n\t\t\t\t\t\tif(isRebuilding(request) && ++tries <= REBUILD_RETRIES) {\n\t\t\t\t\t\t\treturn setTimeout(send,1000);\n\t\t\t\t\t\t}\n\t\t\t\t\t\tif(request && request.status === 412) {\n\t\t\t\t\t\t\treturn resolveConflict(self,title,\"delete\",callback);\n\t\t\t\t\t\t}\n\t\t\t\t\t\treturn callback(err);\n\t\t\t\t\t}\n\t\t\t\t\tdelete pendingBases[title];\n\t\t\t\t\tcallback(null,null);\n\t\t\t\t}\n\t\t\t});\n\t\t}\n\t\tsend();\n\t};\n\n\t// Remember which revision the worker currently lists for each tiddler, fetch the list again while\n\t// it's being rebuilt (isRebuilding, isListStandIn), and never pass on a list that isn't one\n\tproto.getSkinnyTiddlers = function(callback) {\n\t\tvar self = this,\n\t\t\ttries = 0;\n\t\tfunction fetchList() {\n\t\t\t// The adaptor passes on only the error text: catch the request it makes, to read its header.\n\t\t\t// It makes it straight away, so the wrapper is in place only during this call.\n\t\t\tvar request = null,\n\t\t\t\tdelivered = false,\n\t\t\t\tunreadable = false,\n\t\t\t\tbypassed = listBypassCache,\n\t\t\t\thttpRequest = $tw.utils.httpRequest;\n\t\t\t$tw.utils.httpRequest = function(options) {\n\t\t\t\tvar done = options.callback;\n\t\t\t\tif(listBypassCache) {\n\t\t\t\t\toptions.data = $tw.utils.extend({},options.data,{\"cfworker-retry\": String(Date.now())});\n\t\t\t\t}\n\t\t\t\toptions.callback = function(err,data,xhr) {\n\t\t\t\t\trequest = xhr;\n\t\t\t\t\ttry {\n\t\t\t\t\t\treturn done.apply(this,arguments);\n\t\t\t\t\t} catch(e) {\n\t\t\t\t\t\t// The adaptor parses the list itself and throws if it isn't JSON, which would stop\n\t\t\t\t\t\t// syncing with an \"Internal JavaScript Error\": reported as a sync error instead\n\t\t\t\t\t\tif(err || delivered) {\n\t\t\t\t\t\t\tthrow e;\n\t\t\t\t\t\t}\n\t\t\t\t\t\tunreadable = true;\n\t\t\t\t\t\treturn done.call(this,\"the tiddler list can't be read (\" + e.message + \")\",null,xhr);\n\t\t\t\t\t}\n\t\t\t\t};\n\t\t\t\treturn httpRequest.apply(this,arguments);\n\t\t\t};\n\t\t\ttry {\n\t\t\t\toriginalGetSkinnyTiddlers.call(self,listFetched);\n\t\t\t} finally {\n\t\t\t\t$tw.utils.httpRequest = httpRequest;\n\t\t\t}\n\t\t\tfunction listFetched(err,tiddlers) {\n\t\t\t\tdelivered = true;\n\t\t\t\tif(!err && !isTiddlerList(tiddlers)) {\n\t\t\t\t\terr = \"the tiddler list can't be read (it isn't a list of tiddlers)\";\n\t\t\t\t\ttiddlers = null;\n\t\t\t\t\tunreadable = true;\n\t\t\t\t}\n\t\t\t\tif(unreadable || isListStandIn(request)) {\n\t\t\t\t\tlistBypassCache = true;\n\t\t\t\t\t// Maybe only a copy the browser kept: asked again at once, past it, before reporting\n\t\t\t\t\tif(unreadable && !bypassed && !isListStandIn(request)) {\n\t\t\t\t\t\treturn setTimeout(fetchList,0);\n\t\t\t\t\t}\n\t\t\t\t} else if(!err) {\n\t\t\t\t\tlistBypassCache = false;\n\t\t\t\t}\n\t\t\t\tif(err && ++tries <= REBUILD_RETRIES) {\n\t\t\t\t\tif(isRebuilding(request)) {\n\t\t\t\t\t\treturn setTimeout(fetchList,500);\n\t\t\t\t\t}\n\t\t\t\t\tif(isListStandIn(request)) {\n\t\t\t\t\t\treturn setTimeout(fetchList,tries === 1 ? 1000 : 5000);\n\t\t\t\t\t}\n\t\t\t\t}\n\t\t\t\tif(!err) {\n\t\t\t\t\tlistedRevisions = Object.create(null);\n\t\t\t\t\t$tw.utils.each(tiddlers,function(fields) {\n\t\t\t\t\t\tif(fields.revision !== undefined && fields.revision !== null) {\n\t\t\t\t\t\t\tlistedRevisions[fields.title] = String(fields.revision);\n\t\t\t\t\t\t}\n\t\t\t\t\t});\n\t\t\t\t\tlastListFetch = Date.now();\n\t\t\t\t}\n\t\t\t\treturn callback(err,tiddlers);\n\t\t\t}\n\t\t}\n\t\tfetchList();\n\t};\n\n\t// Fetch a tiddler from the public copy of the wiki (R2 + Cloudflare's cache, no worker request).\n\t// Only accepted if it is exactly the revision the worker listed; callback(fields) or callback(null).\n\tfunction loadFromPublicSite(adaptor,title,callback) {\n\t\tvar expected = listedRevisions[title];\n\t\tfunction done(fields) {\n\t\t\tsetTimeout(function() {\n\t\t\t\tcallback(fields);\n\t\t\t},0);\n\t\t}\n\t\tif(!publicBase || publicBase === adaptor.host || !expected || typeof fetch !== \"function\") {\n\t\t\treturn done(null);\n\t\t}\n\t\tfetch(publicBase + \"recipes/default/tiddlers/\" + encodeURIComponent(title),{cache: \"no-cache\", credentials: \"omit\"})\n\t\t\t.then(function(response) {\n\t\t\t\treturn response.ok ? response.json() : null;\n\t\t\t})\n\t\t\t.then(function(data) {\n\t\t\t\tvar fields = null;\n\t\t\t\ttry {\n\t\t\t\t\tif(data && data.title === title && data.revision !== undefined && data.revision !== null && String(data.revision) === expected) {\n\t\t\t\t\t\tfields = adaptor.convertTiddlerFromTiddlyWebFormat(data);\n\t\t\t\t\t}\n\t\t\t\t} catch(e) {\n\t\t\t\t\tfields = null;\n\t\t\t\t}\n\t\t\t\tdone(fields);\n\t\t\t},function() {\n\t\t\t\tdone(null);\n\t\t\t});\n\t}\n\n\t// Never let a background reload overwrite local changes that haven't been uploaded yet;\n\t// the pending save will detect any conflict instead\n\tproto.loadTiddler = function(title,callback) {\n\t\tvar self = this;\n\t\tif(hasUnsavedChanges(title)) {\n\t\t\treturn callback(null,null);\n\t\t}\n\t\tfunction finish(err,tiddlerFields) {\n\t\t\tif(!err && tiddlerFields && hasUnsavedChanges(title)) {\n\t\t\t\treturn callback(null,null);\n\t\t\t}\n\t\t\tcallback(err,tiddlerFields);\n\t\t}\n\t\tloadFromPublicSite(this,title,function(tiddlerFields) {\n\t\t\tif(tiddlerFields) {\n\t\t\t\tfinish(null,tiddlerFields);\n\t\t\t} else {\n\t\t\t\toriginalLoadTiddler.call(self,title,finish);\n\t\t\t}\n\t\t});\n\t};\n};\n\n})();\n";   // replaced by the build
+const CONFLICT_GUARD_SOURCE = "/*\\\ntitle: $:/cfworker/conflict-guard.js\ntype: application/javascript\nmodule-type: startup\n\nEdit-conflict protection for the TiddlyWeb sync adaptor (served by the Cloudflare worker).\n\n- Every save says which server revision it is based on (If-Match), or If-None-Match: * for a new tiddler.\n- A draft remembers the revision it was opened from, so an edit started before another tab saved\n  is still caught even if this tab has re-synced in the meantime.\n- When the server answers 412, your version is kept as \"<title> (conflict <date>)\", the server\n  version is loaded, and an alert explains what happened. Deletes are protected the same way.\n\nIt also keeps worker requests down:\n- Tiddler contents are fetched from the public copy of the wiki ($:/cfworker/public-url, served by\n  R2/Cloudflare without the worker) when it holds exactly the revision the worker listed;\n  otherwise from the worker as usual.\n- Drafts and $:/StoryList, which the worker never stores, are not sent to it, and the \"put\" saver\n  no longer probes the page URL on every load.\n- Background tabs stop polling for changes and catch up as soon as they are shown again.\n- While the worker rebuilds a damaged or missing tiddler list, requests it answers \"rebuilding\"\n  are sent again quietly, and a list that can't be read is a sync error: TiddlyWiki would\n  otherwise remove every tiddler it doesn't find in it, or stop with an \"Internal JavaScript Error\".\n\nAnd it sends saves in the layout the worker stores (X-Tiddler-Layout: flat): every field at the\ntop level, compact JSON, \"text\" last, no revision/bag/recipe. The worker then only parses the\nfields before \"text\" and never has to decode or re-encode the text itself, however big it is.\n\\*/\n(function(){\n\n\"use strict\";\n\nexports.name = \"cfworker-conflict-guard\";\nexports.platforms = [\"browser\"];\nexports.after = [\"load-modules\"];\nexports.before = [\"startup\"];\nexports.synchronous = true;\n\n// Fields that don't count as \"content\" when deciding whether two versions really differ\nvar BOOKKEEPING_FIELDS = [\"revision\",\"bag\",\"recipe\",\"permissions\",\"modified\",\"modifier\"];\n\nfunction link(title) {\n\treturn (title.indexOf(\"]]\") === -1 && title.indexOf(\"|\") === -1) ? \"[[\" + title + \"]]\" : \"'\" + title + \"'\";\n}\n\n// The body of a save in the worker's \"flat\" layout, the only one it stores; the worker appends its\n// own revision, bag and recipe. A field called \"fields\" stays nested as {fields: value}, the way\n// TiddlyWeb's layout has it: a flat \"fields\" is where TiddlyWeb's loader looks for nested fields.\nfunction flatBody(tiddler) {\n\tvar result = {},\n\t\tfields = tiddler.fields;\n\t$tw.utils.each(fields,function(value,name) {\n\t\tif(name === \"fields\") {\n\t\t\tresult.fields = {fields: tiddler.getFieldString(name)};\n\t\t} else if(name !== \"text\" && name !== \"revision\" && name !== \"bag\" && name !== \"recipe\") {\n\t\t\tresult[name] = name === \"tags\" ? value : tiddler.getFieldString(name);\n\t\t}\n\t});\n\tresult.type = result.type || \"text/vnd.tiddlywiki\";\n\tif(fields.text !== undefined) {\n\t\tresult.text = tiddler.getFieldString(\"text\");\n\t}\n\treturn JSON.stringify(result);\n}\n\nexports.startup = function() {\n\tvar Adaptor = null;\n\t$tw.modules.forEachModuleOfType(\"syncadaptor\",function(title,module) {\n\t\tif(module.adaptorClass && module.adaptorClass.prototype.name === \"tiddlyweb\") {\n\t\t\tAdaptor = module.adaptorClass;\n\t\t}\n\t});\n\tif(!Adaptor || Adaptor.prototype.conflictGuardInstalled) {\n\t\treturn;\n\t}\n\tvar proto = Adaptor.prototype,\n\t\twiki = $tw.wiki,\n\t\toriginalLoadTiddler = proto.loadTiddler,\n\t\toriginalGetSkinnyTiddlers = proto.getSkinnyTiddlers,\n\t\tpublicBase = (wiki.getTiddlerText(\"$:/cfworker/public-url\",\"\") || \"\").trim(),\n\t\tlistedRevisions = Object.create(null), // title -> revision in the worker's latest tiddler list\n\t\tlastListFetch = 0,\n\t\t// Base revisions. A string is the server revision the content was derived from, null means\n\t\t// \"must not exist on the server yet\", undefined means unknown (the save is sent unconditionally).\n\t\tdraftBases = Object.create(null),   // draft title -> {of: title, base: revision}\n\t\tpendingBases = Object.create(null), // title -> {base: revision} for a confirmed draft not yet uploaded\n\t\tlistBypassCache = false;            // the last list was the stand-in or unreadable (isListStandIn)\n\tproto.conflictGuardInstalled = true;\n\n\tif(publicBase && publicBase.charAt(publicBase.length - 1) !== \"/\") {\n\t\tpublicBase += \"/\";\n\t}\n\n\t// The \"put\" saver probes the page URL (OPTIONS + HEAD) on every load, but it can't save to the\n\t// worker (saving goes through the sync adaptor), so switch it off\n\t$tw.modules.forEachModuleOfType(\"saver\",function(title,module) {\n\t\tif(title === \"$:/core/modules/savers/put.js\") {\n\t\t\tmodule.canSave = function() {\n\t\t\t\treturn false;\n\t\t\t};\n\t\t}\n\t});\n\n\tif($tw.Syncer && !$tw.Syncer.prototype.cfworkerPatched) {\n\t\tvar originalGetSyncedTiddlers = $tw.Syncer.prototype.getSyncedTiddlers,\n\t\t\toriginalChooseNextTask = $tw.Syncer.prototype.chooseNextTask;\n\t\t$tw.Syncer.prototype.cfworkerPatched = true;\n\t\t// Keep drafts and the story list out of syncing: the worker never stores them. For drafts it\n\t\t// also matters because after the next poll the syncer would see them as \"missing from the\n\t\t// server\" and delete the open draft, closing the editor.\n\t\t$tw.Syncer.prototype.getSyncedTiddlers = function(source) {\n\t\t\tvar syncerWiki = this.wiki;\n\t\t\treturn originalGetSyncedTiddlers.call(this,source).filter(function(title) {\n\t\t\t\tvar tiddler = syncerWiki.getTiddler(title);\n\t\t\t\treturn title !== \"$:/StoryList\" && !(tiddler && tiddler.fields[\"draft.of\"]);\n\t\t\t});\n\t\t};\n\t\t// Don't poll for changes while the tab is in the background (saves still go out)\n\t\t$tw.Syncer.prototype.chooseNextTask = function() {\n\t\t\tif(document.hidden && !this.forceSyncFromServer && this.timestampLastSyncFromServer) {\n\t\t\t\tthis.timestampLastSyncFromServer = new Date();\n\t\t\t}\n\t\t\treturn originalChooseNextTask.call(this);\n\t\t};\n\t\t// ...and catch up as soon as it is shown again\n\t\tdocument.addEventListener(\"visibilitychange\",function() {\n\t\t\tvar s = $tw.syncer;\n\t\t\tif(!document.hidden && s && s.syncadaptor && s.syncadaptor.conflictGuardInstalled && Date.now() - lastListFetch > 10000) {\n\t\t\t\ts.syncFromServer();\n\t\t\t}\n\t\t});\n\t}\n\n\tfunction baseFromInfo(info) {\n\t\tif(!info) {\n\t\t\treturn null;\n\t\t}\n\t\tvar revision = info.revision;\n\t\treturn (revision === undefined || revision === null || revision === \"\") ? undefined : String(revision);\n\t}\n\n\tfunction currentBase(title) {\n\t\tif(pendingBases[title]) {\n\t\t\treturn pendingBases[title].base;\n\t\t}\n\t\tvar s = $tw.syncer;\n\t\treturn baseFromInfo(s && s.tiddlerInfo[title]);\n\t}\n\n\tfunction addPreconditions(headers,title,base,info) {\n\t\tif(typeof base === \"string\") {\n\t\t\tvar bag = (info && info.adaptorInfo && info.adaptorInfo.bag) || \"default\";\n\t\t\theaders[\"If-Match\"] = \"\\\"\" + bag + \"/\" + encodeURIComponent(title) + \"/\" + base + \":auto\\\"\";\n\t\t} else if(base === null) {\n\t\t\theaders[\"If-None-Match\"] = \"*\";\n\t\t}\n\t\treturn headers;\n\t}\n\n\t// After our own successful write, anything based on the old revision is now based on the new one\n\tfunction rebase(title,oldBase,newBase) {\n\t\t$tw.utils.each(draftBases,function(record) {\n\t\t\tif(record.of === title && record.base === oldBase) {\n\t\t\t\trecord.base = newBase;\n\t\t\t}\n\t\t});\n\t\tif(pendingBases[title] && pendingBases[title].base === oldBase) {\n\t\t\tpendingBases[title].base = newBase;\n\t\t}\n\t}\n\n\t// While the worker rebuilds a damaged tiddler list (a step per request), it answers the list,\n\t// saves and deletes with 503 and \"X-Tiddler-List: rebuilding\", without changing anything: the\n\t// request is simply sent again, quietly (TiddlyWiki would show an error and wait 5 seconds).\n\t// Any other error is reported as usual.\n\tvar REBUILD_RETRIES = 200;\n\tfunction isRebuilding(request) {\n\t\treturn !!request && request.status === 503 && request.getResponseHeader(\"X-Tiddler-List\") === \"rebuilding\";\n\t}\n\t// Public tabs read the list straight from R2, so while the worker rebuilds a missing list they\n\t// get the text standing in for it (the worker's listStandIn: keep the two in step). It isn't\n\t// JSON, so TiddlyWiki can't take it for a list. It's fetched again a little later (only the\n\t// worker's own requests move the rebuild on). After the stand-in or a list that can't be read,\n\t// the list is fetched at a URL no cache holds until a good one comes back: a cached copy (the\n\t// browser keeps one for a few minutes) could otherwise outlive the rebuild.\n\tvar LIST_STAND_IN_MARK = \"Tiddler list being rebuilt\";\n\tfunction isListStandIn(request) {\n\t\treturn !!request && request.status === 200 && typeof request.responseText === \"string\" &&\n\t\t\trequest.responseText.indexOf(LIST_STAND_IN_MARK) === 0;\n\t}\n\t// TiddlyWiki removes every tiddler that isn't in the list it gets, so anything that isn't a list\n\t// of tiddlers (a damaged upload, say) must be an error, not an empty list\n\tfunction isTiddlerList(tiddlers) {\n\t\tif(!$tw.utils.isArray(tiddlers)) {\n\t\t\treturn false;\n\t\t}\n\t\tfor(var i = 0; i < tiddlers.length; i++) {\n\t\t\tif(!tiddlers[i] || typeof tiddlers[i].title !== \"string\") {\n\t\t\t\treturn false;\n\t\t\t}\n\t\t}\n\t\treturn true;\n\t}\n\n\tfunction hasUnsavedChanges(title) {\n\t\tvar s = $tw.syncer;\n\t\tif(!s || !wiki.tiddlerExists(title)) {\n\t\t\treturn false;\n\t\t}\n\t\tvar info = s.tiddlerInfo[title];\n\t\tif(info) {\n\t\t\treturn wiki.getChangeCount(title) > info.changeCount;\n\t\t}\n\t\treturn s.getSyncedTiddlers([title]).length > 0;\n\t}\n\n\tfunction sameContent(localTiddler,serverFields) {\n\t\treturn !!serverFields && localTiddler.isEqual(new $tw.Tiddler(serverFields),BOOKKEEPING_FIELDS);\n\t}\n\n\tfunction makeConflictCopy(localTiddler) {\n\t\tvar title = localTiddler.fields.title,\n\t\t\tstamp = $tw.utils.formatDateString(new Date(),\"YYYY-0MM-0DD 0hh.0mm.0ss\"),\n\t\t\tcopyTitle = wiki.generateNewTitle(title + \" (conflict \" + stamp + \")\"),\n\t\t\tkeptTags = [],\n\t\t\tremovedTags = [];\n\t\t// Keep the copy inert: tags such as $:/tags/Stylesheet or $:/tags/Macro would make it take effect\n\t\t$tw.utils.each(localTiddler.fields.tags || [],function(tag) {\n\t\t\t(tag.indexOf(\"$:/tags/\") === 0 ? removedTags : keptTags).push(tag);\n\t\t});\n\t\twiki.addTiddler(new $tw.Tiddler(localTiddler,{\n\t\t\ttitle: copyTitle,\n\t\t\ttags: keptTags,\n\t\t\trevision: undefined,\n\t\t\tbag: undefined,\n\t\t\trecipe: undefined,\n\t\t\tpermissions: undefined,\n\t\t\t\"conflict-of\": title,\n\t\t\t\"conflict-removed-tags\": removedTags.length ? $tw.utils.stringifyList(removedTags) : undefined\n\t\t}));\n\t\tif($tw.Story) {\n\t\t\tnew $tw.Story({wiki: wiki}).addToStory(copyTitle,title);\n\t\t}\n\t\treturn copyTitle;\n\t}\n\n\t// The server rejected our write because its copy changed. Keep our version, adopt the server's.\n\tfunction resolveConflict(adaptor,title,operation,callback) {\n\t\t$tw.utils.httpRequest({\n\t\t\turl: adaptor.host + \"recipes/\" + encodeURIComponent(adaptor.recipe) + \"/tiddlers/\" + encodeURIComponent(title),\n\t\t\tcallback: function(err,data,request) {\n\t\t\t\tvar serverFields = null,\n\t\t\t\t\ts = $tw.syncer;\n\t\t\t\tif(err) {\n\t\t\t\t\tif(!request || request.status !== 404) {\n\t\t\t\t\t\treturn callback(err); // The syncer will retry, and we'll get here again\n\t\t\t\t\t}\n\t\t\t\t} else {\n\t\t\t\t\ttry {\n\t\t\t\t\t\tserverFields = adaptor.convertTiddlerFromTiddlyWebFormat(JSON.parse(data));\n\t\t\t\t\t} catch(e) {\n\t\t\t\t\t\treturn callback(\"Could not read the server copy of '\" + title + \"': \" + e);\n\t\t\t\t\t}\n\t\t\t\t}\n\t\t\t\tvar localTiddler = wiki.tiddlerExists(title) && wiki.getTiddler(title);\n\t\t\t\tdelete pendingBases[title];\n\t\t\t\tif(operation === \"delete\") {\n\t\t\t\t\tif(!serverFields) {\n\t\t\t\t\t\treturn callback(null,null); // It has been deleted in the meantime anyway\n\t\t\t\t\t}\n\t\t\t\t\ts.storeTiddler(serverFields);\n\t\t\t\t\treturn callback(\"Delete conflict: \" + link(title) + \" was changed in another tab or browser, so it was not deleted. The latest version has been restored.\");\n\t\t\t\t}\n\t\t\t\tif(localTiddler && sameContent(localTiddler,serverFields)) {\n\t\t\t\t\t// Someone else saved exactly what we were saving: nothing to keep\n\t\t\t\t\ts.storeTiddler(serverFields);\n\t\t\t\t\tcallback(null,{bag: serverFields.bag || \"default\"},serverFields.revision);\n\t\t\t\t\tif(s.tiddlerInfo[title]) {\n\t\t\t\t\t\ts.tiddlerInfo[title].changeCount = wiki.getChangeCount(title);\n\t\t\t\t\t}\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tvar copyTitle = localTiddler ? makeConflictCopy(localTiddler) : null,\n\t\t\t\t\tkept = copyTitle ? \" Your version has been kept as \" + link(copyTitle) + \".\" : \"\";\n\t\t\t\tif(serverFields) {\n\t\t\t\t\ts.storeTiddler(serverFields);\n\t\t\t\t\tcallback(\"Edit conflict: \" + link(title) + \" was changed in another tab or browser before your save reached the server.\" + kept + \" \" + link(title) + \" now shows the server version.\");\n\t\t\t\t} else {\n\t\t\t\t\tdelete s.tiddlerInfo[title];\n\t\t\t\t\tif(localTiddler) {\n\t\t\t\t\t\twiki.deleteTiddler(title);\n\t\t\t\t\t}\n\t\t\t\t\tcallback(\"Edit conflict: \" + link(title) + \" was deleted in another tab or browser.\" + kept);\n\t\t\t\t}\n\t\t\t}\n\t\t});\n\t}\n\n\t// Remember which revision each draft was opened from\n\twiki.addEventListener(\"change\",function(changes) {\n\t\t$tw.utils.each(changes,function(change,title) {\n\t\t\tif(change.deleted) {\n\t\t\t\tdelete draftBases[title];\n\t\t\t\tif(!wiki.tiddlerExists(title)) {\n\t\t\t\t\tdelete pendingBases[title];\n\t\t\t\t}\n\t\t\t\treturn;\n\t\t\t}\n\t\t\tif(draftBases[title]) {\n\t\t\t\treturn;\n\t\t\t}\n\t\t\tvar draft = wiki.getTiddler(title),\n\t\t\t\tof = draft && draft.fields[\"draft.of\"];\n\t\t\tif(!of) {\n\t\t\t\treturn;\n\t\t\t}\n\t\t\tvar original = wiki.getTiddler(of),\n\t\t\t\tbase = currentBase(of);\n\t\t\t// If the original was reloaded from the server between the draft being made and now,\n\t\t\t// the draft still carries the older revision it was copied from\n\t\t\tif(original && draft.fields.revision !== undefined && original.fields.revision !== draft.fields.revision) {\n\t\t\t\tbase = String(draft.fields.revision);\n\t\t\t}\n\t\t\tdraftBases[title] = {of: of, base: base};\n\t\t});\n\t});\n\n\t// When a draft is confirmed, the saved tiddler inherits the draft's base revision\n\t$tw.hooks.addHook(\"th-saving-tiddler\",function(newTiddler,draftTiddler) {\n\t\tif(newTiddler && draftTiddler) {\n\t\t\tvar record = draftBases[draftTiddler.fields.title];\n\t\t\tif(record && record.of === newTiddler.fields.title) {\n\t\t\t\tpendingBases[record.of] = {base: record.base};\n\t\t\t}\n\t\t}\n\t\treturn newTiddler;\n\t});\n\n\tproto.saveTiddler = function(tiddler,callback,options) {\n\t\tvar self = this,\n\t\t\ttitle = tiddler.fields.title,\n\t\t\ts = $tw.syncer,\n\t\t\tinfo = (options && options.tiddlerInfo) || (s && s.tiddlerInfo[title]),\n\t\t\tpending = pendingBases[title],\n\t\t\tbase = pending ? pending.base : baseFromInfo(info);\n\t\tif(this.isReadOnly) {\n\t\t\treturn callback(null);\n\t\t}\n\t\tvar body = flatBody(tiddler),\n\t\t\theaders = {\"Content-type\": \"application/json\", \"X-Tiddler-Layout\": \"flat\"},\n\t\t\ttries = 0;\n\t\tfunction send() {\n\t\t\t$tw.utils.httpRequest({\n\t\t\t\turl: self.host + \"recipes/\" + encodeURIComponent(self.recipe) + \"/tiddlers/\" + encodeURIComponent(title),\n\t\t\t\ttype: \"PUT\",\n\t\t\t\theaders: addPreconditions(headers,title,base,info),\n\t\t\t\tdata: body,\n\t\t\t\tcallback: function(err,data,request) {\n\t\t\t\t\tif(err) {\n\t\t\t\t\t\tif(isRebuilding(request) && ++tries <= REBUILD_RETRIES) {\n\t\t\t\t\t\t\treturn setTimeout(send,1000);\n\t\t\t\t\t\t}\n\t\t\t\t\t\tif(request && request.status === 412) {\n\t\t\t\t\t\t\treturn resolveConflict(self,title,\"save\",callback);\n\t\t\t\t\t\t}\n\t\t\t\t\t\treturn callback(err);\n\t\t\t\t\t}\n\t\t\t\t\tif($tw.browserStorage && $tw.browserStorage.isEnabled()) {\n\t\t\t\t\t\t$tw.browserStorage.removeTiddlerFromLocalStorage(title);\n\t\t\t\t\t}\n\t\t\t\t\tvar etag = request.getResponseHeader(\"Etag\"),\n\t\t\t\t\t\tetagInfo = etag && self.parseEtag(etag);\n\t\t\t\t\tif(!etagInfo) {\n\t\t\t\t\t\treturn callback(\"Response from server is missing required ETag header\");\n\t\t\t\t\t}\n\t\t\t\t\tif(pending && pendingBases[title] === pending) {\n\t\t\t\t\t\tdelete pendingBases[title];\n\t\t\t\t\t}\n\t\t\t\t\trebase(title,base,etagInfo.revision);\n\t\t\t\t\tcallback(null,{bag: etagInfo.bag},etagInfo.revision);\n\t\t\t\t}\n\t\t\t});\n\t\t}\n\t\tsend();\n\t};\n\n\tproto.deleteTiddler = function(title,callback,options) {\n\t\tvar self = this,\n\t\t\tinfo = options && options.tiddlerInfo,\n\t\t\tbag = info && info.adaptorInfo && info.adaptorInfo.bag;\n\t\tif(this.isReadOnly) {\n\t\t\treturn callback(null);\n\t\t}\n\t\t// No bag means the server has never seen this tiddler, so there is nothing to delete\n\t\tif(!bag) {\n\t\t\treturn callback(null,info && info.adaptorInfo);\n\t\t}\n\t\tvar tries = 0;\n\t\tfunction send() {\n\t\t\t$tw.utils.httpRequest({\n\t\t\t\turl: self.host + \"bags/\" + encodeURIComponent(bag) + \"/tiddlers/\" + encodeURIComponent(title),\n\t\t\t\ttype: \"DELETE\",\n\t\t\t\theaders: addPreconditions({},title,baseFromInfo(info) || undefined,info),\n\t\t\t\tcallback: function(err,data,request) {\n\t\t\t\t\tif(err) {\n\t\t\t\t\t\tif(isRebuilding(request) && ++tries <= REBUILD_RETRIES) {\n\t\t\t\t\t\t\treturn setTimeout(send,1000);\n\t\t\t\t\t\t}\n\t\t\t\t\t\tif(request && request.status === 412) {\n\t\t\t\t\t\t\treturn resolveConflict(self,title,\"delete\",callback);\n\t\t\t\t\t\t}\n\t\t\t\t\t\treturn callback(err);\n\t\t\t\t\t}\n\t\t\t\t\tdelete pendingBases[title];\n\t\t\t\t\tcallback(null,null);\n\t\t\t\t}\n\t\t\t});\n\t\t}\n\t\tsend();\n\t};\n\n\t// Remember which revision the worker currently lists for each tiddler, fetch the list again while\n\t// it's being rebuilt (isRebuilding, isListStandIn), and never pass on a list that isn't one\n\tproto.getSkinnyTiddlers = function(callback) {\n\t\tvar self = this,\n\t\t\ttries = 0;\n\t\tfunction fetchList() {\n\t\t\t// The adaptor passes on only the error text: catch the request it makes, to read its header.\n\t\t\t// It makes it straight away, so the wrapper is in place only during this call.\n\t\t\tvar request = null,\n\t\t\t\tdelivered = false,\n\t\t\t\tunreadable = false,\n\t\t\t\tbypassed = listBypassCache,\n\t\t\t\thttpRequest = $tw.utils.httpRequest;\n\t\t\t$tw.utils.httpRequest = function(options) {\n\t\t\t\tvar done = options.callback;\n\t\t\t\tif(listBypassCache) {\n\t\t\t\t\toptions.data = $tw.utils.extend({},options.data,{\"cfworker-retry\": String(Date.now())});\n\t\t\t\t}\n\t\t\t\toptions.callback = function(err,data,xhr) {\n\t\t\t\t\trequest = xhr;\n\t\t\t\t\ttry {\n\t\t\t\t\t\treturn done.apply(this,arguments);\n\t\t\t\t\t} catch(e) {\n\t\t\t\t\t\t// The adaptor parses the list itself and throws if it isn't JSON, which would stop\n\t\t\t\t\t\t// syncing with an \"Internal JavaScript Error\": reported as a sync error instead\n\t\t\t\t\t\tif(err || delivered) {\n\t\t\t\t\t\t\tthrow e;\n\t\t\t\t\t\t}\n\t\t\t\t\t\tunreadable = true;\n\t\t\t\t\t\treturn done.call(this,\"the tiddler list can't be read (\" + e.message + \")\",null,xhr);\n\t\t\t\t\t}\n\t\t\t\t};\n\t\t\t\treturn httpRequest.apply(this,arguments);\n\t\t\t};\n\t\t\ttry {\n\t\t\t\toriginalGetSkinnyTiddlers.call(self,listFetched);\n\t\t\t} finally {\n\t\t\t\t$tw.utils.httpRequest = httpRequest;\n\t\t\t}\n\t\t\tfunction listFetched(err,tiddlers) {\n\t\t\t\tdelivered = true;\n\t\t\t\tif(!err && !isTiddlerList(tiddlers)) {\n\t\t\t\t\terr = \"the tiddler list can't be read (it isn't a list of tiddlers)\";\n\t\t\t\t\ttiddlers = null;\n\t\t\t\t\tunreadable = true;\n\t\t\t\t}\n\t\t\t\tif(unreadable || isListStandIn(request)) {\n\t\t\t\t\tlistBypassCache = true;\n\t\t\t\t\t// Maybe only a copy the browser kept: asked again at once, past it, before reporting\n\t\t\t\t\tif(unreadable && !bypassed && !isListStandIn(request)) {\n\t\t\t\t\t\treturn setTimeout(fetchList,0);\n\t\t\t\t\t}\n\t\t\t\t} else if(!err) {\n\t\t\t\t\tlistBypassCache = false;\n\t\t\t\t}\n\t\t\t\tif(err && ++tries <= REBUILD_RETRIES) {\n\t\t\t\t\tif(isRebuilding(request)) {\n\t\t\t\t\t\treturn setTimeout(fetchList,500);\n\t\t\t\t\t}\n\t\t\t\t\tif(isListStandIn(request)) {\n\t\t\t\t\t\treturn setTimeout(fetchList,tries === 1 ? 1000 : 5000);\n\t\t\t\t\t}\n\t\t\t\t}\n\t\t\t\tif(!err) {\n\t\t\t\t\tlistedRevisions = Object.create(null);\n\t\t\t\t\t$tw.utils.each(tiddlers,function(fields) {\n\t\t\t\t\t\tif(fields.revision !== undefined && fields.revision !== null) {\n\t\t\t\t\t\t\tlistedRevisions[fields.title] = String(fields.revision);\n\t\t\t\t\t\t}\n\t\t\t\t\t});\n\t\t\t\t\tlastListFetch = Date.now();\n\t\t\t\t}\n\t\t\t\treturn callback(err,tiddlers);\n\t\t\t}\n\t\t}\n\t\tfetchList();\n\t};\n\n\t// Fetch a tiddler from the public copy of the wiki (R2 + Cloudflare's cache, no worker request).\n\t// Only accepted if it is exactly the revision the worker listed; callback(fields) or callback(null).\n\tfunction loadFromPublicSite(adaptor,title,callback) {\n\t\tvar expected = listedRevisions[title];\n\t\tfunction done(fields) {\n\t\t\tsetTimeout(function() {\n\t\t\t\tcallback(fields);\n\t\t\t},0);\n\t\t}\n\t\tif(!publicBase || publicBase === adaptor.host || !expected || typeof fetch !== \"function\") {\n\t\t\treturn done(null);\n\t\t}\n\t\tfetch(publicBase + \"recipes/default/tiddlers/\" + encodeURIComponent(title),{cache: \"no-cache\", credentials: \"omit\"})\n\t\t\t.then(function(response) {\n\t\t\t\treturn response.ok ? response.json() : null;\n\t\t\t})\n\t\t\t.then(function(data) {\n\t\t\t\tvar fields = null;\n\t\t\t\ttry {\n\t\t\t\t\tif(data && data.title === title && data.revision !== undefined && data.revision !== null && String(data.revision) === expected) {\n\t\t\t\t\t\tfields = adaptor.convertTiddlerFromTiddlyWebFormat(data);\n\t\t\t\t\t}\n\t\t\t\t} catch(e) {\n\t\t\t\t\tfields = null;\n\t\t\t\t}\n\t\t\t\tdone(fields);\n\t\t\t},function() {\n\t\t\t\tdone(null);\n\t\t\t});\n\t}\n\n\t// Never let a background reload overwrite local changes that haven't been uploaded yet;\n\t// the pending save will detect any conflict instead\n\tproto.loadTiddler = function(title,callback) {\n\t\tvar self = this;\n\t\tif(hasUnsavedChanges(title)) {\n\t\t\treturn callback(null,null);\n\t\t}\n\t\tfunction finish(err,tiddlerFields) {\n\t\t\tif(!err && tiddlerFields && hasUnsavedChanges(title)) {\n\t\t\t\treturn callback(null,null);\n\t\t\t}\n\t\t\tcallback(err,tiddlerFields);\n\t\t}\n\t\tloadFromPublicSite(this,title,function(tiddlerFields) {\n\t\t\tif(tiddlerFields) {\n\t\t\t\tfinish(null,tiddlerFields);\n\t\t\t} else {\n\t\t\t\toriginalLoadTiddler.call(self,title,finish);\n\t\t\t}\n\t\t});\n\t};\n};\n\n})();\n";   // replaced by the build
 
 function conflictGuardEnabled(env) {
   return String(env.CONFLICT_GUARD || "").toLowerCase() !== "off";
@@ -648,17 +609,6 @@ async function serveWiki(env, ctx, corsHeaders) {
   return new Response(fallback.body, { headers: htmlHeaders });
 }
 
-// Stored tiddlers may use TiddlyWeb's layout (custom fields nested under "fields"); preloadTiddlers wants them flat
-function toPreloadFields(tiddler) {
-  const flat = {};
-  if (tiddler.fields !== null && typeof tiddler.fields === "object") Object.assign(flat, tiddler.fields);
-  for (const [name, value] of Object.entries(tiddler)) {
-    if (name !== "fields") flat[name] = value;
-  }
-  if (typeof flat.revision === "number") flat.revision = String(flat.revision);
-  return flat;
-}
-
 // --- Plugin files -------------------------------------------------------------------------------
 // _plugins/<title>.js holds the stored tiddler, untouched, inside the same code the external-plugins
 // export template produces: it adds the tiddler to $tw.preloadTiddlers before TiddlyWiki boots.
@@ -668,12 +618,9 @@ function toPreloadFields(tiddler) {
 const PLUGIN_FILE_DIR = "_plugins/";
 const PRELOAD_OPEN = "{\nconst tw = globalThis.$tw ??= Object.create(null);\ntw.preloadTiddlers = (tw.preloadTiddlers ?? []).concat([";
 const PRELOAD_CLOSE = "]);\n}\n";
-// Tiddlers stored in TiddlyWeb's layout (before the flat layout, or by other clients) keep their
-// custom fields under "fields": the browser moves them up first, and sets the revision as a string
+// A tiddler with a field called "fields" (stored nested: hasNestedFields) is unpacked first
 const PRELOAD_NESTED_OPEN = "{\nconst t = ";
-const preloadNestedClose = revision => ";\nconst f = t.fields || {}; delete t.fields;\nfor (const k in f) if (!(k in t)) t[k] = f[k];\n" +
-  `t.revision = ${JSON.stringify(String(revision))};\n` +
-  "const tw = globalThis.$tw ??= Object.create(null);\ntw.preloadTiddlers = (tw.preloadTiddlers ?? []).concat([t]);\n}\n";
+const PRELOAD_NESTED_CLOSE = ";\nt.fields = t.fields.fields;\nconst tw = globalThis.$tw ??= Object.create(null);\ntw.preloadTiddlers = (tw.preloadTiddlers ?? []).concat([t]);\n}\n";
 
 function pluginFileKey(title) {
   return `${PLUGIN_FILE_DIR}${title}.js`;
@@ -684,27 +631,20 @@ function pluginFileUrl(env, title, revision) {
   return publicUrl(env, `/${PLUGIN_FILE_DIR}${encodeURIComponent(title)}.js?v=${encodeURIComponent(revision)}`);
 }
 
-// Writes the plugin file from the stored tiddler. file: what head() returned for it (or null).
+// Writes the plugin file from the stored tiddler. entry: its list entry; file: what head()
+// returned for the file (or null).
 // Two page builds can overlap, so it doesn't replace a file holding a newer version, and writes
 // only if the file is still the one it looked at. After two lost races, a missing file is written
 // unconditionally (like the PUT handler's create-only fallback): best effort, not a guarantee.
 // Returns the revision the file holds, or null.
-async function writePluginFile(env, title, file) {
-  let obj = null;
-  for (const key of tiddlerKeys(title)) {
-    if ((obj = await env.WIKI_BUCKET.get(key))) break;
-  }
+async function writePluginFile(env, entry, file) {
+  const title = entry.title;
+  const obj = await env.WIKI_BUCKET.get(tiddlerKey(title));
   if (!obj) return null;
-  const bytes = new Uint8Array(await obj.arrayBuffer());
-  let revision = obj.customMetadata?.revision;
-  if (!revision) {
-    let body = null;
-    try { body = JSON.parse(decoder.decode(bytes)); } catch (e) {}
-    revision = revisionOf(obj, body);
-  }
-  const flat = obj.customMetadata?.layout === FLAT_LAYOUT;
+  const revision = revisionOf(obj);
+  const nested = hasNestedFields(entry);
   const content = concatBytes([
-    encoder.encode(flat ? PRELOAD_OPEN : PRELOAD_NESTED_OPEN), bytes, encoder.encode(flat ? PRELOAD_CLOSE : preloadNestedClose(revision))
+    encoder.encode(nested ? PRELOAD_NESTED_OPEN : PRELOAD_OPEN), new Uint8Array(await obj.arrayBuffer()), encoder.encode(nested ? PRELOAD_NESTED_CLOSE : PRELOAD_CLOSE)
   ]);
   const key = pluginFileKey(title);
   for (let attempt = 1; attempt <= 3; attempt++) {
@@ -732,7 +672,7 @@ async function pluginScriptTags(env, entries) {
     const file = await env.WIKI_BUCKET.head(pluginFileKey(entry.title));
     let revision = file?.customMetadata?.revision;
     if (!revision || revision !== String(entry.revision)) {
-      revision = await writePluginFile(env, entry.title, file);
+      revision = await writePluginFile(env, entry, file);
     }
     return revision ? `<script src="${pluginFileUrl(env, entry.title, revision)}"></script>` : "";
   }));
@@ -795,13 +735,13 @@ async function rebakeHtml(env, ctx, list = null) {
     const store = [];
     const [, pluginTags] = await Promise.all([
       Promise.all(startupTitles.map(async (title) => {
-        for (const key of tiddlerKeys(title)) {
-          const obj = await env.WIKI_BUCKET.get(key);
-          if (obj) {
-            try { store.push(toPreloadFields(await obj.json())); } catch (e) {}
-            return;
-          }
-        }
+        const obj = await env.WIKI_BUCKET.get(tiddlerKey(title));
+        if (!obj) return;
+        try {
+          const tiddler = await obj.json();
+          if (hasNestedFields(tiddler)) tiddler.fields = tiddler.fields.fields;
+          store.push(tiddler);
+        } catch (e) {}
       })),
       pluginScriptTags(env, manifest.filter(t => t.title && needsPluginFile(t)))
     ]);
@@ -910,7 +850,7 @@ async function mutateManifest(env, ctx, mutator, list = null, attempts = 5) {
 }
 
 // A tiddler's entry in the list: every field but the text. title: the title it's stored under
-// (always text, whatever the body says); fields: the tiddler without its text, in either layout.
+// (always text, whatever the body says); fields: the tiddler without its text.
 // date fills in a missing modified or created date.
 function listEntry(title, fields, revision, date = getTwTimestamp()) {
   const rest = { ...fields };
@@ -971,10 +911,8 @@ async function removeFromManifest(env, ctx, title, list = null) {
 // stays as it is, and the list, saves and deletes answer 503 without changing anything, so the
 // browser simply asks again: the conflict guard at once, TiddlyWiki itself every 5 seconds.
 
-const TIDDLER_PREFIX = "recipes/default/tiddlers/";
 const REPAIR_PROGRESS_KEY = "_repair/tiddler-list-progress.json";
 const REPAIR_STEP_TIDDLERS = 100;         // read per request
-const REPAIR_STEP_READ_BYTES = 2000000;   // tiddlers not in the flat layout are read whole (text skipped, about 1 ms per MB): at most this much per request
 const REPAIR_STALE_MS = 2 * 60 * 1000;    // progress untouched for this long is from an abandoned rebuild
 const HEAD_BYTES = 16384;                 // flat tiddlers: how much is read to get the fields before "text"
 const LIST_REBUILDING = "The tiddler list is being rebuilt from the stored tiddlers. Try again in a moment.";
@@ -1034,96 +972,35 @@ async function putIfAbsent(env, key, value, options) {
   return env.WIKI_BUCKET.put(key, value, options);
 }
 
-// Where the closing quote of the JSON string starting at `start` is, or -1: the next quote that
-// isn't escaped (preceded by an even number of backslashes). Inside a string every quote is escaped.
-function stringEnd(bytes, start) {
-  for (let quote = bytes.indexOf(0x22, start + 1); quote !== -1; quote = bytes.indexOf(0x22, quote + 1)) {
-    let slashes = 0;
-    while (bytes[quote - 1 - slashes] === 0x5c) slashes++;
-    if (slashes % 2 === 0) return quote;
-  }
-  return -1;
-}
-
-// Where a stored tiddler's text is, to skip it: { start, end } covers the top-level '"text":"…"' and
-// the comma that separates it, or null if there's none. Strings are jumped over with indexOf, so a
-// big text costs one hop per quote in it; only the bytes between strings are looked at one by one.
-const TEXT_VALUE = encoder.encode('"text":"');
-function textValueRange(bytes) {
-  let depth = 0;
-  for (let i = 0; i < bytes.length; i++) {
-    const byte = bytes[i];
-    if (byte === 0x7b || byte === 0x5b) depth++;
-    else if (byte === 0x7d || byte === 0x5d) depth--;
-    else if (byte === 0x22) {
-      const end = stringEnd(bytes, i);
-      if (end === -1) return null;
-      if (depth === 1 && TEXT_VALUE.every((b, j) => bytes[i + j] === b)) {
-        const valueEnd = stringEnd(bytes, i + TEXT_VALUE.length - 1);
-        if (valueEnd === -1) return null;
-        let before = i - 1;
-        while (before >= 0 && bytes[before] <= 0x20) before--;
-        // ',"text":"…"' goes with the comma before it; the first key with the comma after it
-        if (bytes[before] === 0x2c) return { start: before, end: valueEnd + 1 };
-        let after = valueEnd + 1;
-        while (after < bytes.length && bytes[after] <= 0x20) after++;
-        return { start: i, end: bytes[after] === 0x2c ? after + 1 : valueEnd + 1 };
-      }
-      i = end;
-    }
-  }
-  return null;
-}
-
-// A stored tiddler's fields without its text, in either layout, or null if it isn't a JSON object.
-// The text, often most of the object (a plugin's is), is skipped as bytes, never decoded or parsed;
-// if what's left doesn't parse, the whole object is parsed.
-function storedFields(bytes) {
-  const text = textValueRange(bytes);
-  let fields = null;
-  if (text) {
-    try { fields = JSON.parse(decoder.decode(bytes.subarray(0, text.start)) + decoder.decode(bytes.subarray(text.end))); } catch (e) {}
-  }
-  if (fields === null) {
-    try { fields = JSON.parse(decoder.decode(bytes)); } catch (e) { return null; }
-  }
-  if (fields === null || typeof fields !== "object" || Array.isArray(fields)) return null;
-  delete fields.text;
-  return fields;
-}
-
-// The list entry for a stored tiddler (item: from list()), or null if it isn't listed. Flat
-// tiddlers have their fields before "text": usually only the start of the object is read.
+// The list entry for a stored tiddler (item: from list()), or null if it isn't listed. Its fields
+// come before "text", so usually only the start of the object is read. An object not in the form
+// the worker stores (an older version's file, a hand upload) is left out, never guessed at.
 async function storedEntry(env, item) {
-  const partial = item.customMetadata?.layout === FLAT_LAYOUT && item.size > HEAD_BYTES;
+  const title = item.key.slice(TIDDLER_PREFIX.length);
+  if (item.customMetadata?.layout !== FLAT_LAYOUT) {
+    console.error(`Rebuilding the tiddler list: ${item.key} isn't stored the way the worker stores tiddlers, left out`);
+    return null;
+  }
+  const partial = item.size > HEAD_BYTES;
   let obj = await env.WIKI_BUCKET.get(item.key, partial ? { range: { offset: 0, length: HEAD_BYTES } } : undefined);
   if (!obj) return null;   // deleted meanwhile
   let bytes = new Uint8Array(await obj.arrayBuffer());
-  let fields = null;
-  if (partial) {
-    const cut = obj.customMetadata?.layout === FLAT_LAYOUT ? textKeyOffset(bytes) : -1;   // as stored now
-    if (cut !== -1) {
-      try { fields = JSON.parse(decoder.decode(bytes.subarray(0, cut)) + "}"); } catch (e) {}
-    } else {
-      // Re-saved in another layout meanwhile, or fields over HEAD_BYTES: read whole
-      obj = await env.WIKI_BUCKET.get(item.key);
-      if (!obj) return null;
-      bytes = new Uint8Array(await obj.arrayBuffer());
-    }
+  let cut = textKeyOffset(bytes);
+  if (partial && cut === -1) {   // fields over HEAD_BYTES, or no text: read whole
+    obj = await env.WIKI_BUCKET.get(item.key);
+    if (!obj) return null;
+    bytes = new Uint8Array(await obj.arrayBuffer());
+    cut = textKeyOffset(bytes);
   }
-  if (!fields) fields = storedFields(bytes);
-  if (!fields || typeof fields !== "object" || Array.isArray(fields)) {
+  let fields = null;
+  try { fields = JSON.parse(cut === -1 ? decoder.decode(bytes) : decoder.decode(bytes.subarray(0, cut)) + "}"); } catch (e) {}
+  if (fields === null || typeof fields !== "object" || Array.isArray(fields)) {
     console.error(`Rebuilding the tiddler list: ${item.key} is not a readable tiddler, left out`);
     return null;
   }
-  // A tiddler is stored under its title: the one in the save's URL, which must match the body's.
-  // An older version stored some under their URL-encoded title.
-  const keyTitle = item.key.slice(TIDDLER_PREFIX.length);
-  const title = typeof fields.title === "string" && (fields.title === keyTitle || encodeURIComponent(fields.title) === keyTitle) ? fields.title : keyTitle;
   if (isEphemeralTitle(title) || isDraft(fields)) return null;
-  // If both keys exist, the wiki uses the plain one (findTiddler)
-  if (item.key !== TIDDLER_PREFIX + title && await env.WIKI_BUCKET.head(TIDDLER_PREFIX + title)) return null;
-  return listEntry(title, fields, revisionOf(obj, fields), getTwTimestamp(obj.uploaded));
+  // Listed under the title it's stored under (a save's body always has the same one)
+  return listEntry(title, fields, revisionOf(obj), getTwTimestamp(obj.uploaded));
 }
 
 // One step of a rebuild. damaged: { object, text } of the list as found (object null if missing).
@@ -1159,24 +1036,13 @@ async function rebuildList(env, ctx, damaged, { pageBuild = false } = {}) {
     prefix: TIDDLER_PREFIX, limit: REPAIR_STEP_TIDDLERS, include: ["customMetadata"],
     ...(resume ? (meta.cursor ? { cursor: meta.cursor } : { startAfter: decodeURIComponent(meta.after) }) : {})
   });
-  const items = [];
-  let readBytes = 0;
-  for (const item of listing.objects) {
-    const whole = item.customMetadata?.layout === FLAT_LAYOUT ? 0 : item.size;
-    if (items.length > 0 && readBytes + whole > REPAIR_STEP_READ_BYTES) break;
-    readBytes += whole;
-    items.push(item);
-  }
-  const results = await mapLimit(items, 6, item => storedEntry(env, item));
-  const entries = results.filter(Boolean);
-  // Listed from an older version's URL-encoded key: if its plain key appears later in the rebuild
-  // (a hand upload), it's listed twice, so the last step then removes duplicates
-  const dedupe = (resume && meta.dedupe === "yes") || results.some((entry, i) => entry && items[i].key !== TIDDLER_PREFIX + entry.title);
+  const items = listing.objects;
+  const entries = (await mapLimit(items, 6, item => storedEntry(env, item))).filter(Boolean);
   const added = encoder.encode(entries.map(entry => JSON.stringify(entry)).join(","));
   const all = concatBytes(done.length > 0 && added.length > 0 ? [done, encoder.encode(","), added] : [done, added]);
-  let count = (resume ? Number(meta.count) || 0 : 0) + entries.length;
+  const count = (resume ? Number(meta.count) || 0 : 0) + entries.length;
 
-  if (listing.truncated || items.length < listing.objects.length) {
+  if (listing.truncated) {
     // Only if the damaged list is still there (a request that read it just before another one
     // finished the rebuild would otherwise start a new one)
     if (!resume) {
@@ -1186,7 +1052,7 @@ async function rebuildList(env, ctx, damaged, { pageBuild = false } = {}) {
     // Where the next step starts (list() may return an empty page that isn't the last); the key is
     // encoded, as metadata may be sent as HTTP headers
     const position = items.length > 0 ? { after: encodeURIComponent(items[items.length - 1].key) } : { cursor: listing.cursor };
-    const options = { customMetadata: { rebuild: rebuildId, count: String(count), ...(dedupe ? { dedupe: "yes" } : {}), ...position } };
+    const options = { customMetadata: { rebuild: rebuildId, count: String(count), ...position } };
     // Saved only if no other request took this step meanwhile (otherwise its progress stands)
     if (progress) await env.WIKI_BUCKET.put(REPAIR_PROGRESS_KEY, all, { ...options, onlyIf: { etagMatches: progress.etag } });
     else await putIfAbsent(env, REPAIR_PROGRESS_KEY, all, options);
@@ -1194,15 +1060,10 @@ async function rebuildList(env, ctx, damaged, { pageBuild = false } = {}) {
   }
 
   // Every tiddler read: the new list replaces the damaged one, unless it was replaced meanwhile.
-  // It's normally written as is, without parsing it, so the last step costs no more than the others:
-  // each key is read once (each step adds to the progress it read, and only if no other request did
-  // meanwhile), and a title has one key, except as above.
-  let text = `[${decoder.decode(all)}]`;
-  if (dedupe) {
-    const byTitle = new Map(JSON.parse(text).map(entry => [entry.title, entry]));   // the last one read wins
-    text = JSON.stringify([...byTitle.values()]);
-    count = byTitle.size;
-  }
+  // It's written as is, without parsing it, so the last step costs no more than the others: each
+  // key is read once (each step adds to the progress it read, and only if no other request did
+  // meanwhile), and each key is one title.
+  const text = `[${decoder.decode(all)}]`;
   const written = await env.WIKI_BUCKET.put(MANIFEST_KEY, text, {
     httpMetadata: { contentType: "application/json" },
     onlyIf: { etagMatches: list.etag }
@@ -1324,7 +1185,7 @@ async function requeueBackup(env, msg, delaySeconds, countTry) {
 // Commits one save or delete
 async function backupJob(env, job) {
   const github = githubContents(env);
-  const inWiki = (await findTiddler(env, job.title)) !== null;
+  const inWiki = (await env.WIKI_BUCKET.head(tiddlerKey(job.title))) !== null;
 
   if (job.action === "delete") {
     if (inWiki) return; // Recreated since then: its own save message updates GitHub

@@ -2,7 +2,7 @@
 
 **Status: implemented and deployed (October 2026).** These are the design notes behind README section 4.8: the problem, the design and why it was chosen over baking plugins into the page, what it costs, the change step by step, and how to operate it.
 
-The change is covered by the tests: `test/plugins.test.mjs` (63 checks) runs real plugins shipped with TiddlyWiki, markdown and KaTeX, on the admin site and on a stand-in for the public site. All six suites pass (`npm test`).
+The change is covered by the tests: `test/plugins.test.mjs` (65 checks) runs real plugins shipped with TiddlyWiki, markdown and KaTeX, on the admin site and on a stand-in for the public site. All six suites pass (`npm test`).
 
 "The external-plugins plugin" below is `$:/plugins/theophile.dev/external-plugins`, which exports plugins as standalone `.js` files for single-file wikis. The plugin files here use the same format as its export template.
 
@@ -163,17 +163,17 @@ Before this change, every save was parsed and re-serialized by the worker, just 
 
 Median CPU of the body handling, measured in Node.js (the same JavaScript engine as Workers) on a slow, shared 2-core test machine, so only the proportions matter. The flat column includes building the plugin file.
 
-**Why cutting at `,"text":` is safe:** inside a JSON string every quote is escaped as `\"`, so the sequence `,"text":` can only be the `text` key itself. The flat layout has no nested objects, and the browser puts `text` last. In UTF-8, bytes of multi-byte characters are never ASCII, so searching the bytes can't match inside one either.
+**Why cutting at `,"text":` is safe:** inside a JSON string every quote is escaped as `\"`, so the sequence `,"text":` can only be the `text` key itself. The flat layout has no nested objects except that one, `{"fields":"…"}`, which holds no `"text"` key, and the browser puts `text` last. In UTF-8, bytes of multi-byte characters are never ASCII, so searching the bytes can't match inside one either.
 
 **The worker's fields come last.** It appends `revision`, `bag` and `recipe` to the end of the body, so even if a client sent its own `revision`, the worker's wins: JSON readers keep the last value of a repeated key.
 
 **Compatibility:**
-- Saves without the `X-Tiddler-Layout: flat` header (tabs opened before the deploy, scripts) are parsed and re-serialized, as before.
-- A body sent with the header that doesn't follow the layout (pretty-printed, or with `text`, `revision`, `bag` or `recipe` among the fields before `"text"`) is parsed and re-serialized too. A body that isn't a JSON object at all is refused with `500`, as before. The one thing the worker can't check cheaply is fields placed *after* `text`: they're stored, but missing from the tiddler list. The browser module never does that.
-- A tiddler with a field literally called `fields` is sent in TiddlyWeb's layout, because the flat layout can't represent it.
-- TiddlyWiki reads both layouts: its loader only unpacks `fields` when it's there. Stored tiddlers keep their layout until they're next saved.
+- Saves in any other layout are parsed and turned into the flat one: saves without the `X-Tiddler-Layout: flat` header (tabs opened before the deploy, or with the module off, which use TiddlyWeb's layout), and bodies sent with the header that don't follow the layout (pretty-printed, with `text`, `revision`, `bag` or `recipe` among the fields before `"text"`, or with a value that isn't text). A body that isn't a tiddler is refused with `400`. The one thing the worker can't check cheaply is fields placed *after* `text`: they're stored, but missing from the tiddler list. The browser module never does that.
+- A field literally called `fields` is the one exception to the flat layout: it's sent and stored nested, as `"fields":{"fields":"…"}`, the way TiddlyWeb's layout has it, because a flat `fields` is where TiddlyWiki's loader looks for nested custom fields. TiddlyWiki unpacks it only for tiddlers loaded through sync, so the page build unpacks it in baked startup tiddlers and plugin files. A field value that's an object can't be stored (a `"text"` key inside it would be taken for the text) and is refused with `400`; TiddlyWiki never sends one.
 
-**Alternatives considered:** flattening in the worker would have added about half again to the save's CPU. Flattening in the plugin file (one extra line in the browser) costs nothing there, but leaves the save's own parse and re-serialize. The plugin file for a tiddler still stored in TiddlyWeb's layout uses that extra line.
+At first, other layouts were stored as they came, so the bucket held both and every reader handled both. A later change made the flat layout the only one stored, which removed that code throughout the worker; a bucket filled before then is converted once (README 6).
+
+**Alternatives considered:** flattening in the worker would have added about half again to the save's CPU, which is why the browser sends the flat layout; the worker flattens only the rare saves that arrive in another one. Flattening in the plugin file (one extra line in the browser) costs nothing there, but leaves the save's own parse and re-serialize.
 
 ### 3.6 The page build is the only writer of plugin files
 
@@ -245,17 +245,16 @@ What changed relative to the previous worker, with the code as it now is in `src
 In `src/conflict-guard.js`, this function was added after `link()`:
 
 ```js
-// The body of a save in the worker's "flat" layout; the worker appends its own revision, bag and
-// recipe. Returns null for a tiddler with a field called "fields", which this layout can't
-// represent (TiddlyWeb's loader would take it for its nested field list).
+// The body of a save in the worker's "flat" layout, the only one it stores; the worker appends its
+// own revision, bag and recipe. A field called "fields" stays nested as {fields: value}, the way
+// TiddlyWeb's layout has it: a flat "fields" is where TiddlyWeb's loader looks for nested fields.
 function flatBody(tiddler) {
 	var result = {},
 		fields = tiddler.fields;
-	if($tw.utils.hop(fields,"fields")) {
-		return null;
-	}
 	$tw.utils.each(fields,function(value,name) {
-		if(name !== "text" && name !== "revision" && name !== "bag" && name !== "recipe") {
+		if(name === "fields") {
+			result.fields = {fields: tiddler.getFieldString(name)};
+		} else if(name !== "text" && name !== "revision" && name !== "bag" && name !== "recipe") {
 			result[name] = name === "tags" ? value : tiddler.getFieldString(name);
 		}
 	});
@@ -271,13 +270,8 @@ In `proto.saveTiddler`, the `headers` and `data` of the `$tw.utils.httpRequest({
 
 ```js
 var body = flatBody(tiddler),
-	headers = {"Content-type": "application/json"},
+	headers = {"Content-type": "application/json", "X-Tiddler-Layout": "flat"},
 	tries = 0;
-if(body === null) {
-	body = this.convertTiddlerToTiddlyWebFormat(tiddler);
-} else {
-	headers["X-Tiddler-Layout"] = "flat";
-}
 function send() {
 	$tw.utils.httpRequest({
 		url: self.host + "recipes/" + encodeURIComponent(self.recipe) + "/tiddlers/" + encodeURIComponent(title),
@@ -290,7 +284,7 @@ A paragraph in the header comment says the module sends saves in the flat layout
 
 ### 5.2 The worker: what the page needs at boot
 
-In `src/worker.src.js`, the block that defined `STARTUP_TITLES` and `isStartupTiddler` (just above `tiddlerKeys`) became:
+In `src/worker.src.js`, the block that defined `STARTUP_TITLES` and `isStartupTiddler` (just above `tiddlerKey`) became:
 
 ```js
 // --- What the page needs at boot ---------------------------------------------------------------
@@ -306,12 +300,6 @@ const DISABLED_PLUGIN_PREFIX = "$:/config/Plugins/Disabled/";   // read at boot,
 const PLUGIN_FILE_TYPES = ["plugin", "theme", "language"];
 const MODULE_TYPES = ["application/javascript", "application/json", "application/x-tiddler-dictionary"];   // TiddlyWiki defines modules from these at boot
 
-// A field of a tiddler in either layout: TiddlyWeb's (custom fields under "fields") or flat
-function fieldOf(tiddler, name) {
-  if (tiddler[name] !== undefined) return tiddler[name];
-  return tiddler.fields !== null && typeof tiddler.fields === "object" ? tiddler.fields[name] : undefined;
-}
-
 // These take a saved tiddler or an entry of the tiddler list
 function isStartupTiddler(tiddler) {
   const title = tiddler.title || "", tags = tiddler.tags;
@@ -322,11 +310,11 @@ function isStartupTiddler(tiddler) {
 
 // Plugins (but not the core: it comes with index.html and is never synced) and JavaScript modules
 function needsPluginFile(tiddler) {
-  const pluginType = fieldOf(tiddler, "plugin-type");
+  const pluginType = tiddler["plugin-type"];
   if (pluginType) {
-    return PLUGIN_FILE_TYPES.includes(pluginType) && tiddler.title !== "$:/core" && fieldOf(tiddler, "platform") !== "server";
+    return PLUGIN_FILE_TYPES.includes(pluginType) && tiddler.title !== "$:/core" && tiddler.platform !== "server";
   }
-  return MODULE_TYPES.includes(tiddler.type) && Boolean(fieldOf(tiddler, "module-type"));
+  return MODULE_TYPES.includes(tiddler.type) && Boolean(tiddler["module-type"]);
 }
 
 function isPageTiddler(tiddler) {
@@ -342,11 +330,13 @@ This block was added after `conflictResponse()`:
 
 ```js
 // --- Reading a save ---------------------------------------------------------------------------
-// The browser module sends tiddlers "flat" (header X-Tiddler-Layout: flat): every field at the top
-// level, compact JSON, "text" last, without revision, bag or recipe. The worker parses only the
-// fields before "text" and appends its revision, bag and recipe, working on the raw bytes: the
-// text itself (a whole plugin, an image...) is never decoded, parsed or re-encoded.
-// Other clients send TiddlyWeb JSON (custom fields under "fields"), parsed and re-serialized.
+// Every tiddler is stored "flat": every field at the top level, compact JSON, "text" last, then the
+// worker's revision, bag and recipe; customMetadata { revision, layout: "flat" }. The browser module
+// sends exactly that, without revision, bag or recipe (header X-Tiddler-Layout: flat): the worker
+// parses only the fields before "text" and appends its own, working on the raw bytes, so the text
+// itself (a whole plugin, an image...) is never decoded, parsed or re-encoded. Anything else, such
+// as TiddlyWeb JSON (custom fields under "fields", the text anywhere) from a tab without the module,
+// is parsed and turned into the flat layout first.
 
 const FLAT_LAYOUT = "flat";
 const encoder = new TextEncoder();
@@ -387,39 +377,71 @@ function parseJsonBody(text) {
   }
 }
 
-// A save in TiddlyWeb's layout, or any other JSON: parsed, stamped and re-serialized
-function parsedSave(tiddler) {
-  // A title that isn't text would make the tiddler list unreadable (and no browser sends one)
-  if (!isTiddlerObject(tiddler)) throw new BadSave("the body is not a tiddler (a JSON object with a text title)");
-  const fields = { ...tiddler };
-  delete fields.text;
-  return {
-    fields, layout: "tiddlyweb",
-    stored: revision => encoder.encode(JSON.stringify({ ...tiddler, revision, bag: "default", recipe: "default" }))
-  };
+// TiddlyWiki's field values are text, or lists of text (tags). An object can't be stored flat (a
+// "text" key inside it would be taken for the tiddler's text), with one exception: a field called
+// "fields" stays nested as { fields: value }, the way TiddlyWeb's layout has it, because a flat
+// "fields" is where TiddlyWiki's loader looks for nested custom fields.
+function isFieldValue(value) {
+  return value === null || typeof value !== "object" || (Array.isArray(value) && value.every(item => item === null || typeof item !== "object"));
+}
+function isStorable(name, value) {
+  if (name !== "fields") return isFieldValue(value);
+  return value !== null && typeof value === "object" && !Array.isArray(value) && Object.keys(value).length === 1 &&
+    Object.hasOwn(value, "fields") && (value.fields === null || typeof value.fields !== "object");
 }
 
-// Returns { fields, layout, stored(revision) }: fields = the tiddler without its text,
-// stored(revision) = the bytes to store, with the worker's revision, bag and recipe
-async function readSave(request) {
-  if (request.headers.get("X-Tiddler-Layout") !== FLAT_LAYOUT) {
-    return parsedSave(parseJsonBody(await request.text()));
-  }
-  const bytes = new Uint8Array(await request.arrayBuffer());
-  let end = bytes.length;
-  while (end > 0 && bytes[end - 1] <= 0x20) end--;
+// TiddlyWiki unpacks that nested "fields" when it loads a tiddler through sync, but not the tiddlers
+// the page hands it at boot (preloadTiddlers): the page build unpacks those
+function hasNestedFields(tiddler) {
+  return isStorable("fields", tiddler.fields);
+}
+
+const BOOKKEEPING = ["text", "revision", "bag", "recipe"];
+
+// The fields before "text" of a body in the flat layout, or null if it isn't one
+function flatFields(bytes, end) {
   let cut = textKeyOffset(bytes);
   if (cut === -1) cut = end - 1;   // no text: the fields run up to the closing brace
-  const fields = bytes[0] === 0x7b && bytes[end - 1] === 0x7d && cut > 0
-    ? parseJsonBody(decoder.decode(bytes.subarray(0, cut)) + "}") : null;
-  if (!isTiddlerObject(fields)) throw new BadSave("the body is not a tiddler in the flat layout");
-  // Not what the browser module sends (pretty-printed, or with these fields before "text"):
-  // handled like any other save
-  if (["text", "revision", "bag", "recipe"].some(name => name in fields)) {
-    return parsedSave(parseJsonBody(decoder.decode(bytes)));
+  if (bytes[0] !== 0x7b || bytes[end - 1] !== 0x7d || cut <= 0) return null;
+  let fields = null;
+  try { fields = JSON.parse(decoder.decode(bytes.subarray(0, cut)) + "}"); } catch (e) { return null; }
+  // Pretty-printed, with these before "text", or with a value that isn't text: not the flat layout after all
+  if (!isTiddlerObject(fields) || BOOKKEEPING.some(name => Object.hasOwn(fields, name)) ||
+      !Object.entries(fields).every(([name, value]) => isStorable(name, value))) return null;
+  return fields;
+}
+
+// Any other tiddler JSON, TiddlyWeb's layout included, turned into the flat layout
+function toFlat(tiddler) {
+  // A title that isn't text would make the tiddler list unreadable (and no browser sends one)
+  if (!isTiddlerObject(tiddler)) throw new BadSave("the body is not a tiddler (a JSON object with a text title)");
+  let { fields: custom = {}, text, revision, bag, recipe, ...fields } = tiddler;
+  // In TiddlyWeb's layout, "fields" holds the custom fields (text there is a field called "fields")
+  if (custom === null) custom = {};
+  else if (typeof custom !== "object") custom = { fields: custom };
+  else if (Array.isArray(custom)) throw new BadSave('"fields" must hold the custom fields');
+  for (const [name, value] of Object.entries(custom)) {
+    if (!Object.hasOwn(fields, name) && !BOOKKEEPING.includes(name)) fields[name] = value;
+  }
+  if (Object.hasOwn(fields, "fields")) fields.fields = { fields: fields.fields };   // see isStorable
+  const notText = Object.keys(fields).find(name => !isStorable(name, fields[name]));
+  if (notText !== undefined) throw new BadSave(`the field "${notText}" isn't text`);
+  return { fields, bytes: encoder.encode(JSON.stringify(text === undefined ? fields : { ...fields, text })) };
+}
+
+// Returns { fields, stored(revision) }: fields = the tiddler without its text, stored(revision) =
+// the bytes to store, with the worker's revision, bag and recipe
+async function readSave(request) {
+  let bytes = new Uint8Array(await request.arrayBuffer());
+  let end = bytes.length;
+  while (end > 0 && bytes[end - 1] <= 0x20) end--;
+  let fields = request.headers.get("X-Tiddler-Layout") === FLAT_LAYOUT ? flatFields(bytes, end) : null;
+  if (!fields) {
+    ({ fields, bytes } = toFlat(parseJsonBody(decoder.decode(bytes))));
+    end = bytes.length;
   }
   return {
-    fields, layout: FLAT_LAYOUT,
+    fields,
     stored: revision => concatBytes([
       bytes.subarray(0, end - 1),
       encoder.encode(`,"revision":"${revision}","bag":"default","recipe":"default"}`)
@@ -461,8 +483,7 @@ const newRevision = Date.now().toString();
 const body = save.stored(newRevision);
 const putOptions = {
   httpMetadata: { contentType: "application/json" },
-  // "layout" tells readers the revision, bag and recipe are already in the stored JSON
-  customMetadata: save.layout === FLAT_LAYOUT ? { revision: newRevision, layout: FLAT_LAYOUT } : { revision: newRevision }
+  customMetadata: { revision: newRevision, layout: FLAT_LAYOUT }
 };
 ```
 
@@ -503,16 +524,15 @@ async function finishSave(env, ctx, title, fields, revision, list = null) {
 
 ### 5.5 Reading a flat tiddler through the worker
 
-In the `GET` branch for `recipes/default/tiddlers/…`, serve flat objects as they are stored. The `Cache-Control` line moves up from below the revision lookup:
+The `GET` branch for `recipes/default/tiddlers/…` serves flat objects as they are stored. Since every tiddler is stored flat, that's all it does:
 
 ```js
-headers.set("Cache-Control", "no-cache");
-if (object.customMetadata?.layout === FLAT_LAYOUT) {
+if (key.startsWith(TIDDLER_PREFIX)) {
   // Stored with its revision, bag and recipe already in place: served as is
-  headers.set("ETag", tiddlerEtag(title, object.customMetadata.revision));
-  return new Response(request.method === "GET" ? object.body : null, { headers });
+  headers.set("Cache-Control", "no-cache");
+  headers.set("ETag", tiddlerEtag(key.slice(TIDDLER_PREFIX.length), revisionOf(object)));
+  return new Response(body, { headers });
 }
-const text = await object.text();
 ```
 
 ### 5.6 Deleting
@@ -552,12 +572,9 @@ await untilDone(ctx, (async () => {
 const PLUGIN_FILE_DIR = "_plugins/";
 const PRELOAD_OPEN = "{\nconst tw = globalThis.$tw ??= Object.create(null);\ntw.preloadTiddlers = (tw.preloadTiddlers ?? []).concat([";
 const PRELOAD_CLOSE = "]);\n}\n";
-// Tiddlers stored in TiddlyWeb's layout (before the flat layout, or by other clients) keep their
-// custom fields under "fields": the browser moves them up first, and sets the revision as a string
+// A tiddler with a field called "fields" (stored nested: hasNestedFields) is unpacked first
 const PRELOAD_NESTED_OPEN = "{\nconst t = ";
-const preloadNestedClose = revision => ";\nconst f = t.fields || {}; delete t.fields;\nfor (const k in f) if (!(k in t)) t[k] = f[k];\n" +
-  `t.revision = ${JSON.stringify(String(revision))};\n` +
-  "const tw = globalThis.$tw ??= Object.create(null);\ntw.preloadTiddlers = (tw.preloadTiddlers ?? []).concat([t]);\n}\n";
+const PRELOAD_NESTED_CLOSE = ";\nt.fields = t.fields.fields;\nconst tw = globalThis.$tw ??= Object.create(null);\ntw.preloadTiddlers = (tw.preloadTiddlers ?? []).concat([t]);\n}\n";
 
 function pluginFileKey(title) {
   return `${PLUGIN_FILE_DIR}${title}.js`;
@@ -568,27 +585,20 @@ function pluginFileUrl(env, title, revision) {
   return publicUrl(env, `/${PLUGIN_FILE_DIR}${encodeURIComponent(title)}.js?v=${encodeURIComponent(revision)}`);
 }
 
-// Writes the plugin file from the stored tiddler. file: what head() returned for it (or null).
+// Writes the plugin file from the stored tiddler. entry: its list entry; file: what head()
+// returned for the file (or null).
 // Two page builds can overlap, so it doesn't replace a file holding a newer version, and writes
 // only if the file is still the one it looked at. After two lost races, a missing file is written
 // unconditionally (like the PUT handler's create-only fallback): best effort, not a guarantee.
 // Returns the revision the file holds, or null.
-async function writePluginFile(env, title, file) {
-  let obj = null;
-  for (const key of tiddlerKeys(title)) {
-    if ((obj = await env.WIKI_BUCKET.get(key))) break;
-  }
+async function writePluginFile(env, entry, file) {
+  const title = entry.title;
+  const obj = await env.WIKI_BUCKET.get(tiddlerKey(title));
   if (!obj) return null;
-  const bytes = new Uint8Array(await obj.arrayBuffer());
-  let revision = obj.customMetadata?.revision;
-  if (!revision) {
-    let body = null;
-    try { body = JSON.parse(decoder.decode(bytes)); } catch (e) {}
-    revision = revisionOf(obj, body);
-  }
-  const flat = obj.customMetadata?.layout === FLAT_LAYOUT;
+  const revision = revisionOf(obj);
+  const nested = hasNestedFields(entry);
   const content = concatBytes([
-    encoder.encode(flat ? PRELOAD_OPEN : PRELOAD_NESTED_OPEN), bytes, encoder.encode(flat ? PRELOAD_CLOSE : preloadNestedClose(revision))
+    encoder.encode(nested ? PRELOAD_NESTED_OPEN : PRELOAD_OPEN), new Uint8Array(await obj.arrayBuffer()), encoder.encode(nested ? PRELOAD_NESTED_CLOSE : PRELOAD_CLOSE)
   ]);
   const key = pluginFileKey(title);
   for (let attempt = 1; attempt <= 3; attempt++) {
@@ -616,7 +626,7 @@ async function pluginScriptTags(env, entries) {
     const file = await env.WIKI_BUCKET.head(pluginFileKey(entry.title));
     let revision = file?.customMetadata?.revision;
     if (!revision || revision !== String(entry.revision)) {
-      revision = await writePluginFile(env, entry.title, file);
+      revision = await writePluginFile(env, entry, file);
     }
     return revision ? `<script src="${pluginFileUrl(env, entry.title, revision)}"></script>` : "";
   }));
@@ -679,13 +689,13 @@ async function rebakeHtml(env, ctx, list = null) {
     const store = [];
     const [, pluginTags] = await Promise.all([
       Promise.all(startupTitles.map(async (title) => {
-        for (const key of tiddlerKeys(title)) {
-          const obj = await env.WIKI_BUCKET.get(key);
-          if (obj) {
-            try { store.push(toPreloadFields(await obj.json())); } catch (e) {}
-            return;
-          }
-        }
+        const obj = await env.WIKI_BUCKET.get(tiddlerKey(title));
+        if (!obj) return;
+        try {
+          const tiddler = await obj.json();
+          if (hasNestedFields(tiddler)) tiddler.fields = tiddler.fields.fields;
+          store.push(tiddler);
+        } catch (e) {}
       })),
       pluginScriptTags(env, manifest.filter(t => t.title && needsPluginFile(t)))
     ]);
@@ -730,7 +740,7 @@ async function rebakeHtml(env, ctx, list = null) {
 
 `isNewerRevision`, used by `writePluginFile`, is the existing helper from the backup code.
 
-The comment above `toPreloadFields` now says stored tiddlers *may* use TiddlyWeb's layout.
+(Startup tiddlers are baked as stored: they're flat. `toPreloadFields`, which flattened ones stored in TiddlyWeb's layout, went with the later change described in 3.5.)
 
 ### 5.8 The tiddler list helpers return what they replaced
 
@@ -738,7 +748,7 @@ The comment above `toPreloadFields` now says stored tiddlers *may* use TiddlyWeb
 
 ```js
 // A tiddler's entry in the list: every field but the text. title: the title it's stored under
-// (always text, whatever the body says); fields: the tiddler without its text, in either layout.
+// (always text, whatever the body says); fields: the tiddler without its text.
 // date fills in a missing modified or created date.
 function listEntry(title, fields, revision, date = getTwTimestamp()) {
   const rest = { ...fields };
@@ -789,7 +799,7 @@ async function removeFromManifest(env, ctx, title, list = null) {
 }
 ```
 
-`mutateManifest` may run the callback more than once when two saves race; the variables end up holding the value from the attempt that succeeded. `updateManifest` now keeps every field except the text, in either layout. The page build and the save and delete handlers decide everything from list entries (`plugin-type`, `module-type`, `platform`, `tags`), so the entries need them; the list grows a little as a result.
+`mutateManifest` may run the callback more than once when two saves race; the variables end up holding the value from the attempt that succeeded. `updateManifest` now keeps every field except the text. The page build and the save and delete handlers decide everything from list entries (`plugin-type`, `module-type`, `platform`, `tags`), so the entries need them; the list grows a little as a result.
 
 ### 5.9 The backup takes the stored bytes
 
@@ -861,7 +871,7 @@ writeFileSync(new URL("./worker.js", import.meta.url), banner + source.replace(P
 - **`test/bake.test.mjs`:** the version check becomes `/^4-/`, and a new check for an `index.html` with a byte order mark.
 - **`test/queue-backup.test.mjs`:** one new check for flat saves.
 - **`package.json`:** adds `test:plugins` and runs it in `npm test`.
-- **`README.md`:** updated: the introduction, the architecture, the note on the build (2), the zone rules (3.5), the requests table (4.1), the R2 layout and the two layouts (4.2), the page (4.3), a new section 4.8 on plugins, 5.13, operating (6), troubleshooting (7), limits (8) and tests (9).
+- **`README.md`:** updated: the introduction, the architecture, the note on the build (2), the zone rules (3.5), the requests table (4.1), the R2 layout and the stored layout (4.2), the page (4.3), a new section 4.8 on plugins, 5.13, operating (6), troubleshooting (7), limits (8) and tests (9).
 
 ---
 
@@ -877,9 +887,9 @@ writeFileSync(new URL("./worker.js", import.meta.url), banner + source.replace(P
 6. **Disable and enable:** the flag is in the page, the plugin is inactive with no reload asked and still listed, then active again.
 7. **A theme** is applied at boot.
 8. **A standalone macro module** whose code contains `U+2028`, escaped quotes, `,"text":` and an emoji works.
-9. **Bodies the worker must cut correctly:** `,"text":` inside a field and inside the text, a tiddler without text, a field called `fields`, two bodies that claim the flat layout but don't follow it, and a flat tiddler read back through the worker. Also the order of a save's purge: the list is purged only once it's updated. That check always passes when the order is right, but can only catch the wrong order some of the time, since it depends on timing.
-10. **A save in TiddlyWeb's layout** (an old tab or a script) is stored as before; its file moves the fields up in the browser; the title has spaces, `#` and non-ASCII characters.
-11. **Plugins stored before the change,** here as another tool would store one (no metadata, a number as revision): the first page build writes the file, and the plugin works with no reload asked.
+9. **Bodies the worker must cut correctly:** `,"text":` inside a field and inside the text, a tiddler without text, a field called `fields` (stored nested, and read back after a reload, also on a startup tiddler and a module loaded at boot), two bodies that claim the flat layout but don't follow it (stored flat), and a flat tiddler read back through the worker. Also the order of a save's purge: the list is purged only once it's updated. That check always passes when the order is right, but can only catch the wrong order some of the time, since it depends on timing.
+10. **A save in TiddlyWeb's layout** (an old tab or a script) is stored flat, and its file is the usual one; the title has spaces, `#` and non-ASCII characters.
+11. **A stored plugin whose file is missing:** the next page build writes it, and the plugin works with no reload asked.
 12. **No longer needed:** a plugin turned into an ordinary tiddler, a startup action losing its tag, a deleted plugin.
 13. **Overlapping builds:** a build doesn't replace a page built from a newer tiddler list, or a file holding a newer version; and a tiddler list replaced by hand doesn't stop the page from being rebuilt.
 14. **Recovery:** with the file deleted, the wiki starts without the plugin; deleting the plugin then removes its tag.
@@ -921,7 +931,7 @@ How it was deployed. The same steps apply when setting this up from scratch.
 6. **Try it:** install a plugin with code, for example from Control Panel → Plugins → Get more plugins. Wait for the save to finish, then reload.
 7. **Check the public site** shows the plugin working.
 
-Existing tiddlers stay in TiddlyWeb's layout until they're next saved; nothing needs converting.
+At the time, existing tiddlers stayed in TiddlyWeb's layout until they were next saved. The current worker reads only the flat layout, so a bucket from before is converted once, before deploying it (README 6).
 
 ---
 

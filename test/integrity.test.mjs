@@ -73,19 +73,14 @@ await save("$:/SiteTitle", { text: "Title before the damage" });
 await save("To delete", { text: "bye" });
 await save("No text", { note: "only fields" });
 await save("Big head", { big: "x".repeat(20000), text: "after a big field" });
-// TiddlyWeb's layout (custom fields under "fields"), as other clients send it
+// TiddlyWeb's layout (custom fields under "fields", the text anywhere), as TiddlyWiki sends it
+// without the conflict guard: stored flat like any other save
 await mf.dispatchFetch(url("Nested one"), { method: "PUT", headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({ title: "Nested one", text: "nested", tags: ["a b"], fields: { color: "red" } }) });
-// Stored by an older version: under the URL-encoded key, with the revision only in the body
+  body: JSON.stringify({ text: "nested", title: "Nested one", tags: ["a b"], fields: { color: "red" } }) });
+// Not in the form the worker stores (older versions, hand uploads): an older layout, a URL-encoded
+// key, no metadata. Never guessed at: left out of a rebuilt list.
 await bucket.put("recipes/default/tiddlers/" + encodeURIComponent("Café à"), JSON.stringify({ title: "Café à", text: "old", revision: "123", bag: "default", recipe: "default" }));
-// TiddlyWeb's layout as other tools store it: the text first, or in the middle, with escaped quotes
-// and a backslash right before the closing quote (the rebuild skips the text without parsing it)
-await bucket.put("recipes/default/tiddlers/Text first", JSON.stringify({ text: 'he said "hi" ,"text":"no" \\', title: "Text first", tags: ["x y"], fields: { color: "blue" }, revision: "91" }));
-await bucket.put("recipes/default/tiddlers/Text middle", JSON.stringify({ title: "Text middle", text: "a \\\"quoted\\\" part", caption: "after the text", revision: "92" }));
-// Formatted by hand: a space before the comma after the text, and a "text" key that isn't the text
-await bucket.put("recipes/default/tiddlers/Spaced", '{"text":"x" ,"title":"Spaced","revision":"93"}');
-await bucket.put("recipes/default/tiddlers/Nested text", '{"title":"Nested text","fields":{"text":"n","c":"red"},"revision":"94"}');
-// Stored by an older version, but never listed: the story list and a draft
+await bucket.put("recipes/default/tiddlers/Text first", JSON.stringify({ text: "x", title: "Text first", fields: { color: "blue" }, revision: "91" }), { customMetadata: { revision: "91" } });
 await bucket.put("recipes/default/tiddlers/$:/StoryList", JSON.stringify({ title: "$:/StoryList", list: "x" }));
 await bucket.put("recipes/default/tiddlers/Draft of 'X'", JSON.stringify({ title: "Draft of 'X'", "draft.of": "X", text: "d" }));
 let page = await (await mf.dispatchFetch(base + "/")).text();
@@ -105,7 +100,7 @@ const getList = async () => {
 const repairFiles = async () => (await bucket.list({ prefix: "_repair/" })).objects.map(o => o.key);
 const damagedCopies = new Set();
 
-let expected = { ...summary(await list()), "Café à": "123", "Text first": "91", "Text middle": "92", Spaced: "93", "Nested text": "94" };
+let expected = summary(await list());
 const damaged = '[{"title": "Old note", "revision": ';
 damagedCopies.add(damaged);
 await bucket.put(LIST, damaged);
@@ -116,16 +111,14 @@ check("a damaged list is rebuilt from the stored tiddlers when it's read", got.s
 const rebuilt = await list();
 check("...and the rebuilt list is stored in R2", !differences(summary(rebuilt), expected));
 const rebuiltEntry = title => rebuilt.find(e => e.title === title);
-check("...with every field but the text, in either layout",
-  rebuiltEntry("Nested one")?.fields?.color === "red" && rebuiltEntry("No text")?.note === "only fields" &&
-  rebuiltEntry("Big head")?.big?.length === 20000 && rebuilt.every(e => e.text === undefined && e.bag === "default"));
-check("...the text skipped wherever it is, every other field kept",
-  rebuiltEntry("Text first")?.fields?.color === "blue" && rebuiltEntry("Text first")?.tags?.[0] === "x y" && rebuiltEntry("Text middle")?.caption === "after the text",
-  JSON.stringify([rebuiltEntry("Text first"), rebuiltEntry("Text middle")]));
-check("...including JSON formatted by hand (a space before a comma, a \"text\" key inside another field)",
-  !!rebuiltEntry("Spaced") && rebuiltEntry("Nested text")?.fields?.text === "n" && rebuiltEntry("Nested text")?.fields?.c === "red",
-  JSON.stringify([rebuiltEntry("Spaced"), rebuiltEntry("Nested text")]));
-check("...leaving out the story list and drafts", !rebuiltEntry("$:/StoryList") && !rebuiltEntry("Draft of 'X'"));
+check("...with every field but the text",
+  rebuiltEntry("No text")?.note === "only fields" && rebuiltEntry("Big head")?.big?.length === 20000 &&
+  rebuilt.every(e => e.text === undefined && e.bag === "default"));
+check("...a save in TiddlyWeb's layout among them, stored flat (its custom fields at the top level)",
+  rebuiltEntry("Nested one")?.color === "red" && rebuiltEntry("Nested one")?.fields === undefined && rebuiltEntry("Nested one")?.tags?.[0] === "a b",
+  JSON.stringify(rebuiltEntry("Nested one")));
+check("...leaving out anything not in the form the worker stores (an older layout, an encoded key, no metadata)",
+  !rebuiltEntry("Café à") && !rebuiltEntry("Caf%C3%A9%20%C3%A0") && !rebuiltEntry("Text first") && !rebuiltEntry("$:/StoryList") && !rebuiltEntry("Draft of 'X'"));
 const keptCopies = await Promise.all((await repairFiles()).map(async key => (await bucket.get(key)).text()));
 check("...and keeping the damaged list aside in _repair/", keptCopies.includes(damaged));
 
@@ -168,8 +161,32 @@ check("a save whose title isn't text is refused (400), and the list keeps workin
 res = await mf.dispatchFetch(url("Title A"), { method: "PUT", headers: { "Content-Type": "application/json" },
   body: JSON.stringify({ title: "Title B", text: "which one?" }) });
 check("a save whose body names another title than its URL is refused (400)", res.status === 400 && !(await storedRevision("Title A")), `status ${res.status}`);
-await bucket.put("recipes/default/tiddlers/67890", JSON.stringify({ title: 67890, text: "uploaded by hand", revision: "77" }), { customMetadata: { revision: "77" } });
-await bucket.put("recipes/default/tiddlers/Key title", JSON.stringify({ title: "Body title", text: "uploaded by hand", revision: "78" }), { customMetadata: { revision: "78" } });
+// A field called "fields" stays nested, the way TiddlyWeb's layout has it: TiddlyWiki reads it from there
+res = await mf.dispatchFetch(url("Fields field"), { method: "PUT", headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ title: "Fields field", text: "t", fields: { fields: "x", other: "o" } }) });
+if (res.status === 204) expected["Fields field"] = etagRevision(res);
+const fieldsStored = await bucket.get("recipes/default/tiddlers/Fields field");
+const fieldsText = fieldsStored ? await fieldsStored.text() : "";
+check("a field called \"fields\" is stored nested, as TiddlyWeb's layout has it, the other fields flat",
+  res.status === 204 && JSON.parse(fieldsText || "{}").fields?.fields === "x" && JSON.parse(fieldsText || "{}").other === "o" && fieldsText.includes(',"text":"t","revision":') &&
+  (await entry("Fields field"))?.fields?.fields === "x", `status ${res.status} ${fieldsText}`);
+// Converted faithfully: custom fields named like built-in properties are kept; a "text" (or
+// revision, bag, recipe) under "fields" doesn't move the text; a field that isn't text is refused
+res = await mf.dispatchFetch(url("Odd fields"), { method: "PUT", headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ title: "Odd fields", text: "real text", fields: { constructor: "kept", toString: "kept too", text: "nested", b: "2" } }) });
+if (res.status === 204) expected["Odd fields"] = etagRevision(res);
+const oddStored = await bucket.get("recipes/default/tiddlers/Odd fields");
+const oddText = oddStored ? await oddStored.text() : "";
+const oddEntry = await entry("Odd fields");
+check("a save in TiddlyWeb's layout keeps fields named like built-in properties, and its text stays last",
+  res.status === 204 && oddEntry?.constructor === "kept" && oddEntry?.toString === "kept too" && oddEntry?.b === "2" &&
+  oddText.includes(',"text":"real text","revision":') && !oddText.includes("nested"), `status ${res.status} ${oddText}`);
+res = await mf.dispatchFetch(url("Object field"), { method: "PUT", headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ title: "Object field", text: "t", fields: { meta: { text: "inside" } } }) });
+check("a field whose value isn't text (an object) is refused (400)", res.status === 400 && !(await storedRevision("Object field")), `status ${res.status}`);
+const flatMeta = revision => ({ customMetadata: { revision, layout: "flat" } });
+await bucket.put("recipes/default/tiddlers/67890", '{"title":67890,"text":"uploaded by hand","revision":"77","bag":"default","recipe":"default"}', flatMeta("77"));
+await bucket.put("recipes/default/tiddlers/Key title", '{"title":"Body title","text":"uploaded by hand","revision":"78","bag":"default","recipe":"default"}', flatMeta("78"));
 await bucket.put(LIST, damaged);
 got = await getList();
 check("...and ones stored by hand don't stop a rebuild: they're listed under their key, as text",
@@ -268,26 +285,6 @@ check("...which isn't JSON: even a tab without the conflict guard stops with an 
   !!standIn && !standInParses, standInText.slice(0, 80));
 got = await rebuildToEnd();
 check("...and the rebuild completes", got.status === 200 && !differences(summary(JSON.parse(got.text)), expected), `status ${got.status}`);
-// A tiddler under its URL-encoded key (an older version) whose plain key appears during the rebuild,
-// after the step that listed it, in a later step's range: listed once, not twice
-for (let i = 0; i < 120; i += 40) {
-  await Promise.all(Array.from({ length: 40 }, (_, j) => {
-    const title = `Ax ${String(i + j).padStart(3, "0")}`, revision = String(1710000000000 + i + j);
-    expected[title] = revision;
-    return bucket.put(`recipes/default/tiddlers/${title}`, `{"title":"${title}","text":"a","revision":"${revision}","bag":"default","recipe":"default"}`,
-      { customMetadata: { revision, layout: "flat" } });
-  }));
-}
-await bucket.put("recipes/default/tiddlers/" + encodeURIComponent("Aé"), JSON.stringify({ title: "Aé", text: "old", revision: "200" }));
-await bucket.put(LIST, damaged + "   ");
-damagedCopies.add(damaged + "   ");
-got = await getList();
-await bucket.put("recipes/default/tiddlers/Aé", JSON.stringify({ title: "Aé", text: "new", revision: "201" }), { customMetadata: { revision: "201" } });
-expected["Aé"] = "201";
-got = await rebuildToEnd();
-const aes = got.status === 200 ? JSON.parse(got.text).filter(e => e.title === "Aé") : [];
-check("a tiddler listed from an older key, whose plain key appears later in the rebuild, is listed once",
-  got.status === 200 && aes.length === 1, `status ${got.status}, revisions ${JSON.stringify(aes.map(e => e.revision))}`);
 // A title listed twice anyway (a hand edit) is listed once after its next save
 const twice = await list();
 twice.push({ ...twice.find(e => e.title === "Old note"), revision: "1" });

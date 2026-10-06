@@ -245,17 +245,7 @@ const put = text => mf.dispatchFetch(`${base}/recipes/default/tiddlers/Zeta`, { 
 const statuses = (await Promise.all([put("one"), put("two"), put("three")])).map(x => x.status).sort();
 check("simultaneous saves: exactly one wins", JSON.stringify(statuses) === "[204,412,412]", JSON.stringify(statuses));
 
-// --- 10. Older object stored under the encoded key, body revision disagrees with metadata -----
-await bucket.put("recipes/default/tiddlers/" + encodeURIComponent("Legacy one"), JSON.stringify({ title: "Legacy one", text: "old", revision: "999", tags: [] }));
-const manifest = JSON.parse(await (await bucket.get("recipes/default/tiddlers.json")).text());
-manifest.push({ title: "Legacy one", revision: "999", tags: [], type: "text/vnd.tiddlywiki" });
-await bucket.put("recipes/default/tiddlers.json", JSON.stringify(manifest));
-await sync(B);
-mark = net.length;
-await editViaUI(B, "Legacy one", "updated"); await settle(B);
-check("legacy object: edit saves without a false conflict", !netSince(mark).some(x => x.status === 412) && (await server("Legacy one"))?.text === "updated");
-
-// --- 11. Startup tiddlers are baked with their custom fields flattened ------------------------
+// --- 10. Startup tiddlers are baked with their custom fields flattened ------------------------
 await create(A, "$:/my/startup", "<$action-setfield $tiddler='$:/temp/x' text='$1 $& done'/>", { tags: ["$:/tags/StartupAction"], "my-field": "flat" });
 await settle(A);
 await new Promise(r => setTimeout(r, 500));
@@ -263,7 +253,7 @@ const baked = await (await mf.dispatchFetch(base + "/baked.html")).text();
 check("baked startup tiddler has flattened custom field", baked.includes('"my-field":"flat"') && !baked.includes('"fields":{"my-field"'));
 check("$-patterns in tiddler text survive baking", baked.includes("$1 $& done"));
 
-// --- 12. Public cache purges and the tiddler-list 304 ------------------------------------------
+// --- 11. Public cache purges and the tiddler-list 304 ------------------------------------------
 const PUBLIC_LIST = PUB + "/recipes/default/tiddlers.json?filter=%5Ball%5Btiddlers%5D%5D%20-%5B%5B%24%3A%2FisEncrypted%5D%5D%20-%5Bprefix%5B%24%3A%2Ftemp%2F%5D%5D%20-%5Bprefix%5B%24%3A%2Fstatus%2F%5D%5D%20-%5B%5B%24%3A%2Fboot%2Fboot.js%5D%5D%20-%5B%5B%24%3A%2Fboot%2Fbootprefix.js%5D%5D%20-%5Bhas%5Bplugin-type%5Dfield%3Aplatform%5Bserver%5D%5D%20-%5B%5B%24%3A%2Flibrary%2Fsjcl.js%5D%5D%20-%5B%5B%24%3A%2Fcore%5D%5D";
 await sync(A);
 let before = outbound.length;
@@ -286,7 +276,7 @@ await editViaUI(A, "Zeta", "changed again"); await settle(A);
 const changed = await mf.dispatchFetch(base + "/recipes/default/tiddlers.json", { headers: { "If-None-Match": etag } });
 check("changed tiddler list answers 200 with a new ETag", changed.status === 200 && changed.headers.get("ETag") !== etag && (await changed.json()).length > 0);
 
-// --- 13. Fewer worker requests ---------------------------------------------------------------
+// --- 12. Fewer worker requests ---------------------------------------------------------------
 for (let i = 1; i <= 5; i++) await create(A, `Note ${i}`, `note text ${i}`);
 await settle(A);
 let reqMark = requests.length;
@@ -342,7 +332,7 @@ await new Promise(r => setTimeout(r, 800));
 const shownPolls = requests.slice(reqMark).filter(r => r.tag === "C" && r.url.includes("tiddlers.json")).length;
 check("hidden tab does not poll; shown tab syncs at once", hiddenPolls === 0 && shownPolls >= 1, `hidden ${hiddenPolls}, on show ${shownPolls}`);
 
-// --- 14. A damaged tiddler list is rebuilt while a tab is open ------------------------------------
+// --- 13. A damaged tiddler list is rebuilt while a tab is open ------------------------------------
 await B.close();
 await C.close();
 // Enough tiddlers that the worker rebuilds the list over several requests

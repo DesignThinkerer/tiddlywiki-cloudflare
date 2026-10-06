@@ -78,10 +78,10 @@ flowchart LR
 ├── package.json              build and test scripts
 └── test/
     ├── make-fixture.mjs      builds a test TiddlyWiki (test/fixtures/index.html)
-    ├── two-tabs.test.mjs     real TiddlyWiki in Chromium, several tabs (60 checks)
-    ├── plugins.test.mjs      real plugins on the admin and public sites (63 checks)
+    ├── two-tabs.test.mjs     real TiddlyWiki in Chromium, several tabs (59 checks)
+    ├── plugins.test.mjs      real plugins on the admin and public sites (65 checks)
     ├── queue-backup.test.mjs queue backup against an imitation of GitHub (17 checks)
-    ├── integrity.test.mjs    the tiddler list's integrity, draft-like titles, .gitignore (45 checks)
+    ├── integrity.test.mjs    the tiddler list's integrity, draft-like titles, .gitignore (46 checks)
     ├── r2-ops.test.mjs       R2 calls per kind of request, against a budget (10 checks)
     ├── r2-counter.mjs        test-only wrapper that counts the worker's R2 calls
     └── bake.test.mjs         page serving and rebuilding (9 checks)
@@ -144,9 +144,8 @@ Everything in the bucket is public through the custom domain, including tiddlers
    | `PUBLIC_WIKI_URL` | variable, optional | public address (default `https://my-tiddlywiki.theophile.dev`) |
    | `CONFLICT_GUARD` | variable, optional | `off` stops building the browser module into the page |
    | `BACKUP_RETRY_SECONDS` | variable, optional | first retry delay for failed backups (default 60) |
-   | `API_KEY` | **leave unset** | see below |
 
-   About `API_KEY`: when it's set, the worker requires `Authorization: Bearer <key>` (or the bare key) on every save and delete. TiddlyWiki in the browser never sends that header, so setting it would block all saving from the wiki. The admin host is protected by Cloudflare Access instead.
+   The worker doesn't check who's saving: Cloudflare Access protects the admin host (3.3).
 
    Purges are skipped without `CF_ZONE_ID`/`CF_API_TOKEN`, and backups without `GITHUB_REPO`/`GITHUB_TOKEN`.
 
@@ -222,7 +221,7 @@ This lets the admin wiki read tiddler contents from the public site (see 4.5 and
 | `GET recipes/default/tiddlers.json` | The tiddler list, or `304 Not Modified` when unchanged (4.5), or `503` while it's being rebuilt (4.2). |
 | `GET recipes/default/tiddlers/<title>` | One tiddler as JSON (a flat one exactly as stored, see 4.2), with its revision in the body and the `ETag`. |
 | `GET <any other key>` | That R2 object as is. |
-| `PUT recipes/default/tiddlers/<title>` | Save (4.4): precondition check, conditional write, list update, purge, backup; for a plugin, its file and the page (4.8). A body that isn't a tiddler (a JSON object whose `title` is text, the same as in the URL) gets `400`. |
+| `PUT recipes/default/tiddlers/<title>` | Save (4.4): precondition check, conditional write, list update, purge, backup; for a plugin, its file and the page (4.8). Stored flat, whatever layout it arrives in (4.2). A body that isn't a tiddler (a JSON object whose `title` is text, the same as in the URL), or with a value that isn't text, gets `400`. |
 | `DELETE bags/<bag>/tiddlers/<title>` (or `recipes/<recipe>/…`) | Delete (4.4): same checks, then removal, purge, backup. |
 | queue messages | Backup to GitHub (4.7). |
 
@@ -238,16 +237,16 @@ R2 layout:
 | `status` | The public site's TiddlyWeb status, uploaded once (3.1). |
 | `baked.html` | Generated: `index.html` plus the tiddlers needed at startup (4.3). |
 | `recipes/default/tiddlers.json` | The "skinny" tiddler list: title, tags, type, dates, custom fields and revision for every tiddler, but no text. If it's ever missing or damaged, the worker rebuilds it from the stored tiddlers (below). |
-| `recipes/default/tiddlers/<title>` | One tiddler as JSON, in one of two layouts (below). The key uses the raw title, though older objects may sit under the URL-encoded title, and both are looked up. |
+| `recipes/default/tiddlers/<title>` | One tiddler as JSON, flat (below), under its raw title. |
 | `_plugins/<title>.js` | Generated: the script that loads a plugin or JavaScript module into the page (4.8). |
 | `_backup/versions/…` | Temporary copies of large versions waiting to be backed up (4.7). |
 | `_repair/…` | Left by a rebuild of the tiddler list: the damaged copy, and the progress of a rebuild that takes several requests (below). |
 
-**Revisions.** Each save gets a new revision, `Date.now()` in milliseconds. It's stored in three places that always agree: the object's custom metadata, the `revision` field inside the tiddler JSON, and the tiddler list. For objects written by other tools, the revision is the one in the JSON, or else one derived from the R2 etag. `GET`, `PUT` and `DELETE` all use the same rule, which avoids false conflicts.
+**Revisions.** Each save gets a new revision, `Date.now()` in milliseconds. It's stored in three places that always agree: the object's custom metadata, the `revision` field inside the tiddler JSON, and the tiddler list. `GET`, `PUT` and `DELETE` all read it from the metadata, which avoids false conflicts.
 
-**Two layouts.** Tiddlers saved through the conflict guard are *flat*: every field at the top level, `text` last, and `layout: flat` in the object's metadata. The module sends them that way, with the header `X-Tiddler-Layout: flat` and without `revision`, `bag` or `recipe`. The worker then parses only the few hundred bytes before `"text"` and appends its `revision`, `bag` and `recipe`, working on the raw bytes: it never decodes, parses or re-encodes the text itself, which for a plugin is the whole plugin. A body sent with that header but not in that layout (pretty-printed, or with `revision` before `text`) is handled like any other save. Saves from anything else use TiddlyWeb's layout, with custom fields nested under `fields`; those are parsed and re-serialized as before. TiddlyWiki reads both layouts, and objects stay in their old layout until they're next saved.
+**One layout.** Every tiddler is stored *flat*: every field at the top level, compact JSON, `text` last, then `revision`, `bag` and `recipe`, with `layout: flat` and the revision in the object's metadata. The conflict guard sends saves that way, with the header `X-Tiddler-Layout: flat` and without `revision`, `bag` or `recipe`. The worker then parses only the few hundred bytes before `"text"` and appends its `revision`, `bag` and `recipe`, working on the raw bytes: it never decodes, parses or re-encodes the text itself, which for a plugin is the whole plugin. Anything else is parsed and turned into that layout first: a body sent with the header but not in the layout (pretty-printed, or with `revision` before `text`), or TiddlyWeb's layout, with custom fields nested under `fields`, which TiddlyWiki sends without the guard. Field values must be text or lists of text, as TiddlyWiki's are; a value that's an object (only a script could send one) is refused with `400`. One field is the exception: a field called `fields` stays nested, as `"fields":{"fields":"…"}`, the way TiddlyWeb's layout has it, because a flat `fields` is where TiddlyWiki's loader looks for nested custom fields. A rebuilt list only includes objects in this layout: anything else in R2, left by an older version or uploaded by hand, is left out, with a line in the logs (6, 7). To convert a bucket filled by an older version, see 6.
 
-| Plugin size | Worker CPU to handle the body, TiddlyWeb layout | Flat layout |
+| Plugin size | Worker CPU to handle the body, parsed (TiddlyWeb's layout) | Flat layout |
 |---|---|---|
 | 240 KB (markdown) | about 2.6 ms | about 0.1 ms |
 | 735 KB (KaTeX) | about 6.5 ms | about 0.3 ms |
@@ -256,8 +255,8 @@ R2 layout:
 Measured in Node.js (the same JavaScript engine as Workers) on a development machine, so only the proportions matter.
 
 **A damaged or missing tiddler list rebuilds itself.** The list is only an index: every tiddler is also stored on its own, with all its fields. If the list can't be read (a bad upload or a hand edit) or is missing, the worker rebuilds it from the stored tiddlers wherever it needs it (serving it, a save, a delete, a page build) and carries on. Nothing needs doing by hand, and nothing runs in the background: the requests do the work.
-- **It reads as little as it can.** For a flat tiddler the fields come before `"text"`, so it reads only the first 16 KB of the object. A tiddler in TiddlyWeb's layout is read whole, but its text, usually most of it, is skipped as bytes rather than parsed: about 1 ms per MB, half of what parsing costs (JSON formatted by hand may be parsed whole). Each tiddler is listed under the title it's stored under, once.
-- **A big wiki takes several requests.** A request may make 1,000 R2 calls and use about 10 ms of CPU, so each request reads up to 100 tiddlers (fewer if they must be read whole) and keeps its progress in `_repair/`. Meanwhile the list, saves and deletes answer `503` with `X-Tiddler-List: rebuilding`, before changing anything (unless the list is damaged in the middle of that very request). The open tab sends them again at once, quietly (the conflict guard does this; roughly a second per 100 tiddlers), and each of those requests takes the next step. The damaged list is replaced only when the new one is complete. That last step writes the list as the steps built it, without parsing it, so it costs no more than the others. (It does parse it in one rare case, to remove a duplicate: a tiddler listed from an older version's URL-encoded key whose plain key was uploaded during the rebuild.)
+- **It reads as little as it can.** A tiddler's fields come before `"text"`, so it reads only the first 16 KB of each object (more only for fields bigger than that). Each tiddler is listed under the title it's stored under. Objects not in the stored layout (an older version's, or uploaded by hand) are left out, with a line in the logs.
+- **A big wiki takes several requests.** A request may make 1,000 R2 calls and use about 10 ms of CPU, so each request reads up to 100 tiddlers and keeps its progress in `_repair/`. Meanwhile the list, saves and deletes answer `503` with `X-Tiddler-List: rebuilding`, before changing anything (unless the list is damaged in the middle of that very request). The open tab sends them again at once, quietly (the conflict guard does this; roughly a second per 100 tiddlers), and each of those requests takes the next step. The damaged list is replaced only when the new one is complete. That last step writes the list as the steps built it, without parsing it, so it costs no more than the others.
 - **Public tabs keep their tiddlers.** They read the list straight from R2. A missing list is replaced by a short text while it's rebuilt (each rebuild has its own, so it can't be mistaken for another one's). It isn't JSON, because TiddlyWiki removes every tiddler that isn't in the list it gets, and would take any JSON for one. The conflict guard recognises that text and fetches the list again every few seconds, at a URL no cache holds, and turns a list it can't read (a damaged upload) into an ordinary sync error, after asking once more past any cached copy, instead of TiddlyWiki's "Internal JavaScript Error". A tab without the guard (`CONFLICT_GUARD=off`, or a page opened before this version) stops syncing with that error, but still keeps its tiddlers.
 - **Nothing is lost.** The damaged copy is kept in `_repair/` in case it held a hand edit you want to redo; delete it when you no longer need it. The new list holds exactly what is stored, so a hand edit to the list itself is gone, but no tiddler is.
 - **The page is rebuilt on the next admin page load**, as the rebuilt list may differ from the one it was built from (a plugin saved by a tab closed before its list update was retried, say).
@@ -280,7 +279,7 @@ TiddlyWiki only runs JavaScript modules, plugins and startup actions that are pr
 
 followed by one `<script src="…">` per plugin and JavaScript module (4.8). The conflict guard and the public address are left out when `CONFLICT_GUARD` is `off`.
 
-Stored tiddlers are flattened into the form `preloadTiddlers` expects (custom fields at the top level). The page is edited as bytes, without decoding `index.html` (a few MB) into a string and back, which costs about ten times more CPU. Text containing `$&`, `$1` and the like is copied literally.
+Stored tiddlers are baked as they're stored: flat, already the form `preloadTiddlers` expects. (A field called `fields` is unpacked first: TiddlyWiki does that itself only for tiddlers it loads through sync, 4.2.) The page is edited as bytes, without decoding `index.html` (a few MB) into a string and back, which costs about ten times more CPU. Text containing `$&`, `$1` and the like is copied literally.
 
 **When it's rebuilt:**
 - **On a page request,** if `baked.html` is missing, or was built by a different version of the guard module or of the page format, or for a different public address (`bakeVersion` in its metadata), or from a different `index.html` (`sourceEtag`). Deploying a new worker or uploading a new `index.html` therefore takes effect on the next admin page load.
@@ -419,7 +418,7 @@ tw.preloadTiddlers = (tw.preloadTiddlers ?? []).concat([<the stored tiddler JSON
 }
 ```
 
-A tiddler stored in another layout (TiddlyWeb's, or by another tool) gets a few extra lines that move its custom fields up and set its revision as text. The file keeps the tiddler's `revision`, so after boot TiddlyWiki finds the same revision in the tiddler list and doesn't download the plugin again.
+For a tiddler with a field called `fields`, stored nested (4.2), the file has one more line that unpacks it, since TiddlyWiki doesn't for preloaded tiddlers. The file keeps the tiddler's `revision`, so after boot TiddlyWiki finds the same revision in the tiddler list and doesn't download the plugin again.
 
 **The URL** is `https://my-tiddlywiki.theophile.dev/_plugins/<encodeURIComponent(title)>.js?v=<revision>`, on the public site even in the admin page. The file name never changes, and `?v=` changes with every version, so caches never serve an old version and plugin files are never purged. No plugin code ever goes through the worker: it costs no worker request, and the public site's cache serves it (3.5).
 
@@ -530,6 +529,8 @@ The queue solves the cause instead of working around it:
 
 **Deploying a change:** edit `src/`, run `npm run build` and `npm test`, then deploy `worker.js`, either by pasting it into the dashboard editor or with `npx wrangler deploy`. If the browser module changed, the next admin page load rebuilds `baked.html`. If you changed how the page itself is built, also bump the `4-` prefix in `bakeVersion`, or existing pages keep the old format until something else rebuilds them; plugin files are only rewritten when their plugin changes, so after changing their format, delete `_plugins/` and open the admin wiki. Reload any open admin tabs: tabs opened before a change keep the old module, and tabs older than the module have no conflict protection.
 
+**Converting a bucket filled by an older version:** the worker reads only the flat layout (4.2), and versions before it stored tiddlers in TiddlyWeb's layout, some under their URL-encoded title or with the revision only in the file. Convert them once, *before* deploying this version, while the older one is still in place (one that already stores plugins as files: the script checks, and stops if not). Close any other admin tab, open the admin wiki, wait until it has loaded, and don't edit anything until you've deployed. Paste `tools/convert-stored-tiddlers.js` into the browser's console and press Enter. It re-saves every tiddler in the list exactly as it's stored, in the flat layout (each gets a new revision and one commit in the backup), and prints a table of what it did. A tiddler with a value that isn't text (only a script could have stored one) is skipped. Then deploy right away, and reload the admin wiki. Any object left under a URL-encoded key (a `%20` or `%24` in its name in R2) is no longer used, and can be deleted. Don't deploy first: until they're converted, tiddlers whose revision is only in the file would get false conflicts, plugins stored the old way would stop working, and a rebuilt list would leave them out.
+
 **Updating the wiki engine:** upload the new `index.html` to R2. The next admin page load rebuilds `baked.html` and purges the public page. If a TiddlyWiki upgrade changes the filter in `tiddlers.json?filter=…`, add the new filter to `SKINNY_LIST_FILTERS`, or the public tiddler list won't be purged after saves. You'll see the exact URL in the browser's Network tab. Plugins installed through the wiki override the copies in `index.html`: after an upgrade, update the version in the plugin library's URL (`$:/config/OfficialPluginLibrary`) and update your plugins from its Updates tab.
 
 **Plugins:** install, update, disable or delete them from the wiki (drag and drop, the plugin library, the Control Panel). When TiddlyWiki asks you to reload, wait until the save has finished, then reload. The public site gets the same plugins.
@@ -556,6 +557,7 @@ If the page is rebuilt before step 4 (by a deploy, or by saving another plugin, 
 | `The tiddler list can't be read: rebuilding it from the stored tiddlers` | The list was damaged, and the worker is rebuilding it (4.2). The damaged copy is in `_repair/`. |
 | `Tiddler list rebuilt: <n> tiddlers` | The rebuild is complete. |
 | `Rebuilding the tiddler list: <key> is not a readable tiddler, left out` | That object in R2 isn't valid JSON. It was already unreadable for the wiki. |
+| `Rebuilding the tiddler list: <key> isn't stored the way the worker stores tiddlers, left out` | An object in an older layout, under a URL-encoded key, or uploaded by hand (4.2). Save the tiddler from the wiki instead, or convert the bucket (6); an object under a URL-encoded key can be deleted. |
 | `Failed to rebake HTML` | Building `baked.html` failed; the last page built is served instead (or `index.html` if there is none). A list being rebuilt over several requests also shows this line until it's done. |
 
 **Manual purge:** Cloudflare dashboard → Caching → Configuration → Purge Cache. Use it if something on the public site looks stuck, for example after uploading files to R2 by hand.
@@ -577,7 +579,7 @@ If the page is rebuilt before step 4 (by a deploy, or by saving another plugin, 
 | Changes to `index.html` don't show | You haven't opened the admin wiki since uploading | Open the admin wiki once; it rebuilds `baked.html` and purges the public page. |
 | A plugin is still inactive after the reload | You reloaded before the save finished, or the page build failed | Reload once the save has finished. If the logs show `Failed to rebake HTML`, delete `baked.html` in R2 and open the admin wiki: the page is rebuilt. |
 | The wiki doesn't start after installing a plugin | The plugin breaks at boot | Follow "If a plugin breaks the page" (6). |
-| A tiddler that is in R2 doesn't show in the wiki | It's missing from the tiddler list: a save whose list update failed and was never retried (the tab was closed) | Delete `recipes/default/tiddlers.json` in R2: the worker rebuilds it from the stored tiddlers (4.2). |
+| A tiddler that is in R2 doesn't show in the wiki | It's missing from the tiddler list: a save whose list update failed and was never retried (the tab was closed) | Delete `recipes/default/tiddlers.json` in R2: the worker rebuilds it from the stored tiddlers (4.2). A rebuild lists only tiddlers in the flat layout. |
 | Console shows a failed `_plugins/…` request | The file is missing from R2 | Delete `baked.html` in R2 and open the admin wiki: the rebuild writes missing files. |
 
 ---
@@ -625,12 +627,12 @@ The tests run the real worker in Cloudflare's local runtime (workerd, through Mi
 
 `test:integrity` covers:
 - a save whose list update failed: its retry completes it, for a new and an existing tiddler, while real conflicts are still refused;
-- a damaged or missing tiddler list: rebuilt from the stored tiddlers when it's served, saved to, deleted from or used for a page, with every field but the text, in both layouts, from an object under its URL-encoded key, leaving out the story list and drafts, the damaged copy kept;
+- a damaged or missing tiddler list: rebuilt from the stored tiddlers when it's served, saved to, deleted from or used for a page, with every field but the text, a save in TiddlyWeb's layout among them stored flat, leaving out the story list, drafts and objects not in the stored layout (an older layout, a URL-encoded key, no metadata), the damaged copy kept;
 - a list too big for one request (400 tiddlers): `503` until it's complete (with `X-Tiddler-List` readable from another origin), the damaged list untouched meanwhile, two tabs driving it at once, a save and a delete in the middle retried successfully, a later damage or deletion starting over rather than resuming old progress, no progress left behind;
 - a missing list: each rebuild with its own stand-in in R2, which isn't JSON;
-- tiddlers in TiddlyWeb's layout with the text first or in the middle, escaped quotes and a backslash before the closing quote, or formatted by hand: the text skipped, every other field kept;
-- a tiddler under an older version's URL-encoded key whose plain key appears during the rebuild: listed once; and a title listed twice by hand, listed once after its next save;
+- a title listed twice by hand, listed once after its next save;
 - titles: a save whose title isn't text, or isn't the one in its URL, is refused (`400`), and such tiddlers stored by hand are listed under their key instead of stopping the rebuild or being listed under the wrong title;
+- a field called `fields` stored nested, as TiddlyWeb's layout has it; a value that's an object refused (`400`); custom fields named like built-in properties (`constructor`) kept, and a `text` among the custom fields doesn't move the text;
 - tiddlers titled `Draft of '…'` saved and deleted like any other, while real drafts still aren't stored;
 - `.gitignore` covering `wrangler.toml`, `.dev.vars` and `.wrangler/`.
 
@@ -644,8 +646,8 @@ The tests run the real worker in Cloudflare's local runtime (workerd, through Mi
 | Save refused (`412`) | 1: look it up (the stored tiddler is read only if it's the same size as the save, to recognise a save sent again) |
 | Save sent again, already stored | 4: look it up, read it to compare, read and write the list |
 | Delete | 4: read the list, look it up, delete it, write the list |
-| Save a plugin | 11: the save's 4, a second lookup (a title like `$:/…` has two possible keys), and the page build: read `index.html`, check and write the plugin file, read the stored plugin, check and write `baked.html`. The page build reuses the list the save wrote. |
-| Delete a plugin | 9 |
+| Save a plugin | 10: the save's 4, and the page build: read `index.html`, check and write the plugin file, read the stored plugin, check and write `baked.html`. The page build reuses the list the save wrote. |
+| Delete a plugin | 8 |
 
 Backups don't appear here: with the queue bound, as deployed, they run later in the queue consumer.
 
@@ -664,7 +666,7 @@ Backups don't appear here: with the queue bound, as deployed, they run later in 
 
 `test:tabs` covers:
 - **Conflicts:** an editor open while another tab saves, a stale tab, a new title created in two tabs, a stale delete, identical edits, rename, simultaneous saves.
-- **Baking:** flattened startup tiddlers.
+- **Baking:** startup tiddlers with their custom fields.
 - **Public cache:** exact purge URLs and the `304`.
 - **Request savings:** a 3-request page load, the stale-public-copy fallback, a missing CORS header, the hidden-tab pause.
 - **A damaged tiddler list** rebuilt over several requests while a tab is open: the tab keeps its tiddlers and shows no error; a save answered "rebuilding" is sent again quietly, and any other `503` is reported as before.
@@ -674,7 +676,7 @@ Backups don't appear here: with the queue bound, as deployed, they run later in 
 - **After the reload:** the plugin works, no reload loop, plugin code never comes through the worker, at most three worker requests per page load, the browser cache on the next load.
 - **The public site:** the plugin works, with no worker request.
 - **Update, disable and re-enable, a theme, a standalone module, delete,** and a plugin turned back into an ordinary tiddler.
-- **Edge cases:** a body containing `,"text":` in a field and in the text, a tiddler without text, a field called `fields`, "flat" bodies that aren't, a save in TiddlyWeb's layout, a title with spaces, `#` and non-ASCII, plugins stored before the change by another tool, the order of a save's purge, overlapping page builds, a tiddler list replaced by hand, and the recovery steps.
+- **Edge cases:** a body containing `,"text":` in a field and in the text, a tiddler without text, a field called `fields` (stored nested, and read back after a reload, on an ordinary tiddler and on a startup tiddler and a module loaded at boot), "flat" bodies that aren't and a save in TiddlyWeb's layout (both stored flat), a title with spaces, `#` and non-ASCII, a stored plugin whose file is missing, the order of a save's purge, overlapping page builds, a tiddler list replaced by hand, and the recovery steps.
 - **A public tab while the tiddler list is missing or damaged:** it keeps its tiddlers and doesn't crash, asks again at a URL no cache holds, and catches up by itself once the worker has rebuilt the list; after a damaged list, its next sync bypasses caches too, and a damaged copy its browser kept is passed over quietly.
 
 To run the browser tests against your own wiki file, download `index.html` from the bucket and run `WIKI_HTML=/path/to/index.html npm run test:tabs` (or `test:plugins`).

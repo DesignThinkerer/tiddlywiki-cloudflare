@@ -20,15 +20,13 @@ const BUDGETS = {
   // The same bytes as stored: read once to compare, then the list update is finished
   "save sent again, already stored": { "head tiddler": 1, "get tiddler": 1, "get list": 1, "put list": 1 },
   "delete": { "get list": 1, "head tiddler": 1, "delete tiddler": 1, "put list": 1 },
-  // A title with characters encodeURIComponent changes has two possible keys (an older version
-  // used the encoded one): both are looked up, and both deleted. The page build reuses the list
-  // the save has just written.
+  // The page build reuses the list the save has just written
   "save a plugin (page rebuilt)": {
-    "head tiddler": 2, "get list": 1, "put tiddler": 1, "put list": 1,
+    "head tiddler": 1, "get list": 1, "put tiddler": 1, "put list": 1,
     "get index.html": 1, "head plugin file": 1, "get tiddler": 1, "put plugin file": 1, "head baked.html": 1, "put baked.html": 1
   },
   "delete a plugin (page rebuilt)": {
-    "get list": 1, "head tiddler": 1, "delete tiddler": 2, "put list": 1, "delete plugin file": 1,
+    "get list": 1, "head tiddler": 1, "delete tiddler": 1, "put list": 1, "delete plugin file": 1,
     "get index.html": 1, "head baked.html": 1, "put baked.html": 1
   },
 };

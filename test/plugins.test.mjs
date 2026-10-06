@@ -254,7 +254,6 @@ check("standalone macro module works after the reload", (await renderPlain("<<gr
 // --- 9. Bodies the worker must cut correctly ---------------------------------------------------------
 await add({ title: "Tricky", note: 'a,"text":"b', text: 'x,"text":"y"   😀 \\' });
 await add({ title: "No text", tags: ["a b", "c"] });
-await add({ title: "Has a fields field", fields: "x", text: "t" });
 await settle();
 let t = await stored("Tricky");
 body = JSON.parse(t.text);
@@ -262,16 +261,24 @@ check("',\"text\":' inside a field and the text: both intact", body.note === 'a,
 t = await stored("No text");
 body = JSON.parse(t.text);
 check("tiddler without text: stored with its revision", body.text === undefined && body.revision === t.meta.revision && body.tags.length === 2);
+await add({ title: "Has a fields field", fields: "x", color: "red", text: "t" });
+await settle();
 t = await stored("Has a fields field");
-check("a field called 'fields' falls back to TiddlyWeb's layout", !t.meta.layout && JSON.parse(t.text).fields.fields === "x");
+check("a field called 'fields' is stored nested, as TiddlyWeb's layout has it, the other fields flat",
+  !!t && t.meta.layout === "flat" && JSON.parse(t.text).fields?.fields === "x" && JSON.parse(t.text).color === "red", t?.text);
+// The same on tiddlers the page loads at boot, which TiddlyWiki doesn't unpack itself
+await add({ title: "$:/test/boot-fields", tags: ["$:/tags/StartupAction"], fields: "startup text", text: "" });
+await add({ title: "$:/test/module-fields.js", type: "application/javascript", "module-type": "macro", fields: "module text",
+  text: "exports.name = 'mf'; exports.params = []; exports.run = function() { return 'mf ok'; };" });
+await settle();
 for (const [name, json] of [["pretty-printed", JSON.stringify({ title: "Odd 1", text: "x", tags: ["z"] }, null, 2)],
                             ["revision before text", '{"title":"Odd 2","revision":"1","tags":["z"],"text":"x"}']]) {
   const t2 = JSON.parse(json).title;
   const r = await mf.dispatchFetch(BASE + "/recipes/default/tiddlers/" + encodeURIComponent(t2), { method: "PUT", headers: { "X-Tiddler-Layout": "flat" }, body: json });
   const o = await stored(t2);
   const entry = JSON.parse(await (await bucket.get("recipes/default/tiddlers.json")).text()).find(e => e.title === t2);
-  check(`a "flat" body that isn't (${name}) is handled like any other save`, r.status === 204 && JSON.parse(o.text).revision === o.meta.revision &&
-    JSON.parse(o.text).text === "x" && entry.tags[0] === "z" && entry.text === undefined);
+  check(`a "flat" body that isn't (${name}) is stored flat like any other save`, r.status === 204 && o.meta.layout === "flat" &&
+    o.text.startsWith(`{"title":"${t2}","tags":["z"],"text":"x","revision":"${o.meta.revision}"`) && entry.tags[0] === "z" && entry.text === undefined, o?.text);
 }
 await add({ title: "Purge order", text: "listed before its purge?" });
 await settle();
@@ -297,30 +304,31 @@ let res = await mf.dispatchFetch(BASE + "/recipes/default/tiddlers/" + encodeURI
 });
 saved = await stored(HELLO);
 file = await pluginFile(HELLO);
-check("TiddlyWeb-layout save: stored nested, as before", res.status === 204 && !saved.meta.layout && JSON.parse(saved.text).fields["plugin-type"] === "plugin");
-check("its plugin file moves the fields up in the browser", file.text.startsWith("{\nconst t = ") && runFile(file.text)[0]["plugin-type"] === "plugin");
+check("TiddlyWeb-layout save: stored flat, its custom fields at the top level", res.status === 204 && saved.meta.layout === "flat" &&
+  JSON.parse(saved.text)["plugin-type"] === "plugin" && JSON.parse(saved.text).fields === undefined, saved.text.slice(0, 120));
+check("its plugin file is the usual one", file.text === "{\nconst tw = globalThis.$tw ??= Object.create(null);\ntw.preloadTiddlers = (tw.preloadTiddlers ?? []).concat([" + saved.text + "]);\n}\n" &&
+  runFile(file.text)[0]["plugin-type"] === "plugin");
 await load();
 check("its widget works after the reload (title with spaces, # and non-ASCII)", (await renderPlain("<$hello/>")).includes("Hello from a TiddlyWeb save"));
+check("...and a field called 'fields' reads back after the reload", await page.evaluate(() => {
+  const t = $tw.wiki.getTiddler("Has a fields field");
+  return !!t && t.fields.fields === "x" && t.fields.color === "red" && t.fields.text === "t";
+}));
+const bootFields = await page.evaluate(() => [$tw.wiki.getTiddler("$:/test/boot-fields"), $tw.wiki.getTiddler("$:/test/module-fields.js")].map(t => t && t.fields.fields));
+check("...also on a startup tiddler and a JavaScript module, which the page loads at boot",
+  bootFields[0] === "startup text" && bootFields[1] === "module text" && (await renderPlain("<<mf>>")) === "mf ok", JSON.stringify(bootFields));
 
-// --- 11. Plugins stored before this change: files written on the first page build --------------------
-const OLD = "$:/plugins/test/stored before";
-const oldRev = "1700000000000";
-// as another tool might have written it: no metadata, and a number for revision
-await bucket.put("recipes/default/tiddlers/" + OLD, JSON.stringify({ ...helloPlugin("Hello from before"), title: OLD, revision: Number(oldRev), bag: "default", recipe: "default" }),
-  { httpMetadata: { contentType: "application/json" } });
-const manifest = JSON.parse(await (await bucket.get("recipes/default/tiddlers.json")).text()).filter(e => e.title !== HELLO);
-manifest.push({ title: OLD, type: "application/json", tags: [], revision: oldRev, bag: "default", recipe: "default", fields: { "plugin-type": "plugin" } });
-await bucket.put("recipes/default/tiddlers.json", JSON.stringify(manifest));
-await bucket.delete(["recipes/default/tiddlers/" + HELLO, "_plugins/" + HELLO + ".js"]);   // keep a single "hello" widget
+// --- 11. A stored plugin whose file is missing: written on the next page build ------------------------
+await bucket.delete("_plugins/" + HELLO + ".js");
 await bucket.put("baked.html", "<html><head></head><body>old</body></html>", { customMetadata: { bakeVersion: "3-old", sourceEtag: "x" } });
 await load();
-check("first build after the deploy writes the missing file", (await pluginFile(OLD))?.meta.revision === oldRev);
-check("...and the plugin works, with no reload asked", (await renderPlain("<$hello/>")).includes("Hello from before") && (await reloadAsked()) === "no");
+check("the next page build writes the missing file", (await pluginFile(HELLO))?.meta.revision === saved.meta.revision);
+check("...and the plugin works, with no reload asked", (await renderPlain("<$hello/>")).includes("Hello from a TiddlyWeb save") && (await reloadAsked()) === "no");
 
 // --- 12. A plugin that becomes a normal tiddler, a startup action that loses its tag, deletes -------
-await add({ title: OLD, text: "just text now" });
+await add({ title: HELLO, text: "just text now" });
 await settle();
-check("no longer a plugin: file deleted, tag gone", !(await pluginFile(OLD)) && !(await bakedPage()).includes(encodeURIComponent(OLD)));
+check("no longer a plugin: file deleted, tag gone", !(await pluginFile(HELLO)) && !(await bakedPage()).includes(encodeURIComponent(HELLO)));
 await add({ title: "$:/test/startup", tags: ["$:/tags/StartupAction"], text: "" });
 await settle();
 check("startup action is baked", (await bakedPage()).includes("$:/test/startup"));
