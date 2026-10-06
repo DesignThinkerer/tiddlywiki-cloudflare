@@ -538,6 +538,9 @@ const pluginValue = await freshLoad.evaluate(t => $tw.wiki.getTiddlerText(t), PL
 check("...a fresh load runs only the version the server kept", JSON.stringify(ran) === JSON.stringify(["A's edit"]) && pluginValue === "A's edit",
   `ran ${JSON.stringify(ran)}, plugin value ${JSON.stringify(pluginValue)}`);
 await freshLoad.close();
+const codeAlerts = await alerts(other);
+check("...and the alert says the copy is inactive, and how to use that version",
+  codeAlerts.filter(t => t.includes("inactive") && t.includes("conflict-removed-")).length === 2, JSON.stringify(codeAlerts));
 await other.close();
 
 // --- Summary --------------------------------------------------------------------------------
