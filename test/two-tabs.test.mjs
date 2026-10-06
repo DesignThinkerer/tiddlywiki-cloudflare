@@ -117,6 +117,13 @@ async function finishEdit(page, title, text, newTitle) {
   await page.locator(`.tc-tiddler-frame[data-tiddler-title="${draftTitle}"] button[aria-label="Confirm changes to this tiddler"]`).first().click();
   await page.waitForFunction(d => !$tw.wiki.tiddlerExists(d), draftTitle);
 }
+// Deletes the tiddler from its open editor (TiddlyWiki asks for confirmation)
+async function deleteFromEditor(page, title) {
+  const draftTitle = await page.evaluate(t => $tw.wiki.findDraft(t), title);
+  page.once("dialog", dialog => dialog.accept());
+  await page.locator(`.tc-tiddler-frame[data-tiddler-title="${draftTitle}"] button[aria-label="Delete this tiddler"]`).first().click();
+  await page.waitForFunction(d => !$tw.wiki.tiddlerExists(d), draftTitle);
+}
 async function editViaUI(page, title, text) {
   await startEdit(page, title);
   await finishEdit(page, title, text);
@@ -236,6 +243,44 @@ await startEdit(B, "Epsilon");
 await finishEdit(B, "Epsilon", "renamed", "Epsilon renamed"); await settle(B);
 check("rename: no 412", !netSince(mark).some(x => x.status === 412), JSON.stringify(netSince(mark)));
 check("rename: new title on server, old one gone", (await server("Epsilon renamed"))?.text === "renamed" && (await server("Epsilon")) === null);
+
+// Renaming, or deleting from the editor, deletes the old title: an editor opened before another tab
+// saved mustn't delete that newer version (a delete conflict: refused, the newer version restored)
+await create(A, "Zeta", "z1"); await settle(A); await sync(B);
+mark = net.length;
+await startEdit(B, "Zeta");
+await editViaUI(A, "Zeta", "z2 from A"); await settle(A);
+await sync(B);                                  // A's version arrives behind B's open editor
+let behindEditor = (await localText(B, "Zeta")) === "z2 from A";
+await finishEdit(B, "Zeta", "B's renamed text", "Zeta renamed"); await settle(B);
+check("rename in an editor opened before another tab's save: deleting the old title is refused (412)", behindEditor &&
+  netSince(mark).some(x => x.tag === "B" && x.method === "DELETE" && x.path.endsWith("/Zeta") && x.status === 412), JSON.stringify(netSince(mark)));
+check("...the old title keeps the other tab's version, on the server and in this tab; the new title has this tab's text",
+  (await server("Zeta"))?.text === "z2 from A" && (await localText(B, "Zeta")) === "z2 from A" && (await server("Zeta renamed"))?.text === "B's renamed text");
+check("...and this tab is told", (await alerts(B)).some(t => t.includes("Delete conflict") && t.includes("Zeta")), JSON.stringify(await alerts(B)));
+await clearAlerts(B);
+
+await create(A, "Eta", "h1"); await settle(A); await sync(B);
+mark = net.length;
+await startEdit(B, "Eta");
+await editViaUI(A, "Eta", "h2 from A"); await settle(A);
+await sync(B);
+behindEditor = (await localText(B, "Eta")) === "h2 from A";
+await deleteFromEditor(B, "Eta"); await settle(B);
+check("delete from an editor opened before another tab's save: refused (412), the other tab's version kept and restored",
+  behindEditor && netSince(mark).some(x => x.tag === "B" && x.method === "DELETE" && x.path.endsWith("/Eta") && x.status === 412) &&
+  (await server("Eta"))?.text === "h2 from A" && (await localText(B, "Eta")) === "h2 from A" && (await alerts(B)).some(t => t.includes("Delete conflict")),
+  JSON.stringify(netSince(mark)));
+await clearAlerts(B);
+
+// With no other save in between, deleting from the editor simply deletes
+await create(A, "Theta", "t1"); await settle(A); await sync(B);
+mark = net.length;
+await startEdit(B, "Theta");
+await deleteFromEditor(B, "Theta"); await settle(B);
+check("delete from an up-to-date editor goes through", netSince(mark).some(x => x.tag === "B" && x.method === "DELETE" && x.status === 204) &&
+  !netSince(mark).some(x => x.status === 412) && (await server("Theta")) === null, JSON.stringify(netSince(mark)));
+await sync(A);
 
 // --- 9. Two saves hitting the worker at the same instant --------------------------------------
 await create(A, "Zeta", "z0"); await settle(A);
