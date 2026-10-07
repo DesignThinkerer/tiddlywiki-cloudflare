@@ -387,6 +387,23 @@ outdated = await waitForOutdated();
 text = await loadPage();
 check("a plugin delete whose page build failed: the next page load builds the page without it",
   res.status === 204 && outdated && !text.includes(tagOf(P1)), `status ${res.status}, outdated ${outdated}`);
+// A plugin file that can't be deleted (its plugin deleted, or saved as an ordinary tiddler) doesn't
+// stop the page build: the page stops loading it, and the file is only left behind
+const P3 = "$:/plugins/test/page-three", P4 = "$:/plugins/test/page-four";
+await save(P3, pagePlugin(P3));
+await save(P4, pagePlugin(P4));
+const storedPage = async () => (await bucket.get("baked.html"))?.text() ?? "";
+const loadedBefore = (await storedPage()).includes(tagOf(P3)) && (await storedPage()).includes(tagOf(P4));
+await failNext("delete plugin file");
+const deletedP3 = await del(P3);
+const afterDelete = await storedPage();
+await failNext("delete plugin file");
+const plainP4 = await save(P4, { text: "an ordinary tiddler now" });
+const afterPlain = await storedPage();
+check("a plugin whose file can't be deleted, deleted or saved as an ordinary tiddler: confirmed, and the page built without it",
+  loadedBefore && deletedP3.status === 204 && !afterDelete.includes(tagOf(P3)) && plainP4.status === 204 && !afterPlain.includes(tagOf(P4)) &&
+  (await storedPageMeta()).bakeVersion !== "outdated",
+  `before ${loadedBefore}, delete ${deletedP3.status} (page loads it: ${afterDelete.includes(tagOf(P3))}), plain ${plainP4.status} (page loads it: ${afterPlain.includes(tagOf(P4))})`);
 
 // --- 4. List updates follow revisions --------------------------------------------------------------
 // Two requests for the same title can update the list in the other order (a list write retried after

@@ -518,14 +518,13 @@ async function finishSave(env, ctx, title, fields, revision, list, adminOrigin) 
   // would put the old list back in Cloudflare's cache
   ctx.waitUntil(purgePublicCache(env, tiddlerPurgeUrls(env, title, adminOrigin)));
   const saved = { ...fields, title };
-  if (previous && needsPluginFile(previous) && !needsPluginFile(saved)) {
-    await env.WIKI_BUCKET.delete(pluginFileKey(title));
-  }
   // Something the page needs at boot was added, changed or is no longer needed: rebuild the
   // page (which writes the plugin file) before confirming, so a reload right after has it
   if (isPageTiddler(saved) || (previous && isPageTiddler(previous))) {
     await rebuildPage(env, ctx, stored);
   }
+  // No longer a plugin: its file goes, now that the page doesn't load it
+  if (previous && needsPluginFile(previous) && !needsPluginFile(saved)) await deletePluginFile(env, title);
 }
 ```
 
@@ -567,14 +566,13 @@ await untilDone(ctx, (async () => {
   }
   if (!found && removed) ctx.waitUntil(queueBackup(env, { action: "delete", title, revision: currentRevision }));
   if (found || removed) ctx.waitUntil(purgePublicCache(env, tiddlerPurgeUrls(env, title, url.origin)));
-  // The list entry says what it was; if it wasn't listed, delete any plugin file anyway
-  // (deleting a missing object is free) and rebuild the page for system tiddlers
-  if (removed ? needsPluginFile(removed) : found) {
-    await env.WIKI_BUCKET.delete(pluginFileKey(title));
-  }
+  // The list entry says what it was; if it wasn't listed, rebuild the page for system tiddlers,
+  // and delete any plugin file anyway (deleting a missing object is free), once the page is
+  // rebuilt without it (see deletePluginFile)
   if (removed ? isPageTiddler(removed) : found && title.startsWith("$:/")) {
     await rebuildPage(env, ctx, stored);
   }
+  if (removed ? needsPluginFile(removed) : found) await deletePluginFile(env, title);
 })());
 ```
 

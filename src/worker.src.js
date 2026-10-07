@@ -317,13 +317,23 @@ async function finishSave(env, ctx, title, fields, revision, list, adminOrigin) 
   // would put the old list back in Cloudflare's cache
   ctx.waitUntil(purgePublicCache(env, tiddlerPurgeUrls(env, title, adminOrigin)));
   const saved = { ...fields, title };
-  if (previous && needsPluginFile(previous) && !needsPluginFile(saved)) {
-    await env.WIKI_BUCKET.delete(pluginFileKey(title));
-  }
   // Something the page needs at boot was added, changed or is no longer needed: rebuild the
   // page (which writes the plugin file) before confirming, so a reload right after has it
   if (isPageTiddler(saved) || (previous && isPageTiddler(previous))) {
     await rebuildPage(env, ctx, stored);
+  }
+  // No longer a plugin: its file goes, now that the page doesn't load it
+  if (previous && needsPluginFile(previous) && !needsPluginFile(saved)) await deletePluginFile(env, title);
+}
+
+// After the page has been rebuilt without it, so a page load in between doesn't miss it. If this
+// fails, the file is only left behind (nothing loads it): the request isn't failed for it, since its
+// retry would find nothing left to do, and wouldn't rebuild the page either
+async function deletePluginFile(env, title) {
+  try {
+    await env.WIKI_BUCKET.delete(pluginFileKey(title));
+  } catch (e) {
+    console.error(`Could not delete the plugin file of '${title}' (left behind, unused):`, e.message);
   }
 }
 
@@ -538,14 +548,13 @@ async function handleDelete(request, env, ctx, url, corsHeaders) {
       }
       if (!found && removed) ctx.waitUntil(queueBackup(env, { action: "delete", title, revision: currentRevision }));
       if (found || removed) ctx.waitUntil(purgePublicCache(env, tiddlerPurgeUrls(env, title, url.origin)));
-      // The list entry says what it was; if it wasn't listed, delete any plugin file anyway
-      // (deleting a missing object is free) and rebuild the page for system tiddlers
-      if (removed ? needsPluginFile(removed) : found) {
-        await env.WIKI_BUCKET.delete(pluginFileKey(title));
-      }
+      // The list entry says what it was; if it wasn't listed, rebuild the page for system tiddlers,
+      // and delete any plugin file anyway (deleting a missing object is free), once the page is
+      // rebuilt without it (see deletePluginFile)
       if (removed ? isPageTiddler(removed) : found && title.startsWith("$:/")) {
         await rebuildPage(env, ctx, stored);
       }
+      if (removed ? needsPluginFile(removed) : found) await deletePluginFile(env, title);
     })());
 
     return new Response(null, { status: 204, headers: corsHeaders });
