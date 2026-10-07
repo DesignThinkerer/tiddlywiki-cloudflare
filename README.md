@@ -83,7 +83,7 @@ flowchart LR
 ├── package.json              build and test scripts
 └── test/
     ├── make-fixture.mjs      builds a test TiddlyWiki (test/fixtures/index.html)
-    ├── two-tabs.test.mjs     real TiddlyWiki in Chromium, several tabs (89 checks)
+    ├── two-tabs.test.mjs     real TiddlyWiki in Chromium, several tabs (93 checks)
     ├── plugins.test.mjs      real plugins on the admin and public sites (66 checks)
     ├── page-publish.test.mjs the page published from a real TiddlyWiki (56 checks)
     ├── queue-backup.test.mjs queue backup against an imitation of GitHub (41 checks)
@@ -352,7 +352,7 @@ sequenceDiagram
 - **On `412` for a save:**
   1. The module fetches the server's version.
   2. If it has the same content as yours (ignoring `revision`, `bag`, `recipe`, `permissions`, `modified` and `modifier`), it simply adopts it: no copy, no alert.
-  3. Otherwise it saves your version as a new tiddler, `Title (conflict YYYY-MM-DD hh.mm.ss)`. That copy gets a `conflict-of: Title` field. System tags (starting with `$:/`, such as `$:/tags/Stylesheet` or TiddlyWiki's older `$:/core/wiki/rawmarkup`) are moved into `conflict-removed-tags`, and `module-type` and `plugin-type` into `conflict-removed-module-type` and `conflict-removed-plugin-type`, so the copy stays inert instead of acting as a second stylesheet, macro set, startup action, JavaScript module or plugin (a plugin copy's contents would even override the original's). The alert says so for such a copy: to use that version, copy its text into the original, or, if the original was deleted elsewhere, rename the copy to its title and give it back its `module-type` or `plugin-type`.
+  3. Otherwise it saves your version as a new tiddler, `Title (conflict YYYY-MM-DD hh.mm.ss)` (with `Title` shortened, ending in `…`, if the copy's name would be too long for the worker: 999 bytes). That copy gets a `conflict-of: Title` field. System tags (starting with `$:/`, such as `$:/tags/Stylesheet` or TiddlyWiki's older `$:/core/wiki/rawmarkup`) are moved into `conflict-removed-tags`, and `module-type` and `plugin-type` into `conflict-removed-module-type` and `conflict-removed-plugin-type`, so the copy stays inert instead of acting as a second stylesheet, macro set, startup action, JavaScript module or plugin (a plugin copy's contents would even override the original's). The alert says so for such a copy: to use that version, copy its text into the original, or, if the original was deleted elsewhere, rename the copy to its title and give it back its `module-type` or `plugin-type`.
   4. The copy opens in the story river, the original shows the server version (or disappears, if it was deleted elsewhere), and an alert explains what happened, with links.
 - **On `412` for a delete:** the newer server version is restored and an alert says it wasn't deleted.
 - **A background reload never overwrites unsaved local changes.** If a tiddler has changes waiting to upload, the reload is skipped, and the pending save detects any conflict instead.
@@ -374,7 +374,7 @@ On an admin page load the worker sees only two requests: the page (usually a `30
 | Change | Effect |
 |---|---|
 | **Tiddler contents come from the public site.** After reading the list, TiddlyWiki fetches every tiddler's full text one by one. The module fetches each from the public site instead (same R2 object, served by cache or R2). | Removes one worker request per tiddler per page load. |
-| **Each public copy is checked.** It's used only if its `revision` equals the one in the worker's list. Otherwise, or on any error (including a missing CORS header), the module falls back to the worker. | A stale cached copy can never be loaded into the admin wiki. |
+| **Each public copy is checked.** It's used only if its `revision` equals the one in the worker's list. Otherwise, or on any error (including a missing CORS header), the module falls back to the worker, and also when the public site doesn't answer within 5 seconds, so a hanging site can't hold up loading. | A stale cached copy can never be loaded into the admin wiki. |
 | **The tiddler list stays on the worker.** | It's the up-to-date source of truth that the checks above rely on (5.8). |
 | **`304` for the tiddler list.** The browser revalidates with its ETag, and when nothing changed the worker answers `304` without reading and rewriting the list. Weak `W/"…"` ETags, which Cloudflare's compression produces, are accepted. | Cheaper polls (still one request each). |
 | **Drafts and `$:/StoryList` aren't synced.** | No request per navigation or per draft autosave. It also fixes a real bug (5.7). |
@@ -694,6 +694,7 @@ If the page is rebuilt before step 4 (by a deploy, or by saving another plugin, 
 
 ## 8. Known limits
 
+- **Some titles can't be saved:** `.` and `..` (in a URL, the browser takes them for the folder or its parent, so they'd never reach the worker) and titles over 999 bytes (an R2 key holds 1,024). The admin wiki doesn't send them, which would fail and be retried forever: it keeps them in the tab and shows an alert asking to rename them.
 - **A plugin that breaks at boot breaks both sites** until you remove it (6).
 - **A damaged or missing list is rebuilt only while the admin wiki is open** (4.2): the worker's requests do the work, and public visitors don't use the worker. Until then the public site keeps what its cache holds; a visitor who gets the damaged list or the stand-in sees no tiddlers until it's done.
 - **A rebuild step's CPU** stays around a normal save's, but a single stored tiddler with several megabytes in fields other than its text (rare: plugins keep their content in the text) is read in one step, and could take that step over the limit each time.
@@ -802,7 +803,9 @@ Backups don't appear here: with the queue bound, as deployed, they run later in 
 - **A tiddler changed before its text loaded** (its text held back): the stored text kept with the change, and the tab then loads it.
 - **Failing backups:** a page load asks how backups go with its first tiddler list request, shows an alert (since when, how many, the oldest, GitHub's answer, what to do), asks at each request while it shows, removes it once backups get through, then asks no more than hourly.
 - **Leaving with an editor open:** the browser asks before closing a tab whose editor holds changes, not one left unchanged.
-- **What's sent is what's stored:** a tiddler with an empty `draft.of` field (a draft, for TiddlyWiki) isn't sent and stays in the tab after a poll; a second story river's `$:/StoryList/2` is stored.
+- **What's sent is what's stored:** a tiddler with an empty `draft.of` field (a draft, for TiddlyWiki) isn't sent and stays in the tab after a poll; a second story river's `$:/StoryList/2` is stored; tiddlers titled `.` or `..` aren't sent, and the tab asks to rename them.
+- **Titles at the edges:** alert links that work for a title ending in `]` or holding `]]` and `|`; a conflict copy of a tiddler whose title is near the length limit, saved under a shortened name.
+- **A public site that doesn't answer:** the text comes from the worker after 5 seconds, instead of loading waiting for good.
 
 `test:plugins` uses the markdown and KaTeX plugins shipped with TiddlyWiki and covers:
 - **Install** through the import messages a drop sends: the flat save, the stored tiddler, the file (byte for byte the template format), the script tag, no purge of plugin files.

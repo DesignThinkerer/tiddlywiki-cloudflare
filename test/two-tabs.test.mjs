@@ -581,7 +581,7 @@ await K.waitForFunction(t => $tw.wiki.tiddlerExists(t), BACKUP_ALERT, { timeout:
 const backupAlert = await K.evaluate(t => { const a = $tw.wiki.getTiddler(t); return a ? { tags: a.fields.tags, text: a.fields.text } : null; }, BACKUP_ALERT);
 check("a page load asks how backups go with its first tiddler list request", firstListAsk === "ask", String(firstListAsk));
 check("...and failing backups show as an alert: since when, how many, the oldest, GitHub's answer, what to do",
-  !!backupAlert && (backupAlert.tags || []).includes("$:/tags/Alert") && /2 tiddlers/.test(backupAlert.text) && backupAlert.text.includes("[[Alpha]]") &&
+  !!backupAlert && (backupAlert.tags || []).includes("$:/tags/Alert") && /2 tiddlers/.test(backupAlert.text) && backupAlert.text.includes('<$link to="Alpha">') &&
   backupAlert.text.includes("Bad credentials") && backupAlert.text.includes("GITHUB_TOKEN"), JSON.stringify(backupAlert));
 reqMark16 = requests.length;
 await bucket.delete("_backup/status.json");
@@ -677,6 +677,70 @@ check("a save stored though its answer was lost, edited again before it's tried 
   !(await alerts(A)).some(t => t.includes("Edit conflict")),
   JSON.stringify({ saves: lostSaves, server: (await server("Lost answer"))?.text, alerts: await alerts(A) }));
 await clearAlerts(A);
+
+// --- 20. Titles at the edges, and a public site that doesn't answer ----------------------------------
+// (quietOrNot: false rather than a timeout, for a tab whose syncer would keep retrying)
+const quietOrNot = (page, ms = 20000) => settleTab(page, ms).then(() => true, () => false);
+const L = await openTab("L");
+// An edit conflict: A saves first, then L, which hasn't synced since
+async function staleEdit(title) {
+  await create(A, title, "first"); await settle(A); await sync(L);
+  await A.evaluate(t => $tw.wiki.addTiddler(new $tw.Tiddler($tw.wiki.getTiddler(t), { text: "A's edit" })), title); await settle(A);
+  await L.evaluate(t => $tw.wiki.addTiddler(new $tw.Tiddler($tw.wiki.getTiddler(t), { text: "L's stale edit" })), title);
+  return quietOrNot(L);
+}
+// The tiddlers the links in a tab's alerts point to
+const alertLinks = page => page.evaluate(() => {
+  const div = document.createElement("div");
+  $tw.wiki.filterTiddlers("[tag[$:/tags/Alert]]").forEach(t => {
+    $tw.wiki.makeWidget($tw.wiki.parseTiddler(t), { parentWidget: $tw.rootWidget, document }).render(div, null);
+  });
+  return [...div.querySelectorAll("a[href^='#']")].map(a => decodeURIComponent(a.getAttribute("href").slice(1)));
+});
+
+// The alert's links work whatever the title: one ending in "]", one holding "]]" and "|"
+const BRACKETED = "Todo [x]", ODD_TITLE = "Odd ]] title | with <<version>>";
+await staleEdit(BRACKETED);
+await staleEdit(ODD_TITLE);
+const linked = await alertLinks(L);
+check("alert links point to the tiddler whatever its title (ending in ], or holding ]] and |)",
+  linked.includes(BRACKETED) && linked.includes(ODD_TITLE), JSON.stringify(linked));
+await clearAlerts(L);
+
+// A public site that doesn't answer (rather than failing) doesn't hold up loading: after a short wait
+// the text comes from the worker
+await create(A, "Slow public copy", "loaded from the worker"); await settle(A);
+const M = await context.newPage();
+await watch(M, "M");
+await M.route(url => url.origin === PUB && url.pathname.endsWith("/tiddlers/Slow%20public%20copy"), () => {});   // never answered
+const slowStart = Date.now();
+await M.goto(base + "/");
+const slowLoaded = await M.waitForFunction(() => window.$tw && $tw.wiki && $tw.wiki.getTiddlerText("Slow public copy") === "loaded from the worker", null, { timeout: 30000 }).then(() => true, () => false);
+check("a public site that doesn't answer doesn't hold up loading: the text comes from the worker after a short wait",
+  slowLoaded, `${slowLoaded ? "loaded" : "not loaded"} after ${Math.round((Date.now() - slowStart) / 1000)} s`);
+await M.close();
+
+// A conflict copy of a tiddler whose title is near the worker's limit (999 bytes): the copy's name,
+// which adds the date, is shortened to fit, rather than refused for good (and retried forever)
+const LONG_TITLE = "Long " + "y".repeat(990);
+const longSettled = await staleEdit(LONG_TITLE);
+const longCopies = await conflictCopies(L, LONG_TITLE);
+const longCopy = longCopies.length === 1 ? await server(longCopies[0]) : null;
+check("a conflict copy of a tiddler with a title near the length limit is saved, its name shortened to fit",
+  longSettled && !!longCopy && Buffer.byteLength(longCopies[0]) <= 999 && longCopy.text === "L's stale edit",
+  JSON.stringify({ settled: longSettled, copies: longCopies.map(t => Buffer.byteLength(t)), stored: !!longCopy }));
+await clearAlerts(L);
+
+// Titles "." and ".." can't be in a URL (the browser takes them for the current or parent folder): not
+// sent, which would fail and be retried forever, and the tab says to rename them
+mark = net.length;
+await L.evaluate(() => { $tw.wiki.addTiddler({ title: ".", text: "a dot" }); $tw.wiki.addTiddler({ title: "..", text: "two dots" }); });
+const dotsSettled = await quietOrNot(L, 15000);
+const dotSends = netSince(mark).filter(x => x.tag === "L" && /^\/recipes\/default\/(tiddlers\/?)?$/.test(x.path));
+const dotAlerts = (await alerts(L)).filter(t => /rename/i.test(t));
+check("tiddlers titled . or .. aren't sent (a URL can't carry them), and the tab says to rename them",
+  dotsSettled && dotSends.length === 0 && dotAlerts.length >= 1, JSON.stringify({ settled: dotsSettled, sent: dotSends.map(x => x.status), alerts: dotAlerts }));
+await L.close();
 
 // --- Summary --------------------------------------------------------------------------------
 // (Leaving out the answer section 19 makes the tab see on purpose)
