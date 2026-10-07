@@ -508,7 +508,7 @@ const shellNamed = name => ["<!doctype html>", "<html>", "<head>", `<title>${nam
 const indexEtag = async () => (await bucket.head("index.html")).etag;
 const putShell = async (text, fingerprint) => mf.dispatchFetch(`${base}/page/shell`, { method: "PUT", body: text,
   headers: { "Content-Type": "text/html", "X-Page-Fingerprint": fingerprint, "X-Page-Index": await indexEtag() } });
-res = await mf.dispatchFetch(`${base}/page/core?v=${CORE_V}`, { method: "PUT", headers: { "Content-Type": "application/javascript" }, body: [
+res = await mf.dispatchFetch(`${base}/page/core?v=${CORE_V}`, { method: "PUT", headers: { "Content-Type": "application/javascript", "X-Page-Index": await indexEtag() }, body: [
   "/*\nTiddlyWiki\n*/", "$tw.preloadTiddlers = $tw.preloadTiddlers || [];", '_load(window,{"title":"$:/boot/boot.js","text":""});'].join("\n") });
 const firstShell = await putShell(shellNamed("Shell one"), "s1");
 await delayNext("put baked.html", 800);
