@@ -22,7 +22,9 @@ change to a tiddler it transcludes, like $:/SiteTitle in the Open Graph tags.) I
   published: first in sync with the worker, so a change another tab saved before is included;
 - when the admin wiki loads, once synced, if it renders something else than the page it loaded
   (the first load after a new index.html, a failed publish, a change made outside the admin wiki).
-Changes that arrive from other tabs aren't published by this one: their tab does it. Nothing is sent
+Changes that arrive from other tabs aren't published by this one: their tab does it. But this tab
+then no longer knows which page is published, so its next check sends its page even if it's the one
+it published (or loaded) before: a change undone here, say. The same after a failure. Nothing is sent
 while a tiddler the page needs is still loading, or in safe mode (#:safe). A failure (also an error
 while preparing the page) is shown in a notification and tried again at the next save or load; a
 page the worker refused (400, 409) only once it changes, or at the next load, and after a refused
@@ -96,7 +98,7 @@ exports.startup = function() {
 		storedCore = source.core || "",
 		refused = "",                          // the page (fingerprint and core version) the worker refused
 		refusedCore = "",                      // the core file version the worker refused
-		ownChanges = Object.create(null),      // title -> {stored: saved (true) or deleted (false), time}
+		ownChanges = Object.create(null),      // title -> {stored: saved (true) or deleted (false), time, revision}
 		cameWithPage = null,                   // title -> true, set once the first tiddler list has arrived
 		started = false,
 		timer = null,
@@ -204,7 +206,10 @@ exports.startup = function() {
 		}
 	}
 
+	// (The worker may have kept the page all the same, an answer lost on the way, say: which page is
+	// published is no longer known)
 	function failed(done,message) {
+		published = "";
 		report("failed","Page not published: " + message + " It will be tried again at the next save or reload.");
 		done();
 	}
@@ -429,9 +434,9 @@ exports.startup = function() {
 		deleteTiddler = adaptor.deleteTiddler;
 	adaptor.saveTiddler = function(tiddler,callback,options) {
 		var title = tiddler.fields.title;
-		return saveTiddler.call(this,tiddler,function(err) {
+		return saveTiddler.call(this,tiddler,function(err,adaptorInfo,revision) {
 			if(!err) {
-				ownChanges[title] = {stored: true, time: Date.now()};
+				ownChanges[title] = {stored: true, time: Date.now(), revision: revision};
 				schedule();
 			}
 			return callback.apply(this,arguments);
@@ -446,6 +451,45 @@ exports.startup = function() {
 			return callback.apply(this,arguments);
 		},options);
 	};
+
+	// Whether a tiddler can be in the page, or change it: a system tiddler (a plugin, the site title...)
+	// or one with a raw markup tag (fields: its list entry)
+	function mayChangePage(title,fields) {
+		if(title.indexOf("$:/") === 0) {
+			return true;
+		}
+		var tags = fields && fields.tags,
+			tiddler = wiki.getTiddler(title);
+		tags = typeof tags === "string" ? $tw.utils.parseStringArray(tags) : ($tw.utils.isArray(tags) ? tags : []);
+		return RAW_MARKUP_TAGS.some(function(tag) {
+			return tags.indexOf(tag) !== -1 || (!!tiddler && tiddler.hasTag(tag));
+		});
+	}
+
+	// A tiddler list showing a change to such a tiddler that this tab didn't make (its own saves are
+	// recognised by their revision, its deletes by the title's absence): another tab may have published
+	// a page with it, so the page published is no longer the one this tab knows
+	if(adaptor.cfworkerOnList) {
+		adaptor.cfworkerOnList(function(listed,previous,entries) {
+			if(!previous || !published) {
+				return;
+			}
+			var fields = Object.create(null);
+			$tw.utils.each(entries,function(entry) {
+				fields[entry.title] = entry;
+			});
+			var changed = Object.keys(listed).concat(Object.keys(previous)).some(function(title) {
+				if(listed[title] === previous[title] || !mayChangePage(title,fields[title])) {
+					return false;
+				}
+				var own = ownChanges[title];
+				return !own || (own.stored ? listed[title] !== own.revision : $tw.utils.hop(listed,title));
+			});
+			if(changed) {
+				published = "";
+			}
+		});
+	}
 
 	// Once the worker's tiddler list has arrived and everything has loaded
 	(function start() {

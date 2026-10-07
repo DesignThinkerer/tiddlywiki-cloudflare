@@ -308,6 +308,25 @@ await sleep(QUIET_WINDOW);
 html = await shell();
 check("a tab that publishes after another includes that tab's change (it syncs first)", bBefore !== "subtitle from A" &&
   html.includes("subtitle from A") && html.includes("window.__footerRan = 'B'"), `B had "${bBefore}"`);
+// A change another tab published, undone in this one: this tab then renders the page it published
+// last, but that's no longer the one published, so it publishes
+const UNDONE = "$:/cfw-test/undone";
+mark = requests.length;
+await add(A, { title: UNDONE, tags: "$:/tags/RawMarkup", type: "text/plain", text: '<meta name="cfw-undone" content="1">' });
+await settle(A);
+await waitFor(async () => shellPuts("A", mark) > 0);
+await sleep(QUIET_WINDOW);
+const undonePublished = (await shell()).includes("cfw-undone");
+await B.evaluate(() => $tw.syncer.syncFromServer());
+await settle(B);
+mark = requests.length;
+await B.evaluate(t => $tw.wiki.deleteTiddler(t), UNDONE);
+await settle(B);
+await waitFor(async () => shellPuts("B", mark) > 0, 10000);
+await sleep(QUIET_WINDOW);
+check("a change another tab published, undone in this one, is published by it (its last page is no longer the one published)",
+  undonePublished && shellPuts("B", mark) === 1 && !(await shell()).includes("cfw-undone"),
+  `published by A ${undonePublished}, B's publishes ${shellPuts("B", mark)}, still in the shell ${(await shell()).includes("cfw-undone")}`);
 await contextB.close();
 
 // --- 8. What was deleted stays deleted ----------------------------------------------------------------
@@ -468,6 +487,28 @@ await settle(A);
 await waitFor(async () => (await shell()).includes("after a failure"));
 check("...and tried again at the next save", (await shell()).includes("after a failure") && (await status(A))?.state === "published", JSON.stringify(await status(A)));
 await A.unroute(url => url.pathname === "/page/shell");
+// A publish the worker kept but whose answer was lost (the tab saw a failure), then undone: the tab
+// doesn't know which page is published, so the undo is published too
+let loseAnswer = true;
+const lose = url => url.pathname === "/page/shell";
+await A.route(lose, async route => {
+  if (!loseAnswer) return route.continue();
+  loseAnswer = false;
+  await route.fetch();
+  return route.fulfill({ status: 503, body: "answer lost" });
+});
+const subtitleBefore = await A.evaluate(() => $tw.wiki.getTiddlerText("$:/SiteSubtitle"));
+await add(A, { title: "$:/SiteSubtitle", text: "kept, answer lost" });
+await settle(A);
+await waitFor(async () => (await status(A))?.state === "failed");
+const keptDespite = (await shell()).includes("kept, answer lost");
+await add(A, { title: "$:/SiteSubtitle", text: subtitleBefore });
+await settle(A);
+await waitFor(async () => !(await shell()).includes("kept, answer lost"), 10000);
+check("...and a change whose publish failed, though the worker kept the page, is published when undone",
+  keptDespite && !(await shell()).includes("kept, answer lost") && (await shell()).includes(subtitleBefore),
+  `kept by the worker ${keptDespite}, still published ${(await shell()).includes("kept, answer lost")}`);
+await A.unroute(lose);
 
 // A page the worker refuses (400 or 409: final for that page) isn't sent again at every save, only once
 // the page changes (or after a reload); a 5xx above is still retried at the next save

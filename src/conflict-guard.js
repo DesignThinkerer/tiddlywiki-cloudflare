@@ -90,6 +90,7 @@ exports.startup = function() {
 		listedRevisions = Object.create(null), // title -> revision in the worker's latest tiddler list
 		lastListFetch = 0,
 		listRequested = 0,                     // when the request for that list was sent
+		listListeners = [],                    // called with each new list (cfworkerOnList)
 		// Base revisions. A string is the server revision the content was derived from, null means
 		// "must not exist on the server yet", undefined means unknown (the save is sent unconditionally).
 		draftBases = Object.create(null),   // draft title -> {of: title, base: revision}
@@ -642,6 +643,7 @@ exports.startup = function() {
 					}
 				}
 				if(!err) {
+					var previous = lastListFetch ? listedRevisions : null;
 					listedRevisions = Object.create(null);
 					$tw.utils.each(tiddlers,function(fields) {
 						if(fields.revision !== undefined && fields.revision !== null) {
@@ -650,6 +652,13 @@ exports.startup = function() {
 					});
 					lastListFetch = Date.now();
 					listRequested = requested;
+					$tw.utils.each(listListeners,function(listener) {
+						try {
+							listener(listedRevisions,previous,tiddlers);
+						} catch(e) {
+							console.error("cfworker: a tiddler list listener failed:",e);
+						}
+					});
 				}
 				return callback(err,tiddlers);
 			}
@@ -668,6 +677,12 @@ exports.startup = function() {
 	// be in it yet
 	proto.cfworkerListedSince = function() {
 		return listRequested;
+	};
+
+	// listener(listed, previous, entries) at each new tiddler list: listed and previous are title ->
+	// revision (previous: the list before, null for the first), entries the list's tiddlers (fields)
+	proto.cfworkerOnList = function(listener) {
+		listListeners.push(listener);
 	};
 
 	// Fetch a tiddler from the public copy of the wiki (R2 + Cloudflare's cache, no worker request).
