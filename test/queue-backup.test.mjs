@@ -204,6 +204,16 @@ check("a text sent as two bytes a character, and a big one with a long title, wa
   waiting === 2 && leftAfter === 0 && notQueued.length === 0 && textOf(repoText("Wide")) === wide && repoText(longTitle) === await r2Text(longTitle) && textOf(repoText("Latin")) === latin,
   `waiting ${waiting}, left ${leftAfter}${notQueued.length ? ", " + notQueued.join(" | ").slice(0, 200) : ""}`);
 
+// 8d. A big version's R2 copy that can't be removed after its commit: the backup is still done (not
+// run again, nor reported as failing); the copy is only left behind
+await mf.dispatchFetch(`${base}/__r2fail`, { method: "POST", body: JSON.stringify({ call: "delete backup copy", times: 1 }) });
+const copyText = "c".repeat(150000);
+await put("Copy kept", copyText);
+await until(async () => textOf(repoText("Copy kept")) === copyText);
+await new Promise(r => setTimeout(r, 3000));
+const copyRuns = ghCalls.filter(c => c === "GET tiddlers/Copy kept.json").length;
+check("a backup whose R2 copy can't be removed afterwards still counts as done: not run again, not reported", copyRuns === 1 && await backupStatus() === "ok", `${copyRuns} runs, status ${JSON.stringify(await backupStatus())}`);
+
 // 8b. Saves in the browser module's flat layout are committed exactly as stored, small or large
 const putFlat = (title, text) => mf.dispatchFetch(`${base}/recipes/default/tiddlers/${encodeURIComponent(title)}`,
   { method: "PUT", headers: { "Content-Type": "application/json", "X-Tiddler-Layout": "flat" }, body: JSON.stringify({ title, note: "flat", text }) });
@@ -266,6 +276,21 @@ const lateDone = await until(async () => commits.filter(c => c.path === "tiddler
 await new Promise(r => setTimeout(r, 2000));
 const late = commits.filter(c => c.path === "tiddlers/Late.json").map(c => textOf(c.text));
 check("a late version whose restore of the newer one failed: GitHub still ends on the newer one", lateDone && textOf(repoText("Late")) === "v2", JSON.stringify(late));
+
+// 15b. A late version whose restore failed, retried after a newer version was committed: it's
+// already in the history, so it isn't committed again (only the newest stays on top)
+faults.failOnce.add("PUT tiddlers/Twice.json");                // v1's first try fails: it arrives late
+await put("Twice", "v1");
+await new Promise(r => setTimeout(r, 400));
+await put("Twice", "v2");
+await until(async () => textOf(repoText("Twice")) === "v2");
+faults.failPutOnceOfText.set("tiddlers/Twice.json", "v2");     // v1's retry: committed, then putting v2 back fails
+await until(async () => !faults.failPutOnceOfText.has("tiddlers/Twice.json"), 20000);
+await put("Twice", "v3");                                      // committed before v1 is tried again
+await until(async () => textOf(repoText("Twice")) === "v3");
+await new Promise(r => setTimeout(r, 6000));
+const twice = commits.filter(c => c.path === "tiddlers/Twice.json").map(c => textOf(c.text));
+check("a retried restore doesn't commit the late version again", twice.filter(t => t === "v1").length === 1 && textOf(repoText("Twice")) === "v3", JSON.stringify(twice));
 
 // 13. A file GitHub refuses for good doesn't hold up the backups after it: it keeps being retried on
 // its own (nothing is dropped) while the others go through. (A slow commit first keeps the consumer

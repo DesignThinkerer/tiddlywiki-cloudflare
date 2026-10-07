@@ -1585,7 +1585,8 @@ async function processBackupBatch(batch, env) {
     try {
       await backupJob(env, msg.body);
       msg.ack();
-      if (msg.body.contentKey) await env.WIKI_BUCKET.delete(msg.body.contentKey);
+      // (The backup is done: a copy that can't be removed is only left behind)
+      if (msg.body.contentKey) await env.WIKI_BUCKET.delete(msg.body.contentKey).catch(() => {});
       // Only a version that failed before can clear a recorded failure
       if (msg.body.tries > 0) cleared.push(msg.body.title);
     } catch (e) {
@@ -1658,7 +1659,9 @@ async function backupJob(env, job) {
   const existing = await github.get(job.title);
   let sha = existing ? existing.sha : null;
   const newer = await newerInWiki(env, job, current, sha);
-  if (sha !== await gitBlobSha(content)) {
+  // (A retry after the restore below failed: this version is already in the history, even if a
+  // newer one has been committed on top since)
+  if (!job.restore && sha !== await gitBlobSha(content)) {
     sha = await github.put(job.title, content, `✏️ Save: ${job.title}`, sha);
   }
   if (newer) {

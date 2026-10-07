@@ -574,6 +574,16 @@ check("a tiddler changed before its text loaded keeps its text on the server, wi
   JSON.stringify({ wasSkinny, server: skinnyServer && { text: skinnyServer.text, tags: skinnyServer.tags, skinny: "_is_skinny" in skinnyServer }, local: skinnyLocal }));
 await skinnyTab.close();
 
+// Tags and fields that read as numbers: a tiddler tagged 2024 with a field year: 2024, and a field a
+// script set to a number, are stored (all as text, as TiddlyWiki keeps them)
+await A.evaluate(() => $tw.wiki.addTiddler(new $tw.Tiddler($tw.wiki.getCreationFields(),
+  { title: "Report", text: "x", tags: "2024 [[year 2024]]", year: "2024", count: 42 }, $tw.wiki.getModificationFields())));
+await settle(A);
+const report = await server("Report");
+check("a tiddler tagged 2024, with a field year: 2024, and a field a script set to the number 42, is saved",
+  JSON.stringify(report?.tags) === '["2024","year 2024"]' && report?.year === "2024" && report?.count === "42" &&
+  JSON.stringify(await A.evaluate(() => $tw.wiki.filterTiddlers("[tag[2024]]"))) === '["Report"]', JSON.stringify(report));
+
 // --- Summary --------------------------------------------------------------------------------
 const bad = net.filter(x => x.status === 428 || x.status >= 500);
 check("no 428/5xx responses anywhere", bad.length === 0, JSON.stringify(bad));

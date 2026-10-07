@@ -214,6 +214,13 @@ const badTags = [await save("Numeric tag", { tags: [2024], text: "x" }), await s
   await mf.dispatchFetch(url("Old layout tag"), { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title: "Old layout tag", tags: [1], text: "x" }) })];
 check("a tag that isn't text is refused (400), in either layout", badTags.every(r => r.status === 400) &&
   !(await storedRevision("Numeric tag")) && !(await storedRevision("Null tag")) && !(await storedRevision("Old layout tag")), badTags.map(r => r.status).join(", "));
+// (A tag or field that reads as a number is text like any other: TiddlyWiki sends "2024", not 2024)
+res = await save("Tagged 2024", { tags: ["2024", "year 2024"], year: "2024", text: "x" });
+const tagged2024 = JSON.parse(await (await bucket.get("recipes/default/tiddlers/Tagged 2024")).text());
+check("...while a tag or field that reads as a number (\"2024\") is stored like any other", res.status === 204 &&
+  JSON.stringify(tagged2024.tags) === '["2024","year 2024"]' && tagged2024.year === "2024" && JSON.stringify((await entry("Tagged 2024"))?.tags) === '["2024","year 2024"]',
+  `status ${res.status} ${JSON.stringify(tagged2024)}`);
+await del("Tagged 2024");
 // ...and one already stored (before this check, or by hand) doesn't stop the page from being built
 await bucket.put("recipes/default/tiddlers/Hand tag", '{"title":"Hand tag","tags":[2024],"text":"x","revision":"79","bag":"default","recipe":"default"}', { customMetadata: { revision: "79", layout: "flat" } });
 const withHandTag = await list();

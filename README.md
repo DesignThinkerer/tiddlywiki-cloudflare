@@ -84,7 +84,7 @@ flowchart LR
     ├── two-tabs.test.mjs     real TiddlyWiki in Chromium, several tabs (82 checks)
     ├── plugins.test.mjs      real plugins on the admin and public sites (67 checks)
     ├── page-publish.test.mjs the page published from a real TiddlyWiki (51 checks)
-    ├── queue-backup.test.mjs queue backup against an imitation of GitHub (30 checks)
+    ├── queue-backup.test.mjs queue backup against an imitation of GitHub (32 checks)
     ├── integrity.test.mjs    the tiddler list's integrity, a failed page build, draft-like titles, .gitignore (65 checks)
     ├── r2-ops.test.mjs       R2 calls per kind of request, against a budget (29 checks)
     ├── r2-counter.mjs        test-only wrapper that counts the worker's R2 calls
@@ -235,7 +235,7 @@ This lets the admin wiki read tiddler contents from the public site (see 4.5 and
 | `GET recipes/default/tiddlers.json` | The tiddler list, or `304 Not Modified` when unchanged (4.5), or `503` while it's being rebuilt (4.2). With `X-Backup-Status: ask`, also how backups go, in the `X-Backup-Status` header (4.7). |
 | `GET recipes/default/tiddlers/<title>` | One tiddler as JSON (a flat one exactly as stored, see 4.2), with its revision in the body and the `ETag`. |
 | `GET <any other key>` | That R2 object as is. |
-| `PUT recipes/default/tiddlers/<title>` | Save (4.4): precondition check, conditional write, list update, purge, backup; for a plugin, its file and the page (4.8). Stored flat, whatever layout it arrives in (4.2). A body that isn't a tiddler (a JSON object whose `title` is text, the same as in the URL), or with a value that isn't text (a tag included: a number in the tags is refused, which also keeps it from breaking page builds), gets `400`, and so does a title over 999 bytes of UTF-8 (an R2 key holds 1,024 with `recipes/default/tiddlers/`). |
+| `PUT recipes/default/tiddlers/<title>` | Save (4.4): precondition check, conditional write, list update, purge, backup; for a plugin, its file and the page (4.8). Stored flat, whatever layout it arrives in (4.2). A body that isn't a tiddler (a JSON object whose `title` is text, the same as in the URL), or with a value that isn't text, gets `400`. (Every value TiddlyWiki sends is text: a tag `2024` or a field `year: 2024` is the text `"2024"` and is stored like any other. What's refused is a bare JSON number or `null`, which only a script calling the worker could send, and which would otherwise break page builds.) So does and so does a title over 999 bytes of UTF-8 (an R2 key holds 1,024 with `recipes/default/tiddlers/`). |
 | `DELETE bags/<bag>/tiddlers/<title>` (or `recipes/<recipe>/…`) | Delete (4.4): same checks, then removal, purge, backup. A title too long to be stored answers `204`. |
 | `PUT /page/core?v=<version>-<format>` | TiddlyWiki's core file, from the admin wiki, once per TiddlyWiki version (4.9). |
 | `PUT /page/shell` | The page published by the admin wiki, kept and used to build the page (4.9). |
@@ -771,7 +771,8 @@ Backups don't appear here: with the queue bound, as deployed, they run later in 
 - a duplicate delivery;
 - a file GitHub keeps refusing: the backups after it go through, it keeps being retried, and goes through once accepted;
 - what the admin wiki is told: a refused file (with GitHub's answer), every backup failing with a token GitHub refuses (how many, the oldest, since when; only to a request that asks), cleared once they go through; a rate limit not reported; a direct backup that fails for good recorded, and reported only after `BACKUP_ALERT_MINUTES`; an R2 error while recording that doesn't make a backup that went through count as failed;
-- GitHub's copy not decoded (only its `sha` used), and a late version whose "newer version restored" step fails, put back by the retry;
+- GitHub's copy not decoded (only its `sha` used), and a late version whose "newer version restored" step fails, put back by the retry, without committing the late version again when a newer one was committed meanwhile;
+- a big version's R2 copy that can't be removed after its commit: the backup still counts as done;
 - the fallback without a queue.
 
 `test:tabs` covers:
