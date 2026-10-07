@@ -192,6 +192,15 @@ await editViaUI(A, "Epsilon", "same"); await settle(A);
 await finishEdit(B, "Epsilon", "same"); await settle(B);
 check("identical edits: no conflict copy", (await conflictCopies(B, "Epsilon")).length === 0);
 check("identical edits: no alert, B clean", (await alerts(B)).length === 0 && await B.evaluate(() => !$tw.syncer.isDirty()));
+// The same for a tiddler the tab created itself: it has no type there, while the server's copy has the
+// default one the browser module sends
+await create(A, "Kappa", "k1"); await settle(A); await sync(B);
+await startEdit(A, "Kappa");
+await editViaUI(B, "Kappa", "same"); await settle(B);
+await finishEdit(A, "Kappa", "same"); await settle(A);
+check("identical edits of a tiddler created in this tab: no conflict copy, no alert",
+  (await conflictCopies(A, "Kappa")).length === 0 && (await alerts(A)).length === 0, JSON.stringify(await alerts(A)));
+await clearAlerts(A);
 
 // --- 8. Rename ------------------------------------------------------------------------------
 await sync(A); await sync(B);
@@ -628,7 +637,34 @@ check("a tiddler with an empty draft.of field (a draft, for TiddlyWiki) isn't se
 const secondRiver = await server("$:/StoryList/2");
 check("a second story river's $:/StoryList/2 is stored, for the next tab", secondRiver?.list === "Alpha", JSON.stringify(secondRiver));
 
+// --- 19. A save stored though its answer was lost, edited again before it's tried again ------------
+// The next try carries the newer text, based on the version before: the worker refuses it (412), as
+// it can't tell whose the stored version is. The server's copy is this tab's own earlier save, which
+// the browser module recognises: it's sent again on it, with no conflict copy.
+await create(A, "Lost answer", "v1"); await settle(A);
+mark = net.length;
+let loseAnswer = true;
+const lostAnswerUrl = /\/recipes\/default\/tiddlers\/Lost%20answer$/;
+await A.route(lostAnswerUrl, async route => {
+  if (route.request().method() !== "PUT" || !loseAnswer) return route.continue();
+  await route.fetch();                          // stored by the worker...
+  loseAnswer = false;
+  return route.fulfill({ status: 502, body: "answer lost" });   // ...but the tab sees an error
+});
+await A.evaluate(() => $tw.wiki.addTiddler(new $tw.Tiddler($tw.wiki.getTiddler("Lost answer"), { text: "v2" })));
+for (let i = 0; i < 100 && loseAnswer; i++) await new Promise(r => setTimeout(r, 100));
+await A.evaluate(() => $tw.wiki.addTiddler(new $tw.Tiddler($tw.wiki.getTiddler("Lost answer"), { text: "v3, edited again" })));
+await settle(A);
+await A.unroute(lostAnswerUrl);
+const lostSaves = netSince(mark).filter(x => x.tag === "A" && x.method === "PUT" && x.path.endsWith("/Lost answer")).map(x => x.status);
+check("a save stored though its answer was lost, edited again before it's tried again: no conflict copy, the newer text saved",
+  !loseAnswer && (await conflictCopies(A, "Lost answer")).length === 0 && (await server("Lost answer"))?.text === "v3, edited again" &&
+  !(await alerts(A)).some(t => t.includes("Edit conflict")),
+  JSON.stringify({ saves: lostSaves, server: (await server("Lost answer"))?.text, alerts: await alerts(A) }));
+await clearAlerts(A);
+
 // --- Summary --------------------------------------------------------------------------------
-const bad = net.filter(x => x.status === 428 || x.status >= 500);
+// (Leaving out the answer section 19 makes the tab see on purpose)
+const bad = net.filter(x => (x.status === 428 || x.status >= 500) && !(x.status === 502 && x.path.endsWith("/Lost answer")));
 check("no 428/5xx responses anywhere", bad.length === 0, JSON.stringify(bad));
 await finish({ check, results, pageErrors, browser, site, note: `; ${net.filter(x => x.status === 412).length} conflicts detected; ${net.length} writes` });

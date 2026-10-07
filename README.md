@@ -83,11 +83,11 @@ flowchart LR
 ├── package.json              build and test scripts
 └── test/
     ├── make-fixture.mjs      builds a test TiddlyWiki (test/fixtures/index.html)
-    ├── two-tabs.test.mjs     real TiddlyWiki in Chromium, several tabs (86 checks)
+    ├── two-tabs.test.mjs     real TiddlyWiki in Chromium, several tabs (88 checks)
     ├── plugins.test.mjs      real plugins on the admin and public sites (66 checks)
     ├── page-publish.test.mjs the page published from a real TiddlyWiki (55 checks)
     ├── queue-backup.test.mjs queue backup against an imitation of GitHub (40 checks)
-    ├── integrity.test.mjs    the tiddler list's integrity, a failed page build, draft-like titles, .gitignore (71 checks)
+    ├── integrity.test.mjs    the tiddler list's integrity, a failed page build, draft-like titles, .gitignore (72 checks)
     ├── r2-ops.test.mjs       R2 calls per kind of request, against a budget (29 checks)
     ├── r2-counter.mjs        test-only wrapper that counts the worker's R2 calls
     ├── browser-harness.mjs   the browser suites' shared setup (worker, public site stand-in, Chromium, helpers)
@@ -362,7 +362,8 @@ sequenceDiagram
 - **`PUT` and `DELETE` check `If-Match` and `If-None-Match`** against the current revision. They accept full ETags, bare revisions, weak (`W/`) forms and `*`, and answer `412` with the current `ETag` on a mismatch.
 - **For a save that carries a precondition, the R2 write itself is conditional.** It uses `etagMatches` on the object that was checked, or `If-None-Match: *` for a new tiddler. Two saves arriving at the same instant therefore can't both succeed: exactly one wins and the other gets `412`.
 - **Requests without precondition headers are still accepted**, as before. These come from tabs opened before the module existed, and from scripts.
-- **A retried save that's already stored is finished, not refused.** The worker stores the tiddler, then updates the tiddler list. If the list update fails, the browser retries the save with the same precondition, which no longer matches. When the stored tiddler is byte for byte what that save would store, the worker completes the list update and answers as if it had just saved it. Without this, the conflict guard would adopt the identical copy, the list would never be fixed, and the tiddler would vanish from every tab at the next poll. Different content still gets `412`.
+- **A retried save that's already stored is finished, not refused.** The worker stores the tiddler, then updates the tiddler list. If the list update fails, the browser retries the save with the same precondition, which no longer matches. When the stored tiddler is byte for byte what that save would store, the worker completes the list update and answers as if it had just saved it. Without this, the conflict guard would adopt the identical copy, the list would never be fixed, and the tiddler would vanish from every tab at the next poll. Different content still gets `412` (the tab may have edited again before its retry, or it's another tab's stale save: the worker can't tell), but that stored save is finished all the same, so the list, the public cache and the page don't stay behind it.
+- **A tab recognises its own earlier save.** A save that gets an error may still have been stored (the answer lost on the way, say). The browser module remembers it, and if the next try is refused, it fetches the server's copy as usual: when that copy is exactly the save that got the error, it's this tab's own, so the newer content is sent again based on it, with no conflict copy. Identical content also counts a tiddler created in this tab, without a type, as having the default one the browser module sends.
 
 To find conflict copies later, use the filter `[has[conflict-of]]`.
 
@@ -733,7 +734,7 @@ npm test                             # build, make the test wiki, run all seven 
 The tests run the real worker in Cloudflare's local runtime (workerd, through Miniflare) with a local R2 bucket and queue. Outgoing calls to GitHub and Cloudflare's API are answered by imitations, so nothing touches your accounts. Every suite takes free local ports, so they can run at the same time. The three browser suites share their setup, `test/browser-harness.mjs`: the worker, the stand-in for the public site, Chromium, and the helpers that wait for TiddlyWiki or record each tab's requests (marking the ones the browser answered from its cache, which never reached a server). (On a machine too busy to keep up, such as with the browser suites running alongside, the backup suite's "never overlapped" check can fail: Miniflare then starts a second batch before the first ends, which `max_concurrency = 1` prevents on Cloudflare. It passes run on its own.)
 
 `test:integrity` covers:
-- a save whose list update failed: its retry completes it, for a new and an existing tiddler, while real conflicts are still refused;
+- a save whose list update failed: its retry completes it, for a new and an existing tiddler, while real conflicts are still refused; a retry with other content refused, with the list brought up to the stored save (its fields included) and purged;
 - a damaged or missing tiddler list: rebuilt from the stored tiddlers when it's served, saved to, deleted from or used for a page, with every field but the text, a save in TiddlyWeb's layout among them stored flat, leaving out the story list, drafts and objects not in the stored layout (an older layout, a URL-encoded key, no metadata), the damaged copy kept;
 - a list too big for one request (400 tiddlers): `503` until it's complete (with `X-Tiddler-List` readable from another origin), the damaged list untouched meanwhile, two tabs driving it at once, a save and a delete in the middle retried successfully, a later damage or deletion starting over rather than resuming old progress, no progress left behind;
 - a missing list: each rebuild with its own stand-in in R2, which isn't JSON;
@@ -792,7 +793,7 @@ Backups don't appear here: with the queue bound, as deployed, they run later in 
 - the fallback without a queue.
 
 `test:tabs` covers:
-- **Conflicts:** an editor open while another tab saves, a stale tab, a new title created in two tabs, a stale delete, identical edits, rename, a rename or a delete from an editor opened before another tab's save (refused, that version kept, also when fetching it after the refusal fails once), simultaneous saves, conflict copies of a JavaScript module and a plugin that don't run (no file, no script tag; a fresh load runs only the version kept), with an alert saying so and how to use that version (also when the original was deleted elsewhere).
+- **Conflicts:** an editor open while another tab saves, a stale tab, a new title created in two tabs, a stale delete, identical edits (also of a tiddler created in the tab), a save stored though its answer was lost and edited again before it's tried again (no conflict copy), rename, a rename or a delete from an editor opened before another tab's save (refused, that version kept, also when fetching it after the refusal fails once), simultaneous saves, conflict copies of a JavaScript module and a plugin that don't run (no file, no script tag; a fresh load runs only the version kept), with an alert saying so and how to use that version (also when the original was deleted elsewhere).
 - **Baking:** startup tiddlers with their custom fields.
 - **Public cache:** exact purge URLs (the tiddler list's as TiddlyWiki itself requests it, so a TiddlyWiki that changes it fails the test; also the admin page's copy, purged with its `Origin` header, on a save and a delete) and the `304`.
 - **Request savings:** `/status` asked from the worker once by the first page load in a browser, then answered from the browser's cache: a 2-request page load (TiddlyWiki still knows it's logged in), a reload that downloads none of the page (`304`), also through a stand-in for Cloudflare that removes the page's ETag (the browser asks by date), the stale-public-copy fallback, a missing CORS header, the hidden-tab pause.

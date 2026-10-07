@@ -78,6 +78,23 @@ check("...and the tiddler list shows the stored revision", (await entry("Old not
 res = await save("Old note", { text: "v3 from a stale tab" }, { "If-Match": `"default/Old%20note/${r1}:auto"` });
 check("a real conflict (different content, old revision) is still refused (412)", res.status === 412);
 check("...and nothing was overwritten", (await storedRevision("Old note")) === r2);
+// A retry with other content (the tab edited again before retrying, or a stale tab): refused, as it
+// isn't based on the stored version, but the list is brought up to that version, with its fields,
+// and the public cache purged, rather than left behind until something else saves that title
+res = await save("Edited note", { color: "red", text: "e1" });
+const e1 = etagRevision(res);
+const entryE1 = await entry("Edited note");
+res = await save("Edited note", { color: "blue", text: "e2" }, { "If-Match": `"default/Edited%20note/${e1}:auto"` });
+const e2 = etagRevision(res);
+await undoListUpdate("Edited note", entryE1);
+const purgesBeforeEdited = purges.length;
+res = await save("Edited note", { color: "green", text: "e3, edited again" }, { "If-Match": `"default/Edited%20note/${e1}:auto"` });
+await new Promise(r => setTimeout(r, 300));
+const repairedEntry = await entry("Edited note");
+check("a retry with other content after a failed list update: refused (412), the list brought up to the stored version, and purged",
+  res.status === 412 && repairedEntry?.revision === e2 && repairedEntry?.color === "blue" && await storedRevision("Edited note") === e2 &&
+  purges.slice(purgesBeforeEdited).some(p => p.files.some(f => f.includes("Edited%20note"))),
+  `status ${res.status}, listed ${repairedEntry?.revision} (stored ${e2}), color ${repairedEntry?.color}`);
 
 // --- 2. A damaged or missing tiddler list is rebuilt from the stored tiddlers ---------------------
 // Every tiddler is stored on its own in R2, so the worker can rebuild the list by itself

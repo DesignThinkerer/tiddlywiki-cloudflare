@@ -473,6 +473,14 @@ async function handleSave(request, env, ctx, url, corsHeaders) {
         await untilDone(ctx, finishSave(env, ctx, title, save.fields, currentRevision, list, url.origin));
         return savedResponse(title, currentRevision, corsHeaders);
       }
+      // The stored tiddler isn't the version the list has: a save whose list update failed, retried
+      // with other content (edited again since) or not at all (its tab closed). Refused all the same,
+      // since it isn't based on that version (only the browser module can tell its own save, README
+      // 4.4), but that save is finished: the list, the public cache and the page catch up with it.
+      if (current && listedRevision(list, title) !== currentRevision) {
+        const fields = await storedFields(env, current);
+        if (fields) await untilDone(ctx, finishSave(env, ctx, title, fields, currentRevision, list, url.origin));
+      }
       return conflictResponse(title, reason, currentRevision, corsHeaders);
     }
 
@@ -1137,6 +1145,12 @@ async function getList(env) {
 
 // The list, readable: { object, text, entries }. A missing or damaged list is rebuilt from the
 // stored tiddlers first; throws ListRebuilding while that takes more requests.
+// The revision a list (readableList) has for a title, or null if it isn't listed
+function listedRevision(list, title) {
+  const entry = list.entries.find(e => e.title === title);
+  return entry && entry.revision !== undefined && entry.revision !== null ? String(entry.revision) : null;
+}
+
 async function readableList(env, ctx, options) {
   const list = await getList(env);
   if (list.entries) return list;
@@ -1316,6 +1330,29 @@ async function storedEntry(env, item) {
     console.error(`Rebuilding the tiddler list: ${item.key} isn't stored the way the worker stores tiddlers, left out`);
     return null;
   }
+  const read = await readStoredFields(env, item);
+  if (!read) return null;
+  const { fields, obj } = read;
+  if (fields === null || typeof fields !== "object" || Array.isArray(fields)) {
+    console.error(`Rebuilding the tiddler list: ${item.key} is not a readable tiddler, left out`);
+    return null;
+  }
+  if (isEphemeralTitle(title) || isDraft(fields)) return null;
+  // Listed under the title it's stored under (a save's body always has the same one)
+  return listEntry(title, fields, revisionOf(obj), getTwTimestamp(obj.uploaded));
+}
+
+// The fields of a stored tiddler (not its text), or null: only its beginning is read, unless the
+// fields are longer. item: the object as listed or looked up (key, size)
+async function storedFields(env, item) {
+  if (item.customMetadata?.layout !== FLAT_LAYOUT) return null;
+  const read = await readStoredFields(env, item);
+  const fields = read && read.fields;
+  return fields !== null && typeof fields === "object" && !Array.isArray(fields) ? fields : null;
+}
+
+// { fields (null if they can't be read), obj }, or null if it's gone
+async function readStoredFields(env, item) {
   const partial = item.size > HEAD_BYTES;
   let obj = await env.WIKI_BUCKET.get(item.key, partial ? { range: { offset: 0, length: HEAD_BYTES } } : undefined);
   if (!obj) return null;   // deleted meanwhile
@@ -1329,13 +1366,8 @@ async function storedEntry(env, item) {
   }
   let fields = null;
   try { fields = JSON.parse(cut === -1 ? decoder.decode(bytes) : decoder.decode(bytes.subarray(0, cut)) + "}"); } catch (e) {}
-  if (fields === null || typeof fields !== "object" || Array.isArray(fields)) {
-    console.error(`Rebuilding the tiddler list: ${item.key} is not a readable tiddler, left out`);
-    return null;
-  }
-  if (isEphemeralTitle(title) || isDraft(fields)) return null;
-  // Listed under the title it's stored under (a save's body always has the same one)
-  return listEntry(title, fields, revisionOf(obj), getTwTimestamp(obj.uploaded));
+  if (fields && typeof fields === "object") delete fields.text;
+  return { fields, obj };
 }
 
 // One step of a rebuild. damaged: { object, text } of the list as found (object null if missing).

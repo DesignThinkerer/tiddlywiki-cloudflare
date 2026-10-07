@@ -96,6 +96,7 @@ exports.startup = function() {
 		draftBases = Object.create(null),   // draft title -> {of: title, base: revision}
 		pendingBases = Object.create(null), // title -> {base: revision} for a confirmed draft not yet uploaded
 		deleteBases = Object.create(null),  // title -> revision its editor started from, for the delete a rename or a delete from the editor makes
+		unconfirmedSaves = Object.create(null), // title -> the tiddler of a save that got an error: the worker may have stored it all the same
 		listBypassCache = false;            // the last list was the stand-in or unreadable (isListStandIn)
 	proto.conflictGuardInstalled = true;
 
@@ -245,8 +246,18 @@ exports.startup = function() {
 		return s.getSyncedTiddlers([title]).length > 0;
 	}
 
+	// (A tiddler without a type, as one created in this tab, has the default one the browser module
+	// sends: the server's copy of it has that type)
 	function sameContent(localTiddler,serverFields) {
-		return !!serverFields && localTiddler.isEqual(new $tw.Tiddler(serverFields),BOOKKEEPING_FIELDS);
+		if(!serverFields) {
+			return false;
+		}
+		var local = localTiddler.fields.type ? localTiddler : new $tw.Tiddler(localTiddler,{type: "text/vnd.tiddlywiki"}),
+			server = new $tw.Tiddler(serverFields);
+		if(!server.fields.type) {
+			server = new $tw.Tiddler(server,{type: "text/vnd.tiddlywiki"});
+		}
+		return local.isEqual(server,BOOKKEEPING_FIELDS);
 	}
 
 	function makeConflictCopy(localTiddler) {
@@ -301,7 +312,9 @@ exports.startup = function() {
 	}
 
 	// The server rejected our write because its copy changed. Keep our version, adopt the server's.
-	function resolveConflict(adaptor,title,operation,callback) {
+	// ownEarlier(revision): for a save, called instead if the server's copy is this tab's own earlier
+	// save, one that got an error (an answer lost, say) though the worker stored it
+	function resolveConflict(adaptor,title,operation,callback,ownEarlier) {
 		$tw.utils.httpRequest({
 			url: adaptor.host + "recipes/" + encodeURIComponent(adaptor.recipe) + "/tiddlers/" + encodeURIComponent(title),
 			callback: function(err,data,request) {
@@ -318,7 +331,12 @@ exports.startup = function() {
 						return callback("Could not read the server copy of '" + title + "': " + e);
 					}
 				}
-				var localTiddler = wiki.tiddlerExists(title) && wiki.getTiddler(title);
+				var localTiddler = wiki.tiddlerExists(title) && wiki.getTiddler(title),
+					earlier = unconfirmedSaves[title];
+				if(operation === "save" && ownEarlier && earlier && serverFields && sameContent(earlier,serverFields)) {
+					delete unconfirmedSaves[title];
+					return ownEarlier(serverFields.revision);
+				}
 				// (Only now that the server's answer is in: if asking failed, the syncer tries the save
 				// or delete again, which must still be based on the same revision)
 				delete pendingBases[title];
@@ -453,10 +471,19 @@ exports.startup = function() {
 							return setTimeout(send,1000);
 						}
 						if(request && request.status === 412) {
-							return resolveConflict(self,title,"save",callback);
+							return resolveConflict(self,title,"save",callback,function(revision) {
+								// The worker has this tab's earlier save: this one is based on it. (Its
+								// editors move on to it too.)
+								rebase(title,base,revision);
+								base = revision;
+								send();
+							});
 						}
+						// Maybe stored all the same: the next try's refusal will tell (resolveConflict)
+						unconfirmedSaves[title] = tiddler;
 						return callback(err);
 					}
+					delete unconfirmedSaves[title];
 					if($tw.browserStorage && $tw.browserStorage.isEnabled()) {
 						$tw.browserStorage.removeTiddlerFromLocalStorage(title);
 					}
