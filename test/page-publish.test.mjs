@@ -142,7 +142,8 @@ check("...each where TiddlyWiki puts it, transclusions filled in",
 
 // The copies in the shell carry the worker's revision (TiddlyWeb would write a count of this tab's
 // changes, different in every tab): every tab renders the same page, and a page load doesn't reload them
-const storeOf = text => JSON.parse(/<script class="tiddlywiki-tiddler-store" type="application\/json">(\[[\s\S]*?\])<\/script>/.exec(text)[1]);
+// The tiddlers in a page's tiddler stores (TiddlyWiki reads every one, in order)
+const storeOf = text => [...text.matchAll(/<script class="tiddlywiki-tiddler-store" type="application\/json"[^>]*>(\[[\s\S]*?\])<\/script>/g)].flatMap(m => JSON.parse(m[1]));
 const listedRevision = async title => JSON.parse(await (await bucket.get("recipes/default/tiddlers.json")).text()).find(e => e.title === title)?.revision;
 const splashCopy = storeOf(html).find(t => t.title === "Splash");
 check("...the copies in the shell carry the worker's revision", !!splashCopy && splashCopy.revision === await listedRevision("Splash"),
@@ -417,6 +418,7 @@ const BUNDLED = "$:/plugins/tiddlywiki/highlight";
 const contextW = await browser.newContext();
 const { p: W } = await openAdmin("W", contextW);   // a tab that still has the version from the page
 await settle(W);
+const bundledOriginal = await A.evaluate(t => $tw.wiki.getTiddler(t)?.fields.version, BUNDLED);
 mark = requests.length;
 await A.evaluate(t => $tw.wiki.addTiddler(new $tw.Tiddler($tw.wiki.getTiddler(t), { version: "9.9.9" })), BUNDLED);
 await settle(A);
@@ -440,6 +442,25 @@ const otherCopies = await W.evaluate(t => $tw.wiki.filterTiddlers("[field:confli
 check("...while a tab that updated it from the page's version too gets a conflict, not an overwrite",
   otherStored === "9.9.9" && otherCopies.length === 1, `stored ${otherStored}, copies ${JSON.stringify(otherCopies)}`);
 await contextW.close();
+// Deleting that update goes back to the version that came with the page (as the page built from
+// index.html did), while deleting a plugin that came with the page, never updated, removes it
+const NEVER_UPDATED = "$:/themes/tiddlywiki/snowwhite";
+mark = requests.length;
+await A.evaluate(titles => titles.forEach(t => $tw.wiki.deleteTiddler(t)), [BUNDLED, NEVER_UPDATED]);
+await settle(A);
+await waitFor(async () => shellPuts("A", mark) > 0);
+await sleep(QUIET_WINDOW);
+html = await shell();
+const contextV = await browser.newContext();
+const { p: V } = await openAdmin("V", contextV);
+await settle(V);
+const backInV = await V.evaluate(titles => titles.map(t => $tw.wiki.getTiddler(t)?.fields.version ?? null), [BUNDLED, NEVER_UPDATED]);
+check("deleting the update of a plugin that came with the page brings back the page's version, on both sites",
+  !!bundledOriginal && bundledOriginal !== "9.9.9" && inStore(html, BUNDLED) && backInV[0] === bundledOriginal && !(await bucket.head("recipes/default/tiddlers/" + BUNDLED)),
+  `original ${bundledOriginal}, in the shell ${inStore(html, BUNDLED)}, in a new tab ${backInV[0]}`);
+check("...while a plugin that came with the page, never updated, stays deleted", !inStore(html, NEVER_UPDATED) && backInV[1] === null,
+  `in the shell ${inStore(html, NEVER_UPDATED)}, in a new tab ${backInV[1]}`);
+await contextV.close();
 
 // --- 9. A tiddler whose text hasn't arrived yet is waited for ----------------------------------------
 // Edited outside the admin wiki (in R2): the next admin load publishes it, once its text is there
