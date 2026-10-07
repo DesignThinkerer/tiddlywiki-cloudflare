@@ -620,7 +620,7 @@ async function serveManifest(request, env, ctx, corsHeaders) {
   let object = listObject;
   const listHeaders = obj => {
     const headers = listResponseHeaders(obj, corsHeaders);
-    if (backups) headers.set("X-Backup-Status", backupReport(env, backups));
+    if (backups) headers.set("X-Backup-Status", backupReport(env, backups.failing));
     return headers;
   };
   // A conditional get that fails its precondition returns the object without a body
@@ -1498,9 +1498,11 @@ async function queueBackup(env, job) {
 // Backups GitHub keeps refusing (not a rate limit: that only delays them) are recorded in
 // _backup/status.json, one entry per tiddler: since (when its oldest waiting version was saved),
 // last (its latest attempt), error (GitHub's answer) and status (its HTTP status, 0 without one).
-// The entry goes when that tiddler's backup gets through. Written only when something changes, read
-// only by a batch with a failure or a version that failed before. The admin wiki asks with its
-// tiddler list request (X-Backup-Status: ask) when it loads, then hourly, and shows an alert.
+// The entry goes when that tiddler's backup gets through. The file also keeps a pause of every
+// backup, { until, count }, while there's one (processBackupBatch). Written only when something
+// changes, read only by a batch with a failure or a version that failed or waited before. The admin
+// wiki asks with its tiddler list request (X-Backup-Status: ask) when it loads, then hourly, and
+// shows an alert.
 
 const BACKUP_STATUS_KEY = "_backup/status.json";
 // An entry not retried for a day belongs to a backup no longer waiting (one still waiting is retried
@@ -1511,30 +1513,42 @@ function backupFailure(job, e) {
   return { title: job.title, since: job.time || Date.now(), error: String(e.detail || e.message || e).slice(0, 200), status: e.status || 0 };
 }
 
-// title -> entry
-async function readBackupStatus(env) {
+// { failing: title -> entry, pause }. strict: an R2 error throws, rather than reading as no file (a
+// file that isn't JSON still reads as none)
+async function readBackupStatus(env, strict) {
+  let data = null;
   try {
     const obj = await env.WIKI_BUCKET.get(BACKUP_STATUS_KEY);
-    const failing = obj ? (await obj.json()).failing : null;
-    return new Map(failing && typeof failing === "object" ? Object.entries(failing) : []);
-  } catch {
-    return new Map();
+    try {
+      data = obj ? await obj.json() : null;
+    } catch {}
+  } catch (e) {
+    if (strict) throw e;
   }
+  const failing = data && typeof data.failing === "object" && data.failing ? Object.entries(data.failing) : [];
+  const pause = data && data.pause && data.pause.until > 0 ? { until: data.pause.until, count: data.pause.count || 0 } : null;
+  return { failing: new Map(failing), pause };
 }
 
-// failures: from backupFailure; cleared: titles whose backup got through. Never throws: an R2 error
-// here mustn't count as a failed backup
-async function recordBackupResults(env, failures, cleared) {
+// failures: from backupFailure; cleared: titles whose backup got through; pause: { until, count } of
+// a pause that starts, null when one is over, undefined when that's not known; stored: the status
+// file, if this run has read it already. Never throws: an R2 error here mustn't count as a failed
+// backup
+async function recordBackupResults(env, failures, cleared, pause, stored) {
   try {
-    await updateBackupStatus(env, failures, cleared);
+    await updateBackupStatus(env, failures, cleared, pause, stored);
   } catch (e) {
     console.error("[Backup] Could not record how backups go:", e.message);
   }
 }
 
-async function updateBackupStatus(env, failures, cleared) {
-  const failing = await readBackupStatus(env), now = Date.now();
+async function updateBackupStatus(env, failures, cleared, pause, stored) {
+  const { failing, pause: storedPause } = stored || await readBackupStatus(env, true), now = Date.now();
   let changed = false;
+  let keptPause = pause === undefined ? storedPause : pause;
+  // (A pause over for a while no longer counts: gone)
+  if (keptPause && now - keptPause.until >= PAUSE_CONTINUES) keptPause = null;
+  if (JSON.stringify(keptPause) !== JSON.stringify(storedPause)) changed = true;
   for (const title of cleared) changed = failing.delete(title) || changed;
   for (const { title, since, error, status } of failures) {
     const entry = failing.get(title);
@@ -1546,8 +1560,9 @@ async function updateBackupStatus(env, failures, cleared) {
     if (!(now - entry.last <= BACKUP_STATUS_STALE)) changed = failing.delete(title) || changed;
   }
   if (!changed) return;
-  if (failing.size) {
-    await env.WIKI_BUCKET.put(BACKUP_STATUS_KEY, JSON.stringify({ failing: Object.fromEntries(failing) }), { httpMetadata: { contentType: "application/json" } });
+  if (failing.size || keptPause) {
+    const status = { failing: Object.fromEntries(failing), ...(keptPause ? { pause: keptPause } : {}) };
+    await env.WIKI_BUCKET.put(BACKUP_STATUS_KEY, JSON.stringify(status), { httpMetadata: { contentType: "application/json" } });
   } else {
     await env.WIKI_BUCKET.delete(BACKUP_STATUS_KEY);
   }
@@ -1565,15 +1580,48 @@ function backupReport(env, failing) {
   return encodeURIComponent(JSON.stringify({ count: due.length, title: title.slice(0, 200), since: e.since, error: e.error, status: e.status }));
 }
 
+// A pause of every backup: GitHub asked to slow down, or refuses every backup (a token it no longer
+// accepts, say), so trying them one by one would only make more calls (each answered the same way)
+// and more queue operations. While it lasts, the backups delivered are sent again to wait for its
+// end, without calling GitHub; then the first one tries. If GitHub still refuses, the next pause is
+// twice as long (up to BACKUP_MAX_DELAY, or as long as GitHub asks).
+// { until (ms), count (pauses in a row, from 0), error (GitHub's, from the call that started it),
+// all (GitHub refuses every backup, not just asking to wait: the ones waiting are recorded as
+// failing, for the alert) }. Known to the later runs in this isolate; until and count are also kept
+// in the status file, for a run in a new one.
+let backupPause = null;
+// A failure within this time after a pause ended: the next pause is twice as long
+const PAUSE_CONTINUES = 3600 * 1000;
+
+function nextPause(env, last, e) {
+  const now = Date.now();
+  // Still paused (a run that only knew from the status file): the same pause, for at least as long
+  // as GitHub asks; just after one: twice as long; otherwise a first one
+  const still = last && now < last.until;
+  const count = !last ? 0 : still ? last.count : now - last.until < PAUSE_CONTINUES ? last.count + 1 : 0;
+  const until = Math.max(now + backupRetryDelay(env, count, e.retryAfter) * 1000, still ? last.until : 0);
+  return { until, count, error: e, all: !isRateLimit(e) };
+}
+
 // Queue consumer
 async function processBackupBatch(batch, env) {
   const messages = [...batch.messages].sort((a, b) =>
     (a.body.time - b.body.time) || String(a.body.revision).localeCompare(String(b.body.revision)));
   const held = new Map();   // title -> delay: a version of it failed, its later versions wait with it
   const failures = [], cleared = [];   // for the backup status (backupFailure)
+  let pause;                // for the status file: a pause that starts in this run, or null if one is over
+  let stored;               // the status file, if read in this run
+  let denied;               // a tiddler GitHub answered 403 or 404 in this run (see isAccountWide)
   let attempts = 0;
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i];
+    if (backupPause && Date.now() < backupPause.until) {
+      // Waits for the pause to end. (Marked, so that its backup going through ends the pause in the
+      // status file too)
+      await requeueBackup(env, msg, Math.ceil((backupPause.until - Date.now()) / 1000), false, { paused: true });
+      if (backupPause.all) failures.push(backupFailure(msg.body, backupPause.error));
+      continue;
+    }
     if (held.has(msg.body.title)) {
       await requeueBackup(env, msg, held.get(msg.body.title), false);
       continue;
@@ -1586,22 +1634,37 @@ async function processBackupBatch(batch, env) {
     try {
       await backupJob(env, msg.body);
       msg.ack();
+      backupPause = null;   // GitHub takes backups (again)
       // (The backup is done: a copy that can't be removed is only left behind)
       if (msg.body.contentKey) await env.WIKI_BUCKET.delete(msg.body.contentKey).catch(() => {});
-      // Only a version that failed before can clear a recorded failure
-      if (msg.body.tries > 0) cleared.push(msg.body.title);
+      // Only a version that failed or waited before can clear a recorded failure, or a recorded pause
+      if (msg.body.tries > 0 || msg.body.paused) {
+        cleared.push(msg.body.title);
+        pause = null;
+      }
     } catch (e) {
+      if (isRateLimit(e) || e.status === 401 || (isAccountWide(e) && denied !== undefined && denied !== msg.body.title)) {
+        // Every backup waits: this one, the rest of this run (above), and the next runs. (A rate
+        // limit isn't a failure to report: a big import waits like this for hours.)
+        let last = backupPause;
+        if (!last) {
+          try {
+            stored = await readBackupStatus(env, true);
+            last = stored.pause;
+          } catch {}
+        }
+        backupPause = nextPause(env, last, e);
+        pause = { until: backupPause.until, count: backupPause.count };
+        const delay = Math.ceil((backupPause.until - Date.now()) / 1000);
+        console.error(`[Backup] Backups paused for ${delay}s: ${e.message}`);
+        await requeueBackup(env, msg, delay, true);
+        if (backupPause.all) failures.push(backupFailure(msg.body, e));
+        continue;
+      }
+      if (isAccountWide(e)) denied = msg.body.title;
       const delay = backupRetryDelay(env, msg.body.tries, e.retryAfter);
       console.error(`[Backup] '${msg.body.title}' not backed up yet (${e.message}); retrying in ${delay}s`);
       await requeueBackup(env, msg, delay, true, isRefusal(e) ? { refused: true } : undefined);
-      if (isRateLimit(e)) {
-        // GitHub asks to slow down: everything left waits and retries with it, in order. (Not a
-        // failure to report: a big import waits like this for hours.)
-        for (let j = i + 1; j < messages.length; j++) {
-          await requeueBackup(env, messages[j], delay, false);
-        }
-        break;
-      }
       // Anything else may concern this file only, and other tiddlers' backups go ahead. Its later
       // versions wait with it, so they stay in order, unless GitHub refuses this version for good
       // (its path, or a secret in its text): the next one may be fine, and goes ahead (the late
@@ -1610,7 +1673,17 @@ async function processBackupBatch(batch, env) {
       failures.push(backupFailure(msg.body, e));
     }
   }
-  if (failures.length || cleared.length) await recordBackupResults(env, failures, cleared);
+  if (failures.length || cleared.length || pause !== undefined) await recordBackupResults(env, failures, cleared, pause, stored);
+}
+
+// GitHub refusing every backup, not one file: the token (401: expired or revoked; 403 other than a
+// rate limit: no access to the repository, or the repository archived), or the repository not
+// found (404: only on a write, as the 404 of a read, a file not there yet, isn't an error). A 403 or
+// 404 could still concern one file only (a path GitHub can't take): it pauses every backup only once
+// a second tiddler gets one in the same run, or one file would hold up all the others (the oldest
+// backup tries first after a pause). Until then it's that file's own failure.
+function isAccountWide(e) {
+  return e.status === 401 || (e.status === 403 && !isRateLimit(e)) || e.status === 404;
 }
 
 // GitHub refusing this file for good: its path, or its content (a secret in it, which its push
