@@ -317,8 +317,11 @@ exports.startup = function() {
 					}
 				}
 				var localTiddler = wiki.tiddlerExists(title) && wiki.getTiddler(title);
+				// (Only now that the server's answer is in: if asking failed, the syncer tries the save
+				// or delete again, which must still be based on the same revision)
 				delete pendingBases[title];
 				if(operation === "delete") {
+					delete deleteBases[title];
 					if(!serverFields) {
 						return callback(null,null); // It has been deleted in the meantime anyway
 					}
@@ -504,7 +507,6 @@ exports.startup = function() {
 							return setTimeout(send,1000);
 						}
 						if(request && request.status === 412) {
-							delete deleteBases[title];
 							return resolveConflict(self,title,"delete",callback);
 						}
 						return callback(err);

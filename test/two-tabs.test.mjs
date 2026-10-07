@@ -230,6 +230,29 @@ check("delete from an editor opened before another tab's save: refused (412), th
   JSON.stringify(netSince(mark)));
 await clearAlerts(B);
 
+// The same, when the request for the other tab's version (after the refusal) fails once: the delete,
+// tried again later, is still based on the version the editor started from, so it's refused again
+// rather than deleting the newer version
+await create(A, "Iota", "i1"); await settle(A); await sync(B);
+mark = net.length;
+await startEdit(B, "Iota");
+await editViaUI(A, "Iota", "i2 from A"); await settle(A);
+await sync(B);
+behindEditor = (await localText(B, "Iota")) === "i2 from A";
+let iotaGetFailed = false;
+await B.route(/\/recipes\/default\/tiddlers\/Iota$/, route => {
+  if (route.request().method() === "GET" && !iotaGetFailed) { iotaGetFailed = true; return route.abort("failed"); }
+  return route.continue();
+});
+await deleteFromEditor(B, "Iota"); await settle(B);
+await B.unroute(/\/recipes\/default\/tiddlers\/Iota$/);
+const iotaDeletes = netSince(mark).filter(x => x.tag === "B" && x.method === "DELETE" && x.path.endsWith("/Iota"));
+check("...and when fetching the other tab's version after that refusal fails once, the delete tried again is refused too, the newer version kept",
+  behindEditor && iotaGetFailed && iotaDeletes.length >= 2 && iotaDeletes.every(x => x.status === 412) &&
+  (await server("Iota"))?.text === "i2 from A" && (await localText(B, "Iota")) === "i2 from A",
+  JSON.stringify({ deletes: iotaDeletes.map(x => x.status), server: (await server("Iota"))?.text ?? null }));
+await clearAlerts(B);
+
 // With no other save in between, deleting from the editor simply deletes
 await create(A, "Theta", "t1"); await settle(A); await sync(B);
 mark = net.length;
