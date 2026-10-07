@@ -208,24 +208,27 @@ await until(async () => textOf(repoText("Big")) === big);
 const leftovers = (await bucket.list({ prefix: "_backup/versions/" })).objects.length;
 check("200 KB tiddler committed, temporary copy removed", textOf(repoText("Big")) === big && leftovers === 0, `leftovers ${leftovers}`);
 
-// 8a. The queue's 128 KB limit is on the message as sent, V8-serialized: a text with a character
-// past Latin-1 takes two bytes a character, so one under 100 KB can be over the limit. It waits in
-// R2 like a big one (not sent straight to GitHub from the save), and so does a big one with a title
-// too long to be part of an R2 key. Held up by an outage here, to see the copies waiting.
+// 8a. The queue counts an operation per 64 KB of message, as sent (V8-serialized), so a version waits
+// in R2 rather than make a message over 64 KB (6 operations instead of 3): a 70 KB Latin-1 text; a
+// text with a character past Latin-1, which takes two bytes a character (40 KB of it is over); a big
+// one with a title too long to be part of an R2 key. A 60 KB Latin-1 text still fits in the message.
+// Held up by an outage here, to see the copies waiting.
 const logMark = workerLog.length;
-const wide = "€" + "w".repeat(99000), longTitle = "Long " + "t".repeat(990), latin = "é" + "l".repeat(110000);
+const wide = "€" + "w".repeat(40000), longTitle = "Long " + "t".repeat(990), latin = "é" + "l".repeat(60000), latinBig = "é" + "L".repeat(70000);
 faults.outage = true;
 await put("Wide", wide);
 await put(longTitle, "a".repeat(95000) + "😀".repeat(10000));
 await put("Latin", latin);
+await put("Latin big", latinBig);
 await new Promise(r => setTimeout(r, 1500));
 const waiting = (await bucket.list({ prefix: "_backup/versions/" })).objects.length;
 faults.outage = false;
-await until(async () => textOf(repoText("Wide")) === wide && repoText(longTitle) !== undefined && textOf(repoText("Latin")) === latin);
+await until(async () => textOf(repoText("Wide")) === wide && repoText(longTitle) !== undefined && textOf(repoText("Latin")) === latin && textOf(repoText("Latin big")) === latinBig);
 const notQueued = workerLog.slice(logMark).join("").match(/Could not queue[^\n]*/g) || [];
 const leftAfter = (await bucket.list({ prefix: "_backup/versions/" })).objects.length;
-check("a text sent as two bytes a character, and a big one with a long title, wait in R2 for the queue; a Latin-1 one fits in the message",
-  waiting === 2 && leftAfter === 0 && notQueued.length === 0 && textOf(repoText("Wide")) === wide && repoText(longTitle) === await r2Text(longTitle) && textOf(repoText("Latin")) === latin,
+check("versions that would make a message over 64 KB wait in R2 (two bytes a character, a 70 KB one, a long title); a 60 KB Latin-1 one fits in the message",
+  waiting === 3 && leftAfter === 0 && notQueued.length === 0 && textOf(repoText("Wide")) === wide && repoText(longTitle) === await r2Text(longTitle) &&
+  textOf(repoText("Latin")) === latin && textOf(repoText("Latin big")) === latinBig,
   `waiting ${waiting}, left ${leftAfter}${notQueued.length ? ", " + notQueued.join(" | ").slice(0, 200) : ""}`);
 
 // 8d. A big version's R2 copy that can't be removed after its commit: the backup is still done (not
@@ -408,6 +411,8 @@ await until(async () => repoText("Odd path") !== undefined && await backupStatus
 // how many are waiting, only to a request that asks. It pauses every backup, so the ones waiting make
 // a few GitHub calls in all, not a few each. Cleared once they go through, and the pause with them
 faults.badCredentials = true;
+const queueOps = async () => (await mf.dispatchFetch(`${base}/__qops`)).json();
+await queueOps();                                          // (starts a new count)
 const tokenSaved = Date.now();
 const tokenCalls = () => ghCalls.filter(c => c.includes("tiddlers/Token ")).length;
 const tokenTitles = Array.from({ length: 20 }, (_, i) => `Token ${i + 1}`);
@@ -424,6 +429,14 @@ check("...and pauses every backup: a few GitHub calls in all while it lasts, not
 faults.badCredentials = false;
 check("...and cleared once they go through, with the pause", await until(async () => tokenTitles.every(t => repoText(t) !== undefined) &&
   await backupStatus() === "ok" && !(await bucket.head("_backup/status.json")), 60000));
+// Waiting costs 1 queue operation (the next delivery, through the queue's own retry) instead of 3 (a
+// fresh message sent, delivered, acknowledged), while the message has retries left: never past its
+// third delivery, inside the queue's default limit of 3 retries
+const tokenOps = await queueOps();
+const tokenWaits = tokenOps.deliveries - tokenTitles.length;
+check("...and the waits mostly use the queue's own retry (1 operation instead of 3), never past a message's third delivery",
+  tokenWaits > 0 && tokenOps.retries * 2 >= tokenWaits && tokenOps.maxAttempts <= 3,
+  `${tokenOps.sends + tokenOps.deliveries + tokenOps.acks} operations for ${tokenTitles.length} backups: ${JSON.stringify(tokenOps)}`);
 
 // 16b. A token that can't write to the repository (403 for every write) pauses every backup too, once
 // two tiddlers get that answer

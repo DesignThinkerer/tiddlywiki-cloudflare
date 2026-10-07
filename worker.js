@@ -1505,7 +1505,9 @@ function writeBase64(bytes, out, at) {
   return at;
 }
 
-const QUEUE_MESSAGE_LIMIT = 128000;   // a queue message, as sent; a version that would make it bigger waits in R2
+// A queue message, as sent: a version that would make it bigger waits in R2. (The queue takes up to
+// 128 KB, but counts an operation per 64 KB of message: over 64 KB, a backup would cost 6 instead of 3.)
+const QUEUE_MESSAGE_LIMIT = 64000;
 const BACKUP_PER_RUN = 10;            // keeps one run within Cloudflare's 50-subrequest limit (free plan)
 // After this many bytes of versions, the rest of a run goes on to the next one: a megabyte takes a
 // few milliseconds of CPU (its base64 above all), and a run gets about 10 on the free plan. A run
@@ -1514,8 +1516,8 @@ const BACKUP_BYTES_PER_RUN = 512 * 1024;
 const BACKUP_MAX_DELAY = 6 * 3600;    // longest wait between retries (seconds)
 
 // About the size of a message as the queue measures it: V8-serialized, where a string takes one
-// byte a character if they're all Latin-1, two otherwise (so a text under 100 KB can be over 128 KB),
-// with room for the other fields
+// byte a character if they're all Latin-1, two otherwise (so a text of 40 KB can be over 64 KB), with
+// room for the other fields
 function queueMessageSize(message) {
   let size = 200;
   for (const value of [message.title, message.content]) {
@@ -1711,7 +1713,7 @@ async function processBackupBatch(batch, env) {
       // (The backup is done: a copy that can't be removed is only left behind)
       if (msg.body.contentKey) await env.WIKI_BUCKET.delete(msg.body.contentKey).catch(() => {});
       // Only a version that failed or waited before can clear a recorded failure, or a recorded pause
-      if (msg.body.tries > 0 || msg.body.paused) {
+      if (msg.body.tries > 0 || msg.body.paused || msg.attempts > 1) {
         cleared.push(msg.body.title);
         pause = null;
       }
@@ -1777,9 +1779,25 @@ function backupRetryDelay(env, tries, retryAfter) {
   return Math.ceil(Math.min(Math.max(delay, retryAfter || 0), 24 * 3600));
 }
 
-// Sends the message again as a fresh one, so neither the queue's retry limit nor its retention
-// period can drop a backup that keeps failing. extra: fields to add to it
+// The queue's retry limit, which the worker can't read: Cloudflare's default (README 3.4: leave it)
+const QUEUE_RETRIES = 3;
+// How long the queue keeps a message from when it was sent: 24 hours on the free plan (the least)
+const QUEUE_RETENTION = 24 * 3600 * 1000;
+
+// Puts a message back, to be delivered again after delaySeconds. While it only waits (nothing in it
+// changes but being marked paused, which its next delivery shows anyway: msg.attempts) and has a
+// retry left, with a delivery to spare, before the queue would drop it, by its retry limit or its
+// retention, the queue's own retry: 1 operation, the next delivery. Otherwise it's sent again as a
+// fresh message, which neither limit applies to: 3 operations (sent, delivered, acknowledged).
+// countTry: one more failed try; extra: fields to add to it
 async function requeueBackup(env, msg, delaySeconds, countTry, extra) {
+  const onlyWaits = !countTry && (!extra || (Object.keys(extra).length === 1 && extra.paused === true));
+  const sent = msg.timestamp instanceof Date ? msg.timestamp.getTime() : NaN;
+  if (onlyWaits && msg.attempts >= 1 && msg.attempts < QUEUE_RETRIES &&
+      Date.now() + delaySeconds * 1000 < sent + QUEUE_RETENTION - 3600 * 1000) {
+    msg.retry(delaySeconds > 0 ? { delaySeconds } : undefined);
+    return;
+  }
   const body = { ...msg.body, ...(countTry ? { tries: (msg.body.tries || 0) + 1 } : {}), ...extra };
   try {
     await env.BACKUP_QUEUE.send(body, delaySeconds > 0 ? { delaySeconds } : undefined);

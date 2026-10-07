@@ -3,7 +3,10 @@
 // chosen calls fail. GET /__r2ops returns { calls, overlaps } since the last time and starts a new
 // count; POST /__r2fail with { call: "put baked.html", times: 1 } makes the next such calls throw
 // (or, with delay: milliseconds, makes them wait that long first). GET /__runs returns the R2 calls of
-// each queue run since the last time, one list a run, and starts a new count.
+// each queue run since the last time, one list a run, and starts a new count. GET /__qops returns the
+// queue operations since the last time, { sends, deliveries, acks, retries, maxAttempts (the most
+// deliveries of one message) }, and starts a new count:
+// Cloudflare counts a send, a delivery and an ack as one operation each (a retry is the next delivery).
 // Used by test/r2-ops.test.mjs, test/integrity.test.mjs and test/queue-backup.test.mjs; never deployed.
 import worker from "../worker.js";
 
@@ -11,6 +14,16 @@ let calls = [];
 let overlaps = [];          // "get list + head tiddler": a call that started while the others were running
 let failures = [];          // { call, times, delay }: calls to make fail, or wait first
 let runs = [];              // the R2 calls of each queue run
+let qops = { sends: 0, deliveries: 0, acks: 0, retries: 0, maxAttempts: 0 };
+
+// The queue binding, counting what's sent
+function countedQueue(queue) {
+  if (!queue) return queue;
+  return {
+    send(body, options) { qops.sends++; return queue.send(body, options); },
+    sendBatch(messages, options) { qops.sends += messages.length; return queue.sendBatch(messages, options); }
+  };
+}
 const running = new Map();  // call -> how many are running
 
 // What a key is, in the words the test uses
@@ -61,6 +74,11 @@ export default {
       failures.push({ call, times, delay });
       return new Response(null, { status: 204 });
     }
+    if (new URL(request.url).pathname === "/__qops") {
+      const out = qops;
+      qops = { sends: 0, deliveries: 0, acks: 0, retries: 0, maxAttempts: 0 };
+      return Response.json(out);
+    }
     if (new URL(request.url).pathname === "/__runs") {
       const out = runs;
       runs = [];
@@ -72,11 +90,20 @@ export default {
       overlaps = [];
       return Response.json(out);
     }
-    return worker.fetch(request, { ...env, WIKI_BUCKET: counted(env.WIKI_BUCKET) }, ctx);
+    return worker.fetch(request, { ...env, WIKI_BUCKET: counted(env.WIKI_BUCKET), BACKUP_QUEUE: countedQueue(env.BACKUP_QUEUE) }, ctx);
   },
   async queue(batch, env, ctx) {
     const run = [];
     runs.push(run);
-    return worker.queue(batch, { ...env, WIKI_BUCKET: counted(env.WIKI_BUCKET, run) }, ctx);
+    qops.deliveries += batch.messages.length;
+    for (const m of batch.messages) qops.maxAttempts = Math.max(qops.maxAttempts, m.attempts || 0);
+    // The messages, counting acks and retries (attempts and timestamp read through)
+    const messages = batch.messages.map(m => ({
+      get id() { return m.id; }, get body() { return m.body; }, get attempts() { return m.attempts; }, get timestamp() { return m.timestamp; },
+      ack() { qops.acks++; return m.ack(); },
+      retry(options) { qops.retries++; return m.retry(options); }
+    }));
+    return worker.queue({ queue: batch.queue, messages, ackAll: () => batch.ackAll(), retryAll: o => batch.retryAll(o) },
+      { ...env, WIKI_BUCKET: counted(env.WIKI_BUCKET, run), BACKUP_QUEUE: countedQueue(env.BACKUP_QUEUE) }, ctx);
   }
 };
