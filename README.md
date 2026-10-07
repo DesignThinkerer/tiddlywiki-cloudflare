@@ -87,6 +87,7 @@ flowchart LR
     ├── queue-backup.test.mjs queue backup against an imitation of GitHub (42 checks)
     ├── integrity.test.mjs    the tiddler list's integrity, a failed page build, draft-like titles, .gitignore (73 checks)
     ├── r2-ops.test.mjs       R2 calls per kind of request, against a budget (29 checks)
+    ├── cpu.test.mjs          CPU of a big plugin's save and backup, against a budget (2 checks)
     ├── r2-counter.mjs        test-only wrapper that counts the worker's R2 calls
     ├── browser-harness.mjs   the browser suites' shared setup (worker, public site stand-in, Chromium, helpers)
     └── bake.test.mjs         page serving and rebuilding, the published page (49 checks)
@@ -713,7 +714,7 @@ Requirements: Node.js 20 or newer and a Chromium for the browser tests.
 ```bash
 npm install
 npx playwright install chromium      # or: export CHROMIUM_PATH=/path/to/chrome
-npm test                             # build, make the test wiki, run all seven suites
+npm test                             # build, make the test wiki, run all eight suites
 ```
 
 | Command | What it runs |
@@ -724,6 +725,7 @@ npm test                             # build, make the test wiki, run all seven 
 | `npm run test:bake` | Page serving: rebuild on an outdated bake or a new `index.html`, the `304` for an unchanged page (also with a weakened ETag, and by date alone, including two pages built within the same second), a byte order mark; CORS, a bad `PUT` path, and `/status`, kept by the browser for a week and no longer baked into the page. The published page: the core file stored and each kind refused (also one sent for an older `index.html`, or without saying which) (also one still switching the save template, while the core plugin's escaped mentions of it are accepted), each kind of shell refused, a shell kept and the page built from it, the same again, plugin tags before the core (only in a shell: in a full `index.html` they stay in `<head>`, even with TiddlyWiki's marker in raw markup), a new `index.html` built from until a shell is published for it. `CONFLICT_GUARD = off`: the page built without the browser modules. |
 | `npm run test:integrity` | The tiddler list's integrity, the page after a failed build, draft-like titles and `.gitignore` (see below). |
 | `npm run test:r2` | R2 calls per kind of request, against a budget (see below). |
+| `npm run test:cpu` | CPU of the heaviest steps, a big plugin's save and backup, against a budget (see below). |
 | `npm run test:backup` | Queue backup against an imitation of GitHub's Contents API (see below). |
 | `npm run test:tabs` | Real TiddlyWiki in Chromium with several tabs (see below). |
 | `npm run test:plugins` | Real plugins in Chromium, on the admin site and a stand-in for the public site (see below). |
@@ -765,6 +767,12 @@ The tests run the real worker in Cloudflare's local runtime (workerd, through Mi
 | Delete a plugin | 10: the delete's 4, the page build's 5 without that plugin's file, then the file deleted (11 before the first publish) |
 
 Backups don't appear here: with the queue bound, as deployed, they run later in the queue consumer.
+
+`test:cpu` loads the built worker's own functions in Node, which runs the same V8 as Workers, and measures the CPU of the two heaviest steps for a 4.8 MB plugin. Each budget is relative to `JSON.parse` of the same bytes on that machine (what the worker avoids), so it holds on a faster or slower one:
+- reading a save in the flat layout: at most 0.25× (it parses only the fields before the text; about 0.12×);
+- its backup from its R2 copy: at most 2.5× (the git hash and base64 worked out on bytes; about 1×, where encoding it through strings took about 4–6×).
+
+Reading the save in full, or building the backup's request through strings, fails its budget.
 
 `test:backup` covers:
 - a 150-tiddler import (one commit each, never two at once, byte-identical content);
