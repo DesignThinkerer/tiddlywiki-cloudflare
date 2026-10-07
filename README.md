@@ -76,6 +76,8 @@ flowchart LR
 │   ├── worker.src.js         the worker's source
 │   ├── conflict-guard.js     the browser module, embedded into worker.js by the build
 │   └── page-publisher.js     the second browser module (4.9), embedded the same way
+├── tools/
+│   └── convert-stored-tiddlers.js  converts a bucket filled by an older version (6)
 ├── build.mjs                 inserts both modules into src/worker.src.js → worker.js
 ├── wrangler.example.toml     all bindings and settings, for deploying with wrangler
 ├── package.json              build and test scripts
@@ -421,7 +423,7 @@ sequenceDiagram
 Commit messages: `✏️ Save: <title>`, `🗑️ Delete: <title>`, and `✏️ Save: <title> (newer version restored)` for the case in point 4.
 
 **Failing backups show in the admin wiki.** Retrying means nothing is lost, but also that a token GitHub no longer accepts (an expired one, say) would otherwise only show in the worker's logs, for months. So:
-- **The queue handler records each tiddler GitHub keeps refusing** in `_backup/status.json`: since when (the save of its oldest waiting version), GitHub's answer and its HTTP status. (Readable on the public site like everything in the bucket, it shows nothing new: the titles are in the public tiddler list already, and GitHub's answers hold no secret.) Rate limits aren't recorded: they only make backups wait, for hours during a big import. During a pause for a token GitHub refuses (4.7, point 7), every backup that waits is recorded, so none is left out of the count. The entry goes once that tiddler's backup gets through, and the file once none is left (and no pause). The file is written only when something changes, and read only by a run with a failure, a retry or a pause; a direct backup (no queue) records its failures too.
+- **The queue handler records each tiddler GitHub keeps refusing** in `_backup/status.json`: since when (the save of its oldest waiting version), GitHub's answer and its HTTP status. (Readable on the public site like everything in the bucket, it shows nothing new: the titles are in the public tiddler list already, and GitHub's answers hold no secret.) Rate limits aren't recorded: they only make backups wait, for hours during a big import. During a pause for a token GitHub refuses (4.7, point 7), every backup that waits is recorded, so none is left out of the count. The entry goes once that tiddler's backup gets through, and the file once none is left (and no pause). The file is written only when something changes, and read only by a run with a failure, a retry or a pause. A direct backup (no queue) records its failures too, and reads the file after each backup that goes through, to clear its entry: without a queue, a backup doesn't know whether it failed before.
 - **The admin wiki asks with its tiddler list request** (header `X-Backup-Status: ask`): when the page loads, then once an hour, and at each request while the alert shows. Only then does the worker read the file, at the same time as the list, and answer in a header of that response, a `304` included. No extra request.
 - **An alert** ("GitHub backup") then says since when backups fail, how many tiddlers wait and the oldest, GitHub's answer, and what to do: for a `401`, make a new token and update the `GITHUB_TOKEN` secret. Only backups failing for at least `BACKUP_ALERT_MINUTES` (60) are reported, so a short GitHub outage doesn't raise one. It goes away by itself once they get through. Dismissed, it stays away for that problem; a reload shows it again if it's still there.
 
@@ -636,6 +638,11 @@ The queue solves the cause instead of working around it:
 
 If the page is rebuilt before step 4 (by a deploy, or by saving another plugin, a startup action, `$:/theme` or a disable flag), the file is written again; delete it again.
 
+**A plugin with raw markup** (one with a tiddler tagged `$:/tags/RawMarkup…`) is in the page as well as in its file (4.9), so deleting the file isn't enough, and a page built again writes the file again while the plugin is stored. Remove the plugin itself, in R2:
+1. Delete `recipes/default/tiddlers/<plugin title>` and `_plugins/<plugin title>.js`, then `recipes/default/tiddlers.json`, `_page/shell.html` and `baked.html`.
+2. Purge everything from Cloudflare's cache.
+3. Open the admin wiki. The worker rebuilds the tiddler list from the stored tiddlers (4.2) and the page from `index.html`, both without the plugin, and the admin wiki then publishes its page. The GitHub backup still has the plugin (`tiddlers/<plugin title>.json`), to install again once fixed.
+
 **Checking the module is active:** in the admin wiki's browser console, `$tw.syncadaptor.conflictGuardInstalled` should be `true`.
 
 **Log lines** (worker logs):
@@ -755,8 +762,8 @@ The tests run the real worker in Cloudflare's local runtime (workerd, through Mi
 | Save refused (`412`) | 2: look it up and read the list, both at once (the stored tiddler itself is read only if it's the same size as the save, to recognise a save sent again) |
 | Save sent again, already stored | 4: look it up, read it to compare, read and write the list |
 | Delete | 4: read the list, look it up, delete it, write the list |
-| Save a plugin | 10: the save's 4, and the page build: read `index.html`, check and write the plugin file, read the stored plugin, check and write `baked.html`. The page build reuses the list the save wrote. |
-| Delete a plugin | 8 |
+| Save a plugin | 12: the save's 4, and the page build: look up `index.html` and the stored core file and read the published shell (all at once), check and write the plugin file, read the stored plugin, check and write `baked.html`. The page build reuses the list the save wrote, and checks every other plugin's file too (one `HEAD` each). Before the first publish, with no shell, it reads `index.html` as well: 13. |
+| Delete a plugin | 10: the delete's 4, the page build's 5 without that plugin's file, then the file deleted (11 before the first publish) |
 
 Backups don't appear here: with the queue bound, as deployed, they run later in the queue consumer.
 
