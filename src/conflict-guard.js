@@ -266,12 +266,13 @@ exports.startup = function() {
 			copyTitle = wiki.generateNewTitle(title + " (conflict " + stamp + ")"),
 			keptTags = [],
 			removedTags = [];
-		// Keep the copy inert: tags such as $:/tags/Stylesheet or $:/tags/Macro would make it take effect,
-		// and so would module-type (a JavaScript module, defined and run at startup) or plugin-type (a
-		// plugin, whose contents would even override the original's). They're moved aside, kept for
+		// Keep the copy inert: system tags such as $:/tags/Stylesheet or $:/tags/Macro would make it take
+		// effect (every $:/ tag: TiddlyWiki's older $:/core/wiki/rawmarkup still puts raw markup in the
+		// page), and so would module-type (a JavaScript module, defined and run at startup) or plugin-type
+		// (a plugin, whose contents would even override the original's). They're moved aside, kept for
 		// putting back by hand.
 		$tw.utils.each(localTiddler.fields.tags || [],function(tag) {
-			(tag.indexOf("$:/tags/") === 0 ? removedTags : keptTags).push(tag);
+			(tag.indexOf("$:/") === 0 ? removedTags : keptTags).push(tag);
 		});
 		var fields = {
 			title: copyTitle,

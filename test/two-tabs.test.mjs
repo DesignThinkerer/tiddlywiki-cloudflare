@@ -548,6 +548,21 @@ await putCode(other, GONE, markerModule("edited after the delete")); await settl
 const goneAlert = (await alerts(other)).find(t => t.includes("was deleted") && t.includes(GONE)) || "";
 check("...when the original was deleted in another tab, it says to rename the copy and give its module-type back",
   /inactive/.test(goneAlert) && /rename it/.test(goneAlert) && /module-type/.test(goneAlert) && !/copy its text/.test(goneAlert), goneAlert);
+// A raw markup tiddler with TiddlyWiki's older tag, $:/core/wiki/rawmarkup (still rendered into the
+// page's <head>): its copy loses that tag too, as every $:/ tag, so the copy's markup isn't published
+const OLD_RAW = "Old-style raw markup";
+await create(A, OLD_RAW, "<meta name='cfw-old' content='original'>", { tags: ["$:/core/wiki/rawmarkup", "notes"] }); await settle(A);
+await sync(other);
+await startEdit(other, OLD_RAW);
+await editViaUI(A, OLD_RAW, "<meta name='cfw-old' content='A'>"); await settle(A);
+await sync(other);
+await finishEdit(other, OLD_RAW, "<meta name='cfw-old' content='other tab'>"); await settle(other);
+const oldRawCopies = await conflictCopies(other, OLD_RAW);
+const oldRawCopy = oldRawCopies.length === 1 ? await server(oldRawCopies[0]) : null;
+check("a conflict copy of a tiddler with the older raw markup tag loses that tag too (every $:/ tag moved aside), keeping the others",
+  !!oldRawCopy && JSON.stringify(oldRawCopy.tags) === '["notes"]' && oldRawCopy["conflict-removed-tags"] === "$:/core/wiki/rawmarkup",
+  JSON.stringify(oldRawCopy && { tags: oldRawCopy.tags, removed: oldRawCopy["conflict-removed-tags"] }));
+await clearAlerts(other);
 await other.close();
 
 // --- 16. Backups failing are shown in the admin wiki ---------------------------------------------
