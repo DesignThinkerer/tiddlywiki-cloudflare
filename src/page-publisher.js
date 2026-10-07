@@ -321,7 +321,7 @@ exports.startup = function() {
 		if(storedCore === coreVersion) {
 			return sendShell();
 		}
-		send("page/core?v=" + encodeURIComponent(coreVersion),coreFile(),{"Content-Type": "application/javascript; charset=utf-8"},guarded(done,function(err,status) {
+		send("page/core?v=" + encodeURIComponent(coreVersion),coreFile(),{"Content-Type": "application/javascript; charset=utf-8", "X-Page-Index": source.index},guarded(done,function(err,status) {
 			if(err) {
 				return rejected(done,print,err,status,true);
 			}

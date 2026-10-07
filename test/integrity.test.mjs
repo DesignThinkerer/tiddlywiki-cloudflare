@@ -263,6 +263,22 @@ const builtPage = await (await bucket.get("baked.html")).text();
 check("...and one already listed doesn't stop the page from being built", res.status === 204 && builtPage.includes("Built despite a numeric tag"), `status ${res.status}`);
 await del("$:/SiteSubtitle");
 await del("Hand tag");
+// A body sent as the flat layout (text last) that doesn't follow it: a field after the text is listed
+// (the body is read in full, and stored in the right order), a text that isn't text is refused, in
+// either layout, and so is a body that isn't JSON after its text
+const putRaw = (title, raw, flat = true) => mf.dispatchFetch(url(title), { method: "PUT", body: raw,
+  headers: { "Content-Type": "application/json", ...(flat ? { "X-Tiddler-Layout": "flat" } : {}) } });
+const afterText = await putRaw("After text", '{"title":"After text","text":"abc","color":"x","tags":["late"]}');
+const afterTextEntry = await entry("After text");
+const afterTextStored = await (await bucket.get("recipes/default/tiddlers/After text"))?.text();
+const notTextFlat = await putRaw("Object text", '{"title":"Object text","text":{"a":1}}');
+const notTextTiddlyWeb = await putRaw("Object text", '{"title":"Object text","text":{"a":1}}', false);
+const garbage = await putRaw("Garbage after", '{"title":"Garbage after","text":"abc" garbage}');
+check("a flat body that isn't (a field after the text, a text that isn't text, garbage after it): the field listed, the others refused (400)",
+  afterText.status === 204 && afterTextEntry?.color === "x" && JSON.stringify(afterTextEntry?.tags) === '["late"]' && /"text":"abc","revision":/.test(afterTextStored || "") &&
+  notTextFlat.status === 400 && notTextTiddlyWeb.status === 400 && garbage.status === 400 && !(await storedRevision("Object text")) && !(await storedRevision("Garbage after")),
+  JSON.stringify({ after: [afterText.status, afterTextEntry?.color, afterTextEntry?.tags], objectText: [notTextFlat.status, notTextTiddlyWeb.status], garbage: garbage.status }));
+await del("After text");
 const flatMeta = revision => ({ customMetadata: { revision, layout: "flat" } });
 await bucket.put("recipes/default/tiddlers/67890", '{"title":67890,"text":"uploaded by hand","revision":"77","bag":"default","recipe":"default"}', flatMeta("77"));
 await bucket.put("recipes/default/tiddlers/Key title", '{"title":"Body title","text":"uploaded by hand","revision":"78","bag":"default","recipe":"default"}', flatMeta("78"));
@@ -508,7 +524,7 @@ const shellNamed = name => ["<!doctype html>", "<html>", "<head>", `<title>${nam
 const indexEtag = async () => (await bucket.head("index.html")).etag;
 const putShell = async (text, fingerprint) => mf.dispatchFetch(`${base}/page/shell`, { method: "PUT", body: text,
   headers: { "Content-Type": "text/html", "X-Page-Fingerprint": fingerprint, "X-Page-Index": await indexEtag() } });
-res = await mf.dispatchFetch(`${base}/page/core?v=${CORE_V}`, { method: "PUT", headers: { "Content-Type": "application/javascript" }, body: [
+res = await mf.dispatchFetch(`${base}/page/core?v=${CORE_V}`, { method: "PUT", headers: { "Content-Type": "application/javascript", "X-Page-Index": await indexEtag() }, body: [
   "/*\nTiddlyWiki\n*/", "$tw.preloadTiddlers = $tw.preloadTiddlers || [];", '_load(window,{"title":"$:/boot/boot.js","text":""});'].join("\n") });
 const firstShell = await putShell(shellNamed("Shell one"), "s1");
 await delayNext("put baked.html", 800);

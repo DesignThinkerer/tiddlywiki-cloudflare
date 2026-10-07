@@ -42,8 +42,36 @@ exports.synchronous = true;
 // Fields that don't count as "content" when deciding whether two versions really differ
 var BOOKKEEPING_FIELDS = ["revision","bag","recipe","permissions","modified","modifier"];
 
+// A wikitext attribute value holding the text as it is (in quotes it doesn't contain), or null
+function attributeValue(text) {
+	if(text.indexOf('"') === -1) {
+		return '"' + text + '"';
+	}
+	if(text.indexOf("'") === -1) {
+		return "'" + text + "'";
+	}
+	if(text.indexOf('"""') === -1 && text.charAt(text.length - 1) !== '"') {
+		return '"""' + text + '"""';
+	}
+	return null;
+}
+
+// A link to a tiddler in an alert, whatever its title: a [[...]] link would break on one ending in
+// "]" or holding "]]" or "|", and the title is shown as text, never rendered as wikitext
 function link(title) {
-	return (title.indexOf("]]") === -1 && title.indexOf("|") === -1) ? "[[" + title + "]]" : "'" + title + "'";
+	var value = attributeValue(title);
+	return value ? "<$link to=" + value + "><$text text=" + value + "/></$link>" : "'" + title + "'";
+}
+
+// The longest title the worker stores: an R2 key holds 1024 bytes, 25 of them before the title
+var MAX_TITLE_BYTES = 999;
+function utf8Length(text) {
+	return typeof TextEncoder === "function" ? new TextEncoder().encode(text).length : unescape(encodeURIComponent(text)).length;
+}
+// Titles the worker can't store, so never sent: "." and ".." (the browser takes them, in a URL, for
+// the folder or its parent, so they'd never get there) and those too long for an R2 key
+function storableTitle(title) {
+	return title !== "." && title !== ".." && (title.length * 3 <= MAX_TITLE_BYTES || utf8Length(title) <= MAX_TITLE_BYTES);
 }
 
 // The body of a save in the worker's "flat" layout, the only one it stores; the worker appends its
@@ -114,6 +142,18 @@ exports.startup = function() {
 		}
 	});
 
+	// Once per title in this tab
+	var askedToRename = Object.create(null),
+		renameLogger = $tw.utils.Logger ? new $tw.utils.Logger("cfworker") : null;
+	function askToRename(title) {
+		if(askedToRename[title] || !renameLogger) {
+			return;
+		}
+		askedToRename[title] = true;
+		renameLogger.alert(link(title) + " can't be saved: the server doesn't take a tiddler titled \".\" or \"..\", or a title over " +
+			MAX_TITLE_BYTES + " bytes. Rename it to keep it; until then it's only in this tab.");
+	}
+
 	if($tw.Syncer && !$tw.Syncer.prototype.cfworkerPatched) {
 		var originalGetSyncedTiddlers = $tw.Syncer.prototype.getSyncedTiddlers,
 			originalChooseNextTask = $tw.Syncer.prototype.chooseNextTask;
@@ -122,10 +162,18 @@ exports.startup = function() {
 		// $:/StoryList itself, and a draft.of field, even empty, as TiddlyWiki tells drafts). For drafts
 		// it also matters because after the next poll the syncer would see them as "missing from the
 		// server" and delete the open draft, closing the editor.
+		// Nor a title the worker can't store (storableTitle): each save would fail, and be tried again
+		// forever. The tab says to rename it instead.
 		$tw.Syncer.prototype.getSyncedTiddlers = function(source) {
 			var syncerWiki = this.wiki;
 			return originalGetSyncedTiddlers.call(this,source).filter(function(title) {
 				var tiddler = syncerWiki.getTiddler(title);
+				if(!storableTitle(title)) {
+					if(tiddler) {
+						askToRename(title);
+					}
+					return false;
+				}
 				return title !== "$:/StoryList" && !(tiddler && tiddler.hasField("draft.of"));
 			});
 		};
@@ -260,10 +308,24 @@ exports.startup = function() {
 		return local.isEqual(server,BOOKKEEPING_FIELDS);
 	}
 
+	// The title, shortened (ending with "…") if need be so that with suffix, and a number
+	// generateNewTitle may add, it's still a title the worker stores
+	function shortenedFor(title,suffix) {
+		var room = MAX_TITLE_BYTES - utf8Length(suffix) - 8;
+		if(utf8Length(title) <= room) {
+			return title;
+		}
+		var chars = Array.from(title);   // (whole characters: a pair of surrogates isn't split)
+		while(chars.length && utf8Length(chars.join("")) > room - 3) {
+			chars.length -= Math.max(1,Math.floor((utf8Length(chars.join("")) - room) / 4));
+		}
+		return chars.join("") + "…";
+	}
+
 	function makeConflictCopy(localTiddler) {
 		var title = localTiddler.fields.title,
 			stamp = $tw.utils.formatDateString(new Date(),"YYYY-0MM-0DD 0hh.0mm.0ss"),
-			copyTitle = wiki.generateNewTitle(title + " (conflict " + stamp + ")"),
+			copyTitle = wiki.generateNewTitle(shortenedFor(title," (conflict " + stamp + ")") + " (conflict " + stamp + ")"),
 			keptTags = [],
 			removedTags = [];
 		// Keep the copy inert: system tags such as $:/tags/Stylesheet or $:/tags/Macro would make it take
@@ -716,6 +778,7 @@ exports.startup = function() {
 
 	// Fetch a tiddler from the public copy of the wiki (R2 + Cloudflare's cache, no worker request).
 	// Only accepted if it is exactly the revision the worker listed; callback(fields) or callback(null).
+	var PUBLIC_READ_TIMEOUT = 5000;
 	function loadFromPublicSite(adaptor,title,callback) {
 		var expected = listedRevisions[title];
 		function done(fields) {
@@ -726,11 +789,18 @@ exports.startup = function() {
 		if(!publicBase || siteOf(publicBase) === siteOf(adaptor.host) || !expected || typeof fetch !== "function") {
 			return done(null);
 		}
-		fetch(publicBase + "recipes/default/tiddlers/" + encodeURIComponent(title),{cache: "no-cache", credentials: "omit"})
+		// A public site that doesn't answer (rather than fails) mustn't hold up loading: given up after a
+		// few seconds, and the text comes from the worker
+		var controller = typeof AbortController === "function" ? new AbortController() : null,
+			timer = controller && setTimeout(function() {
+				controller.abort();
+			},PUBLIC_READ_TIMEOUT);
+		fetch(publicBase + "recipes/default/tiddlers/" + encodeURIComponent(title),{cache: "no-cache", credentials: "omit", signal: controller ? controller.signal : undefined})
 			.then(function(response) {
 				return response.ok ? response.json() : null;
 			})
 			.then(function(data) {
+				clearTimeout(timer);
 				var fields = null;
 				try {
 					if(data && data.title === title && data.revision !== undefined && data.revision !== null && String(data.revision) === expected) {
@@ -741,6 +811,7 @@ exports.startup = function() {
 				}
 				done(fields);
 			},function() {
+				clearTimeout(timer);
 				done(null);
 			});
 	}

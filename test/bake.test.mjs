@@ -121,7 +121,9 @@ const fakeShell = ({ title = "Published title", v = CORE_V, tiddlyweb = true, ex
   "</body>", "</html>"
 ].join("\n");
 const indexEtag = async () => (await bucket.head("index.html")).etag;
-const putCore = (body, v = CORE_V) => mf.dispatchFetch(`${base}/page/core?v=${encodeURIComponent(v)}`, { method: "PUT", headers: { "Content-Type": "application/javascript" }, body });
+// index: the index.html it's sent for (X-Page-Index): the current one by default, none with null
+const putCore = async (body, v = CORE_V, index) => mf.dispatchFetch(`${base}/page/core?v=${encodeURIComponent(v)}`, { method: "PUT", body,
+  headers: { "Content-Type": "application/javascript", ...(index === null ? {} : { "X-Page-Index": index ?? await indexEtag() }) } });
 const putShell = async (body, { fingerprint = "f1", index } = {}) => {
   try {
     return await mf.dispatchFetch(`${base}/page/shell`, {
@@ -166,6 +168,13 @@ for (const [what, body, v, says] of [
   res = await putCore(body, v);
   const text = await res.text();
   check(`core file refused (400): ${what}`, res.status === 400 && text.length > 0 && (!says || says.test(text)) && (await bucket.head("_plugins/tiddlywikicore.js"))?.customMetadata?.v === CORE_V, `${res.status} ${text}`);
+}
+// An admin tab opened before index.html changed (an upgrade) mustn't replace the core file with its
+// older version: the public site would serve it under the new version's URL, cached for a year
+for (const [what, index] of [["sent for an index.html that has since changed (a tab opened before an upgrade)", '"old"'], ["without saying which index.html it's for", null]]) {
+  res = await putCore(fakeCore("5.3.0-1"), "5.3.0-1", index);
+  const text = await res.text();
+  check(`core file refused (409): ${what}`, res.status === 409 && /reload/i.test(text) && (await bucket.head("_plugins/tiddlywikicore.js"))?.customMetadata?.v === CORE_V, `${res.status} ${text}`);
 }
 
 // The shell: refused unless it's a page that works

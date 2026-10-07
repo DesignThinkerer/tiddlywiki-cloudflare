@@ -230,9 +230,11 @@ const BOOKKEEPING = ["text", "revision", "bag", "recipe"];
 
 // The fields before "text" of a body in the flat layout, or null if it isn't one
 function flatFields(bytes, end) {
+  if (bytes[0] !== 0x7b || bytes[end - 1] !== 0x7d) return null;
   let cut = textKeyOffset(bytes);
   if (cut === -1) cut = end - 1;   // no text: the fields run up to the closing brace
-  if (bytes[0] !== 0x7b || bytes[end - 1] !== 0x7d || cut <= 0) return null;
+  else if (!textIsLast(bytes, cut + TEXT_KEY.length, end)) return null;
+  if (cut <= 0) return null;
   let fields = null;
   try { fields = JSON.parse(decoder.decode(bytes.subarray(0, cut)) + "}"); } catch (e) { return null; }
   // Pretty-printed, with these before "text", or with a value that isn't text: not the flat layout after all
@@ -241,11 +243,34 @@ function flatFields(bytes, end) {
   return fields;
 }
 
+// Whether the text, from its opening quote at start, is a string that ends the body (end - 1 is its
+// closing brace), as the flat layout has it: it opens with a quote, and the body ends with one that
+// isn't escaped. Up to FLAT_CHECK_BYTES, also that no other field follows: the first quote that isn't
+// escaped (inside a JSON string, every quote is) must be that last one. A bigger body (a plugin) isn't
+// scanned: it costs milliseconds of CPU a megabyte, and the browser module always puts the text last.
+// Otherwise the body is read in full (toFlat).
+const FLAT_CHECK_BYTES = 256 * 1024;
+function textIsLast(bytes, start, end) {
+  const close = end - 2;
+  if (bytes[start] !== 0x22 || close <= start || bytes[close] !== 0x22) return false;
+  const escaped = at => {
+    let slashes = 0;
+    while (bytes[at - 1 - slashes] === 0x5c) slashes++;
+    return slashes % 2 === 1;
+  };
+  if (escaped(close)) return false;
+  if (end > FLAT_CHECK_BYTES) return true;
+  let i = bytes.indexOf(0x22, start + 1);
+  while (i !== -1 && i < close && escaped(i)) i = bytes.indexOf(0x22, i + 1);
+  return i === close;
+}
+
 // Any other tiddler JSON, TiddlyWeb's layout included, turned into the flat layout
 function toFlat(tiddler) {
   // A title that isn't text would make the tiddler list unreadable (and no browser sends one)
   if (!isTiddlerObject(tiddler)) throw new BadSave("the body is not a tiddler (a JSON object with a text title)");
   let { fields: custom = {}, text, revision, bag, recipe, ...fields } = tiddler;
+  if (text !== undefined && typeof text !== "string") throw new BadSave('the field "text" isn\'t text');
   // In TiddlyWeb's layout, "fields" holds the custom fields (text there is a field called "fields")
   if (custom === null) custom = {};
   else if (typeof custom !== "object") custom = { fields: custom };
@@ -1046,7 +1071,13 @@ async function publishCoreFile(request, env, url, corsHeaders) {
   if (!/^[0-9A-Za-z.+]+(-[0-9A-Za-z.+]+)*-\d+$/.test(version)) {
     return refusal(`"${version}" isn't a core file version (<TiddlyWiki version>-<format>).`, corsHeaders);
   }
-  const current = await env.WIKI_BUCKET.head(CORE_KEY);
+  // For the index.html the admin page was built for (X-Page-Index), as a shell: a tab opened before
+  // a new one (an upgrade) would otherwise replace the core file with its older version, which the
+  // public site would then serve under the new version's URL, cached for a year
+  const [index, current] = await Promise.all([env.WIKI_BUCKET.head("index.html"), env.WIKI_BUCKET.head(CORE_KEY)]);
+  if (!index || request.headers.get("X-Page-Index") !== index.etag) {
+    return refusal("index.html has changed since this page was loaded: reload the admin wiki.", corsHeaders, 409);
+  }
   if (current?.customMetadata?.v === version) return new Response(null, { status: 204, headers: corsHeaders });
   if (Number(request.headers.get("Content-Length")) > CORE_LIMIT) return refusal("The core file is too big.", corsHeaders);
   const bytes = new Uint8Array(await request.arrayBuffer());
