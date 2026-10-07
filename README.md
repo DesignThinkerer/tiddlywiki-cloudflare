@@ -84,10 +84,10 @@ flowchart LR
 └── test/
     ├── make-fixture.mjs      builds a test TiddlyWiki (test/fixtures/index.html)
     ├── two-tabs.test.mjs     real TiddlyWiki in Chromium, several tabs (84 checks)
-    ├── plugins.test.mjs      real plugins on the admin and public sites (67 checks)
+    ├── plugins.test.mjs      real plugins on the admin and public sites (66 checks)
     ├── page-publish.test.mjs the page published from a real TiddlyWiki (55 checks)
     ├── queue-backup.test.mjs queue backup against an imitation of GitHub (40 checks)
-    ├── integrity.test.mjs    the tiddler list's integrity, a failed page build, draft-like titles, .gitignore (67 checks)
+    ├── integrity.test.mjs    the tiddler list's integrity, a failed page build, draft-like titles, .gitignore (70 checks)
     ├── r2-ops.test.mjs       R2 calls per kind of request, against a budget (29 checks)
     ├── r2-counter.mjs        test-only wrapper that counts the worker's R2 calls
     ├── browser-harness.mjs   the browser suites' shared setup (worker, public site stand-in, Chromium, helpers)
@@ -739,10 +739,12 @@ The tests run the real worker in Cloudflare's local runtime (workerd, through Mi
 - a damaged or missing tiddler list: rebuilt from the stored tiddlers when it's served, saved to, deleted from or used for a page, with every field but the text, a save in TiddlyWeb's layout among them stored flat, leaving out the story list, drafts and objects not in the stored layout (an older layout, a URL-encoded key, no metadata), the damaged copy kept;
 - a list too big for one request (400 tiddlers): `503` until it's complete (with `X-Tiddler-List` readable from another origin), the damaged list untouched meanwhile, two tabs driving it at once, a save and a delete in the middle retried successfully, a later damage or deletion starting over rather than resuming old progress, no progress left behind;
 - a missing list: each rebuild with its own stand-in in R2, which isn't JSON;
+- after a rebuild, the list purged from the public cache at once and again 5 seconds later;
+- a save's purge sent only once the tiddler list is updated (its write held up through `test/r2-counter.mjs`);
 - a title listed twice by hand, listed once after its next save;
 - a list whose entries all have bag and recipe served byte for byte as stored, one without them given them;
 - list writes landing out of order (one delayed through `test/r2-counter.mjs`): a delete after the title was created again keeps the new tiddler listed, a save landing between a delete's check and its removal (removed with it) isn't left listed, and an older save doesn't replace a newer entry;
-- a page build that fails after a plugin save or delete (the page or the plugin file can't be written, through `test/r2-counter.mjs`): the change is still confirmed, the page is marked outdated, and the next page load builds it with the change; a plugin file that can't be deleted (its plugin deleted, or saved as an ordinary tiddler): confirmed, and the page built without it;
+- a page build that fails after a plugin save or delete (the page or the plugin file can't be written, through `test/r2-counter.mjs`): the change is still confirmed, the page is marked outdated, and the next page load builds it with the change (a load whose build fails too serves the last page built, not the bare `index.html`); a plugin file that can't be deleted (its plugin deleted, or saved as an ordinary tiddler): confirmed, and the page built without it;
 - overlapping page builds: a save's build that read the shell before a new one was published (its page write delayed) doesn't put the old shell back;
 - titles: a save whose title isn't text, or isn't the one in its URL, or is too long for an R2 key, is refused (`400`; the longest that fits is stored and deleted, and one too long is "deleted" with a `204`), a path that isn't valid percent-encoding refused (`400`) by reads, saves and deletes, and such tiddlers stored by hand are listed under their key instead of stopping the rebuild or being listed under the wrong title;
 - a field called `fields` stored nested, as TiddlyWeb's layout has it; a value that's an object refused (`400`), and a tag that isn't text (in either layout), while one already listed doesn't stop the page from being built; custom fields named like built-in properties (`constructor`) kept, and a `text` among the custom fields doesn't move the text;
@@ -806,7 +808,7 @@ Backups don't appear here: with the queue bound, as deployed, they run later in 
 - **After the reload:** the plugin works, no reload loop, plugin code never comes through the worker, at most two worker requests per page load, the browser cache on the next load.
 - **The public site:** the plugin works, with no worker request.
 - **Update, disable and re-enable, a theme, the sync settings, a standalone module, delete,** and a plugin turned back into an ordinary tiddler.
-- **Edge cases:** a body containing `,"text":` in a field and in the text, a tiddler without text, a field called `fields` (stored nested, and read back after a reload, on an ordinary tiddler and on a startup tiddler and a module loaded at boot), "flat" bodies that aren't and a save in TiddlyWeb's layout (both stored flat), a title with spaces, `#` and non-ASCII, a stored plugin whose file is missing, the order of a save's purge, overlapping page builds, a tiddler list replaced by hand, and the recovery steps.
+- **Edge cases:** a body containing `,"text":` in a field and in the text, a tiddler without text, a field called `fields` (stored nested, and read back after a reload, on an ordinary tiddler and on a startup tiddler and a module loaded at boot), "flat" bodies that aren't and a save in TiddlyWeb's layout (both stored flat), a title with spaces, `#` and non-ASCII, a stored plugin whose file is missing, overlapping page builds, a tiddler list replaced by hand, and the recovery steps.
 - **A public tab while the tiddler list is missing or damaged:** it keeps its tiddlers and doesn't crash, asks again at a URL no cache holds, and catches up by itself once the worker has rebuilt the list; after a damaged list, its next sync bypasses caches too, and a damaged copy its browser kept is passed over quietly; it never asks how backups go (only the admin site does).
 
 `test:publish` starts from the full test wiki as `index.html` and covers:

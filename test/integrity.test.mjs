@@ -10,12 +10,19 @@ const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const WORKER = path.join(ROOT, "worker.js");
 const LIST = "recipes/default/tiddlers.json";
 
-// The worker behind test/r2-counter.mjs, which can make chosen R2 calls fail
+// The worker behind test/r2-counter.mjs, which can make chosen R2 calls fail. Cache purges are
+// recorded: { time, files (their URLs) }
+const purges = [];
 const mf = new Miniflare({
   modules: true, scriptPath: "test/r2-counter.mjs", modulesRoot: ROOT,
   modulesRules: [{ type: "ESModule", include: ["**/*.js", "**/*.mjs"] }],
   compatibilityDate: "2024-09-23", r2Buckets: ["WIKI_BUCKET"], port: 0,
-  outboundService: async () => new Response('{"success":true}'),
+  bindings: { CF_ZONE_ID: "zone", CF_API_TOKEN: "token" },
+  outboundService: async req => {
+    // (A purged file is a URL, or { url, headers } for a copy cached with those request headers)
+    if (req.url.includes("/purge_cache")) purges.push({ time: Date.now(), files: ((await req.json()).files || []).map(f => typeof f === "string" ? f : f.url) });
+    return new Response('{"success":true}');
+  },
 });
 const base = (await mf.ready).toString().replace(/\/$/, "");
 const bucket = await mf.getR2Bucket("WIKI_BUCKET");
@@ -109,6 +116,7 @@ let expected = summary(await list());
 const damaged = '[{"title": "Old note", "revision": ';
 damagedCopies.add(damaged);
 await bucket.put(LIST, damaged);
+const rebuiltAt = Date.now();
 let got = await getList();
 let served = got.status === 200 ? summary(JSON.parse(got.text)) : {};
 check("a damaged list is rebuilt from the stored tiddlers when it's read", got.status === 200 && !differences(served, expected),
@@ -126,6 +134,13 @@ check("...leaving out anything not in the form the worker stores (an older layou
   !rebuiltEntry("Café à") && !rebuiltEntry("Caf%C3%A9%20%C3%A0") && !rebuiltEntry("Text first") && !rebuiltEntry("$:/StoryList") && !rebuiltEntry("Draft of 'X'"));
 const keptCopies = await Promise.all((await repairFiles()).map(async key => (await bucket.get(key)).text()));
 check("...and keeping the damaged list aside in _repair/", keptCopies.includes(damaged));
+// Purged from the public cache at once, and again a little later (a public request that read the
+// damaged list just before could put it back in the cache). Nothing else is saved meanwhile.
+await new Promise(r => setTimeout(r, Math.max(0, rebuiltAt + 6500 - Date.now())));
+const listPurges = purges.filter(p => p.time >= rebuiltAt && p.files.some(f => f.includes("/recipes/default/tiddlers.json")));
+check("...and the list purged from the public cache at once, then again 5 seconds later",
+  listPurges.length === 2 && listPurges[0].time - rebuiltAt < 2000 && listPurges[1].time - listPurges[0].time >= 4500,
+  JSON.stringify(listPurges.map(p => p.time - rebuiltAt)));
 
 await bucket.put(LIST, damaged + " ");
 damagedCopies.add(damaged + " ");
@@ -404,12 +419,34 @@ check("a plugin whose file can't be deleted, deleted or saved as an ordinary tid
   loadedBefore && deletedP3.status === 204 && !afterDelete.includes(tagOf(P3)) && plainP4.status === 204 && !afterPlain.includes(tagOf(P4)) &&
   (await storedPageMeta()).bakeVersion !== "outdated",
   `before ${loadedBefore}, delete ${deletedP3.status} (page loads it: ${afterDelete.includes(tagOf(P3))}), plain ${plainP4.status} (page loads it: ${afterPlain.includes(tagOf(P4))})`);
+// A page load whose build fails too: the last page built is served (with the browser modules and the
+// plugin files), not the bare index.html
+const P5 = "$:/plugins/test/page-five";
+await failNext("put baked.html");
+res = await save(P5, pagePlugin(P5));
+outdated = await waitForOutdated();
+await failNext("put baked.html");
+const servedWhileFailing = await loadPage();
+text = await loadPage();
+check("a page load whose build fails serves the last page built, not the bare index.html; the next load builds it",
+  outdated && servedWhileFailing.includes(tagOf(P2)) && text.includes(tagOf(P5)),
+  `outdated ${outdated}, served the last page ${servedWhileFailing.includes(tagOf(P2))}, then built ${text.includes(tagOf(P5))}`);
 
 // --- 4. List updates follow revisions --------------------------------------------------------------
 // Two requests for the same title can update the list in the other order (a list write retried after
 // another one): the list keeps the newer version
 const delayNext = (call, delay) => mf.dispatchFetch(`${base}/__r2fail`, { method: "POST", body: JSON.stringify({ call, delay }) });
 const pause = ms => new Promise(r => setTimeout(r, ms));
+// A save purges the public tiddler list only once the list is updated (a public request in between
+// would put the old list back in Cloudflare's cache): with the list write held up, the purge waits
+await delayNext("put list", 800);
+const orderStart = Date.now();
+res = await save("Purge order", { text: "listed before its purge?" });
+await pause(300);
+const orderPurge = purges.find(p => p.time >= orderStart && p.files.some(f => f.includes(encodeURIComponent("Purge order"))));
+check("a save purges the public cache only once the tiddler list is updated (the list write held up 800 ms)",
+  res.status === 204 && !!orderPurge && orderPurge.time - orderStart >= 800 && orderPurge.files.some(f => f.includes("/recipes/default/tiddlers.json")),
+  orderPurge ? `purged after ${orderPurge.time - orderStart} ms` : "no purge");
 await save("Raced", { text: "first" });
 await delayNext("put list", 600);
 const deleting = del("Raced");

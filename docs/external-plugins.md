@@ -2,7 +2,7 @@
 
 **Status: implemented and deployed (October 2026).** These are the design notes behind README section 4.8: the problem, the design and why it was chosen over baking plugins into the page, what it costs, the change step by step, and how to operate it.
 
-The change is covered by the tests: `test/plugins.test.mjs` (67 checks) runs real plugins shipped with TiddlyWiki, markdown and KaTeX, on the admin site and on a stand-in for the public site. All seven suites pass (`npm test`).
+The change is covered by the tests: `test/plugins.test.mjs` (66 checks) runs real plugins shipped with TiddlyWiki, markdown and KaTeX, on the admin site and on a stand-in for the public site. All seven suites pass (`npm test`).
 
 "The external-plugins plugin" below is `$:/plugins/theophile.dev/external-plugins`, which exports plugins as standalone `.js` files for single-file wikis. The plugin files here use the same format as its export template.
 
@@ -976,7 +976,7 @@ const output = banner + source.replace(PLACEHOLDER, () => JSON.stringify(guard))
 6. **Disable and enable:** the flag is in the page, the plugin is inactive with no reload asked and still listed, then active again.
 7. **A theme** is applied at boot.
 8. **A standalone macro module** whose code contains `U+2028`, escaped quotes, `,"text":` and an emoji works.
-9. **Bodies the worker must cut correctly:** `,"text":` inside a field and inside the text, a tiddler without text, a field called `fields` (stored nested, and read back after a reload, also on a startup tiddler and a module loaded at boot), two bodies that claim the flat layout but don't follow it (stored flat), and a flat tiddler read back through the worker. Also the order of a save's purge: the list is purged only once it's updated. That check always passes when the order is right, but can only catch the wrong order some of the time, since it depends on timing.
+9. **Bodies the worker must cut correctly:** `,"text":` inside a field and inside the text, a tiddler without text, a field called `fields` (stored nested, and read back after a reload, also on a startup tiddler and a module loaded at boot), two bodies that claim the flat layout but don't follow it (stored flat), and a flat tiddler read back through the worker. (The order of a save's purge, the list purged only once it's updated, moved to `test/integrity.test.mjs`, which holds the list write up and so catches the wrong order every time.)
 10. **A save in TiddlyWeb's layout** (an old tab or a script) is stored flat, and its file is the usual one; the title has spaces, `#` and non-ASCII characters.
 11. **A stored plugin whose file is missing:** the next page build writes it, and the plugin works with no reload asked.
 12. **No longer needed:** a plugin turned into an ordinary tiddler, a startup action losing its tag, a deleted plugin.
