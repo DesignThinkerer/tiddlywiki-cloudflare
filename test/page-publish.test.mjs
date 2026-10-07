@@ -390,6 +390,38 @@ await add(A, { title: "A note after the failure", text: "publishes again" });
 await settle(A);
 await waitFor(async () => (await status(A))?.state === "published");
 
+// A plugin that came with index.html, updated from the wiki (the plugin library replaces it this way).
+// The page carries it with revision "0", which the worker never gave: the save creates it on the
+// worker, instead of being taken for a tiddler another tab deleted (which made a conflict copy and
+// published a page without the plugin)
+const BUNDLED = "$:/plugins/tiddlywiki/highlight";
+const contextW = await browser.newContext();
+const { p: W } = await openAdmin("W", contextW);   // a tab that still has the version from the page
+await settle(W);
+mark = requests.length;
+await A.evaluate(t => $tw.wiki.addTiddler(new $tw.Tiddler($tw.wiki.getTiddler(t), { version: "9.9.9" })), BUNDLED);
+await settle(A);
+await sleep(QUIET_WINDOW);
+await settle(A);
+const bundledStored = await bucket.get("recipes/default/tiddlers/" + BUNDLED);
+const bundledVersion = bundledStored ? JSON.parse(await bundledStored.text()).version : null;
+const bundledCopies = await A.evaluate(t => $tw.wiki.filterTiddlers("[field:conflict-of[" + t + "]]"), BUNDLED);
+check("a plugin that came with index.html, updated from the wiki, is saved like an installed one: no conflict, kept in the tab",
+  bundledVersion === "9.9.9" && bundledCopies.length === 0 && await A.evaluate(t => $tw.wiki.tiddlerExists(t), BUNDLED),
+  `stored ${bundledVersion}, copies ${JSON.stringify(bundledCopies)}`);
+const contextU = await browser.newContext();
+const { p: U } = await openAdmin("U", contextU);
+await settle(U);
+check("...and a fresh tab has the updated version", await U.evaluate(t => $tw.wiki.getTiddler(t)?.fields.version, BUNDLED) === "9.9.9");
+await contextU.close();
+await W.evaluate(t => $tw.wiki.addTiddler(new $tw.Tiddler($tw.wiki.getTiddler(t), { version: "8.8.8" })), BUNDLED);
+await settle(W);
+const otherStored = JSON.parse(await (await bucket.get("recipes/default/tiddlers/" + BUNDLED)).text()).version;
+const otherCopies = await W.evaluate(t => $tw.wiki.filterTiddlers("[field:conflict-of[" + t + "]]"), BUNDLED);
+check("...while a tab that updated it from the page's version too gets a conflict, not an overwrite",
+  otherStored === "9.9.9" && otherCopies.length === 1, `stored ${otherStored}, copies ${JSON.stringify(otherCopies)}`);
+await contextW.close();
+
 // --- 9. A tiddler whose text hasn't arrived yet is waited for ----------------------------------------
 // Edited outside the admin wiki (in R2): the next admin load publishes it, once its text is there
 const splashKey = "recipes/default/tiddlers/Splash";

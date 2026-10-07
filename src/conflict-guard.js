@@ -142,12 +142,27 @@ exports.startup = function() {
 		});
 	}
 
+	// The revision a save is based on, from a tiddler's revision: undefined if it has none (the save
+	// is sent without a condition), null if it's one the worker never gives, which means the worker
+	// doesn't have that version. The worker's revisions are times in milliseconds (or an R2 etag for
+	// a tiddler stored by hand); the tiddlers that came with the page carry "0" in a published page,
+	// or a change count in index.html (as the page publisher's hasStoredRevision tells them apart).
+	// Saving one, a plugin updated from the library say, then creates it on the worker, and is a
+	// conflict only if another tab stored it meanwhile, instead of being taken for a tiddler that
+	// was deleted.
+	function revisionBase(revision) {
+		if(revision === undefined || revision === null || revision === "") {
+			return undefined;
+		}
+		revision = String(revision);
+		return /^\d{1,9}$/.test(revision) ? null : revision;
+	}
+
 	function baseFromInfo(info) {
 		if(!info) {
 			return null;
 		}
-		var revision = info.revision;
-		return (revision === undefined || revision === null || revision === "") ? undefined : String(revision);
+		return revisionBase(info.revision);
 	}
 
 	function currentBase(title) {
@@ -375,7 +390,7 @@ exports.startup = function() {
 			// If the original was reloaded from the server between the draft being made and now,
 			// the draft still carries the older revision it was copied from
 			if(original && draft.fields.revision !== undefined && original.fields.revision !== draft.fields.revision) {
-				base = String(draft.fields.revision);
+				base = revisionBase(draft.fields.revision);
 			}
 			draftBases[title] = {of: of, base: base};
 		});
