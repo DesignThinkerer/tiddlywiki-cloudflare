@@ -545,6 +545,35 @@ check("...after that, the next requests don't ask (once an hour)", !requests.sli
   JSON.stringify(requests.slice(reqMark16).filter(r => r.tag === "K").map(r => r.url)));
 await K.close();
 
+// --- 17. A tiddler changed before its text has loaded keeps its text -------------------------------
+// After a page load, TiddlyWiki has each tiddler's fields from the list, and loads the texts one by
+// one. One changed before its text arrives (a checkbox clicked during that time) is saved without
+// it: the worker keeps the stored text, and the tab then loads it
+await create(A, "Task", "important text that must not be lost", { tags: ["todo"] });
+await settle(A);
+const skinnyTab = await context.newPage();
+await watch(skinnyTab, "S");
+let releaseText;
+const textHeld = new Promise(r => { releaseText = r; });
+await skinnyTab.route(/\/recipes\/default\/tiddlers\/Task$/, async route => {
+  if (route.request().method() === "GET") await textHeld;
+  return route.continue();
+});
+await skinnyTab.goto(base + "/");
+await skinnyTab.waitForFunction(() => window.$tw && $tw.syncer && $tw.wiki.tiddlerExists("Task"));
+const wasSkinny = await skinnyTab.evaluate(() => $tw.wiki.getTiddler("Task").hasField("_is_skinny"));
+await skinnyTab.evaluate(() => { const t = $tw.wiki.getTiddler("Task"); $tw.wiki.addTiddler(new $tw.Tiddler(t, { tags: t.fields.tags.concat("done") })); });
+releaseText();
+await settle(skinnyTab);
+await skinnyTab.waitForFunction(() => $tw.wiki.getTiddlerText("Task") !== null && !$tw.wiki.getTiddler("Task").hasField("_is_skinny"), null, { timeout: 15000 }).catch(() => {});
+const skinnyServer = await server("Task");
+const skinnyLocal = await skinnyTab.evaluate(() => ({ text: $tw.wiki.getTiddlerText("Task"), tags: $tw.wiki.getTiddler("Task").fields.tags }));
+check("a tiddler changed before its text loaded keeps its text on the server, with the change, and the tab gets the text",
+  wasSkinny && skinnyServer?.text === "important text that must not be lost" && JSON.stringify(skinnyServer?.tags) === '["todo","done"]' &&
+  !("_is_skinny" in (skinnyServer || {})) && skinnyLocal.text === "important text that must not be lost" && skinnyLocal.tags.includes("done"),
+  JSON.stringify({ wasSkinny, server: skinnyServer && { text: skinnyServer.text, tags: skinnyServer.tags, skinny: "_is_skinny" in skinnyServer }, local: skinnyLocal }));
+await skinnyTab.close();
+
 // --- Summary --------------------------------------------------------------------------------
 const bad = net.filter(x => x.status === 428 || x.status >= 500);
 check("no 428/5xx responses anywhere", bad.length === 0, JSON.stringify(bad));

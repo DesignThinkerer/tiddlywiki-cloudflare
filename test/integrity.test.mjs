@@ -427,6 +427,29 @@ check("a page build that read the shell before a new one was published doesn't p
   res.status === 204 && firstShell.status === 204 && secondShell.status === 204 && text.includes("<title>Shell two</title>") && text.includes("Raced title"),
   `core ${res.status}, shells ${firstShell.status} ${secondShell.status}, page from ${(/<title>(.*?)<\/title>/.exec(text) || [])[1]}, title ${text.includes("Raced title")}`);
 
+// --- 4c. A tiddler changed before its text arrived keeps its stored text ---------------------------
+// TiddlyWiki marks a tiddler whose fields came with the list but whose text hasn't loaded yet with
+// _is_skinny. Changed then (a checkbox during the first sync), it's saved without its text: the
+// worker keeps the stored text, as TiddlyWiki's own server does, and doesn't store the mark (the
+// tiddler list marks every entry so, by design: it never carries the text)
+res = await save("Skinny", { tags: ["todo"], text: "text that must stay" });
+let skinnyBase = res.headers.get("ETag");
+res = await save("Skinny", { tags: ["todo", "done"], _is_skinny: "" }, { "If-Match": skinnyBase });
+let skinnyStored = JSON.parse(await (await bucket.get("recipes/default/tiddlers/Skinny")).text());
+check("a save of a tiddler whose text never loaded keeps the stored text, with the new fields, without the mark",
+  res.status === 204 && skinnyStored.text === "text that must stay" && JSON.stringify(skinnyStored.tags) === '["todo","done"]' &&
+  !("_is_skinny" in skinnyStored), `status ${res.status} ${JSON.stringify(skinnyStored)}`);
+res = await mf.dispatchFetch(url("Skinny"), { method: "PUT", headers: { "Content-Type": "application/json", "If-Match": res.headers.get("ETag") },
+  body: JSON.stringify({ title: "Skinny", tags: ["todo", "done", "again"], fields: { _is_skinny: "" } }) });
+skinnyStored = JSON.parse(await (await bucket.get("recipes/default/tiddlers/Skinny")).text());
+check("...also in TiddlyWeb's layout", res.status === 204 && skinnyStored.text === "text that must stay" && skinnyStored.tags.length === 3 && !("_is_skinny" in skinnyStored),
+  `status ${res.status} ${JSON.stringify(skinnyStored)}`);
+res = await save("Skinny, not stored", { tags: ["x"], _is_skinny: "" });
+const notStored = JSON.parse(await (await bucket.get("recipes/default/tiddlers/Skinny, not stored")).text());
+check("...and one the worker doesn't have is stored without text, without the mark", res.status === 204 && !("text" in notStored) && !("_is_skinny" in notStored),
+  JSON.stringify(notStored));
+for (const title of ["Skinny", "Skinny, not stored"]) await del(title);
+
 // --- 5. A tiddler whose title only looks like a draft is saved like any other ---------------------
 const NOT_A_DRAFT = "Draft of 'Chapter 1'";
 res = await save(NOT_A_DRAFT, { text: "my chapter" });

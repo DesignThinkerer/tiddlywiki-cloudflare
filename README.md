@@ -81,11 +81,11 @@ flowchart LR
 ├── package.json              build and test scripts
 └── test/
     ├── make-fixture.mjs      builds a test TiddlyWiki (test/fixtures/index.html)
-    ├── two-tabs.test.mjs     real TiddlyWiki in Chromium, several tabs (81 checks)
+    ├── two-tabs.test.mjs     real TiddlyWiki in Chromium, several tabs (82 checks)
     ├── plugins.test.mjs      real plugins on the admin and public sites (67 checks)
     ├── page-publish.test.mjs the page published from a real TiddlyWiki (51 checks)
     ├── queue-backup.test.mjs queue backup against an imitation of GitHub (30 checks)
-    ├── integrity.test.mjs    the tiddler list's integrity, a failed page build, draft-like titles, .gitignore (60 checks)
+    ├── integrity.test.mjs    the tiddler list's integrity, a failed page build, draft-like titles, .gitignore (63 checks)
     ├── r2-ops.test.mjs       R2 calls per kind of request, against a budget (29 checks)
     ├── r2-counter.mjs        test-only wrapper that counts the worker's R2 calls
     ├── browser-harness.mjs   the browser suites' shared setup (worker, public site stand-in, Chromium, helpers)
@@ -274,6 +274,8 @@ R2 layout:
 | 945 KB (geospatial) | about 10 ms | about 0.4 ms |
 
 Measured in Node.js (the same JavaScript engine as Workers) on a development machine, so only the proportions matter.
+
+**A tiddler saved before its text has loaded keeps its text.** After a page load, TiddlyWiki has every tiddler's fields from the list (each entry marked `_is_skinny`) and loads the texts one by one. A tiddler changed before its text arrived (a checkbox clicked during that time, say) is saved without it: the worker then keeps the stored text, as TiddlyWiki's own server does, and doesn't store the mark; the tab loads the text right after. Only such a save reads the stored tiddler.
 
 **The list is served as stored.** Every entry the worker writes has its `bag` and `recipe`, so the list goes out as R2 has it, without being written out again; only a list without them (written by hand) gets them added on the way out. It's still parsed, to tell a damaged one.
 
@@ -734,6 +736,7 @@ The tests run the real worker in Cloudflare's local runtime (workerd, through Mi
 - overlapping page builds: a save's build that read the shell before a new one was published (its page write delayed) doesn't put the old shell back;
 - titles: a save whose title isn't text, or isn't the one in its URL, or is too long for an R2 key, is refused (`400`; the longest that fits is stored and deleted, and one too long is "deleted" with a `204`), a path that isn't valid percent-encoding refused (`400`) by reads, saves and deletes, and such tiddlers stored by hand are listed under their key instead of stopping the rebuild or being listed under the wrong title;
 - a field called `fields` stored nested, as TiddlyWeb's layout has it; a value that's an object refused (`400`); custom fields named like built-in properties (`constructor`) kept, and a `text` among the custom fields doesn't move the text;
+- a save of a tiddler whose text never loaded (`_is_skinny`), in both layouts, keeping the stored text without storing the mark, and one the worker doesn't have stored without text;
 - tiddlers titled `Draft of '…'` saved and deleted like any other, while real drafts still aren't stored;
 - `.gitignore` covering `wrangler.toml`, `.dev.vars` and `.wrangler/`.
 
@@ -777,6 +780,7 @@ Backups don't appear here: with the queue bound, as deployed, they run later in 
 - **Public cache:** exact purge URLs (also the admin page's copy, purged with its `Origin` header, on a save and a delete) and the `304`.
 - **Request savings:** `/status` asked from the worker once by the first page load in a browser, then answered from the browser's cache: a 2-request page load (TiddlyWiki still knows it's logged in), a reload that downloads none of the page (`304`), also through a stand-in for Cloudflare that removes the page's ETag (the browser asks by date), the stale-public-copy fallback, a missing CORS header, the hidden-tab pause.
 - **A damaged tiddler list** rebuilt over several requests while a tab is open: the tab keeps its tiddlers and shows no error; a save answered "rebuilding" is sent again quietly, and any other `503` is reported as before.
+- **A tiddler changed before its text loaded** (its text held back): the stored text kept with the change, and the tab then loads it.
 - **Failing backups:** a page load asks how backups go with its first tiddler list request, shows an alert (since when, how many, the oldest, GitHub's answer, what to do), asks at each request while it shows, removes it once backups get through, then asks no more than hourly.
 - **Leaving with an editor open:** the browser asks before closing a tab whose editor holds changes, not one left unchanged.
 

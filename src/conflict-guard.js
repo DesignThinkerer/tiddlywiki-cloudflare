@@ -465,6 +465,14 @@ exports.startup = function() {
 					}
 					rebase(title,base,etagInfo.revision);
 					callback(null,{bag: etagInfo.bag},etagInfo.revision);
+					// Saved before its text had loaded (the worker kept the stored text): load it now,
+					// the version just saved (a public copy from before the save doesn't count)
+					if(tiddler.hasField("_is_skinny") && s) {
+						listedRevisions[title] = etagInfo.revision;
+						setTimeout(function() {
+							s.enqueueLoadTiddler(title);
+						},0);
+					}
 				}
 			});
 		}

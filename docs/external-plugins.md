@@ -442,13 +442,20 @@ async function readSave(request) {
     ({ fields, bytes } = toFlat(parseJsonBody(decoder.decode(bytes))));
     end = bytes.length;
   }
+  return flatSave(fields, bytes.subarray(0, end));
+}
+
+// A save from its fields and its body in the flat layout (ending with "}")
+function flatSave(fields, body) {
   return {
     fields,
-    stored: revision => concatBytes([
-      bytes.subarray(0, end - 1),
-      encoder.encode(`,"revision":"${revision}","bag":"default","recipe":"default"}`)
-    ])
+    stored: revision => concatBytes([body.subarray(0, body.length - 1), storedSuffix(revision)])
   };
+}
+
+// What the worker appends to a stored tiddler, after its text
+function storedSuffix(revision) {
+  return encoder.encode(`,"revision":"${revision}","bag":"default","recipe":"default"}`);
 }
 ```
 
@@ -470,7 +477,7 @@ function untilDone(ctx, promise) {
 In the `PUT` handler, `const tiddler = JSON.parse(await request.text());` and the draft check became the lines below. (The title check came later, with the rebuild of the tiddler list, README 4.2, which lists every tiddler under the title it's stored under. So did reading the tiddler list with `readableList(env, ctx)`, now at the same time as the lookup of the stored tiddler: the list is read before the tiddler is written, and while a damaged list is being rebuilt the save answers `503` before anything is written.)
 
 ```js
-const save = await readSave(request);
+let save = await readSave(request);
 // Stored and listed under the title in the URL: a different one in the body would make the
 // list disagree with the stored tiddlers (the browser always sends the same one)
 if (save.fields.title !== title) throw new BadSave("the title in the body isn't the one in the URL");

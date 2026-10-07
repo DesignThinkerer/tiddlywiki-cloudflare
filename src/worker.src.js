@@ -265,13 +265,44 @@ async function readSave(request) {
     ({ fields, bytes } = toFlat(parseJsonBody(decoder.decode(bytes))));
     end = bytes.length;
   }
+  return flatSave(fields, bytes.subarray(0, end));
+}
+
+// A save from its fields and its body in the flat layout (ending with "}")
+function flatSave(fields, body) {
   return {
     fields,
-    stored: revision => concatBytes([
-      bytes.subarray(0, end - 1),
-      encoder.encode(`,"revision":"${revision}","bag":"default","recipe":"default"}`)
-    ])
+    stored: revision => concatBytes([body.subarray(0, body.length - 1), storedSuffix(revision)])
   };
+}
+
+// What the worker appends to a stored tiddler, after its text
+function storedSuffix(revision) {
+  return encoder.encode(`,"revision":"${revision}","bag":"default","recipe":"default"}`);
+}
+
+// A tiddler TiddlyWiki has only the fields of (from the tiddler list; the text loads separately) is
+// marked _is_skinny. Changed before its text arrives (a checkbox clicked during the first sync, say),
+// it's saved without the text: the stored text is kept, as TiddlyWiki's own server does, rather than
+// stored as nothing, and the mark isn't stored. current: the stored object, read with its body.
+async function keepStoredText(save, current) {
+  const { _is_skinny, ...fields } = save.fields;
+  const head = encoder.encode(JSON.stringify(fields));
+  let text = new Uint8Array(0);   // ',"text":"..."' of the stored tiddler
+  if (current) {
+    const stored = new Uint8Array(await current.arrayBuffer());
+    const at = textKeyOffset(stored), suffix = storedSuffix(revisionOf(current));
+    const tail = stored.subarray(stored.length - suffix.length);
+    if (at !== -1 && suffix.every((byte, i) => tail[i] === byte)) {
+      text = stored.subarray(at, stored.length - suffix.length);   // the stored layout: copied as bytes
+    } else {
+      // Stored by hand: read as JSON
+      let value;
+      try { value = JSON.parse(decoder.decode(stored)).text; } catch (e) {}
+      if (typeof value === "string") text = encoder.encode(`,"text":${JSON.stringify(value)}`);
+    }
+  }
+  return flatSave(fields, concatBytes([head.subarray(0, head.length - 1), text, encoder.encode("}")]));
 }
 
 // The rest of a save once the tiddler is stored: the tiddler list, the public cache and the page.
@@ -397,7 +428,7 @@ async function handleSave(request, env, ctx, url, corsHeaders) {
 
     const title = decodePath(match[1]);
     if (title === null) return invalidPath(corsHeaders);
-    const save = await readSave(request);
+    let save = await readSave(request);
     // Stored and listed under the title in the URL: a different one in the body would make the
     // list disagree with the stored tiddlers (the browser always sends the same one)
     if (save.fields.title !== title) throw new BadSave("the title in the body isn't the one in the URL");
@@ -412,9 +443,11 @@ async function handleSave(request, env, ctx, url, corsHeaders) {
     // The stored tiddler and the tiddler list, read at once (one round trip, not two). While a
     // damaged list is being rebuilt, readableList throws: the save is refused (503) without
     // changing anything, so the browser's retry can't conflict with it.
-    const key = tiddlerKey(title);
-    const [current, list] = await Promise.all([env.WIKI_BUCKET.head(key), readableList(env, ctx)]);
+    // (A save without its text, keepStoredText, reads the stored text too.)
+    const key = tiddlerKey(title), skinny = Object.hasOwn(save.fields, "_is_skinny");
+    const [current, list] = await Promise.all([skinny ? env.WIKI_BUCKET.get(key) : env.WIKI_BUCKET.head(key), readableList(env, ctx)]);
     const currentRevision = current ? revisionOf(current) : null;
+    if (skinny) save = await keepStoredText(save, current);
 
     const { conditional, reason } = checkPreconditions(request, currentRevision);
     if (reason) {
