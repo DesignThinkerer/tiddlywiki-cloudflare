@@ -1421,24 +1421,46 @@ async function markPageOutdated(env) {
 // Every save or delete becomes one message. The queue consumer (the queue() handler, configured
 // with max_concurrency 1) commits them one at a time, in order, one commit per save, so commits
 // never collide, and GitHub rate limits or outages only delay backups: failed messages are put
-// back with a growing delay until they go through. A rate limit holds everything back; any other
-// failure only that tiddler's versions, so a file GitHub refuses can't hold up the others. Nothing
-// runs while the queue is empty.
+// back with a growing delay until they go through. A rate limit or a token GitHub refuses pauses
+// every backup; any other failure holds up only that tiddler's versions, so a file GitHub refuses
+// can't hold up the others. Nothing runs while the queue is empty.
 // Without a BACKUP_QUEUE binding (or if the queue is unavailable) the same backup runs directly.
 
-// Text to base64 as UTF-8, for the GitHub API (in chunks: String.fromCharCode takes a limited
-// number of arguments)
-function toBase64(str) {
-  const bytes = encoder.encode(str);
-  let binary = "";
-  for (let i = 0; i < bytes.length; i += 8192) {
-    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + 8192));
+// Writes bytes as base64 into out (ASCII bytes) from position at; returns where it ends. GitHub takes
+// a file's content in base64, in a request body sent as bytes: written there directly, it's never a
+// string. (Through a string, with String.fromCharCode, btoa, then the body encoded to be sent, a 1.5
+// MB plugin took about 7 ms of CPU, this about 2: a run gets about 10 on the free plan.)
+const BASE64_DIGITS = encoder.encode("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/");
+function writeBase64(bytes, out, at) {
+  const end = bytes.length - bytes.length % 3;
+  let i = 0;
+  for (; i < end; i += 3) {
+    const v = bytes[i] << 16 | bytes[i + 1] << 8 | bytes[i + 2];
+    out[at] = BASE64_DIGITS[v >>> 18];
+    out[at + 1] = BASE64_DIGITS[v >>> 12 & 63];
+    out[at + 2] = BASE64_DIGITS[v >>> 6 & 63];
+    out[at + 3] = BASE64_DIGITS[v & 63];
+    at += 4;
   }
-  return btoa(binary);
+  if (i < bytes.length) {
+    // One or two bytes left: padded with "="
+    const two = i + 1 < bytes.length;
+    const v = bytes[i] << 16 | (two ? bytes[i + 1] << 8 : 0);
+    out[at] = BASE64_DIGITS[v >>> 18];
+    out[at + 1] = BASE64_DIGITS[v >>> 12 & 63];
+    out[at + 2] = two ? BASE64_DIGITS[v >>> 6 & 63] : 61;
+    out[at + 3] = 61;
+    at += 4;
+  }
+  return at;
 }
 
 const QUEUE_MESSAGE_LIMIT = 128000;   // a queue message, as sent; a version that would make it bigger waits in R2
 const BACKUP_PER_RUN = 10;            // keeps one run within Cloudflare's 50-subrequest limit (free plan)
+// After this many bytes of versions, the rest of a run goes on to the next one: a megabyte takes a
+// few milliseconds of CPU (its base64 above all), and a run gets about 10 on the free plan. A run
+// always backs up one version, whatever its size.
+const BACKUP_BYTES_PER_RUN = 512 * 1024;
 const BACKUP_MAX_DELAY = 6 * 3600;    // longest wait between retries (seconds)
 
 // About the size of a message as the queue measures it: V8-serialized, where a string takes one
@@ -1478,7 +1500,7 @@ async function queueBackup(env, job) {
     }
   }
   // No queue: run the same backup right away, with a couple of quick retries
-  const direct = { ...message, content: job.content && decoder.decode(job.content), contentKey: undefined };
+  const direct = { ...message, content: job.content, contentKey: undefined };
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
       await backupJob(env, direct);
@@ -1613,6 +1635,7 @@ async function processBackupBatch(batch, env) {
   let stored;               // the status file, if read in this run
   let denied;               // a tiddler GitHub answered 403 or 404 in this run (see isAccountWide)
   let attempts = 0;
+  const work = { bytes: 0 };   // the size of the versions handled so far (BACKUP_BYTES_PER_RUN)
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i];
     if (backupPause && Date.now() < backupPause.until) {
@@ -1626,13 +1649,13 @@ async function processBackupBatch(batch, env) {
       await requeueBackup(env, msg, held.get(msg.body.title), false);
       continue;
     }
-    if (attempts >= BACKUP_PER_RUN) {
+    if (attempts >= BACKUP_PER_RUN || work.bytes >= BACKUP_BYTES_PER_RUN) {
       await requeueBackup(env, msg, 0, false);
       continue;
     }
     attempts++;
     try {
-      await backupJob(env, msg.body);
+      await backupJob(env, msg.body, work);
       msg.ack();
       backupPause = null;   // GitHub takes backups (again)
       // (The backup is done: a copy that can't be removed is only left behind)
@@ -1716,8 +1739,9 @@ async function requeueBackup(env, msg, delaySeconds, countTry, extra) {
   }
 }
 
-// Commits one save or delete
-async function backupJob(env, job) {
+// Commits one save or delete. job.content: the version as text (in a queue message) or bytes (a
+// direct backup). work.bytes: adds the size of the versions it handles
+async function backupJob(env, job, work = { bytes: 0 }) {
   const github = githubContents(env);
   const current = await env.WIKI_BUCKET.head(tiddlerKey(job.title));   // the version in the wiki now
 
@@ -1728,19 +1752,21 @@ async function backupJob(env, job) {
     return;
   }
 
-  let content = job.content;
+  // (As bytes: what GitHub gets, and what its sha is computed from)
+  let content = typeof job.content === "string" ? encoder.encode(job.content) : job.content;
   if (content === undefined && job.contentKey) {
     const stored = await env.WIKI_BUCKET.get(job.contentKey);
-    content = stored ? await stored.text() : undefined;
+    content = stored ? new Uint8Array(await stored.arrayBuffer()) : undefined;
   }
   if (content === undefined) return; // Already handled by an earlier delivery of this message
+  work.bytes += content.length;
 
   // GitHub needs the sha of the file it holds to replace it. Its content isn't needed (decoding a
   // plugin's took more CPU than a run is allowed): whether GitHub already holds a newer version is
   // told by the sha too, compared with the wiki's current version's
   const existing = await github.get(job.title);
   let sha = existing ? existing.sha : null;
-  const newer = await newerInWiki(env, job, current, sha);
+  const newer = await newerInWiki(env, job, current, sha, work);
   // A version GitHub refused for good, now replaced there by a newer one, or whose tiddler has been
   // deleted since: dropped, rather than tried forever (it would only have been history)
   if (job.refused && (newer || !current)) return;
@@ -1754,24 +1780,25 @@ async function backupJob(env, job) {
     // newer version goes back on top. (Marked first: if putting it back fails, the retry of this
     // message, which finds this version already committed, still does it.)
     job.restore = true;
-    if (sha !== newer.sha) await github.put(job.title, newer.text, `✏️ Save: ${job.title} (newer version restored)`, sha);
+    if (sha !== newer.sha) await github.put(job.title, newer.bytes, `✏️ Save: ${job.title} (newer version restored)`, sha);
   } else if (!current) {
     // Deleted since this save: keep this version in the history, then delete it again
     await github.remove(job.title, sha, `🗑️ Delete: ${job.title}`);
   }
 }
 
-// The wiki's current version of a tiddler, { text, sha }, if it's newer than this job's and GitHub
+// The wiki's current version of a tiddler, { bytes, sha }, if it's newer than this job's and GitHub
 // already holds it (githubSha), so this job's version arrived late; or if an earlier try of this
 // job found that (job.restore). Otherwise null: a newer version still waiting for its own backup
 // (quick successive edits) is committed by its own message, in order.
-async function newerInWiki(env, job, current, githubSha) {
+async function newerInWiki(env, job, current, githubSha, work) {
   if (!current || !isNewerRevision(revisionOf(current), job.revision) || (!githubSha && !job.restore)) return null;
   const obj = await env.WIKI_BUCKET.get(tiddlerKey(job.title));
   if (!obj) return null;
-  const text = await obj.text();
-  const sha = await gitBlobSha(text);
-  return job.restore || sha === githubSha ? { text, sha } : null;
+  const bytes = new Uint8Array(await obj.arrayBuffer());
+  work.bytes += bytes.length;
+  const sha = await gitBlobSha(bytes);
+  return job.restore || sha === githubSha ? { bytes, sha } : null;
 }
 
 // Revisions written by this worker are millisecond timestamps
@@ -1779,10 +1806,9 @@ function isNewerRevision(a, b) {
   return /^\d+$/.test(a) && /^\d+$/.test(String(b)) && Number(a) > Number(b);
 }
 
-// Git's blob id for a file, to recognise content GitHub already has
-async function gitBlobSha(text) {
-  const content = new TextEncoder().encode(text);
-  const header = new TextEncoder().encode(`blob ${content.length}\0`);
+// Git's blob id for a file (its bytes), to recognise content GitHub already has
+async function gitBlobSha(content) {
+  const header = encoder.encode(`blob ${content.length}\0`);
   const data = new Uint8Array(header.length + content.length);
   data.set(header);
   data.set(content, header.length);
@@ -1813,6 +1839,7 @@ function githubContents(env) {
     "X-GitHub-Api-Version": "2022-11-28",
     "User-Agent": "TiddlyWiki-Cloudflare-Worker"
   };
+  // body: the request body, as text or bytes
   async function call(method, title, body) {
     const apiBase = `https://api.github.com/repos/${env.GITHUB_REPO}/contents/tiddlers/${encodeURIComponent(title)}.json`;
     // Reads ask for the "object" format: the default one isn't available for files between 1 and
@@ -1821,7 +1848,7 @@ function githubContents(env) {
     const res = await fetch(method === "GET" ? `${apiBase}?ref=${branch}` : apiBase, {
       method,
       headers: method === "GET" ? { ...headers, Accept: "application/vnd.github.object+json" } : headers,
-      body: body ? JSON.stringify(body) : undefined
+      body
     });
     if (method === "GET" && res.status === 404) return null;
     if (!res.ok) {
@@ -1846,13 +1873,20 @@ function githubContents(env) {
       const file = await call("GET", title);
       return file ? { sha: file.sha } : null;
     },
-    // Returns the new blob sha
+    // content: bytes. Returns the new blob sha. (The body is made as bytes, the content written into
+    // it as base64: see writeBase64.)
     async put(title, content, message, sha) {
-      const result = await call("PUT", title, { message, content: toBase64(content), branch, ...(sha ? { sha } : {}) });
+      const head = encoder.encode(`{"message":${JSON.stringify(message)},"branch":${JSON.stringify(branch)}${sha ? `,"sha":${JSON.stringify(sha)}` : ""},"content":"`);
+      const body = new Uint8Array(head.length + Math.ceil(content.length / 3) * 4 + 2);
+      body.set(head);
+      const end = writeBase64(content, body, head.length);
+      body[end] = 34;        // "
+      body[end + 1] = 125;   // }
+      const result = await call("PUT", title, body);
       return result.content.sha;
     },
     async remove(title, sha, message) {
-      await call("DELETE", title, { message, sha, branch });
+      await call("DELETE", title, JSON.stringify({ message, sha, branch }));
     }
   };
 }

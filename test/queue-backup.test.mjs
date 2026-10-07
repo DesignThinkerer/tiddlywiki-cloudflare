@@ -256,10 +256,31 @@ await put("After huge", "still backed up");
 check("a tiddler over 1 MB is backed up on every save, and later backups go through",
   await until(async () => textOf(repoText("Huge")) === huge + " v2" && textOf(repoText("After huge")) === "still backed up", 20000));
 
+// 8e. A run backs up one big version at most (each megabyte takes a few milliseconds of CPU, and a
+// run gets about 10 on the free plan): with three waiting in one batch, two go on to the next runs
+await mf.dispatchFetch(`${base}/__runs`);                  // (starts a new count)
+latencyMs = 1500;
+await put("Slow before big", "s");                         // the next saves arrive in one batch
+await new Promise(r => setTimeout(r, 300));
+latencyMs = 30;
+const bigTitles = ["Big 1", "Big 2", "Big 3"];
+for (const t of bigTitles) await put(t, t + " é " + "b".repeat(600 * 1024));
+await until(async () => bigTitles.every(t => repoText(t) !== undefined), 30000);
+let bigExact = true;
+for (const t of bigTitles) if (repoText(t) !== await r2Text(t)) bigExact = false;
+const bigRuns = await (await mf.dispatchFetch(`${base}/__runs`)).json();
+const bigPerRun = Math.max(...bigRuns.map(run => run.filter(c => c === "get backup copy").length));
+check("a run backs up one big version at most: the others go on to the next runs", bigExact && bigPerRun === 1,
+  `committed exactly ${bigExact}, at most ${bigPerRun} big versions in a run`);
+
 // 9. Special titles keep the old file paths
 await put("$:/config/Some Thing", "s");
 await until(async () => files.has("tiddlers/$:/config/Some Thing.json"));
 check("special title uses the same API path as before", ghCalls.some(c => c === "PUT tiddlers/$:/config/Some Thing.json"));
+// (and a title the commit message must escape)
+await put('Say "hi" \\ there', "q");
+check("a title with quotes and a backslash: committed, with its commit message", await until(async () =>
+  commits.some(c => c.path === 'tiddlers/Say "hi" \\ there.json' && c.message === '✏️ Save: Say "hi" \\ there'), 10000));
 
 
 // 11. Non-ASCII text survives, including the "newer version restored" path

@@ -893,7 +893,7 @@ if (content !== null && queueMessageSize({ ...message, content }) <= QUEUE_MESSA
 and for the fallback without a queue:
 
 ```js
-const direct = { ...message, content: job.content && decoder.decode(job.content), contentKey: undefined };
+const direct = { ...message, content: job.content, contentKey: undefined };
 ```
 
 The queue consumer receives text, as before. (Since then, whether the text fits in the message is decided on the message as the queue measures it, not on the bytes: README 4.7.) Backups now hold the stored bytes, so each file in the GitHub repository switches to the flat layout on its tiddler's next save, and the repository holds both layouts.
