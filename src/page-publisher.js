@@ -10,8 +10,7 @@ its own file, but with the core in a separate file:
   came with the page (the themes, TiddlyWeb: plugins the worker doesn't store), installed plugins that
   have raw markup, and your raw markup tiddlers; never one that was deleted, here or in another tab. TiddlyWiki writes everything else: the title, the
   language, the raw markup, the content for browsers without JavaScript. The core is loaded at the
-  end, from the public site. A plugin that came with the page and was updated from the wiki keeps
-  the page's version too, under the stored one: deleting the update goes back to it.
+  end, from the public site.
 - The core file: TiddlyWiki's own $:/core/templates/tiddlywiki5.js (boot code, library modules,
   $:/core), sent once per TiddlyWiki version.
 
@@ -44,8 +43,6 @@ var TEMPLATE = "$:/core/templates/tiddlywiki5-external-js.html",
 	SOURCE = "$:/cfworker/page-source",
 	PUBLIC_URL = "$:/cfworker/public-url",
 	STATUS = "$:/temp/cfworker/page-publisher",
-	TIDDLYWEB = "$:/plugins/tiddlywiki/tiddlyweb",
-	STORE_START = '<script class="tiddlywiki-tiddler-store" type="application/json">',
 	RAW_MARKUP_TAGS = [
 		"$:/core/wiki/rawmarkup", "$:/tags/RawMarkup", "$:/tags/RawMarkupWikified",
 		"$:/tags/RawMarkupWikified/TopHead", "$:/tags/RawMarkupWikified/TopBody", "$:/tags/RawMarkupWikified/BottomBody"
@@ -103,8 +100,6 @@ exports.startup = function() {
 		refusedCore = "",                      // the core file version the worker refused
 		ownChanges = Object.create(null),      // title -> {stored: saved (true) or deleted (false), time, revision}
 		cameWithPage = null,                   // title -> true, set once the first tiddler list has arrived
-		baseCopies = null,                     // title -> fields: the page's version of plugins that came with it (pageBaseCopies)
-		everStored = Object.create(null),      // title -> true: plugins this tab has known stored
 		started = false,
 		timer = null,
 		busy = false,
@@ -122,65 +117,10 @@ exports.startup = function() {
 
 	// A revision the worker gave (tiddlers that came with the page have none, or "0" in a published
 	// page, or a count of changes in a TiddlyWeb offline snapshot)
-	function isStoredRevision(revision) {
-		return revision !== undefined && revision !== null && revision !== "" && !/^\d{1,9}$/.test(String(revision));
-	}
 	function hasStoredRevision(title) {
-		var tiddler = wiki.getTiddler(title);
-		return !!tiddler && isStoredRevision(tiddler.fields.revision);
-	}
-
-	// The plugins that came with the page, as the page itself holds them: its tiddler stores, in the
-	// document, which keep them even once a version stored on the worker has replaced them in the wiki
-	// (loaded after them, from its file). Read once, when first needed. TiddlyWeb isn't kept: an update
-	// of it must stay refused by the worker (README 7), and the page still has the version it came with.
-	function pageBaseCopies() {
-		if(baseCopies) {
-			return baseCopies;
-		}
-		baseCopies = Object.create(null);
-		var stores = typeof document !== "undefined" && document.querySelectorAll ? document.querySelectorAll("script.tiddlywiki-tiddler-store") : [];
-		$tw.utils.each(stores,function(script) {
-			var tiddlers = null;
-			try {
-				tiddlers = JSON.parse(script.textContent);
-			} catch(e) {}
-			$tw.utils.each($tw.utils.isArray(tiddlers) ? tiddlers : [],function(fields) {
-				var title = fields && fields.title;
-				if(typeof title === "string" && fields["plugin-type"] && fields["plugin-type"] !== "import" && fields.platform !== "server" &&
-					title !== "$:/core" && title !== TIDDLYWEB && title.indexOf("$:/temp/") !== 0 && !isStoredRevision(fields.revision)) {
-					baseCopies[title] = fields;
-				}
-			});
-		});
-		return baseCopies;
-	}
-
-	// The page's versions to keep in the shell, before its own tiddler store (TiddlyWiki reads every
-	// store in order, then the plugin files: what comes later replaces them): those of plugins stored on
-	// the worker now, and of those it stored before but no longer does, unless the page has them anyway
-	// (its update was deleted, here or in another tab: the page goes back to its version). A plugin that
-	// came with the page and was deleted without ever being stored stays deleted.
-	function withBaseCopies(text,titles) {
-		var listed = adaptor.cfworkerListed() || {},
-			since = adaptor.cfworkerListedSince ? adaptor.cfworkerListedSince() : 0,
-			inPage = Object.create(null),
-			copies = pageBaseCopies(),
-			kept = [];
-		$tw.utils.each(titles,function(title) {
-			inPage[title] = true;
-		});
-		$tw.utils.each(Object.keys(copies).sort(),function(title) {
-			if(onServer(title,listed,since) || (everStored[title] && !inPage[title])) {
-				kept.push(copies[title]);
-			}
-		});
-		var at = text.indexOf(STORE_START);
-		if(!kept.length || at === -1) {
-			return text;
-		}
-		// (Escaped like TiddlyWiki's own store: no "<" that could end the script)
-		return text.slice(0,at) + STORE_START + JSON.stringify(kept).replace(/</g,"\\u003C") + "</script>\n" + text.slice(at);
+		var tiddler = wiki.getTiddler(title),
+			revision = tiddler && tiddler.fields.revision;
+		return revision !== undefined && revision !== null && revision !== "" && !/^\d{1,9}$/.test(String(revision));
 	}
 
 	// The plugins and raw markup tiddlers in the page this tab loaded, before anything else happened:
@@ -246,18 +186,17 @@ exports.startup = function() {
 	}
 
 	// The shell as this tab renders it now, the way TiddlyWiki renders its save templates
-	function shell() {
-		var titles = pageTitles(),
-			widget = wiki.makeWidget(wiki.parseText("text/vnd.tiddlywiki",SHELL_TEXT),{
+	function shell(titles) {
+		var widget = wiki.makeWidget(wiki.parseText("text/vnd.tiddlywiki",SHELL_TEXT),{
 				document: $tw.fakeDocument,
 				variables: {
-					saveTiddlerFilter: $tw.utils.stringifyList(titles),
+					saveTiddlerFilter: $tw.utils.stringifyList(titles || pageTitles()),
 					coreURL: coreUrl
 				}
 			}),
 			container = $tw.fakeDocument.createElement("div");
 		widget.render(container,null);
-		return withBaseCopies(container.textContent,titles);
+		return container.textContent;
 	}
 
 	function report(state,text) {
@@ -498,9 +437,6 @@ exports.startup = function() {
 		return saveTiddler.call(this,tiddler,function(err,adaptorInfo,revision) {
 			if(!err) {
 				ownChanges[title] = {stored: true, time: Date.now(), revision: revision};
-				if(tiddler.fields["plugin-type"]) {
-					everStored[title] = true;
-				}
 				schedule();
 			}
 			return callback.apply(this,arguments);
@@ -535,16 +471,13 @@ exports.startup = function() {
 	// a page with it, so the page published is no longer the one this tab knows
 	if(adaptor.cfworkerOnList) {
 		adaptor.cfworkerOnList(function(listed,previous,entries) {
-			var fields = Object.create(null);
-			$tw.utils.each(entries,function(entry) {
-				fields[entry.title] = entry;
-				if(entry["plugin-type"]) {
-					everStored[entry.title] = true;
-				}
-			});
 			if(!previous || !published) {
 				return;
 			}
+			var fields = Object.create(null);
+			$tw.utils.each(entries,function(entry) {
+				fields[entry.title] = entry;
+			});
 			var changed = Object.keys(listed).concat(Object.keys(previous)).some(function(title) {
 				if(listed[title] === previous[title] || !mayChangePage(title,fields[title])) {
 					return false;

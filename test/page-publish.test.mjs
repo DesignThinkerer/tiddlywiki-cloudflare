@@ -442,8 +442,8 @@ const otherCopies = await W.evaluate(t => $tw.wiki.filterTiddlers("[field:confli
 check("...while a tab that updated it from the page's version too gets a conflict, not an overwrite",
   otherStored === "9.9.9" && otherCopies.length === 1, `stored ${otherStored}, copies ${JSON.stringify(otherCopies)}`);
 await contextW.close();
-// Deleting that update goes back to the version that came with the page (as the page built from
-// index.html did), while deleting a plugin that came with the page, never updated, removes it
+// Deleting that update removes the plugin, as in a single-file wiki (where the update replaced the
+// page's version), and so does deleting a plugin that came with the page, never updated
 const NEVER_UPDATED = "$:/themes/tiddlywiki/snowwhite";
 mark = requests.length;
 await A.evaluate(titles => titles.forEach(t => $tw.wiki.deleteTiddler(t)), [BUNDLED, NEVER_UPDATED]);
@@ -454,13 +454,31 @@ html = await shell();
 const contextV = await browser.newContext();
 const { p: V } = await openAdmin("V", contextV);
 await settle(V);
-const backInV = await V.evaluate(titles => titles.map(t => $tw.wiki.getTiddler(t)?.fields.version ?? null), [BUNDLED, NEVER_UPDATED]);
-check("deleting the update of a plugin that came with the page brings back the page's version, on both sites",
-  !!bundledOriginal && bundledOriginal !== "9.9.9" && inStore(html, BUNDLED) && backInV[0] === bundledOriginal && !(await bucket.head("recipes/default/tiddlers/" + BUNDLED)),
-  `original ${bundledOriginal}, in the shell ${inStore(html, BUNDLED)}, in a new tab ${backInV[0]}`);
-check("...while a plugin that came with the page, never updated, stays deleted", !inStore(html, NEVER_UPDATED) && backInV[1] === null,
-  `in the shell ${inStore(html, NEVER_UPDATED)}, in a new tab ${backInV[1]}`);
+const leftInV = await V.evaluate(titles => titles.map(t => $tw.wiki.getTiddler(t)?.fields.version ?? null), [BUNDLED, NEVER_UPDATED]);
+check("deleting the update of a plugin that came with the page removes it, as in a single-file wiki; one never updated too",
+  !inStore(html, BUNDLED) && !inStore(html, NEVER_UPDATED) && leftInV[0] === null && leftInV[1] === null && !(await bucket.head("recipes/default/tiddlers/" + BUNDLED)),
+  `in the shell ${inStore(html, BUNDLED)} / ${inStore(html, NEVER_UPDATED)}, in a new tab ${JSON.stringify(leftInV)}`);
 await contextV.close();
+// To get index.html's version back (README 6): delete the published shell and the page in R2, then open
+// the admin wiki. The page is built from index.html, with the plugin, and that tab publishes it again.
+await bucket.delete("_page/shell.html");
+await bucket.delete("baked.html");
+const contextBack = await browser.newContext();
+mark = requests.length;
+const { p: Back } = await openAdmin("Back", contextBack);
+await settle(Back);
+await waitFor(async () => shellPuts("Back", mark) > 0, 30000);
+await sleep(QUIET_WINDOW);
+html = await shell();
+await contextBack.close();
+const contextAfter = await browser.newContext();
+const { p: After } = await openAdmin("After", contextAfter);
+await settle(After);
+const backInS = await After.evaluate(t => $tw.wiki.getTiddler(t)?.fields.version ?? null, BUNDLED);
+check("...and deleting the published shell and the page in R2 brings back index.html's version, published by the next admin load",
+  !!bundledOriginal && bundledOriginal !== "9.9.9" && inStore(html, BUNDLED) && backInS === bundledOriginal,
+  `original ${bundledOriginal}, in the shell ${inStore(html, BUNDLED)}, in a new tab ${backInS}`);
+await contextAfter.close();
 
 // --- 9. A tiddler whose text hasn't arrived yet is waited for ----------------------------------------
 // Edited outside the admin wiki (in R2): the next admin load publishes it, once its text is there
