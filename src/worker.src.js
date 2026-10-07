@@ -1046,7 +1046,13 @@ async function publishCoreFile(request, env, url, corsHeaders) {
   if (!/^[0-9A-Za-z.+]+(-[0-9A-Za-z.+]+)*-\d+$/.test(version)) {
     return refusal(`"${version}" isn't a core file version (<TiddlyWiki version>-<format>).`, corsHeaders);
   }
-  const current = await env.WIKI_BUCKET.head(CORE_KEY);
+  // For the index.html the admin page was built for (X-Page-Index), as a shell: a tab opened before
+  // a new one (an upgrade) would otherwise replace the core file with its older version, which the
+  // public site would then serve under the new version's URL, cached for a year
+  const [index, current] = await Promise.all([env.WIKI_BUCKET.head("index.html"), env.WIKI_BUCKET.head(CORE_KEY)]);
+  if (!index || request.headers.get("X-Page-Index") !== index.etag) {
+    return refusal("index.html has changed since this page was loaded: reload the admin wiki.", corsHeaders, 409);
+  }
   if (current?.customMetadata?.v === version) return new Response(null, { status: 204, headers: corsHeaders });
   if (Number(request.headers.get("Content-Length")) > CORE_LIMIT) return refusal("The core file is too big.", corsHeaders);
   const bytes = new Uint8Array(await request.arrayBuffer());

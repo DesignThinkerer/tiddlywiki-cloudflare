@@ -38,10 +38,11 @@ const BUDGETS = {
     "get list": 1, "head tiddler": 1, "delete tiddler": 1, "put list": 1, "delete plugin file": 1,
     "head index.html": 1, "get page shell": 1, "head core file": 1, "get index.html": 1, "head baked.html": 1, "put baked.html": 1
   },
-  // The core file: once per TiddlyWiki version. The page is then marked outdated (copied with that
-  // mark), so the next load's page says the core is stored, even if the shell that follows is refused
-  "publish the core file": { "head core file": 1, "put core file": 1, "get baked.html": 1, "put baked.html": 1 },
-  "publish the same core file again": { "head core file": 1 },
+  // The core file: once per TiddlyWiki version, checked against index.html and the stored one, at the
+  // same time. The page is then marked outdated (copied with that mark), so the next load's page says
+  // the core is stored, even if the shell that follows is refused
+  "publish the core file": { "head index.html": 1, "head core file": 1, "put core file": 1, "get baked.html": 1, "put baked.html": 1 },
+  "publish the same core file again": { "head index.html": 1, "head core file": 1 },
   // A shell: checked against index.html, the core file and the shell already kept, then the page is
   // built from it (without reading it back)
   "publish a shell (page rebuilt)": {
@@ -133,7 +134,8 @@ await measure("delete a plugin (page rebuilt)", () => del(PLUGIN, { "If-Match": 
 // The page shell and the core file, as the admin wiki publishes them
 const CORE_V = "5.4.1-1";
 const coreBody = "/*\nTiddlyWiki\n*/\n$tw.preloadTiddlers = $tw.preloadTiddlers || [];\n" + "x".repeat(5000) + '\n_load(window,{"title":"$:/boot/boot.js","text":""});';
-const publishCore = () => mf.dispatchFetch(`${base}/page/core?v=${CORE_V}`, { method: "PUT", headers: { "Content-Type": "application/javascript" }, body: coreBody });
+const indexEtag = (await bucket.head("index.html")).etag;
+const publishCore = () => mf.dispatchFetch(`${base}/page/core?v=${CORE_V}`, { method: "PUT", headers: { "Content-Type": "application/javascript", "X-Page-Index": indexEtag }, body: coreBody });
 res = await measure("publish the core file", publishCore);
 check("...published", res.status === 204, `status ${res.status}`);
 res = await measure("publish the same core file again", publishCore);
@@ -141,7 +143,6 @@ check("...published", res.status === 204, `status ${res.status}`);
 const shellBody = ["<!doctype html>", '<html lang="en-GB">', "<head>", "<title>Shell</title>", "</head>", '<body class="tc-body">', "<!--~~ Ordinary tiddlers ~~-->",
   '<script class="tiddlywiki-tiddler-store" type="application/json">[{"title":"$:/plugins/tiddlywiki/tiddlyweb","plugin-type":"plugin","text":"{}"}\n]</script>',
   "<!--~~ Load external JavaScripts ~~-->", '<script src="https://my-tiddlywiki.theophile.dev/_plugins/tiddlywikicore.js?v=' + CORE_V + '"></script>', "</body>", "</html>"].join("\n");
-const indexEtag = (await bucket.head("index.html")).etag;
 const publishShell = () => mf.dispatchFetch(`${base}/page/shell`, { method: "PUT", headers: { "Content-Type": "text/html", "X-Page-Fingerprint": "counted", "X-Page-Index": indexEtag }, body: shellBody });
 res = await measure("publish a shell (page rebuilt)", publishShell);
 check("...published", res.status === 204, `status ${res.status}`);
