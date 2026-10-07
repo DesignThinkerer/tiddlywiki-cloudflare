@@ -1067,6 +1067,11 @@ async function publishCoreFile(request, env, url, corsHeaders) {
     httpMetadata: { contentType: "application/javascript; charset=utf-8", cacheControl: "public, max-age=31536000, immutable" },
     customMetadata: { v: version }
   });
+  // The page says which core file is stored (the admin wiki sends it only if it isn't): built again
+  // at the next load, so it says this one even if the shell that follows is refused (otherwise every
+  // load would send the core file again). Before answering, so that a shell published right after
+  // builds over it. (A failure here only means the core file may be sent once more.)
+  await markPageOutdated(env).catch(e => console.error("Could not mark the page outdated after a new core file:", e.message));
   return new Response(null, { status: 204, headers: corsHeaders });
 }
 

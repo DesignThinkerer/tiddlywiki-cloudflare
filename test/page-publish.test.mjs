@@ -594,6 +594,27 @@ await contextR.close();
 await relabel(CORE_V);
 await add(A, { title: "$:/SiteSubtitle", text: "accepted again" }); await settle(A);
 await markPageOutdated();
+// While the worker keeps refusing the page (one too big, say), the core file the first load stores
+// isn't sent again at every load: storing a new one marks the page outdated, so the next load's page
+// says it's stored. (A tab that has to send the core: the stored one relabelled, as above.)
+await relabel("0.0.0-1");
+await markPageOutdated();
+const contextRefused = await browser.newContext();
+await contextRefused.route(url => url.pathname === "/page/shell", route => route.fulfill({ status: 400, body: "The shell is too big." }));
+mark = requests.length;
+const { p: Refused } = await openAdmin("Refused", contextRefused);
+for (let load = 1; load <= 3; load++) {
+  if (load > 1) {
+    await Refused.reload();
+    await Refused.waitForFunction(() => window.$tw && $tw.syncer, null, { timeout: 30000 });
+  }
+  await settle(Refused);
+  await sleep(QUIET_WINDOW);
+}
+check("while the page keeps being refused, the core file is sent once, not at every load",
+  corePuts("Refused", mark) === 1 && shellPuts("Refused", mark) >= 1 && (await bucket.head(CORE_KEY))?.customMetadata?.v === CORE_V,
+  `${corePuts("Refused", mark)} core PUTs, ${shellPuts("Refused", mark)} shell PUTs over 3 loads`);
+await contextRefused.close();
 
 // An error while rendering the page (here an editor that takes focus, in raw markup: the page is
 // rendered as text, where nothing can) is reported, and doesn't stop later publishes in that tab

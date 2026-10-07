@@ -38,8 +38,9 @@ const BUDGETS = {
     "get list": 1, "head tiddler": 1, "delete tiddler": 1, "put list": 1, "delete plugin file": 1,
     "head index.html": 1, "get page shell": 1, "head core file": 1, "get index.html": 1, "head baked.html": 1, "put baked.html": 1
   },
-  // The core file: once per TiddlyWiki version
-  "publish the core file": { "head core file": 1, "put core file": 1 },
+  // The core file: once per TiddlyWiki version. The page is then marked outdated (copied with that
+  // mark), so the next load's page says the core is stored, even if the shell that follows is refused
+  "publish the core file": { "head core file": 1, "put core file": 1, "get baked.html": 1, "put baked.html": 1 },
   "publish the same core file again": { "head core file": 1 },
   // A shell: checked against index.html, the core file and the shell already kept, then the page is
   // built from it (without reading it back)
