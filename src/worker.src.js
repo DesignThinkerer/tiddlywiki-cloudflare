@@ -26,14 +26,18 @@ function getTwTimestamp(date = new Date()) {
 
 // Titles the wiki keeps only in the browser: never stored, never backed up. Drafts are recognised by
 // their draft.of field (isDraft), not their title: a tiddler can be called "Draft of 'Chapter 1'".
+// (TiddlyWiki doesn't sync $:/HistoryList…, $:/state/, $:/temp/ or $:/status/ anyway. Only
+// $:/StoryList itself is a tab's own: the browser module doesn't send it, while $:/StoryList/2 or
+// $:/StoryListBackup are sent, and stored like any tiddler.)
 function isEphemeralTitle(title) {
-  return title.startsWith("$:/StoryList") ||
+  return title === "$:/StoryList" ||
          title.startsWith("$:/HistoryList") ||
          title.startsWith("$:/state/") ||
          title.startsWith("$:/temp/") ||
          title.startsWith("$:/status/");
 }
 
+// TiddlyWiki's own test (a draft.of field, even empty), which the browser module uses too
 function isDraft(tiddler) {
   return tiddler["draft.of"] !== undefined;
 }
@@ -56,8 +60,9 @@ const MODULE_TYPES = ["application/javascript", "application/json", "application
 // These take a saved tiddler or an entry of the tiddler list
 function isStartupTiddler(tiddler) {
   const title = tiddler.title || "", tags = tiddler.tags;
+  // (A list entry stored before field values had to be text, or by hand, may hold a tag that isn't)
   return STARTUP_TITLES.includes(title) || title.startsWith(DISABLED_PLUGIN_PREFIX) || (Array.isArray(tags)
-    ? tags.some(tag => tag.includes("$:/tags/StartupAction"))
+    ? tags.some(tag => String(tag).includes("$:/tags/StartupAction"))
     : typeof tags === "string" && tags.includes("$:/tags/StartupAction"));
 }
 
@@ -207,12 +212,12 @@ function parseJsonBody(text) {
 // "fields" stays nested as { fields: value }, the way TiddlyWeb's layout has it, because a flat
 // "fields" is where TiddlyWiki's loader looks for nested custom fields.
 function isFieldValue(value) {
-  return value === null || typeof value !== "object" || (Array.isArray(value) && value.every(item => item === null || typeof item !== "object"));
+  return typeof value === "string" || (Array.isArray(value) && value.every(item => typeof item === "string"));
 }
 function isStorable(name, value) {
   if (name !== "fields") return isFieldValue(value);
   return value !== null && typeof value === "object" && !Array.isArray(value) && Object.keys(value).length === 1 &&
-    Object.hasOwn(value, "fields") && (value.fields === null || typeof value.fields !== "object");
+    Object.hasOwn(value, "fields") && typeof value.fields === "string";
 }
 
 // TiddlyWiki unpacks that nested "fields" when it loads a tiddler through sync, but not the tiddlers
@@ -265,13 +270,44 @@ async function readSave(request) {
     ({ fields, bytes } = toFlat(parseJsonBody(decoder.decode(bytes))));
     end = bytes.length;
   }
+  return flatSave(fields, bytes.subarray(0, end));
+}
+
+// A save from its fields and its body in the flat layout (ending with "}")
+function flatSave(fields, body) {
   return {
     fields,
-    stored: revision => concatBytes([
-      bytes.subarray(0, end - 1),
-      encoder.encode(`,"revision":"${revision}","bag":"default","recipe":"default"}`)
-    ])
+    stored: revision => concatBytes([body.subarray(0, body.length - 1), storedSuffix(revision)])
   };
+}
+
+// What the worker appends to a stored tiddler, after its text
+function storedSuffix(revision) {
+  return encoder.encode(`,"revision":"${revision}","bag":"default","recipe":"default"}`);
+}
+
+// A tiddler TiddlyWiki has only the fields of (from the tiddler list; the text loads separately) is
+// marked _is_skinny. Changed before its text arrives (a checkbox clicked during the first sync, say),
+// it's saved without the text: the stored text is kept, as TiddlyWiki's own server does, rather than
+// stored as nothing, and the mark isn't stored. current: the stored object, read with its body.
+async function keepStoredText(save, current) {
+  const { _is_skinny, ...fields } = save.fields;
+  const head = encoder.encode(JSON.stringify(fields));
+  let text = new Uint8Array(0);   // ',"text":"..."' of the stored tiddler
+  if (current) {
+    const stored = new Uint8Array(await current.arrayBuffer());
+    const at = textKeyOffset(stored), suffix = storedSuffix(revisionOf(current));
+    const tail = stored.subarray(stored.length - suffix.length);
+    if (at !== -1 && suffix.every((byte, i) => tail[i] === byte)) {
+      text = stored.subarray(at, stored.length - suffix.length);   // the stored layout: copied as bytes
+    } else {
+      // Stored by hand: read as JSON
+      let value;
+      try { value = JSON.parse(decoder.decode(stored)).text; } catch (e) {}
+      if (typeof value === "string") text = encoder.encode(`,"text":${JSON.stringify(value)}`);
+    }
+  }
+  return flatSave(fields, concatBytes([head.subarray(0, head.length - 1), text, encoder.encode("}")]));
 }
 
 // The rest of a save once the tiddler is stored: the tiddler list, the public cache and the page.
@@ -285,13 +321,23 @@ async function finishSave(env, ctx, title, fields, revision, list, adminOrigin) 
   // would put the old list back in Cloudflare's cache
   ctx.waitUntil(purgePublicCache(env, tiddlerPurgeUrls(env, title, adminOrigin)));
   const saved = { ...fields, title };
-  if (previous && needsPluginFile(previous) && !needsPluginFile(saved)) {
-    await env.WIKI_BUCKET.delete(pluginFileKey(title));
-  }
   // Something the page needs at boot was added, changed or is no longer needed: rebuild the
   // page (which writes the plugin file) before confirming, so a reload right after has it
   if (isPageTiddler(saved) || (previous && isPageTiddler(previous))) {
     await rebuildPage(env, ctx, stored);
+  }
+  // No longer a plugin: its file goes, now that the page doesn't load it
+  if (previous && needsPluginFile(previous) && !needsPluginFile(saved)) await deletePluginFile(env, title);
+}
+
+// After the page has been rebuilt without it, so a page load in between doesn't miss it. If this
+// fails, the file is only left behind (nothing loads it): the request isn't failed for it, since its
+// retry would find nothing left to do, and wouldn't rebuild the page either
+async function deletePluginFile(env, title) {
+  try {
+    await env.WIKI_BUCKET.delete(pluginFileKey(title));
+  } catch (e) {
+    console.error(`Could not delete the plugin file of '${title}' (left behind, unused):`, e.message);
   }
 }
 
@@ -397,7 +443,7 @@ async function handleSave(request, env, ctx, url, corsHeaders) {
 
     const title = decodePath(match[1]);
     if (title === null) return invalidPath(corsHeaders);
-    const save = await readSave(request);
+    let save = await readSave(request);
     // Stored and listed under the title in the URL: a different one in the body would make the
     // list disagree with the stored tiddlers (the browser always sends the same one)
     if (save.fields.title !== title) throw new BadSave("the title in the body isn't the one in the URL");
@@ -412,9 +458,11 @@ async function handleSave(request, env, ctx, url, corsHeaders) {
     // The stored tiddler and the tiddler list, read at once (one round trip, not two). While a
     // damaged list is being rebuilt, readableList throws: the save is refused (503) without
     // changing anything, so the browser's retry can't conflict with it.
-    const key = tiddlerKey(title);
-    const [current, list] = await Promise.all([env.WIKI_BUCKET.head(key), readableList(env, ctx)]);
+    // (A save without its text, keepStoredText, reads the stored text too.)
+    const key = tiddlerKey(title), skinny = Object.hasOwn(save.fields, "_is_skinny");
+    const [current, list] = await Promise.all([skinny ? env.WIKI_BUCKET.get(key) : env.WIKI_BUCKET.head(key), readableList(env, ctx)]);
     const currentRevision = current ? revisionOf(current) : null;
+    if (skinny) save = await keepStoredText(save, current);
 
     const { conditional, reason } = checkPreconditions(request, currentRevision);
     if (reason) {
@@ -424,6 +472,14 @@ async function handleSave(request, env, ctx, url, corsHeaders) {
       if (current && await storesSameContent(env, current, save, currentRevision)) {
         await untilDone(ctx, finishSave(env, ctx, title, save.fields, currentRevision, list, url.origin));
         return savedResponse(title, currentRevision, corsHeaders);
+      }
+      // The stored tiddler isn't the version the list has: a save whose list update failed, retried
+      // with other content (edited again since) or not at all (its tab closed). Refused all the same,
+      // since it isn't based on that version (only the browser module can tell its own save, README
+      // 4.4), but that save is finished: the list, the public cache and the page catch up with it.
+      if (current && listedRevision(list, title) !== currentRevision) {
+        const fields = await storedFields(env, current);
+        if (fields) await untilDone(ctx, finishSave(env, ctx, title, fields, currentRevision, list, url.origin));
       }
       return conflictResponse(title, reason, currentRevision, corsHeaders);
     }
@@ -504,14 +560,13 @@ async function handleDelete(request, env, ctx, url, corsHeaders) {
       }
       if (!found && removed) ctx.waitUntil(queueBackup(env, { action: "delete", title, revision: currentRevision }));
       if (found || removed) ctx.waitUntil(purgePublicCache(env, tiddlerPurgeUrls(env, title, url.origin)));
-      // The list entry says what it was; if it wasn't listed, delete any plugin file anyway
-      // (deleting a missing object is free) and rebuild the page for system tiddlers
-      if (removed ? needsPluginFile(removed) : found) {
-        await env.WIKI_BUCKET.delete(pluginFileKey(title));
-      }
+      // The list entry says what it was; if it wasn't listed, rebuild the page for system tiddlers,
+      // and delete any plugin file anyway (deleting a missing object is free), once the page is
+      // rebuilt without it (see deletePluginFile)
       if (removed ? isPageTiddler(removed) : found && title.startsWith("$:/")) {
         await rebuildPage(env, ctx, stored);
       }
+      if (removed ? needsPluginFile(removed) : found) await deletePluginFile(env, title);
     })());
 
     return new Response(null, { status: 204, headers: corsHeaders });
@@ -585,7 +640,7 @@ async function serveManifest(request, env, ctx, corsHeaders) {
   let object = listObject;
   const listHeaders = obj => {
     const headers = listResponseHeaders(obj, corsHeaders);
-    if (backups) headers.set("X-Backup-Status", backupReport(env, backups));
+    if (backups) headers.set("X-Backup-Status", backupReport(env, backups.failing));
     return headers;
   };
   // A conditional get that fails its precondition returns the object without a body
@@ -1012,6 +1067,11 @@ async function publishCoreFile(request, env, url, corsHeaders) {
     httpMetadata: { contentType: "application/javascript; charset=utf-8", cacheControl: "public, max-age=31536000, immutable" },
     customMetadata: { v: version }
   });
+  // The page says which core file is stored (the admin wiki sends it only if it isn't): built again
+  // at the next load, so it says this one even if the shell that follows is refused (otherwise every
+  // load would send the core file again). Before answering, so that a shell published right after
+  // builds over it. (A failure here only means the core file may be sent once more.)
+  await markPageOutdated(env).catch(e => console.error("Could not mark the page outdated after a new core file:", e.message));
   return new Response(null, { status: 204, headers: corsHeaders });
 }
 
@@ -1090,6 +1150,12 @@ async function getList(env) {
 
 // The list, readable: { object, text, entries }. A missing or damaged list is rebuilt from the
 // stored tiddlers first; throws ListRebuilding while that takes more requests.
+// The revision a list (readableList) has for a title, or null if it isn't listed
+function listedRevision(list, title) {
+  const entry = list.entries.find(e => e.title === title);
+  return entry && entry.revision !== undefined && entry.revision !== null ? String(entry.revision) : null;
+}
+
 async function readableList(env, ctx, options) {
   const list = await getList(env);
   if (list.entries) return list;
@@ -1269,6 +1335,29 @@ async function storedEntry(env, item) {
     console.error(`Rebuilding the tiddler list: ${item.key} isn't stored the way the worker stores tiddlers, left out`);
     return null;
   }
+  const read = await readStoredFields(env, item);
+  if (!read) return null;
+  const { fields, obj } = read;
+  if (fields === null || typeof fields !== "object" || Array.isArray(fields)) {
+    console.error(`Rebuilding the tiddler list: ${item.key} is not a readable tiddler, left out`);
+    return null;
+  }
+  if (isEphemeralTitle(title) || isDraft(fields)) return null;
+  // Listed under the title it's stored under (a save's body always has the same one)
+  return listEntry(title, fields, revisionOf(obj), getTwTimestamp(obj.uploaded));
+}
+
+// The fields of a stored tiddler (not its text), or null: only its beginning is read, unless the
+// fields are longer. item: the object as listed or looked up (key, size)
+async function storedFields(env, item) {
+  if (item.customMetadata?.layout !== FLAT_LAYOUT) return null;
+  const read = await readStoredFields(env, item);
+  const fields = read && read.fields;
+  return fields !== null && typeof fields === "object" && !Array.isArray(fields) ? fields : null;
+}
+
+// { fields (null if they can't be read), obj }, or null if it's gone
+async function readStoredFields(env, item) {
   const partial = item.size > HEAD_BYTES;
   let obj = await env.WIKI_BUCKET.get(item.key, partial ? { range: { offset: 0, length: HEAD_BYTES } } : undefined);
   if (!obj) return null;   // deleted meanwhile
@@ -1282,13 +1371,8 @@ async function storedEntry(env, item) {
   }
   let fields = null;
   try { fields = JSON.parse(cut === -1 ? decoder.decode(bytes) : decoder.decode(bytes.subarray(0, cut)) + "}"); } catch (e) {}
-  if (fields === null || typeof fields !== "object" || Array.isArray(fields)) {
-    console.error(`Rebuilding the tiddler list: ${item.key} is not a readable tiddler, left out`);
-    return null;
-  }
-  if (isEphemeralTitle(title) || isDraft(fields)) return null;
-  // Listed under the title it's stored under (a save's body always has the same one)
-  return listEntry(title, fields, revisionOf(obj), getTwTimestamp(obj.uploaded));
+  if (fields && typeof fields === "object") delete fields.text;
+  return { fields, obj };
 }
 
 // One step of a rebuild. damaged: { object, text } of the list as found (object null if missing).
@@ -1386,29 +1470,53 @@ async function markPageOutdated(env) {
 // Every save or delete becomes one message. The queue consumer (the queue() handler, configured
 // with max_concurrency 1) commits them one at a time, in order, one commit per save, so commits
 // never collide, and GitHub rate limits or outages only delay backups: failed messages are put
-// back with a growing delay until they go through. A rate limit holds everything back; any other
-// failure only that tiddler's versions, so a file GitHub refuses can't hold up the others. Nothing
-// runs while the queue is empty.
+// back with a growing delay until they go through. A rate limit or a token GitHub refuses pauses
+// every backup; any other failure holds up only that tiddler's versions, so a file GitHub refuses
+// can't hold up the others. Nothing runs while the queue is empty.
 // Without a BACKUP_QUEUE binding (or if the queue is unavailable) the same backup runs directly.
 
-// Text to base64 as UTF-8, for the GitHub API (in chunks: String.fromCharCode takes a limited
-// number of arguments)
-function toBase64(str) {
-  const bytes = encoder.encode(str);
-  let binary = "";
-  for (let i = 0; i < bytes.length; i += 8192) {
-    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + 8192));
+// Writes bytes as base64 into out (ASCII bytes) from position at; returns where it ends. GitHub takes
+// a file's content in base64, in a request body sent as bytes: written there directly, it's never a
+// string. (Through a string, with String.fromCharCode, btoa, then the body encoded to be sent, a 1.5
+// MB plugin took about 7 ms of CPU, this about 2: a run gets about 10 on the free plan.)
+const BASE64_DIGITS = encoder.encode("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/");
+function writeBase64(bytes, out, at) {
+  const end = bytes.length - bytes.length % 3;
+  let i = 0;
+  for (; i < end; i += 3) {
+    const v = bytes[i] << 16 | bytes[i + 1] << 8 | bytes[i + 2];
+    out[at] = BASE64_DIGITS[v >>> 18];
+    out[at + 1] = BASE64_DIGITS[v >>> 12 & 63];
+    out[at + 2] = BASE64_DIGITS[v >>> 6 & 63];
+    out[at + 3] = BASE64_DIGITS[v & 63];
+    at += 4;
   }
-  return btoa(binary);
+  if (i < bytes.length) {
+    // One or two bytes left: padded with "="
+    const two = i + 1 < bytes.length;
+    const v = bytes[i] << 16 | (two ? bytes[i + 1] << 8 : 0);
+    out[at] = BASE64_DIGITS[v >>> 18];
+    out[at + 1] = BASE64_DIGITS[v >>> 12 & 63];
+    out[at + 2] = two ? BASE64_DIGITS[v >>> 6 & 63] : 61;
+    out[at + 3] = 61;
+    at += 4;
+  }
+  return at;
 }
 
-const QUEUE_MESSAGE_LIMIT = 128000;   // a queue message, as sent; a version that would make it bigger waits in R2
+// A queue message, as sent: a version that would make it bigger waits in R2. (The queue takes up to
+// 128 KB, but counts an operation per 64 KB of message: over 64 KB, a backup would cost 6 instead of 3.)
+const QUEUE_MESSAGE_LIMIT = 64000;
 const BACKUP_PER_RUN = 10;            // keeps one run within Cloudflare's 50-subrequest limit (free plan)
+// After this many bytes of versions, the rest of a run goes on to the next one: a megabyte takes a
+// few milliseconds of CPU (its base64 above all), and a run gets about 10 on the free plan. A run
+// always backs up one version, whatever its size.
+const BACKUP_BYTES_PER_RUN = 512 * 1024;
 const BACKUP_MAX_DELAY = 6 * 3600;    // longest wait between retries (seconds)
 
 // About the size of a message as the queue measures it: V8-serialized, where a string takes one
-// byte a character if they're all Latin-1, two otherwise (so a text under 100 KB can be over 128 KB),
-// with room for the other fields
+// byte a character if they're all Latin-1, two otherwise (so a text of 40 KB can be over 64 KB), with
+// room for the other fields
 function queueMessageSize(message) {
   let size = 200;
   for (const value of [message.title, message.content]) {
@@ -1443,7 +1551,7 @@ async function queueBackup(env, job) {
     }
   }
   // No queue: run the same backup right away, with a couple of quick retries
-  const direct = { ...message, content: job.content && decoder.decode(job.content), contentKey: undefined };
+  const direct = { ...message, content: job.content, contentKey: undefined };
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
       await backupJob(env, direct);
@@ -1463,9 +1571,11 @@ async function queueBackup(env, job) {
 // Backups GitHub keeps refusing (not a rate limit: that only delays them) are recorded in
 // _backup/status.json, one entry per tiddler: since (when its oldest waiting version was saved),
 // last (its latest attempt), error (GitHub's answer) and status (its HTTP status, 0 without one).
-// The entry goes when that tiddler's backup gets through. Written only when something changes, read
-// only by a batch with a failure or a version that failed before. The admin wiki asks with its
-// tiddler list request (X-Backup-Status: ask) when it loads, then hourly, and shows an alert.
+// The entry goes when that tiddler's backup gets through. The file also keeps a pause of every
+// backup, { until, count }, while there's one (processBackupBatch). Written only when something
+// changes, read only by a batch with a failure or a version that failed or waited before. The admin
+// wiki asks with its tiddler list request (X-Backup-Status: ask) when it loads, then hourly, and
+// shows an alert.
 
 const BACKUP_STATUS_KEY = "_backup/status.json";
 // An entry not retried for a day belongs to a backup no longer waiting (one still waiting is retried
@@ -1476,30 +1586,42 @@ function backupFailure(job, e) {
   return { title: job.title, since: job.time || Date.now(), error: String(e.detail || e.message || e).slice(0, 200), status: e.status || 0 };
 }
 
-// title -> entry
-async function readBackupStatus(env) {
+// { failing: title -> entry, pause }. strict: an R2 error throws, rather than reading as no file (a
+// file that isn't JSON still reads as none)
+async function readBackupStatus(env, strict) {
+  let data = null;
   try {
     const obj = await env.WIKI_BUCKET.get(BACKUP_STATUS_KEY);
-    const failing = obj ? (await obj.json()).failing : null;
-    return new Map(failing && typeof failing === "object" ? Object.entries(failing) : []);
-  } catch {
-    return new Map();
+    try {
+      data = obj ? await obj.json() : null;
+    } catch {}
+  } catch (e) {
+    if (strict) throw e;
   }
+  const failing = data && typeof data.failing === "object" && data.failing ? Object.entries(data.failing) : [];
+  const pause = data && data.pause && data.pause.until > 0 ? { until: data.pause.until, count: data.pause.count || 0 } : null;
+  return { failing: new Map(failing), pause };
 }
 
-// failures: from backupFailure; cleared: titles whose backup got through. Never throws: an R2 error
-// here mustn't count as a failed backup
-async function recordBackupResults(env, failures, cleared) {
+// failures: from backupFailure; cleared: titles whose backup got through; pause: { until, count } of
+// a pause that starts, null when one is over, undefined when that's not known; stored: the status
+// file, if this run has read it already. Never throws: an R2 error here mustn't count as a failed
+// backup
+async function recordBackupResults(env, failures, cleared, pause, stored) {
   try {
-    await updateBackupStatus(env, failures, cleared);
+    await updateBackupStatus(env, failures, cleared, pause, stored);
   } catch (e) {
     console.error("[Backup] Could not record how backups go:", e.message);
   }
 }
 
-async function updateBackupStatus(env, failures, cleared) {
-  const failing = await readBackupStatus(env), now = Date.now();
+async function updateBackupStatus(env, failures, cleared, pause, stored) {
+  const { failing, pause: storedPause } = stored || await readBackupStatus(env, true), now = Date.now();
   let changed = false;
+  let keptPause = pause === undefined ? storedPause : pause;
+  // (A pause over for a while no longer counts: gone)
+  if (keptPause && now - keptPause.until >= PAUSE_CONTINUES) keptPause = null;
+  if (JSON.stringify(keptPause) !== JSON.stringify(storedPause)) changed = true;
   for (const title of cleared) changed = failing.delete(title) || changed;
   for (const { title, since, error, status } of failures) {
     const entry = failing.get(title);
@@ -1511,8 +1633,9 @@ async function updateBackupStatus(env, failures, cleared) {
     if (!(now - entry.last <= BACKUP_STATUS_STALE)) changed = failing.delete(title) || changed;
   }
   if (!changed) return;
-  if (failing.size) {
-    await env.WIKI_BUCKET.put(BACKUP_STATUS_KEY, JSON.stringify({ failing: Object.fromEntries(failing) }), { httpMetadata: { contentType: "application/json" } });
+  if (failing.size || keptPause) {
+    const status = { failing: Object.fromEntries(failing), ...(keptPause ? { pause: keptPause } : {}) };
+    await env.WIKI_BUCKET.put(BACKUP_STATUS_KEY, JSON.stringify(status), { httpMetadata: { contentType: "application/json" } });
   } else {
     await env.WIKI_BUCKET.delete(BACKUP_STATUS_KEY);
   }
@@ -1530,49 +1653,117 @@ function backupReport(env, failing) {
   return encodeURIComponent(JSON.stringify({ count: due.length, title: title.slice(0, 200), since: e.since, error: e.error, status: e.status }));
 }
 
+// A pause of every backup: GitHub asked to slow down, or refuses every backup (a token it no longer
+// accepts, say), so trying them one by one would only make more calls (each answered the same way)
+// and more queue operations. While it lasts, the backups delivered are sent again to wait for its
+// end, without calling GitHub; then the first one tries. If GitHub still refuses, the next pause is
+// twice as long (up to BACKUP_MAX_DELAY, or as long as GitHub asks).
+// { until (ms), count (pauses in a row, from 0), error (GitHub's, from the call that started it),
+// all (GitHub refuses every backup, not just asking to wait: the ones waiting are recorded as
+// failing, for the alert) }. Known to the later runs in this isolate; until and count are also kept
+// in the status file, for a run in a new one.
+let backupPause = null;
+// A failure within this time after a pause ended: the next pause is twice as long
+const PAUSE_CONTINUES = 3600 * 1000;
+
+function nextPause(env, last, e) {
+  const now = Date.now();
+  // Still paused (a run that only knew from the status file): the same pause, for at least as long
+  // as GitHub asks; just after one: twice as long; otherwise a first one
+  const still = last && now < last.until;
+  const count = !last ? 0 : still ? last.count : now - last.until < PAUSE_CONTINUES ? last.count + 1 : 0;
+  const until = Math.max(now + backupRetryDelay(env, count, e.retryAfter) * 1000, still ? last.until : 0);
+  return { until, count, error: e, all: !isRateLimit(e) };
+}
+
 // Queue consumer
 async function processBackupBatch(batch, env) {
   const messages = [...batch.messages].sort((a, b) =>
     (a.body.time - b.body.time) || String(a.body.revision).localeCompare(String(b.body.revision)));
   const held = new Map();   // title -> delay: a version of it failed, its later versions wait with it
   const failures = [], cleared = [];   // for the backup status (backupFailure)
+  let pause;                // for the status file: a pause that starts in this run, or null if one is over
+  let stored;               // the status file, if read in this run
+  let denied;               // a tiddler GitHub answered 403 or 404 in this run (see isAccountWide)
   let attempts = 0;
+  const work = { bytes: 0 };   // the size of the versions handled so far (BACKUP_BYTES_PER_RUN)
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i];
+    if (backupPause && Date.now() < backupPause.until) {
+      // Waits for the pause to end. (Marked, so that its backup going through ends the pause in the
+      // status file too)
+      await requeueBackup(env, msg, Math.ceil((backupPause.until - Date.now()) / 1000), false, { paused: true });
+      if (backupPause.all) failures.push(backupFailure(msg.body, backupPause.error));
+      continue;
+    }
     if (held.has(msg.body.title)) {
       await requeueBackup(env, msg, held.get(msg.body.title), false);
       continue;
     }
-    if (attempts >= BACKUP_PER_RUN) {
+    if (attempts >= BACKUP_PER_RUN || work.bytes >= BACKUP_BYTES_PER_RUN) {
       await requeueBackup(env, msg, 0, false);
       continue;
     }
     attempts++;
     try {
-      await backupJob(env, msg.body);
+      await backupJob(env, msg.body, work);
       msg.ack();
-      if (msg.body.contentKey) await env.WIKI_BUCKET.delete(msg.body.contentKey);
-      // Only a version that failed before can clear a recorded failure
-      if (msg.body.tries > 0) cleared.push(msg.body.title);
+      backupPause = null;   // GitHub takes backups (again)
+      // (The backup is done: a copy that can't be removed is only left behind)
+      if (msg.body.contentKey) await env.WIKI_BUCKET.delete(msg.body.contentKey).catch(() => {});
+      // Only a version that failed or waited before can clear a recorded failure, or a recorded pause
+      if (msg.body.tries > 0 || msg.body.paused || msg.attempts > 1) {
+        cleared.push(msg.body.title);
+        pause = null;
+      }
     } catch (e) {
+      if (isRateLimit(e) || e.status === 401 || (isAccountWide(e) && denied !== undefined && denied !== msg.body.title)) {
+        // Every backup waits: this one, the rest of this run (above), and the next runs. (A rate
+        // limit isn't a failure to report: a big import waits like this for hours.)
+        let last = backupPause;
+        if (!last) {
+          try {
+            stored = await readBackupStatus(env, true);
+            last = stored.pause;
+          } catch {}
+        }
+        backupPause = nextPause(env, last, e);
+        pause = { until: backupPause.until, count: backupPause.count };
+        const delay = Math.ceil((backupPause.until - Date.now()) / 1000);
+        console.error(`[Backup] Backups paused for ${delay}s: ${e.message}`);
+        await requeueBackup(env, msg, delay, true);
+        if (backupPause.all) failures.push(backupFailure(msg.body, e));
+        continue;
+      }
+      if (isAccountWide(e)) denied = msg.body.title;
       const delay = backupRetryDelay(env, msg.body.tries, e.retryAfter);
       console.error(`[Backup] '${msg.body.title}' not backed up yet (${e.message}); retrying in ${delay}s`);
-      await requeueBackup(env, msg, delay, true);
-      if (isRateLimit(e)) {
-        // GitHub asks to slow down: everything left waits and retries with it, in order. (Not a
-        // failure to report: a big import waits like this for hours.)
-        for (let j = i + 1; j < messages.length; j++) {
-          await requeueBackup(env, messages[j], delay, false);
-        }
-        break;
-      }
-      // Anything else may concern this file only (GitHub refusing its path, say): its later
-      // versions wait with it, so they stay in order, and other tiddlers' backups go ahead
-      held.set(msg.body.title, delay);
+      await requeueBackup(env, msg, delay, true, isRefusal(e) ? { refused: true } : undefined);
+      // Anything else may concern this file only, and other tiddlers' backups go ahead. Its later
+      // versions wait with it, so they stay in order, unless GitHub refuses this version for good
+      // (its path, or a secret in its text): the next one may be fine, and goes ahead (the late
+      // versions logic keeps GitHub on the newest)
+      if (!isRefusal(e)) held.set(msg.body.title, delay);
       failures.push(backupFailure(msg.body, e));
     }
   }
-  if (failures.length || cleared.length) await recordBackupResults(env, failures, cleared);
+  if (failures.length || cleared.length || pause !== undefined) await recordBackupResults(env, failures, cleared, pause, stored);
+}
+
+// GitHub refusing every backup, not one file: the token (401: expired or revoked; 403 other than a
+// rate limit: no access to the repository, or the repository archived), or the repository not
+// found (404: only on a write, as the 404 of a read, a file not there yet, isn't an error). A 403 or
+// 404 could still concern one file only (a path GitHub can't take): it pauses every backup only once
+// a second tiddler gets one in the same run, or one file would hold up all the others (the oldest
+// backup tries first after a pause). Until then it's that file's own failure.
+function isAccountWide(e) {
+  return e.status === 401 || (e.status === 403 && !isRateLimit(e)) || e.status === 404;
+}
+
+// GitHub refusing this file for good: its path, or its content (a secret in it, which its push
+// protection refuses with a 409; a 409 that's only a race over the file's sha passes on its retry)
+function isRefusal(e) {
+  return e.status === 409 || e.status === 422;
 }
 
 // GitHub asking to slow down: Retry-After or an exhausted rate limit, 429, or its "rate limit"
@@ -1587,10 +1778,26 @@ function backupRetryDelay(env, tries, retryAfter) {
   return Math.ceil(Math.min(Math.max(delay, retryAfter || 0), 24 * 3600));
 }
 
-// Sends the message again as a fresh one, so neither the queue's retry limit nor its retention
-// period can drop a backup that keeps failing
-async function requeueBackup(env, msg, delaySeconds, countTry) {
-  const body = countTry ? { ...msg.body, tries: (msg.body.tries || 0) + 1 } : msg.body;
+// The queue's retry limit, which the worker can't read: Cloudflare's default (README 3.4: leave it)
+const QUEUE_RETRIES = 3;
+// How long the queue keeps a message from when it was sent: 24 hours on the free plan (the least)
+const QUEUE_RETENTION = 24 * 3600 * 1000;
+
+// Puts a message back, to be delivered again after delaySeconds. While it only waits (nothing in it
+// changes but being marked paused, which its next delivery shows anyway: msg.attempts) and has a
+// retry left, with a delivery to spare, before the queue would drop it, by its retry limit or its
+// retention, the queue's own retry: 1 operation, the next delivery. Otherwise it's sent again as a
+// fresh message, which neither limit applies to: 3 operations (sent, delivered, acknowledged).
+// countTry: one more failed try; extra: fields to add to it
+async function requeueBackup(env, msg, delaySeconds, countTry, extra) {
+  const onlyWaits = !countTry && (!extra || (Object.keys(extra).length === 1 && extra.paused === true));
+  const sent = msg.timestamp instanceof Date ? msg.timestamp.getTime() : NaN;
+  if (onlyWaits && msg.attempts >= 1 && msg.attempts < QUEUE_RETRIES &&
+      Date.now() + delaySeconds * 1000 < sent + QUEUE_RETENTION - 3600 * 1000) {
+    msg.retry(delaySeconds > 0 ? { delaySeconds } : undefined);
+    return;
+  }
+  const body = { ...msg.body, ...(countTry ? { tries: (msg.body.tries || 0) + 1 } : {}), ...extra };
   try {
     await env.BACKUP_QUEUE.send(body, delaySeconds > 0 ? { delaySeconds } : undefined);
     msg.ack();
@@ -1599,8 +1806,9 @@ async function requeueBackup(env, msg, delaySeconds, countTry) {
   }
 }
 
-// Commits one save or delete
-async function backupJob(env, job) {
+// Commits one save or delete. job.content: the version as text (in a queue message) or bytes (a
+// direct backup). work.bytes: adds the size of the versions it handles
+async function backupJob(env, job, work = { bytes: 0 }) {
   const github = githubContents(env);
   const current = await env.WIKI_BUCKET.head(tiddlerKey(job.title));   // the version in the wiki now
 
@@ -1611,20 +1819,27 @@ async function backupJob(env, job) {
     return;
   }
 
-  let content = job.content;
+  // (As bytes: what GitHub gets, and what its sha is computed from)
+  let content = typeof job.content === "string" ? encoder.encode(job.content) : job.content;
   if (content === undefined && job.contentKey) {
     const stored = await env.WIKI_BUCKET.get(job.contentKey);
-    content = stored ? await stored.text() : undefined;
+    content = stored ? new Uint8Array(await stored.arrayBuffer()) : undefined;
   }
   if (content === undefined) return; // Already handled by an earlier delivery of this message
+  work.bytes += content.length;
 
   // GitHub needs the sha of the file it holds to replace it. Its content isn't needed (decoding a
   // plugin's took more CPU than a run is allowed): whether GitHub already holds a newer version is
   // told by the sha too, compared with the wiki's current version's
   const existing = await github.get(job.title);
   let sha = existing ? existing.sha : null;
-  const newer = await newerInWiki(env, job, current, sha);
-  if (sha !== await gitBlobSha(content)) {
+  const newer = await newerInWiki(env, job, current, sha, work);
+  // A version GitHub refused for good, now replaced there by a newer one, or whose tiddler has been
+  // deleted since: dropped, rather than tried forever (it would only have been history)
+  if (job.refused && (newer || !current)) return;
+  // (A retry after the restore below failed: this version is already in the history, even if a
+  // newer one has been committed on top since)
+  if (!job.restore && sha !== await gitBlobSha(content)) {
     sha = await github.put(job.title, content, `✏️ Save: ${job.title}`, sha);
   }
   if (newer) {
@@ -1632,24 +1847,25 @@ async function backupJob(env, job) {
     // newer version goes back on top. (Marked first: if putting it back fails, the retry of this
     // message, which finds this version already committed, still does it.)
     job.restore = true;
-    if (sha !== newer.sha) await github.put(job.title, newer.text, `✏️ Save: ${job.title} (newer version restored)`, sha);
+    if (sha !== newer.sha) await github.put(job.title, newer.bytes, `✏️ Save: ${job.title} (newer version restored)`, sha);
   } else if (!current) {
     // Deleted since this save: keep this version in the history, then delete it again
     await github.remove(job.title, sha, `🗑️ Delete: ${job.title}`);
   }
 }
 
-// The wiki's current version of a tiddler, { text, sha }, if it's newer than this job's and GitHub
+// The wiki's current version of a tiddler, { bytes, sha }, if it's newer than this job's and GitHub
 // already holds it (githubSha), so this job's version arrived late; or if an earlier try of this
 // job found that (job.restore). Otherwise null: a newer version still waiting for its own backup
 // (quick successive edits) is committed by its own message, in order.
-async function newerInWiki(env, job, current, githubSha) {
+async function newerInWiki(env, job, current, githubSha, work) {
   if (!current || !isNewerRevision(revisionOf(current), job.revision) || (!githubSha && !job.restore)) return null;
   const obj = await env.WIKI_BUCKET.get(tiddlerKey(job.title));
   if (!obj) return null;
-  const text = await obj.text();
-  const sha = await gitBlobSha(text);
-  return job.restore || sha === githubSha ? { text, sha } : null;
+  const bytes = new Uint8Array(await obj.arrayBuffer());
+  work.bytes += bytes.length;
+  const sha = await gitBlobSha(bytes);
+  return job.restore || sha === githubSha ? { bytes, sha } : null;
 }
 
 // Revisions written by this worker are millisecond timestamps
@@ -1657,10 +1873,9 @@ function isNewerRevision(a, b) {
   return /^\d+$/.test(a) && /^\d+$/.test(String(b)) && Number(a) > Number(b);
 }
 
-// Git's blob id for a file, to recognise content GitHub already has
-async function gitBlobSha(text) {
-  const content = new TextEncoder().encode(text);
-  const header = new TextEncoder().encode(`blob ${content.length}\0`);
+// Git's blob id for a file (its bytes), to recognise content GitHub already has
+async function gitBlobSha(content) {
+  const header = encoder.encode(`blob ${content.length}\0`);
   const data = new Uint8Array(header.length + content.length);
   data.set(header);
   data.set(content, header.length);
@@ -1691,6 +1906,7 @@ function githubContents(env) {
     "X-GitHub-Api-Version": "2022-11-28",
     "User-Agent": "TiddlyWiki-Cloudflare-Worker"
   };
+  // body: the request body, as text or bytes
   async function call(method, title, body) {
     const apiBase = `https://api.github.com/repos/${env.GITHUB_REPO}/contents/tiddlers/${encodeURIComponent(title)}.json`;
     // Reads ask for the "object" format: the default one isn't available for files between 1 and
@@ -1699,7 +1915,7 @@ function githubContents(env) {
     const res = await fetch(method === "GET" ? `${apiBase}?ref=${branch}` : apiBase, {
       method,
       headers: method === "GET" ? { ...headers, Accept: "application/vnd.github.object+json" } : headers,
-      body: body ? JSON.stringify(body) : undefined
+      body
     });
     if (method === "GET" && res.status === 404) return null;
     if (!res.ok) {
@@ -1724,13 +1940,20 @@ function githubContents(env) {
       const file = await call("GET", title);
       return file ? { sha: file.sha } : null;
     },
-    // Returns the new blob sha
+    // content: bytes. Returns the new blob sha. (The body is made as bytes, the content written into
+    // it as base64: see writeBase64.)
     async put(title, content, message, sha) {
-      const result = await call("PUT", title, { message, content: toBase64(content), branch, ...(sha ? { sha } : {}) });
+      const head = encoder.encode(`{"message":${JSON.stringify(message)},"branch":${JSON.stringify(branch)}${sha ? `,"sha":${JSON.stringify(sha)}` : ""},"content":"`);
+      const body = new Uint8Array(head.length + Math.ceil(content.length / 3) * 4 + 2);
+      body.set(head);
+      const end = writeBase64(content, body, head.length);
+      body[end] = 34;        // "
+      body[end + 1] = 125;   // }
+      const result = await call("PUT", title, body);
       return result.content.sha;
     },
     async remove(title, sha, message) {
-      await call("DELETE", title, { message, sha, branch });
+      await call("DELETE", title, JSON.stringify({ message, sha, branch }));
     }
   };
 }

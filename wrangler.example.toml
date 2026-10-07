@@ -32,8 +32,8 @@ CF_ZONE_ID = "YOUR-ZONE-ID"
 # PUBLIC_WIKI_URL = "https://my-tiddlywiki.theophile.dev"   # the default
 # CONFLICT_GUARD = "off"                                     # stop baking the browser module
 # BACKUP_ALERT_MINUTES = "60"                                # the default: show backups failing for an hour
+# BACKUP_RETRY_SECONDS = "60"                                # the default: first wait before a failed backup is tried again
 
 # Secrets: set with `npx wrangler secret put NAME`, never in this file
 #   GITHUB_TOKEN   fine-grained token with Contents: read and write on the backup repository
 #   CF_API_TOKEN   API token with Zone > Cache Purge on the zone
-# Leave API_KEY unset (see README section 3.2, "Variables and secrets").

@@ -2,7 +2,7 @@
 
 **Status: implemented and deployed (October 2026).** These are the design notes behind README section 4.8: the problem, the design and why it was chosen over baking plugins into the page, what it costs, the change step by step, and how to operate it.
 
-The change is covered by the tests: `test/plugins.test.mjs` (65 checks) runs real plugins shipped with TiddlyWiki, markdown and KaTeX, on the admin site and on a stand-in for the public site. All six suites pass (`npm test`).
+The change is covered by the tests: `test/plugins.test.mjs` (66 checks) runs real plugins shipped with TiddlyWiki, markdown and KaTeX, on the admin site and on a stand-in for the public site. All seven suites pass (`npm test`).
 
 "The external-plugins plugin" below is `$:/plugins/theophile.dev/external-plugins`, which exports plugins as standalone `.js` files for single-file wikis. The plugin files here use the same format as its export template.
 
@@ -220,13 +220,13 @@ If it were excluded, updating it from the plugin library would store the new ver
 
 These figures come from the same test machine as in section 3, so read them as proportions. The worker's metrics in the Cloudflare dashboard show its real CPU time per request.
 
-**The backup queue consumer** spends about 2.5 ms of CPU on a 254 KB plugin, measured on the test machine (base64 encoding and git's blob hash; GitHub's copy of the previous version is no longer decoded, which took about 14 ms more). Queue consumers share the Workers per-invocation CPU limits ([Queues limits](https://developers.cloudflare.com/queues/platform/limits/)), so on the Free plan count on 10 ms, with some tolerance for occasional overruns; a batch of several plugin updates can still go over. The fallback without a queue runs inside the save request, so keep the queue bound.
+**The backup queue consumer** spends about 1 ms of CPU on a 254 KB plugin, measured on the test machine (git's blob hash, and the base64 written straight into the request's bytes; GitHub's copy of the previous version isn't decoded, which took about 14 ms more). Queue consumers share the Workers per-invocation CPU limits ([Queues limits](https://developers.cloudflare.com/queues/platform/limits/)), so on the Free plan count on 10 ms, with some tolerance for occasional overruns. A run stops taking versions once it has handled 512 KB, so a batch of several plugin updates is spread over several runs (README 4.7). The fallback without a queue runs inside the save request, so keep the queue bound.
 
 **Worker requests:** unchanged by this change: plugin files never reach the worker. (A page load was three requests, and is two since the browser keeps `/status` for a week, README 4.5.)
 
 **Per plugin save:**
 - **R2 writes (Class A):** the tiddler, the tiddler list, the plugin file, `baked.html`, plus the backup copy for a version over 100 KB.
-- **R2 reads (Class B):** about six, plus one `HEAD` per plugin and one read per listed startup tiddler for the page build.
+- **R2 reads (Class B):** eight with a published shell (nine before the first publish, when the page is built from `index.html`), plus one `HEAD` per other plugin and one read per listed startup tiddler for the page build.
 - **Subrequests:** all of the above, plus the queue message, count against the Free plan's 1,000 calls to Cloudflare services per request; only the purges count against its 50 external ones.
 - **Purges:** the tiddler's URLs and the two page URLs, as for any page change. Never plugin files.
 
@@ -305,8 +305,9 @@ const MODULE_TYPES = ["application/javascript", "application/json", "application
 // These take a saved tiddler or an entry of the tiddler list
 function isStartupTiddler(tiddler) {
   const title = tiddler.title || "", tags = tiddler.tags;
+  // (A list entry stored before field values had to be text, or by hand, may hold a tag that isn't)
   return STARTUP_TITLES.includes(title) || title.startsWith(DISABLED_PLUGIN_PREFIX) || (Array.isArray(tags)
-    ? tags.some(tag => tag.includes("$:/tags/StartupAction"))
+    ? tags.some(tag => String(tag).includes("$:/tags/StartupAction"))
     : typeof tags === "string" && tags.includes("$:/tags/StartupAction"));
 }
 
@@ -384,12 +385,12 @@ function parseJsonBody(text) {
 // "fields" stays nested as { fields: value }, the way TiddlyWeb's layout has it, because a flat
 // "fields" is where TiddlyWiki's loader looks for nested custom fields.
 function isFieldValue(value) {
-  return value === null || typeof value !== "object" || (Array.isArray(value) && value.every(item => item === null || typeof item !== "object"));
+  return typeof value === "string" || (Array.isArray(value) && value.every(item => typeof item === "string"));
 }
 function isStorable(name, value) {
   if (name !== "fields") return isFieldValue(value);
   return value !== null && typeof value === "object" && !Array.isArray(value) && Object.keys(value).length === 1 &&
-    Object.hasOwn(value, "fields") && (value.fields === null || typeof value.fields !== "object");
+    Object.hasOwn(value, "fields") && typeof value.fields === "string";
 }
 
 // TiddlyWiki unpacks that nested "fields" when it loads a tiddler through sync, but not the tiddlers
@@ -442,13 +443,20 @@ async function readSave(request) {
     ({ fields, bytes } = toFlat(parseJsonBody(decoder.decode(bytes))));
     end = bytes.length;
   }
+  return flatSave(fields, bytes.subarray(0, end));
+}
+
+// A save from its fields and its body in the flat layout (ending with "}")
+function flatSave(fields, body) {
   return {
     fields,
-    stored: revision => concatBytes([
-      bytes.subarray(0, end - 1),
-      encoder.encode(`,"revision":"${revision}","bag":"default","recipe":"default"}`)
-    ])
+    stored: revision => concatBytes([body.subarray(0, body.length - 1), storedSuffix(revision)])
   };
+}
+
+// What the worker appends to a stored tiddler, after its text
+function storedSuffix(revision) {
+  return encoder.encode(`,"revision":"${revision}","bag":"default","recipe":"default"}`);
 }
 ```
 
@@ -470,7 +478,7 @@ function untilDone(ctx, promise) {
 In the `PUT` handler, `const tiddler = JSON.parse(await request.text());` and the draft check became the lines below. (The title check came later, with the rebuild of the tiddler list, README 4.2, which lists every tiddler under the title it's stored under. So did reading the tiddler list with `readableList(env, ctx)`, now at the same time as the lookup of the stored tiddler: the list is read before the tiddler is written, and while a damaged list is being rebuilt the save answers `503` before anything is written.)
 
 ```js
-const save = await readSave(request);
+let save = await readSave(request);
 // Stored and listed under the title in the URL: a different one in the body would make the
 // list disagree with the stored tiddlers (the browser always sends the same one)
 if (save.fields.title !== title) throw new BadSave("the title in the body isn't the one in the URL");
@@ -510,14 +518,13 @@ async function finishSave(env, ctx, title, fields, revision, list, adminOrigin) 
   // would put the old list back in Cloudflare's cache
   ctx.waitUntil(purgePublicCache(env, tiddlerPurgeUrls(env, title, adminOrigin)));
   const saved = { ...fields, title };
-  if (previous && needsPluginFile(previous) && !needsPluginFile(saved)) {
-    await env.WIKI_BUCKET.delete(pluginFileKey(title));
-  }
   // Something the page needs at boot was added, changed or is no longer needed: rebuild the
   // page (which writes the plugin file) before confirming, so a reload right after has it
   if (isPageTiddler(saved) || (previous && isPageTiddler(previous))) {
     await rebuildPage(env, ctx, stored);
   }
+  // No longer a plugin: its file goes, now that the page doesn't load it
+  if (previous && needsPluginFile(previous) && !needsPluginFile(saved)) await deletePluginFile(env, title);
 }
 ```
 
@@ -559,14 +566,13 @@ await untilDone(ctx, (async () => {
   }
   if (!found && removed) ctx.waitUntil(queueBackup(env, { action: "delete", title, revision: currentRevision }));
   if (found || removed) ctx.waitUntil(purgePublicCache(env, tiddlerPurgeUrls(env, title, url.origin)));
-  // The list entry says what it was; if it wasn't listed, delete any plugin file anyway
-  // (deleting a missing object is free) and rebuild the page for system tiddlers
-  if (removed ? needsPluginFile(removed) : found) {
-    await env.WIKI_BUCKET.delete(pluginFileKey(title));
-  }
+  // The list entry says what it was; if it wasn't listed, rebuild the page for system tiddlers,
+  // and delete any plugin file anyway (deleting a missing object is free), once the page is
+  // rebuilt without it (see deletePluginFile)
   if (removed ? isPageTiddler(removed) : found && title.startsWith("$:/")) {
     await rebuildPage(env, ctx, stored);
   }
+  if (removed ? needsPluginFile(removed) : found) await deletePluginFile(env, title);
 })());
 ```
 
@@ -885,7 +891,7 @@ if (content !== null && queueMessageSize({ ...message, content }) <= QUEUE_MESSA
 and for the fallback without a queue:
 
 ```js
-const direct = { ...message, content: job.content && decoder.decode(job.content), contentKey: undefined };
+const direct = { ...message, content: job.content, contentKey: undefined };
 ```
 
 The queue consumer receives text, as before. (Since then, whether the text fits in the message is decided on the message as the queue measures it, not on the bytes: README 4.7.) Backups now hold the stored bytes, so each file in the GitHub repository switches to the flat layout on its tiddler's next save, and the repository holds both layouts.
@@ -970,7 +976,7 @@ const output = banner + source.replace(PLACEHOLDER, () => JSON.stringify(guard))
 6. **Disable and enable:** the flag is in the page, the plugin is inactive with no reload asked and still listed, then active again.
 7. **A theme** is applied at boot.
 8. **A standalone macro module** whose code contains `U+2028`, escaped quotes, `,"text":` and an emoji works.
-9. **Bodies the worker must cut correctly:** `,"text":` inside a field and inside the text, a tiddler without text, a field called `fields` (stored nested, and read back after a reload, also on a startup tiddler and a module loaded at boot), two bodies that claim the flat layout but don't follow it (stored flat), and a flat tiddler read back through the worker. Also the order of a save's purge: the list is purged only once it's updated. That check always passes when the order is right, but can only catch the wrong order some of the time, since it depends on timing.
+9. **Bodies the worker must cut correctly:** `,"text":` inside a field and inside the text, a tiddler without text, a field called `fields` (stored nested, and read back after a reload, also on a startup tiddler and a module loaded at boot), two bodies that claim the flat layout but don't follow it (stored flat), and a flat tiddler read back through the worker. (The order of a save's purge, the list purged only once it's updated, moved to `test/integrity.test.mjs`, which holds the list write up and so catches the wrong order every time.)
 10. **A save in TiddlyWeb's layout** (an old tab or a script) is stored flat, and its file is the usual one; the title has spaces, `#` and non-ASCII characters.
 11. **A stored plugin whose file is missing:** the next page build writes it, and the plugin works with no reload asked.
 12. **No longer needed:** a plugin turned into an ordinary tiddler, a startup action losing its tag, a deleted plugin.

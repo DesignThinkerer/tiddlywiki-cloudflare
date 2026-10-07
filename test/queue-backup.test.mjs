@@ -12,7 +12,7 @@ const blobSha = buf => sha1(Buffer.concat([Buffer.from(`blob ${buf.length}\0`), 
 const files = new Map();      // decoded path -> { sha, text }
 const commits = [];           // { message, path, text|null }
 let inFlight = 0, maxInFlight = 0, latencyMs = 50;
-const faults = { badCredentials: false, rateLimitPuts: 0, outage: false, failOnce: new Set(), refuse: new Set(), failPutOnceOfText: new Map(), garbleContent: new Set() };
+const faults = { badCredentials: false, rateLimitPuts: 0, rateLimitUntil: 0, outage: false, failOnce: new Set(), refuse: new Set(), refuseText: new Set(), notFound: new Set(), noWriteAccess: false, failPutOnceOfText: new Map(), garbleContent: new Set() };
 const ghCalls = [];
 const json = (obj, status = 200, headers = {}) => new Response(JSON.stringify(obj), { status, headers: { "Content-Type": "application/json", ...headers } });
 
@@ -26,9 +26,19 @@ async function fakeGitHub(req) {
   if (req.headers.get("authorization") !== "Bearer ghtoken") return json({ message: "Bad credentials" }, 401);
   if (faults.badCredentials) return json({ message: "Bad credentials", documentation_url: "https://docs.github.com/rest" }, 401);
   if (faults.outage) return json({ message: "Server Error" }, 502);
+  // (rateLimitUntil: a time until which GitHub asks every request to wait 2 seconds, reads included)
+  if (Date.now() < faults.rateLimitUntil) return json({ message: "You have exceeded a secondary rate limit" }, 403, { "retry-after": "2" });
   if (req.method !== "GET") {
     const key = `${req.method} ${path}`;
     if (faults.refuse.has(path)) return json({ message: "This path isn't allowed" }, 422);
+    // (notFound: a path GitHub answers 404 for, as it answers every write to a repository it can't find;
+    // noWriteAccess: a token that can read the repository but not write to it)
+    if (faults.notFound.has(path)) return json({ message: "Not Found" }, 404);
+    if (faults.noWriteAccess) return json({ message: "Resource not accessible by personal access token" }, 403);
+    // (refuseText: content GitHub refuses, as its push protection does a text containing a secret)
+    if (req.method === "PUT" && [...faults.refuseText].some(mark => Buffer.from(body.content, "base64").toString("utf8").includes(mark))) {
+      return json({ message: "Secret detected in content" }, 409);
+    }
     if (req.method === "PUT" && faults.failPutOnceOfText.get(path) === JSON.parse(Buffer.from(body.content, "base64").toString("utf8")).text) {
       faults.failPutOnceOfText.delete(path);
       return json({ message: "Server Error" }, 500);
@@ -143,10 +153,24 @@ faults.rateLimitPuts = 4;
 for (const t of ["RL a", "RL b", "RL c"]) await put(t, t);
 await until(async () => faults.rateLimitPuts <= 2);
 await new Promise(r => setTimeout(r, 300));
-check("a rate limit isn't a failure to report: GitHub only asks to wait", !(await bucket.head("_backup/status.json")) && await backupStatus() === "ok");
+const rlRecorded = await bucket.get("_backup/status.json");
+check("a rate limit isn't a failure to report: GitHub only asks to wait",
+  Object.keys((rlRecorded && (await rlRecorded.json()).failing) || {}).length === 0 && await backupStatus() === "ok");
 const rlDone = await until(async () => ["RL a", "RL b", "RL c"].every(t => repoText(t) !== undefined));
 const rlOrder = commits.filter(c => c.path.startsWith("tiddlers/RL ")).map(c => c.path);
 check("rate limited: all committed after waiting, in save order", rlDone && JSON.stringify(rlOrder) === JSON.stringify(["tiddlers/RL a.json", "tiddlers/RL b.json", "tiddlers/RL c.json"]), JSON.stringify(rlOrder));
+
+// 4b. A rate limit pauses every backup, not only the batch it hit: while GitHub asks to wait, the
+// backups waiting make about one call each time the wait ends, however many they are (here 40 saves
+// during 6 seconds of rate limit, GitHub asking each time to wait 2 seconds)
+const pacedCalls = () => ghCalls.filter(c => c.includes("tiddlers/Paced ")).length;
+faults.rateLimitUntil = Date.now() + 6000;
+for (let i = 0; i < 40; i++) await put(`Paced ${i}`, `p${i}`);
+await until(async () => Date.now() > faults.rateLimitUntil, 10000);
+const pacedDuring = pacedCalls();
+const pacedIn = await until(async () => { for (let i = 0; i < 40; i++) if (repoText(`Paced ${i}`) === undefined) return false; return true; }, 60000);
+check("a rate limit pauses every backup: a few GitHub calls while it lasts, not one per batch, and then they all go through",
+  pacedDuring <= 6 && pacedIn && await backupStatus() === "ok", `${pacedDuring} calls during the rate limit, all in ${pacedIn}`);
 
 // 5. GitHub outage: nothing lost, final state right
 faults.outage = true;
@@ -184,25 +208,38 @@ await until(async () => textOf(repoText("Big")) === big);
 const leftovers = (await bucket.list({ prefix: "_backup/versions/" })).objects.length;
 check("200 KB tiddler committed, temporary copy removed", textOf(repoText("Big")) === big && leftovers === 0, `leftovers ${leftovers}`);
 
-// 8a. The queue's 128 KB limit is on the message as sent, V8-serialized: a text with a character
-// past Latin-1 takes two bytes a character, so one under 100 KB can be over the limit. It waits in
-// R2 like a big one (not sent straight to GitHub from the save), and so does a big one with a title
-// too long to be part of an R2 key. Held up by an outage here, to see the copies waiting.
+// 8a. The queue counts an operation per 64 KB of message, as sent (V8-serialized), so a version waits
+// in R2 rather than make a message over 64 KB (6 operations instead of 3): a 70 KB Latin-1 text; a
+// text with a character past Latin-1, which takes two bytes a character (40 KB of it is over); a big
+// one with a title too long to be part of an R2 key. A 60 KB Latin-1 text still fits in the message.
+// Held up by an outage here, to see the copies waiting.
 const logMark = workerLog.length;
-const wide = "€" + "w".repeat(99000), longTitle = "Long " + "t".repeat(990), latin = "é" + "l".repeat(110000);
+const wide = "€" + "w".repeat(40000), longTitle = "Long " + "t".repeat(990), latin = "é" + "l".repeat(60000), latinBig = "é" + "L".repeat(70000);
 faults.outage = true;
 await put("Wide", wide);
 await put(longTitle, "a".repeat(95000) + "😀".repeat(10000));
 await put("Latin", latin);
+await put("Latin big", latinBig);
 await new Promise(r => setTimeout(r, 1500));
 const waiting = (await bucket.list({ prefix: "_backup/versions/" })).objects.length;
 faults.outage = false;
-await until(async () => textOf(repoText("Wide")) === wide && repoText(longTitle) !== undefined && textOf(repoText("Latin")) === latin);
+await until(async () => textOf(repoText("Wide")) === wide && repoText(longTitle) !== undefined && textOf(repoText("Latin")) === latin && textOf(repoText("Latin big")) === latinBig);
 const notQueued = workerLog.slice(logMark).join("").match(/Could not queue[^\n]*/g) || [];
 const leftAfter = (await bucket.list({ prefix: "_backup/versions/" })).objects.length;
-check("a text sent as two bytes a character, and a big one with a long title, wait in R2 for the queue; a Latin-1 one fits in the message",
-  waiting === 2 && leftAfter === 0 && notQueued.length === 0 && textOf(repoText("Wide")) === wide && repoText(longTitle) === await r2Text(longTitle) && textOf(repoText("Latin")) === latin,
+check("versions that would make a message over 64 KB wait in R2 (two bytes a character, a 70 KB one, a long title); a 60 KB Latin-1 one fits in the message",
+  waiting === 3 && leftAfter === 0 && notQueued.length === 0 && textOf(repoText("Wide")) === wide && repoText(longTitle) === await r2Text(longTitle) &&
+  textOf(repoText("Latin")) === latin && textOf(repoText("Latin big")) === latinBig,
   `waiting ${waiting}, left ${leftAfter}${notQueued.length ? ", " + notQueued.join(" | ").slice(0, 200) : ""}`);
+
+// 8d. A big version's R2 copy that can't be removed after its commit: the backup is still done (not
+// run again, nor reported as failing); the copy is only left behind
+await mf.dispatchFetch(`${base}/__r2fail`, { method: "POST", body: JSON.stringify({ call: "delete backup copy", times: 1 }) });
+const copyText = "c".repeat(150000);
+await put("Copy kept", copyText);
+await until(async () => textOf(repoText("Copy kept")) === copyText);
+await new Promise(r => setTimeout(r, 3000));
+const copyRuns = ghCalls.filter(c => c === "GET tiddlers/Copy kept.json").length;
+check("a backup whose R2 copy can't be removed afterwards still counts as done: not run again, not reported", copyRuns === 1 && await backupStatus() === "ok", `${copyRuns} runs, status ${JSON.stringify(await backupStatus())}`);
 
 // 8b. Saves in the browser module's flat layout are committed exactly as stored, small or large
 const putFlat = (title, text) => mf.dispatchFetch(`${base}/recipes/default/tiddlers/${encodeURIComponent(title)}`,
@@ -222,10 +259,31 @@ await put("After huge", "still backed up");
 check("a tiddler over 1 MB is backed up on every save, and later backups go through",
   await until(async () => textOf(repoText("Huge")) === huge + " v2" && textOf(repoText("After huge")) === "still backed up", 20000));
 
+// 8e. A run backs up one big version at most (each megabyte takes a few milliseconds of CPU, and a
+// run gets about 10 on the free plan): with three waiting in one batch, two go on to the next runs
+await mf.dispatchFetch(`${base}/__runs`);                  // (starts a new count)
+latencyMs = 1500;
+await put("Slow before big", "s");                         // the next saves arrive in one batch
+await new Promise(r => setTimeout(r, 300));
+latencyMs = 30;
+const bigTitles = ["Big 1", "Big 2", "Big 3"];
+for (const t of bigTitles) await put(t, t + " é " + "b".repeat(600 * 1024));
+await until(async () => bigTitles.every(t => repoText(t) !== undefined), 30000);
+let bigExact = true;
+for (const t of bigTitles) if (repoText(t) !== await r2Text(t)) bigExact = false;
+const bigRuns = await (await mf.dispatchFetch(`${base}/__runs`)).json();
+const bigPerRun = Math.max(...bigRuns.map(run => run.filter(c => c === "get backup copy").length));
+check("a run backs up one big version at most: the others go on to the next runs", bigExact && bigPerRun === 1,
+  `committed exactly ${bigExact}, at most ${bigPerRun} big versions in a run`);
+
 // 9. Special titles keep the old file paths
 await put("$:/config/Some Thing", "s");
 await until(async () => files.has("tiddlers/$:/config/Some Thing.json"));
 check("special title uses the same API path as before", ghCalls.some(c => c === "PUT tiddlers/$:/config/Some Thing.json"));
+// (and a title the commit message must escape)
+await put('Say "hi" \\ there', "q");
+check("a title with quotes and a backslash: committed, with its commit message", await until(async () =>
+  commits.some(c => c.path === 'tiddlers/Say "hi" \\ there.json' && c.message === '✏️ Save: Say "hi" \\ there'), 10000));
 
 
 // 11. Non-ASCII text survives, including the "newer version restored" path
@@ -267,6 +325,21 @@ await new Promise(r => setTimeout(r, 2000));
 const late = commits.filter(c => c.path === "tiddlers/Late.json").map(c => textOf(c.text));
 check("a late version whose restore of the newer one failed: GitHub still ends on the newer one", lateDone && textOf(repoText("Late")) === "v2", JSON.stringify(late));
 
+// 15b. A late version whose restore failed, retried after a newer version was committed: it's
+// already in the history, so it isn't committed again (only the newest stays on top)
+faults.failOnce.add("PUT tiddlers/Twice.json");                // v1's first try fails: it arrives late
+await put("Twice", "v1");
+await new Promise(r => setTimeout(r, 400));
+await put("Twice", "v2");
+await until(async () => textOf(repoText("Twice")) === "v2");
+faults.failPutOnceOfText.set("tiddlers/Twice.json", "v2");     // v1's retry: committed, then putting v2 back fails
+await until(async () => !faults.failPutOnceOfText.has("tiddlers/Twice.json"), 20000);
+await put("Twice", "v3");                                      // committed before v1 is tried again
+await until(async () => textOf(repoText("Twice")) === "v3");
+await new Promise(r => setTimeout(r, 6000));
+const twice = commits.filter(c => c.path === "tiddlers/Twice.json").map(c => textOf(c.text));
+check("a retried restore doesn't commit the late version again", twice.filter(t => t === "v1").length === 1 && textOf(repoText("Twice")) === "v3", JSON.stringify(twice));
+
 // 13. A file GitHub refuses for good doesn't hold up the backups after it: it keeps being retried on
 // its own (nothing is dropped) while the others go through. (A slow commit first keeps the consumer
 // busy, so the next saves arrive in one batch, the refused one first.)
@@ -290,22 +363,95 @@ faults.refuse.clear();
 check("...and goes through once GitHub accepts it", await until(async () => textOf(repoText("Refused")) === "never accepted", 30000));
 check("...after which there's nothing to report", await until(async () => await backupStatus() === "ok" && !(await bucket.head("_backup/status.json")), 10000));
 
+// 13b. A version GitHub refuses for good (here a text with a secret in it) doesn't hold up that
+// tiddler's later versions: the next one, without the secret, goes through, even saved right after
+// (the two then come in one batch). The refused version is then dropped, as the newer one is on
+// GitHub, and so is one whose tiddler was deleted since: neither is retried forever
+faults.refuseText.add("SECRET-TOKEN");
+latencyMs = 1500;
+await put("Slow before secret", "s");                      // keeps the consumer busy: the next saves arrive in one batch
+await new Promise(r => setTimeout(r, 300));
+latencyMs = 30;
+await put("Secret note", "pasted SECRET-TOKEN by mistake");
+await put("Secret note", "secret removed");
+await put("Secret gone", "SECRET-TOKEN here too");
+await new Promise(r => setTimeout(r, 300));
+await del("Secret gone");
+const cleanIn = await until(async () => textOf(repoText("Secret note")) === "secret removed", 20000);
+const secretTries = () => ghCalls.filter(c => c === "GET tiddlers/Secret note.json" || c === "GET tiddlers/Secret gone.json").length;
+// (Six reads: both versions of Secret note, Secret gone's save and its delete, then the two refused
+// versions' retries, which drop them)
+await until(async () => secretTries() >= 6 && await backupStatus() === "ok", 30000);
+const triesThen = secretTries();
+await new Promise(r => setTimeout(r, 8000));
+check("a version GitHub refuses for good doesn't hold up the tiddler's next one, and is dropped once a newer one is on GitHub, or the tiddler deleted",
+  cleanIn && await backupStatus() === "ok" && secretTries() === triesThen && !commits.some(c => (c.text || "").includes("SECRET-TOKEN")),
+  `clean version in ${cleanIn}, status ${JSON.stringify(await backupStatus())}, GitHub calls for them after ${secretTries() - triesThen}`);
+faults.refuseText.clear();
+
+// 13c. A file GitHub answers the way it answers every backup when the repository is out of reach (a
+// 404 for its path here) doesn't pause the others: that takes two tiddlers answered that way
+latencyMs = 1500;
+await put("Slow before odd", "s");                         // the next saves arrive in one batch, the odd one first
+await new Promise(r => setTimeout(r, 300));
+latencyMs = 30;
+faults.notFound.add("tiddlers/Odd path.json");
+await put("Odd path", "o");
+await put("After odd 1", "a1");
+await put("After odd 2", "a2");
+const oddOthersIn = await until(async () => repoText("After odd 1") !== undefined && repoText("After odd 2") !== undefined, 10000);
+await until(async () => (await backupStatus())?.title === "Odd path", 5000);
+const oddStatus = await backupStatus();
+check("one file answered like a repository out of reach (404) doesn't pause the others, and is reported",
+  oddOthersIn && oddStatus?.count === 1 && oddStatus.title === "Odd path" && oddStatus.status === 404, `others in ${oddOthersIn}, status ${JSON.stringify(oddStatus)}`);
+faults.notFound.clear();
+await until(async () => repoText("Odd path") !== undefined && await backupStatus() === "ok", 30000);
+
 // 16. Every backup failing (here a token GitHub no longer accepts): reported with the oldest one and
-// how many are waiting, only to a request that asks; cleared once they go through
+// how many are waiting, only to a request that asks. It pauses every backup, so the ones waiting make
+// a few GitHub calls in all, not a few each. Cleared once they go through, and the pause with them
 faults.badCredentials = true;
+const queueOps = async () => (await mf.dispatchFetch(`${base}/__qops`)).json();
+await queueOps();                                          // (starts a new count)
 const tokenSaved = Date.now();
-await put("Token 1", "t1");
-await put("Token 2", "t2");
-await until(async () => ghCalls.filter(c => c.startsWith("GET tiddlers/Token ")).length >= 2);
-await until(async () => (await backupStatus())?.count === 2, 10000);
+const tokenCalls = () => ghCalls.filter(c => c.includes("tiddlers/Token ")).length;
+const tokenTitles = Array.from({ length: 20 }, (_, i) => `Token ${i + 1}`);
+for (const t of tokenTitles) await put(t, t);
+await until(async () => (await backupStatus())?.count === 20, 10000);
 const tokenStatus = await backupStatus();
 check("all backups failing (a token GitHub refuses): reported with how many wait, the oldest, its time and GitHub's answer",
-  tokenStatus?.count === 2 && tokenStatus.title === "Token 1" && tokenStatus.status === 401 && tokenStatus.error === "Bad credentials" &&
+  tokenStatus?.count === 20 && tokenStatus.title === "Token 1" && tokenStatus.status === 401 && tokenStatus.error === "Bad credentials" &&
   tokenStatus.since >= tokenSaved - 1000 && tokenStatus.since <= Date.now(), JSON.stringify(tokenStatus));
 check("...not in a tiddler list request that doesn't ask (no extra R2 read there)", await backupStatus(base, mf, false) === null);
+await new Promise(r => setTimeout(r, Math.max(0, tokenSaved + 6000 - Date.now())));
+check("...and pauses every backup: a few GitHub calls in all while it lasts, not a few for each", tokenCalls() <= 8,
+  `${tokenCalls()} calls for ${tokenTitles.length} backups in ${Math.round((Date.now() - tokenSaved) / 1000)} s`);
 faults.badCredentials = false;
-check("...and cleared once they go through", await until(async () => repoText("Token 1") !== undefined && repoText("Token 2") !== undefined &&
-  await backupStatus() === "ok" && !(await bucket.head("_backup/status.json")), 30000));
+check("...and cleared once they go through, with the pause", await until(async () => tokenTitles.every(t => repoText(t) !== undefined) &&
+  await backupStatus() === "ok" && !(await bucket.head("_backup/status.json")), 60000));
+// Waiting costs 1 queue operation (the next delivery, through the queue's own retry) instead of 3 (a
+// fresh message sent, delivered, acknowledged), while the message has retries left: never past its
+// third delivery, inside the queue's default limit of 3 retries
+const tokenOps = await queueOps();
+const tokenWaits = tokenOps.deliveries - tokenTitles.length;
+check("...and the waits mostly use the queue's own retry (1 operation instead of 3), never past a message's third delivery",
+  tokenWaits > 0 && tokenOps.retries * 2 >= tokenWaits && tokenOps.maxAttempts <= 3,
+  `${tokenOps.sends + tokenOps.deliveries + tokenOps.acks} operations for ${tokenTitles.length} backups: ${JSON.stringify(tokenOps)}`);
+
+// 16b. A token that can't write to the repository (403 for every write) pauses every backup too, once
+// two tiddlers get that answer
+faults.noWriteAccess = true;
+const writeTitles = Array.from({ length: 10 }, (_, i) => `Read only ${i + 1}`);
+const writeCalls = () => ghCalls.filter(c => c.includes("tiddlers/Read only ")).length;
+const writeSaved = Date.now();
+for (const t of writeTitles) await put(t, t);
+await new Promise(r => setTimeout(r, Math.max(0, writeSaved + 5000 - Date.now())));
+const writeStatus = await backupStatus();
+check("a token that can't write (403 on every write) pauses every backup too: a few GitHub calls in all, all reported",
+  writeCalls() <= 16 && writeStatus?.count === 10 && writeStatus.status === 403, `${writeCalls()} calls for ${writeTitles.length} backups in 5 s, ${JSON.stringify(writeStatus)}`);
+faults.noWriteAccess = false;
+check("...and cleared once they go through", await until(async () => writeTitles.every(t => repoText(t) !== undefined) &&
+  await backupStatus() === "ok" && !(await bucket.head("_backup/status.json")), 60000));
 
 // 10. Without a queue binding, it commits directly like before
 const mf2 = makeWorker(0, false);

@@ -192,6 +192,15 @@ await editViaUI(A, "Epsilon", "same"); await settle(A);
 await finishEdit(B, "Epsilon", "same"); await settle(B);
 check("identical edits: no conflict copy", (await conflictCopies(B, "Epsilon")).length === 0);
 check("identical edits: no alert, B clean", (await alerts(B)).length === 0 && await B.evaluate(() => !$tw.syncer.isDirty()));
+// The same for a tiddler the tab created itself: it has no type there, while the server's copy has the
+// default one the browser module sends
+await create(A, "Kappa", "k1"); await settle(A); await sync(B);
+await startEdit(A, "Kappa");
+await editViaUI(B, "Kappa", "same"); await settle(B);
+await finishEdit(A, "Kappa", "same"); await settle(A);
+check("identical edits of a tiddler created in this tab: no conflict copy, no alert",
+  (await conflictCopies(A, "Kappa")).length === 0 && (await alerts(A)).length === 0, JSON.stringify(await alerts(A)));
+await clearAlerts(A);
 
 // --- 8. Rename ------------------------------------------------------------------------------
 await sync(A); await sync(B);
@@ -230,6 +239,29 @@ check("delete from an editor opened before another tab's save: refused (412), th
   JSON.stringify(netSince(mark)));
 await clearAlerts(B);
 
+// The same, when the request for the other tab's version (after the refusal) fails once: the delete,
+// tried again later, is still based on the version the editor started from, so it's refused again
+// rather than deleting the newer version
+await create(A, "Iota", "i1"); await settle(A); await sync(B);
+mark = net.length;
+await startEdit(B, "Iota");
+await editViaUI(A, "Iota", "i2 from A"); await settle(A);
+await sync(B);
+behindEditor = (await localText(B, "Iota")) === "i2 from A";
+let iotaGetFailed = false;
+await B.route(/\/recipes\/default\/tiddlers\/Iota$/, route => {
+  if (route.request().method() === "GET" && !iotaGetFailed) { iotaGetFailed = true; return route.abort("failed"); }
+  return route.continue();
+});
+await deleteFromEditor(B, "Iota"); await settle(B);
+await B.unroute(/\/recipes\/default\/tiddlers\/Iota$/);
+const iotaDeletes = netSince(mark).filter(x => x.tag === "B" && x.method === "DELETE" && x.path.endsWith("/Iota"));
+check("...and when fetching the other tab's version after that refusal fails once, the delete tried again is refused too, the newer version kept",
+  behindEditor && iotaGetFailed && iotaDeletes.length >= 2 && iotaDeletes.every(x => x.status === 412) &&
+  (await server("Iota"))?.text === "i2 from A" && (await localText(B, "Iota")) === "i2 from A",
+  JSON.stringify({ deletes: iotaDeletes.map(x => x.status), server: (await server("Iota"))?.text ?? null }));
+await clearAlerts(B);
+
 // With no other save in between, deleting from the editor simply deletes
 await create(A, "Theta", "t1"); await settle(A); await sync(B);
 mark = net.length;
@@ -256,7 +288,10 @@ check("baked startup tiddler has flattened custom field", baked.includes('"my-fi
 check("$-patterns in tiddler text survive baking", baked.includes("$1 $& done"));
 
 // --- 11. Public cache purges and the tiddler-list 304 ------------------------------------------
-const PUBLIC_LIST = PUB + "/recipes/default/tiddlers.json?filter=%5Ball%5Btiddlers%5D%5D%20-%5B%5B%24%3A%2FisEncrypted%5D%5D%20-%5Bprefix%5B%24%3A%2Ftemp%2F%5D%5D%20-%5Bprefix%5B%24%3A%2Fstatus%2F%5D%5D%20-%5B%5B%24%3A%2Fboot%2Fboot.js%5D%5D%20-%5B%5B%24%3A%2Fboot%2Fbootprefix.js%5D%5D%20-%5Bhas%5Bplugin-type%5Dfield%3Aplatform%5Bserver%5D%5D%20-%5B%5B%24%3A%2Flibrary%2Fsjcl.js%5D%5D%20-%5B%5B%24%3A%2Fcore%5D%5D";
+// The list URL TiddlyWiki itself asks for (the worker purges its public copy): taken from a tab's
+// request, not copied from the worker, so a TiddlyWiki that changed it would fail here
+const listRequest = requests.find(r => r.origin === "worker" && /^\/recipes\/default\/tiddlers\.json\?filter=/.test(r.path) && !r.url.includes("cfworker-retry"));
+const PUBLIC_LIST = listRequest ? PUB + new URL(listRequest.url).pathname + new URL(listRequest.url).search : "(no list request seen)";
 await sync(A);
 let before = outbound.length;
 await editViaUI(A, "Zeta", "purge me"); await settle(A);
@@ -513,6 +548,21 @@ await putCode(other, GONE, markerModule("edited after the delete")); await settl
 const goneAlert = (await alerts(other)).find(t => t.includes("was deleted") && t.includes(GONE)) || "";
 check("...when the original was deleted in another tab, it says to rename the copy and give its module-type back",
   /inactive/.test(goneAlert) && /rename it/.test(goneAlert) && /module-type/.test(goneAlert) && !/copy its text/.test(goneAlert), goneAlert);
+// A raw markup tiddler with TiddlyWiki's older tag, $:/core/wiki/rawmarkup (still rendered into the
+// page's <head>): its copy loses that tag too, as every $:/ tag, so the copy's markup isn't published
+const OLD_RAW = "Old-style raw markup";
+await create(A, OLD_RAW, "<meta name='cfw-old' content='original'>", { tags: ["$:/core/wiki/rawmarkup", "notes"] }); await settle(A);
+await sync(other);
+await startEdit(other, OLD_RAW);
+await editViaUI(A, OLD_RAW, "<meta name='cfw-old' content='A'>"); await settle(A);
+await sync(other);
+await finishEdit(other, OLD_RAW, "<meta name='cfw-old' content='other tab'>"); await settle(other);
+const oldRawCopies = await conflictCopies(other, OLD_RAW);
+const oldRawCopy = oldRawCopies.length === 1 ? await server(oldRawCopies[0]) : null;
+check("a conflict copy of a tiddler with the older raw markup tag loses that tag too (every $:/ tag moved aside), keeping the others",
+  !!oldRawCopy && JSON.stringify(oldRawCopy.tags) === '["notes"]' && oldRawCopy["conflict-removed-tags"] === "$:/core/wiki/rawmarkup",
+  JSON.stringify(oldRawCopy && { tags: oldRawCopy.tags, removed: oldRawCopy["conflict-removed-tags"] }));
+await clearAlerts(other);
 await other.close();
 
 // --- 16. Backups failing are shown in the admin wiki ---------------------------------------------
@@ -545,7 +595,91 @@ check("...after that, the next requests don't ask (once an hour)", !requests.sli
   JSON.stringify(requests.slice(reqMark16).filter(r => r.tag === "K").map(r => r.url)));
 await K.close();
 
+// --- 17. A tiddler changed before its text has loaded keeps its text -------------------------------
+// After a page load, TiddlyWiki has each tiddler's fields from the list, and loads the texts one by
+// one. One changed before its text arrives (a checkbox clicked during that time) is saved without
+// it: the worker keeps the stored text, and the tab then loads it
+await create(A, "Task", "important text that must not be lost", { tags: ["todo"] });
+await settle(A);
+const skinnyTab = await context.newPage();
+await watch(skinnyTab, "S");
+let releaseText;
+const textHeld = new Promise(r => { releaseText = r; });
+await skinnyTab.route(/\/recipes\/default\/tiddlers\/Task$/, async route => {
+  if (route.request().method() === "GET") await textHeld;
+  return route.continue();
+});
+await skinnyTab.goto(base + "/");
+await skinnyTab.waitForFunction(() => window.$tw && $tw.syncer && $tw.wiki.tiddlerExists("Task"));
+const wasSkinny = await skinnyTab.evaluate(() => $tw.wiki.getTiddler("Task").hasField("_is_skinny"));
+await skinnyTab.evaluate(() => { const t = $tw.wiki.getTiddler("Task"); $tw.wiki.addTiddler(new $tw.Tiddler(t, { tags: t.fields.tags.concat("done") })); });
+releaseText();
+await settle(skinnyTab);
+await skinnyTab.waitForFunction(() => $tw.wiki.getTiddlerText("Task") !== null && !$tw.wiki.getTiddler("Task").hasField("_is_skinny"), null, { timeout: 15000 }).catch(() => {});
+const skinnyServer = await server("Task");
+const skinnyLocal = await skinnyTab.evaluate(() => ({ text: $tw.wiki.getTiddlerText("Task"), tags: $tw.wiki.getTiddler("Task").fields.tags }));
+check("a tiddler changed before its text loaded keeps its text on the server, with the change, and the tab gets the text",
+  wasSkinny && skinnyServer?.text === "important text that must not be lost" && JSON.stringify(skinnyServer?.tags) === '["todo","done"]' &&
+  !("_is_skinny" in (skinnyServer || {})) && skinnyLocal.text === "important text that must not be lost" && skinnyLocal.tags.includes("done"),
+  JSON.stringify({ wasSkinny, server: skinnyServer && { text: skinnyServer.text, tags: skinnyServer.tags, skinny: "_is_skinny" in skinnyServer }, local: skinnyLocal }));
+await skinnyTab.close();
+
+// Tags and fields that read as numbers: a tiddler tagged 2024 with a field year: 2024, and a field a
+// script set to a number, are stored (all as text, as TiddlyWiki keeps them)
+await A.evaluate(() => $tw.wiki.addTiddler(new $tw.Tiddler($tw.wiki.getCreationFields(),
+  { title: "Report", text: "x", tags: "2024 [[year 2024]]", year: "2024", count: 42 }, $tw.wiki.getModificationFields())));
+await settle(A);
+const report = await server("Report");
+check("a tiddler tagged 2024, with a field year: 2024, and a field a script set to the number 42, is saved",
+  JSON.stringify(report?.tags) === '["2024","year 2024"]' && report?.year === "2024" && report?.count === "42" &&
+  JSON.stringify(await A.evaluate(() => $tw.wiki.filterTiddlers("[tag[2024]]"))) === '["Report"]', JSON.stringify(report));
+
+// --- 18. What the worker doesn't store isn't sent, and what's sent is stored ----------------------
+// TiddlyWiki takes any tiddler with a draft.of field for a draft, even an empty one: never sent (the
+// worker would answer without storing it, and the next poll would delete it from the tab). A second
+// story river's $:/StoryList/2 is sent and stored, so a new tab has it.
+mark = net.length;
+await A.evaluate(() => {
+  $tw.wiki.addTiddler(new $tw.Tiddler({ title: "Empty draft.of", "draft.of": "", text: "kept in the tab" }));
+  $tw.wiki.addTiddler(new $tw.Tiddler({ title: "$:/StoryList/2", list: "Alpha" }));
+});
+await settle(A);
+await sync(A);
+const emptyDraftSent = netSince(mark).some(x => x.path.endsWith("/Empty draft.of"));
+const emptyDraftKept = await A.evaluate(() => $tw.wiki.getTiddlerText("Empty draft.of"));
+check("a tiddler with an empty draft.of field (a draft, for TiddlyWiki) isn't sent, and stays in the tab after a poll",
+  !emptyDraftSent && emptyDraftKept === "kept in the tab", JSON.stringify({ sent: emptyDraftSent, kept: emptyDraftKept }));
+const secondRiver = await server("$:/StoryList/2");
+check("a second story river's $:/StoryList/2 is stored, for the next tab", secondRiver?.list === "Alpha", JSON.stringify(secondRiver));
+
+// --- 19. A save stored though its answer was lost, edited again before it's tried again ------------
+// The next try carries the newer text, based on the version before: the worker refuses it (412), as
+// it can't tell whose the stored version is. The server's copy is this tab's own earlier save, which
+// the browser module recognises: it's sent again on it, with no conflict copy.
+await create(A, "Lost answer", "v1"); await settle(A);
+mark = net.length;
+let loseAnswer = true;
+const lostAnswerUrl = /\/recipes\/default\/tiddlers\/Lost%20answer$/;
+await A.route(lostAnswerUrl, async route => {
+  if (route.request().method() !== "PUT" || !loseAnswer) return route.continue();
+  await route.fetch();                          // stored by the worker...
+  loseAnswer = false;
+  return route.fulfill({ status: 502, body: "answer lost" });   // ...but the tab sees an error
+});
+await A.evaluate(() => $tw.wiki.addTiddler(new $tw.Tiddler($tw.wiki.getTiddler("Lost answer"), { text: "v2" })));
+for (let i = 0; i < 100 && loseAnswer; i++) await new Promise(r => setTimeout(r, 100));
+await A.evaluate(() => $tw.wiki.addTiddler(new $tw.Tiddler($tw.wiki.getTiddler("Lost answer"), { text: "v3, edited again" })));
+await settle(A);
+await A.unroute(lostAnswerUrl);
+const lostSaves = netSince(mark).filter(x => x.tag === "A" && x.method === "PUT" && x.path.endsWith("/Lost answer")).map(x => x.status);
+check("a save stored though its answer was lost, edited again before it's tried again: no conflict copy, the newer text saved",
+  !loseAnswer && (await conflictCopies(A, "Lost answer")).length === 0 && (await server("Lost answer"))?.text === "v3, edited again" &&
+  !(await alerts(A)).some(t => t.includes("Edit conflict")),
+  JSON.stringify({ saves: lostSaves, server: (await server("Lost answer"))?.text, alerts: await alerts(A) }));
+await clearAlerts(A);
+
 // --- Summary --------------------------------------------------------------------------------
-const bad = net.filter(x => x.status === 428 || x.status >= 500);
+// (Leaving out the answer section 19 makes the tab see on purpose)
+const bad = net.filter(x => (x.status === 428 || x.status >= 500) && !(x.status === 502 && x.path.endsWith("/Lost answer")));
 check("no 428/5xx responses anywhere", bad.length === 0, JSON.stringify(bad));
 await finish({ check, results, pageErrors, browser, site, note: `; ${net.filter(x => x.status === 412).length} conflicts detected; ${net.length} writes` });

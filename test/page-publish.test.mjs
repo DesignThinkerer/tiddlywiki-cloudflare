@@ -142,7 +142,8 @@ check("...each where TiddlyWiki puts it, transclusions filled in",
 
 // The copies in the shell carry the worker's revision (TiddlyWeb would write a count of this tab's
 // changes, different in every tab): every tab renders the same page, and a page load doesn't reload them
-const storeOf = text => JSON.parse(/<script class="tiddlywiki-tiddler-store" type="application\/json">(\[[\s\S]*?\])<\/script>/.exec(text)[1]);
+// The tiddlers in a page's tiddler stores (TiddlyWiki reads every one, in order)
+const storeOf = text => [...text.matchAll(/<script class="tiddlywiki-tiddler-store" type="application\/json"[^>]*>(\[[\s\S]*?\])<\/script>/g)].flatMap(m => JSON.parse(m[1]));
 const listedRevision = async title => JSON.parse(await (await bucket.get("recipes/default/tiddlers.json")).text()).find(e => e.title === title)?.revision;
 const splashCopy = storeOf(html).find(t => t.title === "Splash");
 check("...the copies in the shell carry the worker's revision", !!splashCopy && splashCopy.revision === await listedRevision("Splash"),
@@ -308,6 +309,25 @@ await sleep(QUIET_WINDOW);
 html = await shell();
 check("a tab that publishes after another includes that tab's change (it syncs first)", bBefore !== "subtitle from A" &&
   html.includes("subtitle from A") && html.includes("window.__footerRan = 'B'"), `B had "${bBefore}"`);
+// A change another tab published, undone in this one: this tab then renders the page it published
+// last, but that's no longer the one published, so it publishes
+const UNDONE = "$:/cfw-test/undone";
+mark = requests.length;
+await add(A, { title: UNDONE, tags: "$:/tags/RawMarkup", type: "text/plain", text: '<meta name="cfw-undone" content="1">' });
+await settle(A);
+await waitFor(async () => shellPuts("A", mark) > 0);
+await sleep(QUIET_WINDOW);
+const undonePublished = (await shell()).includes("cfw-undone");
+await B.evaluate(() => $tw.syncer.syncFromServer());
+await settle(B);
+mark = requests.length;
+await B.evaluate(t => $tw.wiki.deleteTiddler(t), UNDONE);
+await settle(B);
+await waitFor(async () => shellPuts("B", mark) > 0, 10000);
+await sleep(QUIET_WINDOW);
+check("a change another tab published, undone in this one, is published by it (its last page is no longer the one published)",
+  undonePublished && shellPuts("B", mark) === 1 && !(await shell()).includes("cfw-undone"),
+  `published by A ${undonePublished}, B's publishes ${shellPuts("B", mark)}, still in the shell ${(await shell()).includes("cfw-undone")}`);
 await contextB.close();
 
 // --- 8. What was deleted stays deleted ----------------------------------------------------------------
@@ -390,6 +410,76 @@ await add(A, { title: "A note after the failure", text: "publishes again" });
 await settle(A);
 await waitFor(async () => (await status(A))?.state === "published");
 
+// A plugin that came with index.html, updated from the wiki (the plugin library replaces it this way).
+// The page carries it with revision "0", which the worker never gave: the save creates it on the
+// worker, instead of being taken for a tiddler another tab deleted (which made a conflict copy and
+// published a page without the plugin)
+const BUNDLED = "$:/plugins/tiddlywiki/highlight";
+const contextW = await browser.newContext();
+const { p: W } = await openAdmin("W", contextW);   // a tab that still has the version from the page
+await settle(W);
+const bundledOriginal = await A.evaluate(t => $tw.wiki.getTiddler(t)?.fields.version, BUNDLED);
+mark = requests.length;
+await A.evaluate(t => $tw.wiki.addTiddler(new $tw.Tiddler($tw.wiki.getTiddler(t), { version: "9.9.9" })), BUNDLED);
+await settle(A);
+await sleep(QUIET_WINDOW);
+await settle(A);
+const bundledStored = await bucket.get("recipes/default/tiddlers/" + BUNDLED);
+const bundledVersion = bundledStored ? JSON.parse(await bundledStored.text()).version : null;
+const bundledCopies = await A.evaluate(t => $tw.wiki.filterTiddlers("[field:conflict-of[" + t + "]]"), BUNDLED);
+check("a plugin that came with index.html, updated from the wiki, is saved like an installed one: no conflict, kept in the tab",
+  bundledVersion === "9.9.9" && bundledCopies.length === 0 && await A.evaluate(t => $tw.wiki.tiddlerExists(t), BUNDLED),
+  `stored ${bundledVersion}, copies ${JSON.stringify(bundledCopies)}`);
+const contextU = await browser.newContext();
+const { p: U } = await openAdmin("U", contextU);
+await settle(U);
+check("...and a fresh tab has the updated version", await U.evaluate(t => $tw.wiki.getTiddler(t)?.fields.version, BUNDLED) === "9.9.9");
+await contextU.close();
+await W.evaluate(t => $tw.wiki.addTiddler(new $tw.Tiddler($tw.wiki.getTiddler(t), { version: "8.8.8" })), BUNDLED);
+await settle(W);
+const otherStored = JSON.parse(await (await bucket.get("recipes/default/tiddlers/" + BUNDLED)).text()).version;
+const otherCopies = await W.evaluate(t => $tw.wiki.filterTiddlers("[field:conflict-of[" + t + "]]"), BUNDLED);
+check("...while a tab that updated it from the page's version too gets a conflict, not an overwrite",
+  otherStored === "9.9.9" && otherCopies.length === 1, `stored ${otherStored}, copies ${JSON.stringify(otherCopies)}`);
+await contextW.close();
+// Deleting that update removes the plugin, as in a single-file wiki (where the update replaced the
+// page's version), and so does deleting a plugin that came with the page, never updated
+const NEVER_UPDATED = "$:/themes/tiddlywiki/snowwhite";
+mark = requests.length;
+await A.evaluate(titles => titles.forEach(t => $tw.wiki.deleteTiddler(t)), [BUNDLED, NEVER_UPDATED]);
+await settle(A);
+await waitFor(async () => shellPuts("A", mark) > 0);
+await sleep(QUIET_WINDOW);
+html = await shell();
+const contextV = await browser.newContext();
+const { p: V } = await openAdmin("V", contextV);
+await settle(V);
+const leftInV = await V.evaluate(titles => titles.map(t => $tw.wiki.getTiddler(t)?.fields.version ?? null), [BUNDLED, NEVER_UPDATED]);
+check("deleting the update of a plugin that came with the page removes it, as in a single-file wiki; one never updated too",
+  !inStore(html, BUNDLED) && !inStore(html, NEVER_UPDATED) && leftInV[0] === null && leftInV[1] === null && !(await bucket.head("recipes/default/tiddlers/" + BUNDLED)),
+  `in the shell ${inStore(html, BUNDLED)} / ${inStore(html, NEVER_UPDATED)}, in a new tab ${JSON.stringify(leftInV)}`);
+await contextV.close();
+// To get index.html's version back (README 6): delete the published shell and the page in R2, then open
+// the admin wiki. The page is built from index.html, with the plugin, and that tab publishes it again.
+await bucket.delete("_page/shell.html");
+await bucket.delete("baked.html");
+const contextBack = await browser.newContext();
+mark = requests.length;
+const { p: Back } = await openAdmin("Back", contextBack);
+await settle(Back);
+await waitFor(async () => shellPuts("Back", mark) > 0, 30000);
+await sleep(QUIET_WINDOW);
+html = await shell();
+await contextBack.close();
+const contextAfter = await browser.newContext();
+const { p: After } = await openAdmin("After", contextAfter);
+await settle(After);
+const backInS = await After.evaluate(t => $tw.wiki.getTiddler(t)?.fields.version ?? null, BUNDLED);
+check("...and deleting the published shell and the page in R2 brings back index.html's version, published by the next admin load",
+  !!bundledOriginal && bundledOriginal !== "9.9.9" && inStore(html, BUNDLED) && backInS === bundledOriginal,
+  `original ${bundledOriginal}, in the shell ${inStore(html, BUNDLED)}, in a new tab ${backInS}`);
+await contextAfter.close();
+
 // --- 9. A tiddler whose text hasn't arrived yet is waited for ----------------------------------------
 // Edited outside the admin wiki (in R2): the next admin load publishes it, once its text is there
 const splashKey = "recipes/default/tiddlers/Splash";
@@ -436,6 +526,28 @@ await settle(A);
 await waitFor(async () => (await shell()).includes("after a failure"));
 check("...and tried again at the next save", (await shell()).includes("after a failure") && (await status(A))?.state === "published", JSON.stringify(await status(A)));
 await A.unroute(url => url.pathname === "/page/shell");
+// A publish the worker kept but whose answer was lost (the tab saw a failure), then undone: the tab
+// doesn't know which page is published, so the undo is published too
+let loseAnswer = true;
+const lose = url => url.pathname === "/page/shell";
+await A.route(lose, async route => {
+  if (!loseAnswer) return route.continue();
+  loseAnswer = false;
+  await route.fetch();
+  return route.fulfill({ status: 503, body: "answer lost" });
+});
+const subtitleBefore = await A.evaluate(() => $tw.wiki.getTiddlerText("$:/SiteSubtitle"));
+await add(A, { title: "$:/SiteSubtitle", text: "kept, answer lost" });
+await settle(A);
+await waitFor(async () => (await status(A))?.state === "failed");
+const keptDespite = (await shell()).includes("kept, answer lost");
+await add(A, { title: "$:/SiteSubtitle", text: subtitleBefore });
+await settle(A);
+await waitFor(async () => !(await shell()).includes("kept, answer lost"), 10000);
+check("...and a change whose publish failed, though the worker kept the page, is published when undone",
+  keptDespite && !(await shell()).includes("kept, answer lost") && (await shell()).includes(subtitleBefore),
+  `kept by the worker ${keptDespite}, still published ${(await shell()).includes("kept, answer lost")}`);
+await A.unroute(lose);
 
 // A page the worker refuses (400 or 409: final for that page) isn't sent again at every save, only once
 // the page changes (or after a reload); a 5xx above is still retried at the next save
@@ -482,6 +594,27 @@ await contextR.close();
 await relabel(CORE_V);
 await add(A, { title: "$:/SiteSubtitle", text: "accepted again" }); await settle(A);
 await markPageOutdated();
+// While the worker keeps refusing the page (one too big, say), the core file the first load stores
+// isn't sent again at every load: storing a new one marks the page outdated, so the next load's page
+// says it's stored. (A tab that has to send the core: the stored one relabelled, as above.)
+await relabel("0.0.0-1");
+await markPageOutdated();
+const contextRefused = await browser.newContext();
+await contextRefused.route(url => url.pathname === "/page/shell", route => route.fulfill({ status: 400, body: "The shell is too big." }));
+mark = requests.length;
+const { p: Refused } = await openAdmin("Refused", contextRefused);
+for (let load = 1; load <= 3; load++) {
+  if (load > 1) {
+    await Refused.reload();
+    await Refused.waitForFunction(() => window.$tw && $tw.syncer, null, { timeout: 30000 });
+  }
+  await settle(Refused);
+  await sleep(QUIET_WINDOW);
+}
+check("while the page keeps being refused, the core file is sent once, not at every load",
+  corePuts("Refused", mark) === 1 && shellPuts("Refused", mark) >= 1 && (await bucket.head(CORE_KEY))?.customMetadata?.v === CORE_V,
+  `${corePuts("Refused", mark)} core PUTs, ${shellPuts("Refused", mark)} shell PUTs over 3 loads`);
+await contextRefused.close();
 
 // An error while rendering the page (here an editor that takes focus, in raw markup: the page is
 // rendered as text, where nothing can) is reported, and doesn't stop later publishes in that tab

@@ -2,13 +2,28 @@
 // call it makes ("get list", "put tiddler"...) and which calls ran at the same time, and that can make
 // chosen calls fail. GET /__r2ops returns { calls, overlaps } since the last time and starts a new
 // count; POST /__r2fail with { call: "put baked.html", times: 1 } makes the next such calls throw
-// (or, with delay: milliseconds, makes them wait that long first).
+// (or, with delay: milliseconds, makes them wait that long first). GET /__runs returns the R2 calls of
+// each queue run since the last time, one list a run, and starts a new count. GET /__qops returns the
+// queue operations since the last time, { sends, deliveries, acks, retries, maxAttempts (the most
+// deliveries of one message) }, and starts a new count:
+// Cloudflare counts a send, a delivery and an ack as one operation each (a retry is the next delivery).
 // Used by test/r2-ops.test.mjs, test/integrity.test.mjs and test/queue-backup.test.mjs; never deployed.
 import worker from "../worker.js";
 
 let calls = [];
 let overlaps = [];          // "get list + head tiddler": a call that started while the others were running
 let failures = [];          // { call, times, delay }: calls to make fail, or wait first
+let runs = [];              // the R2 calls of each queue run
+let qops = { sends: 0, deliveries: 0, acks: 0, retries: 0, maxAttempts: 0 };
+
+// The queue binding, counting what's sent
+function countedQueue(queue) {
+  if (!queue) return queue;
+  return {
+    send(body, options) { qops.sends++; return queue.send(body, options); },
+    sendBatch(messages, options) { qops.sends += messages.length; return queue.sendBatch(messages, options); }
+  };
+}
 const running = new Map();  // call -> how many are running
 
 // What a key is, in the words the test uses
@@ -24,7 +39,8 @@ function kind(key) {
   return key;   // baked.html, index.html, status...
 }
 
-function counted(bucket) {
+// run: where to record the calls of a queue run too
+function counted(bucket, run) {
   return new Proxy(bucket, {
     get(target, name) {
       const value = target[name];
@@ -33,6 +49,7 @@ function counted(bucket) {
         if (!["get", "head", "put", "delete", "list"].includes(name)) return value.apply(target, args);
         const call = name === "list" ? "list tiddlers" : `${name} ${kind(Array.isArray(args[0]) ? args[0][0] : args[0])}`;
         calls.push(call);
+        if (run) run.push(call);
         const failure = failures.find(f => f.call === call && f.times > 0);
         if (failure) {
           failure.times--;
@@ -57,15 +74,36 @@ export default {
       failures.push({ call, times, delay });
       return new Response(null, { status: 204 });
     }
+    if (new URL(request.url).pathname === "/__qops") {
+      const out = qops;
+      qops = { sends: 0, deliveries: 0, acks: 0, retries: 0, maxAttempts: 0 };
+      return Response.json(out);
+    }
+    if (new URL(request.url).pathname === "/__runs") {
+      const out = runs;
+      runs = [];
+      return Response.json(out);
+    }
     if (new URL(request.url).pathname === "/__r2ops") {
       const out = { calls, overlaps };
       calls = [];
       overlaps = [];
       return Response.json(out);
     }
-    return worker.fetch(request, { ...env, WIKI_BUCKET: counted(env.WIKI_BUCKET) }, ctx);
+    return worker.fetch(request, { ...env, WIKI_BUCKET: counted(env.WIKI_BUCKET), BACKUP_QUEUE: countedQueue(env.BACKUP_QUEUE) }, ctx);
   },
   async queue(batch, env, ctx) {
-    return worker.queue(batch, { ...env, WIKI_BUCKET: counted(env.WIKI_BUCKET) }, ctx);
+    const run = [];
+    runs.push(run);
+    qops.deliveries += batch.messages.length;
+    for (const m of batch.messages) qops.maxAttempts = Math.max(qops.maxAttempts, m.attempts || 0);
+    // The messages, counting acks and retries (attempts and timestamp read through)
+    const messages = batch.messages.map(m => ({
+      get id() { return m.id; }, get body() { return m.body; }, get attempts() { return m.attempts; }, get timestamp() { return m.timestamp; },
+      ack() { qops.acks++; return m.ack(); },
+      retry(options) { qops.retries++; return m.retry(options); }
+    }));
+    return worker.queue({ queue: batch.queue, messages, ackAll: () => batch.ackAll(), retryAll: o => batch.retryAll(o) },
+      { ...env, WIKI_BUCKET: counted(env.WIKI_BUCKET, run), BACKUP_QUEUE: countedQueue(env.BACKUP_QUEUE) }, ctx);
   }
 };

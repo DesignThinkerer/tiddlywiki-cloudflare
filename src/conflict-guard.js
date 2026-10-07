@@ -90,11 +90,13 @@ exports.startup = function() {
 		listedRevisions = Object.create(null), // title -> revision in the worker's latest tiddler list
 		lastListFetch = 0,
 		listRequested = 0,                     // when the request for that list was sent
+		listListeners = [],                    // called with each new list (cfworkerOnList)
 		// Base revisions. A string is the server revision the content was derived from, null means
 		// "must not exist on the server yet", undefined means unknown (the save is sent unconditionally).
 		draftBases = Object.create(null),   // draft title -> {of: title, base: revision}
 		pendingBases = Object.create(null), // title -> {base: revision} for a confirmed draft not yet uploaded
 		deleteBases = Object.create(null),  // title -> revision its editor started from, for the delete a rename or a delete from the editor makes
+		unconfirmedSaves = Object.create(null), // title -> the tiddler of a save that got an error: the worker may have stored it all the same
 		listBypassCache = false;            // the last list was the stand-in or unreadable (isListStandIn)
 	proto.conflictGuardInstalled = true;
 
@@ -116,14 +118,15 @@ exports.startup = function() {
 		var originalGetSyncedTiddlers = $tw.Syncer.prototype.getSyncedTiddlers,
 			originalChooseNextTask = $tw.Syncer.prototype.chooseNextTask;
 		$tw.Syncer.prototype.cfworkerPatched = true;
-		// Keep drafts and the story list out of syncing: the worker never stores them. For drafts it
-		// also matters because after the next poll the syncer would see them as "missing from the
+		// Keep drafts and the story list out of syncing: the worker never stores them (the same rule:
+		// $:/StoryList itself, and a draft.of field, even empty, as TiddlyWiki tells drafts). For drafts
+		// it also matters because after the next poll the syncer would see them as "missing from the
 		// server" and delete the open draft, closing the editor.
 		$tw.Syncer.prototype.getSyncedTiddlers = function(source) {
 			var syncerWiki = this.wiki;
 			return originalGetSyncedTiddlers.call(this,source).filter(function(title) {
 				var tiddler = syncerWiki.getTiddler(title);
-				return title !== "$:/StoryList" && !(tiddler && tiddler.fields["draft.of"]);
+				return title !== "$:/StoryList" && !(tiddler && tiddler.hasField("draft.of"));
 			});
 		};
 		// Don't poll for changes while the tab is in the background (saves still go out)
@@ -142,12 +145,27 @@ exports.startup = function() {
 		});
 	}
 
+	// The revision a save is based on, from a tiddler's revision: undefined if it has none (the save
+	// is sent without a condition), null if it's one the worker never gives, which means the worker
+	// doesn't have that version. The worker's revisions are times in milliseconds (or an R2 etag for
+	// a tiddler stored by hand); the tiddlers that came with the page carry "0" in a published page,
+	// or a change count in index.html (as the page publisher's hasStoredRevision tells them apart).
+	// Saving one, a plugin updated from the library say, then creates it on the worker, and is a
+	// conflict only if another tab stored it meanwhile, instead of being taken for a tiddler that
+	// was deleted.
+	function revisionBase(revision) {
+		if(revision === undefined || revision === null || revision === "") {
+			return undefined;
+		}
+		revision = String(revision);
+		return /^\d{1,9}$/.test(revision) ? null : revision;
+	}
+
 	function baseFromInfo(info) {
 		if(!info) {
 			return null;
 		}
-		var revision = info.revision;
-		return (revision === undefined || revision === null || revision === "") ? undefined : String(revision);
+		return revisionBase(info.revision);
 	}
 
 	function currentBase(title) {
@@ -228,8 +246,18 @@ exports.startup = function() {
 		return s.getSyncedTiddlers([title]).length > 0;
 	}
 
+	// (A tiddler without a type, as one created in this tab, has the default one the browser module
+	// sends: the server's copy of it has that type)
 	function sameContent(localTiddler,serverFields) {
-		return !!serverFields && localTiddler.isEqual(new $tw.Tiddler(serverFields),BOOKKEEPING_FIELDS);
+		if(!serverFields) {
+			return false;
+		}
+		var local = localTiddler.fields.type ? localTiddler : new $tw.Tiddler(localTiddler,{type: "text/vnd.tiddlywiki"}),
+			server = new $tw.Tiddler(serverFields);
+		if(!server.fields.type) {
+			server = new $tw.Tiddler(server,{type: "text/vnd.tiddlywiki"});
+		}
+		return local.isEqual(server,BOOKKEEPING_FIELDS);
 	}
 
 	function makeConflictCopy(localTiddler) {
@@ -238,12 +266,13 @@ exports.startup = function() {
 			copyTitle = wiki.generateNewTitle(title + " (conflict " + stamp + ")"),
 			keptTags = [],
 			removedTags = [];
-		// Keep the copy inert: tags such as $:/tags/Stylesheet or $:/tags/Macro would make it take effect,
-		// and so would module-type (a JavaScript module, defined and run at startup) or plugin-type (a
-		// plugin, whose contents would even override the original's). They're moved aside, kept for
+		// Keep the copy inert: system tags such as $:/tags/Stylesheet or $:/tags/Macro would make it take
+		// effect (every $:/ tag: TiddlyWiki's older $:/core/wiki/rawmarkup still puts raw markup in the
+		// page), and so would module-type (a JavaScript module, defined and run at startup) or plugin-type
+		// (a plugin, whose contents would even override the original's). They're moved aside, kept for
 		// putting back by hand.
 		$tw.utils.each(localTiddler.fields.tags || [],function(tag) {
-			(tag.indexOf("$:/tags/") === 0 ? removedTags : keptTags).push(tag);
+			(tag.indexOf("$:/") === 0 ? removedTags : keptTags).push(tag);
 		});
 		var fields = {
 			title: copyTitle,
@@ -284,7 +313,9 @@ exports.startup = function() {
 	}
 
 	// The server rejected our write because its copy changed. Keep our version, adopt the server's.
-	function resolveConflict(adaptor,title,operation,callback) {
+	// ownEarlier(revision): for a save, called instead if the server's copy is this tab's own earlier
+	// save, one that got an error (an answer lost, say) though the worker stored it
+	function resolveConflict(adaptor,title,operation,callback,ownEarlier) {
 		$tw.utils.httpRequest({
 			url: adaptor.host + "recipes/" + encodeURIComponent(adaptor.recipe) + "/tiddlers/" + encodeURIComponent(title),
 			callback: function(err,data,request) {
@@ -301,9 +332,17 @@ exports.startup = function() {
 						return callback("Could not read the server copy of '" + title + "': " + e);
 					}
 				}
-				var localTiddler = wiki.tiddlerExists(title) && wiki.getTiddler(title);
+				var localTiddler = wiki.tiddlerExists(title) && wiki.getTiddler(title),
+					earlier = unconfirmedSaves[title];
+				if(operation === "save" && ownEarlier && earlier && serverFields && sameContent(earlier,serverFields)) {
+					delete unconfirmedSaves[title];
+					return ownEarlier(serverFields.revision);
+				}
+				// (Only now that the server's answer is in: if asking failed, the syncer tries the save
+				// or delete again, which must still be based on the same revision)
 				delete pendingBases[title];
 				if(operation === "delete") {
+					delete deleteBases[title];
 					if(!serverFields) {
 						return callback(null,null); // It has been deleted in the meantime anyway
 					}
@@ -375,7 +414,7 @@ exports.startup = function() {
 			// If the original was reloaded from the server between the draft being made and now,
 			// the draft still carries the older revision it was copied from
 			if(original && draft.fields.revision !== undefined && original.fields.revision !== draft.fields.revision) {
-				base = String(draft.fields.revision);
+				base = revisionBase(draft.fields.revision);
 			}
 			draftBases[title] = {of: of, base: base};
 		});
@@ -433,10 +472,19 @@ exports.startup = function() {
 							return setTimeout(send,1000);
 						}
 						if(request && request.status === 412) {
-							return resolveConflict(self,title,"save",callback);
+							return resolveConflict(self,title,"save",callback,function(revision) {
+								// The worker has this tab's earlier save: this one is based on it. (Its
+								// editors move on to it too.)
+								rebase(title,base,revision);
+								base = revision;
+								send();
+							});
 						}
+						// Maybe stored all the same: the next try's refusal will tell (resolveConflict)
+						unconfirmedSaves[title] = tiddler;
 						return callback(err);
 					}
+					delete unconfirmedSaves[title];
 					if($tw.browserStorage && $tw.browserStorage.isEnabled()) {
 						$tw.browserStorage.removeTiddlerFromLocalStorage(title);
 					}
@@ -450,6 +498,14 @@ exports.startup = function() {
 					}
 					rebase(title,base,etagInfo.revision);
 					callback(null,{bag: etagInfo.bag},etagInfo.revision);
+					// Saved before its text had loaded (the worker kept the stored text): load it now,
+					// the version just saved (a public copy from before the save doesn't count)
+					if(tiddler.hasField("_is_skinny") && s) {
+						listedRevisions[title] = etagInfo.revision;
+						setTimeout(function() {
+							s.enqueueLoadTiddler(title);
+						},0);
+					}
 				}
 			});
 		}
@@ -481,7 +537,6 @@ exports.startup = function() {
 							return setTimeout(send,1000);
 						}
 						if(request && request.status === 412) {
-							delete deleteBases[title];
 							return resolveConflict(self,title,"delete",callback);
 						}
 						return callback(err);
@@ -617,6 +672,7 @@ exports.startup = function() {
 					}
 				}
 				if(!err) {
+					var previous = lastListFetch ? listedRevisions : null;
 					listedRevisions = Object.create(null);
 					$tw.utils.each(tiddlers,function(fields) {
 						if(fields.revision !== undefined && fields.revision !== null) {
@@ -625,6 +681,13 @@ exports.startup = function() {
 					});
 					lastListFetch = Date.now();
 					listRequested = requested;
+					$tw.utils.each(listListeners,function(listener) {
+						try {
+							listener(listedRevisions,previous,tiddlers);
+						} catch(e) {
+							console.error("cfworker: a tiddler list listener failed:",e);
+						}
+					});
 				}
 				return callback(err,tiddlers);
 			}
@@ -643,6 +706,12 @@ exports.startup = function() {
 	// be in it yet
 	proto.cfworkerListedSince = function() {
 		return listRequested;
+	};
+
+	// listener(listed, previous, entries) at each new tiddler list: listed and previous are title ->
+	// revision (previous: the list before, null for the first), entries the list's tiddlers (fields)
+	proto.cfworkerOnList = function(listener) {
+		listListeners.push(listener);
 	};
 
 	// Fetch a tiddler from the public copy of the wiki (R2 + Cloudflare's cache, no worker request).
