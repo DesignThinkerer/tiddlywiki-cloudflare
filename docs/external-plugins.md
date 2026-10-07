@@ -2,7 +2,7 @@
 
 **Status: implemented and deployed (October 2026).** These are the design notes behind README section 4.8: the problem, the design and why it was chosen over baking plugins into the page, what it costs, the change step by step, and how to operate it.
 
-The change is covered by the tests: `test/plugins.test.mjs` (66 checks) runs real plugins shipped with TiddlyWiki, markdown and KaTeX, on the admin site and on a stand-in for the public site. All seven suites pass (`npm test`).
+The change is covered by the tests: `test/plugins.test.mjs` (66 checks) runs real plugins shipped with TiddlyWiki, markdown and KaTeX, on the admin site and on a stand-in for the public site. All eight suites pass (`npm test`).
 
 "The external-plugins plugin" below is `$:/plugins/theophile.dev/external-plugins`, which exports plugins as standalone `.js` files for single-file wikis. The plugin files here use the same format as its export template.
 
@@ -171,7 +171,7 @@ Median CPU of the body handling, measured in Node.js (the same JavaScript engine
 - Saves in any other layout are parsed and turned into the flat one: saves without the `X-Tiddler-Layout: flat` header (tabs opened before the deploy, or with the module off, which use TiddlyWeb's layout), and bodies sent with the header that don't follow the layout (pretty-printed, with `text`, `revision`, `bag` or `recipe` among the fields before `"text"`, or with a value that isn't text). A body that isn't a tiddler is refused with `400`. The one thing the worker can't check cheaply is fields placed *after* `text`: they're stored, but missing from the tiddler list. The browser module never does that.
 - A field literally called `fields` is the one exception to the flat layout: it's sent and stored nested, as `"fields":{"fields":"…"}`, the way TiddlyWeb's layout has it, because a flat `fields` is where TiddlyWiki's loader looks for nested custom fields. TiddlyWiki unpacks it only for tiddlers loaded through sync, so the page build unpacks it in baked startup tiddlers and plugin files. A field value that's an object can't be stored (a `"text"` key inside it would be taken for the text) and is refused with `400`; TiddlyWiki never sends one.
 
-At first, other layouts were stored as they came, so the bucket held both and every reader handled both. A later change made the flat layout the only one stored, which removed that code throughout the worker; a bucket filled before then is converted once (README 6).
+At first, other layouts were stored as they came, so the bucket held both and every reader handled both. A later change made the flat layout the only one stored, which removed that code throughout the worker; a bucket filled before then had to be converted once, with a script since removed.
 
 **Alternatives considered:** flattening in the worker would have added about half again to the save's CPU, which is why the browser sends the flat layout; the worker flattens only the rare saves that arrive in another one. Flattening in the plugin file (one extra line in the browser) costs nothing there, but leaves the save's own parse and re-serialize.
 
@@ -1045,7 +1045,7 @@ How it was deployed. The same steps apply when setting this up from scratch.
 6. **Try it:** install a plugin with code, for example from Control Panel → Plugins → Get more plugins. Wait for the save to finish, then reload.
 7. **Check the public site** shows the plugin working.
 
-At the time, existing tiddlers stayed in TiddlyWeb's layout until they were next saved. The current worker reads only the flat layout, so a bucket from before is converted once, before deploying it (README 6).
+At the time, existing tiddlers stayed in TiddlyWeb's layout until they were next saved. The current worker reads only the flat layout, so a bucket from before had to be converted once, before deploying it, with a script since removed.
 
 ---
 

@@ -76,8 +76,6 @@ flowchart LR
 │   ├── worker.src.js         the worker's source
 │   ├── conflict-guard.js     the browser module, embedded into worker.js by the build
 │   └── page-publisher.js     the second browser module (4.9), embedded the same way
-├── tools/
-│   └── convert-stored-tiddlers.js  converts a bucket filled by an older version (6)
 ├── build.mjs                 inserts both modules into src/worker.src.js → worker.js
 ├── wrangler.example.toml     all bindings and settings, for deploying with wrangler
 ├── package.json              build and test scripts
@@ -86,9 +84,10 @@ flowchart LR
     ├── two-tabs.test.mjs     real TiddlyWiki in Chromium, several tabs (93 checks)
     ├── plugins.test.mjs      real plugins on the admin and public sites (66 checks)
     ├── page-publish.test.mjs the page published from a real TiddlyWiki (56 checks)
-    ├── queue-backup.test.mjs queue backup against an imitation of GitHub (41 checks)
+    ├── queue-backup.test.mjs queue backup against an imitation of GitHub (42 checks)
     ├── integrity.test.mjs    the tiddler list's integrity, a failed page build, draft-like titles, .gitignore (73 checks)
     ├── r2-ops.test.mjs       R2 calls per kind of request, against a budget (29 checks)
+    ├── cpu.test.mjs          CPU of a big plugin's save and backup, against a budget (2 checks)
     ├── r2-counter.mjs        test-only wrapper that counts the worker's R2 calls
     ├── browser-harness.mjs   the browser suites' shared setup (worker, public site stand-in, Chromium, helpers)
     └── bake.test.mjs         page serving and rebuilding, the published page (49 checks)
@@ -267,7 +266,7 @@ R2 layout:
 
 **Revisions.** Each save gets a new revision, `Date.now()` in milliseconds. It's stored in three places that always agree: the object's custom metadata, the `revision` field inside the tiddler JSON, and the tiddler list. `GET`, `PUT` and `DELETE` all read it from the metadata, which avoids false conflicts.
 
-**One layout.** Every tiddler is stored *flat*: every field at the top level, compact JSON, `text` last, then `revision`, `bag` and `recipe`, with `layout: flat` and the revision in the object's metadata. The conflict guard sends saves that way, with the header `X-Tiddler-Layout: flat` and without `revision`, `bag` or `recipe`. The worker then parses only the few hundred bytes before `"text"` and appends its `revision`, `bag` and `recipe`, working on the raw bytes: it never decodes, parses or re-encodes the text itself, which for a plugin is the whole plugin. It only checks that the text is a string that ends the body: it opens with a quote, and the body ends with one that isn't escaped. Up to 256 KB, it also checks that no field follows the text (scanning for the first quote that isn't escaped); a bigger body isn't scanned, since that costs milliseconds of CPU a megabyte, and the browser module always puts the text last. Anything else is parsed and turned into that layout first: a body sent with the header but not in the layout (pretty-printed, with `revision` before `text`, or with a field after the text), or TiddlyWeb's layout, with custom fields nested under `fields`, which TiddlyWiki sends without the guard. Field values must be text or lists of text, as TiddlyWiki's are; a value that's an object (only a script could send one) is refused with `400`, and so is a `text` that isn't text. One field is the exception: a field called `fields` stays nested, as `"fields":{"fields":"…"}`, the way TiddlyWeb's layout has it, because a flat `fields` is where TiddlyWiki's loader looks for nested custom fields. A rebuilt list only includes objects in this layout: anything else in R2, left by an older version or uploaded by hand, is left out, with a line in the logs (6, 7). To convert a bucket filled by an older version, see 6.
+**One layout.** Every tiddler is stored *flat*: every field at the top level, compact JSON, `text` last, then `revision`, `bag` and `recipe`, with `layout: flat` and the revision in the object's metadata. The conflict guard sends saves that way, with the header `X-Tiddler-Layout: flat` and without `revision`, `bag` or `recipe`. The worker then parses only the few hundred bytes before `"text"` and appends its `revision`, `bag` and `recipe`, working on the raw bytes: it never decodes, parses or re-encodes the text itself, which for a plugin is the whole plugin. It only checks that the text is a string that ends the body: it opens with a quote, and the body ends with one that isn't escaped. Up to 256 KB, it also checks that no field follows the text (scanning for the first quote that isn't escaped); a bigger body isn't scanned, since that costs milliseconds of CPU a megabyte, and the browser module always puts the text last. Anything else is parsed and turned into that layout first: a body sent with the header but not in the layout (pretty-printed, with `revision` before `text`, or with a field after the text), or TiddlyWeb's layout, with custom fields nested under `fields`, which TiddlyWiki sends without the guard. Field values must be text or lists of text, as TiddlyWiki's are; a value that's an object (only a script could send one) is refused with `400`, and so is a `text` that isn't text. One field is the exception: a field called `fields` stays nested, as `"fields":{"fields":"…"}`, the way TiddlyWeb's layout has it, because a flat `fields` is where TiddlyWiki's loader looks for nested custom fields. A rebuilt list only includes objects in this layout: anything else in R2, left by an older version or uploaded by hand, is left out, with a line in the logs (7).
 
 | Plugin size | Worker CPU to handle the body, parsed (TiddlyWeb's layout) | Flat layout |
 |---|---|---|
@@ -619,8 +618,6 @@ The queue solves the cause instead of working around it:
 
 **Deploying a change:** edit `src/`, run `npm run build` and `npm test`, then deploy `worker.js`, either by pasting it into the dashboard editor or with `npx wrangler deploy`. If a browser module changed, the next admin page load rebuilds `baked.html`. If you changed how the page itself is built, also bump the number in front of `bakeVersion` (now `7-`), or existing pages keep the old format until something else rebuilds them; plugin files are only rewritten when their plugin changes, so after changing their format, delete `_plugins/` and open the admin wiki. Reload any open admin tabs: tabs opened before a change keep the old module, and tabs older than the module have no conflict protection.
 
-**Converting a bucket filled by an older version:** the worker reads only the flat layout (4.2), and versions before it stored tiddlers in TiddlyWeb's layout, some under their URL-encoded title or with the revision only in the file. Convert them once, *before* deploying this version, while the older one is still in place (one that already stores plugins as files: the script checks, and stops if not). Close any other admin tab, open the admin wiki, wait until it has loaded, and don't edit anything until you've deployed. Paste `tools/convert-stored-tiddlers.js` into the browser's console and press Enter. It re-saves every tiddler in the list exactly as it's stored, in the flat layout (each gets a new revision and one commit in the backup), and prints a table of what it did. A tiddler with a value that isn't text (only a script could have stored one) is skipped. Then deploy right away, and reload the admin wiki. Any object left under a URL-encoded key (a `%20` or `%24` in its name in R2) is no longer used, and can be deleted. Don't deploy first: until they're converted, tiddlers whose revision is only in the file would get false conflicts, plugins stored the old way would stop working, and a rebuilt list would leave them out.
-
 **Updating the wiki engine:** upload the new `index.html` (a regular, full TiddlyWiki) to R2. The next admin page load rebuilds `baked.html` from it and purges the public page, then publishes the core file and the page for the new version by itself (4.9). If a TiddlyWiki upgrade changes the filter in `tiddlers.json?filter=…`, add the new filter to `SKINNY_LIST_FILTERS`, or the public tiddler list won't be purged after saves. You'll see the exact URL in the browser's Network tab. Plugins installed through the wiki override the copies in `index.html`: after an upgrade, update the version in the plugin library's URL (`$:/config/OfficialPluginLibrary`) and update your plugins from its Updates tab.
 
 **Plugins:** install, update, disable or delete them from the wiki (drag and drop, the plugin library, the Control Panel). When TiddlyWiki asks you to reload, wait until the save has finished, then reload. The public site gets the same plugins. As in a single-file wiki, updating a plugin that came with `index.html` (a theme from the plugin library, say) replaces it, and deleting it afterwards removes it. To get `index.html`'s version back: in R2, delete `_page/shell.html` and `baked.html`, then open the admin wiki. The page is built from `index.html` again, and that load publishes it. Any other plugin from `index.html` you deleted comes back too.
@@ -657,7 +654,7 @@ If the page is rebuilt before step 4 (by a deploy, or by saving another plugin, 
 | `The tiddler list can't be read: rebuilding it from the stored tiddlers` | The list was damaged, and the worker is rebuilding it (4.2). The damaged copy is in `_repair/`. |
 | `Tiddler list rebuilt: <n> tiddlers` | The rebuild is complete. |
 | `Rebuilding the tiddler list: <key> is not a readable tiddler, left out` | That object in R2 isn't valid JSON. It was already unreadable for the wiki. |
-| `Rebuilding the tiddler list: <key> isn't stored the way the worker stores tiddlers, left out` | An object in an older layout, under a URL-encoded key, or uploaded by hand (4.2). Save the tiddler from the wiki instead, or convert the bucket (6); an object under a URL-encoded key can be deleted. |
+| `Rebuilding the tiddler list: <key> isn't stored the way the worker stores tiddlers, left out` | An object in an older layout, under a URL-encoded key, or uploaded by hand (4.2). Save the tiddler again from a wiki that has it, or upload it in the flat layout with its metadata (4.2); an object under a URL-encoded key can be deleted. |
 | `Failed to rebake HTML` | Building `baked.html` failed; the last page built is served instead (or `index.html` if there is none). A list being rebuilt over several requests also shows this line until it's done. |
 
 **Manual purge:** Cloudflare dashboard → Caching → Configuration → Purge Cache. Use it if something on the public site looks stuck, for example after uploading files to R2 by hand.
@@ -717,7 +714,7 @@ Requirements: Node.js 20 or newer and a Chromium for the browser tests.
 ```bash
 npm install
 npx playwright install chromium      # or: export CHROMIUM_PATH=/path/to/chrome
-npm test                             # build, make the test wiki, run all seven suites
+npm test                             # build, make the test wiki, run all eight suites
 ```
 
 | Command | What it runs |
@@ -728,6 +725,7 @@ npm test                             # build, make the test wiki, run all seven 
 | `npm run test:bake` | Page serving: rebuild on an outdated bake or a new `index.html`, the `304` for an unchanged page (also with a weakened ETag, and by date alone, including two pages built within the same second), a byte order mark; CORS, a bad `PUT` path, and `/status`, kept by the browser for a week and no longer baked into the page. The published page: the core file stored and each kind refused (also one sent for an older `index.html`, or without saying which) (also one still switching the save template, while the core plugin's escaped mentions of it are accepted), each kind of shell refused, a shell kept and the page built from it, the same again, plugin tags before the core (only in a shell: in a full `index.html` they stay in `<head>`, even with TiddlyWiki's marker in raw markup), a new `index.html` built from until a shell is published for it. `CONFLICT_GUARD = off`: the page built without the browser modules. |
 | `npm run test:integrity` | The tiddler list's integrity, the page after a failed build, draft-like titles and `.gitignore` (see below). |
 | `npm run test:r2` | R2 calls per kind of request, against a budget (see below). |
+| `npm run test:cpu` | CPU of the heaviest steps, a big plugin's save and backup, against a budget (see below). |
 | `npm run test:backup` | Queue backup against an imitation of GitHub's Contents API (see below). |
 | `npm run test:tabs` | Real TiddlyWiki in Chromium with several tabs (see below). |
 | `npm run test:plugins` | Real plugins in Chromium, on the admin site and a stand-in for the public site (see below). |
@@ -753,7 +751,7 @@ The tests run the real worker in Cloudflare's local runtime (workerd, through Mi
 - tiddlers titled `Draft of '…'` saved and deleted like any other, while real drafts still aren't stored; titles starting like `$:/StoryList` (`$:/StoryList/2`) stored, `$:/StoryList` itself not;
 - `.gitignore` covering `wrangler.toml`, `.dev.vars` and `.wrangler/`.
 
-`test:r2` runs the worker unchanged behind `test/r2-counter.mjs`, which counts every R2 call it makes, including work left running after the answer (and can make chosen calls fail, which `test:integrity` and `test:backup` use, and tells which queue run made each, and counts queue operations, for `test:backup`). Each kind of request has a budget, and a change that makes more calls fails. It also checks that a save reads the stored tiddler and the list at the same time. These are the counts now:
+`test:r2` runs the worker unchanged behind `test/r2-counter.mjs`, which counts every R2 call it makes, including work left running after the answer (and can make chosen calls fail, which `test:integrity` and `test:backup` use, and tells which queue run made each, counts queue operations and can make the queue refuse messages, for `test:backup`). Each kind of request has a budget, and a change that makes more calls fails. It also checks that a save reads the stored tiddler and the list at the same time. These are the counts now:
 
 | Request | R2 calls |
 |---|---|
@@ -769,6 +767,12 @@ The tests run the real worker in Cloudflare's local runtime (workerd, through Mi
 | Delete a plugin | 10: the delete's 4, the page build's 5 without that plugin's file, then the file deleted (11 before the first publish) |
 
 Backups don't appear here: with the queue bound, as deployed, they run later in the queue consumer.
+
+`test:cpu` loads the built worker's own functions in Node, which runs the same V8 as Workers, and measures the CPU of the two heaviest steps for a 4.8 MB plugin. Each budget is relative to `JSON.parse` of the same bytes on that machine (what the worker avoids), so it holds on a faster or slower one:
+- reading a save in the flat layout: at most 0.25× (it parses only the fields before the text; about 0.12×);
+- its backup from its R2 copy: at most 2.5× (the git hash and base64 worked out on bytes; about 1×, where encoding it through strings took about 4–6×).
+
+Reading the save in full, or building the backup's request through strings, fails its budget.
 
 `test:backup` covers:
 - a 150-tiddler import (one commit each, never two at once, byte-identical content);
@@ -792,6 +796,7 @@ Backups don't appear here: with the queue bound, as deployed, they run later in 
 - what the admin wiki is told: a refused file (with GitHub's answer), every backup failing with a token GitHub refuses (how many, the oldest, since when; only to a request that asks), cleared once they go through; a rate limit not reported; a direct backup that fails for good recorded, and reported only after `BACKUP_ALERT_MINUTES`; an R2 error while recording that doesn't make a backup that went through count as failed;
 - GitHub's copy not decoded (only its `sha` used), and a late version whose "newer version restored" step fails, put back by the retry, without committing the late version again when a newer one was committed meanwhile;
 - a big version's R2 copy that can't be removed after its commit: the backup still counts as done;
+- a message the queue refuses (its daily operations used up, say): the save backed up directly instead, small or big, the big one's R2 copy removed;
 - the fallback without a queue.
 
 `test:tabs` covers:

@@ -241,6 +241,20 @@ await new Promise(r => setTimeout(r, 3000));
 const copyRuns = ghCalls.filter(c => c === "GET tiddlers/Copy kept.json").length;
 check("a backup whose R2 copy can't be removed afterwards still counts as done: not run again, not reported", copyRuns === 1 && await backupStatus() === "ok", `${copyRuns} runs, status ${JSON.stringify(await backupStatus())}`);
 
+// 8f. The queue refusing a message (its daily operations used up on the free plan, say): the save is
+// backed up directly instead, small or big, and a big version's R2 copy is removed again
+const queueLogMark = workerLog.length;
+const copiesBefore = (await bucket.list({ prefix: "_backup/versions/" })).objects.length;   // (8d leaves one)
+await mf.dispatchFetch(`${base}/__qfail`, { method: "POST", body: JSON.stringify({ times: 2 }) });
+const directSmall = "backed up directly", directBig = "d".repeat(150000);
+await put("Queue refused small", directSmall);
+await put("Queue refused big", directBig);
+const directIn = await until(async () => textOf(repoText("Queue refused small")) === directSmall && textOf(repoText("Queue refused big")) === directBig, 20000);
+const directCopies = (await bucket.list({ prefix: "_backup/versions/" })).objects.length;
+const directLogged = (workerLog.slice(queueLogMark).join("").match(/Could not queue/g) || []).length;
+check("a message the queue refuses: the save is backed up directly instead, small or big (the big one's R2 copy removed)",
+  directIn && directCopies === copiesBefore && directLogged === 2, `committed ${directIn}, copies ${copiesBefore} before, ${directCopies} after, ${directLogged} refusals logged`);
+
 // 8b. Saves in the browser module's flat layout are committed exactly as stored, small or large
 const putFlat = (title, text) => mf.dispatchFetch(`${base}/recipes/default/tiddlers/${encodeURIComponent(title)}`,
   { method: "PUT", headers: { "Content-Type": "application/json", "X-Tiddler-Layout": "flat" }, body: JSON.stringify({ title, note: "flat", text }) });
