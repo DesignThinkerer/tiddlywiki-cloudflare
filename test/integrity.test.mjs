@@ -208,6 +208,22 @@ const broken = [await mf.dispatchFetch(BROKEN), await mf.dispatchFetch(BROKEN, {
   await mf.dispatchFetch(BROKEN.replace("/recipes/", "/bags/"), { method: "DELETE" })];
 check("a path that isn't valid percent-encoding is refused (400) by reads, saves and deletes, with CORS headers",
   broken.every(r => r.status === 400 && r.headers.get("access-control-allow-origin") === "*"), broken.map(r => r.status).join(", "));
+// Tags must be text too: a number in the tags (a script's addTiddler can make one) was stored, then
+// broke every page build ("tag.includes is not a function")
+const badTags = [await save("Numeric tag", { tags: [2024], text: "x" }), await save("Null tag", { tags: [null], text: "x" }),
+  await mf.dispatchFetch(url("Old layout tag"), { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title: "Old layout tag", tags: [1], text: "x" }) })];
+check("a tag that isn't text is refused (400), in either layout", badTags.every(r => r.status === 400) &&
+  !(await storedRevision("Numeric tag")) && !(await storedRevision("Null tag")) && !(await storedRevision("Old layout tag")), badTags.map(r => r.status).join(", "));
+// ...and one already stored (before this check, or by hand) doesn't stop the page from being built
+await bucket.put("recipes/default/tiddlers/Hand tag", '{"title":"Hand tag","tags":[2024],"text":"x","revision":"79","bag":"default","recipe":"default"}', { customMetadata: { revision: "79", layout: "flat" } });
+const withHandTag = await list();
+withHandTag.push({ title: "Hand tag", tags: [2024], revision: "79", type: "text/vnd.tiddlywiki" });
+await bucket.put(LIST, JSON.stringify(withHandTag));
+res = await save("$:/SiteSubtitle", { text: "Built despite a numeric tag" });
+const builtPage = await (await bucket.get("baked.html")).text();
+check("...and one already listed doesn't stop the page from being built", res.status === 204 && builtPage.includes("Built despite a numeric tag"), `status ${res.status}`);
+await del("$:/SiteSubtitle");
+await del("Hand tag");
 const flatMeta = revision => ({ customMetadata: { revision, layout: "flat" } });
 await bucket.put("recipes/default/tiddlers/67890", '{"title":67890,"text":"uploaded by hand","revision":"77","bag":"default","recipe":"default"}', flatMeta("77"));
 await bucket.put("recipes/default/tiddlers/Key title", '{"title":"Body title","text":"uploaded by hand","revision":"78","bag":"default","recipe":"default"}', flatMeta("78"));

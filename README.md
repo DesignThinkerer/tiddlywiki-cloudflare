@@ -85,7 +85,7 @@ flowchart LR
     ├── plugins.test.mjs      real plugins on the admin and public sites (67 checks)
     ├── page-publish.test.mjs the page published from a real TiddlyWiki (51 checks)
     ├── queue-backup.test.mjs queue backup against an imitation of GitHub (30 checks)
-    ├── integrity.test.mjs    the tiddler list's integrity, a failed page build, draft-like titles, .gitignore (63 checks)
+    ├── integrity.test.mjs    the tiddler list's integrity, a failed page build, draft-like titles, .gitignore (65 checks)
     ├── r2-ops.test.mjs       R2 calls per kind of request, against a budget (29 checks)
     ├── r2-counter.mjs        test-only wrapper that counts the worker's R2 calls
     ├── browser-harness.mjs   the browser suites' shared setup (worker, public site stand-in, Chromium, helpers)
@@ -235,7 +235,7 @@ This lets the admin wiki read tiddler contents from the public site (see 4.5 and
 | `GET recipes/default/tiddlers.json` | The tiddler list, or `304 Not Modified` when unchanged (4.5), or `503` while it's being rebuilt (4.2). With `X-Backup-Status: ask`, also how backups go, in the `X-Backup-Status` header (4.7). |
 | `GET recipes/default/tiddlers/<title>` | One tiddler as JSON (a flat one exactly as stored, see 4.2), with its revision in the body and the `ETag`. |
 | `GET <any other key>` | That R2 object as is. |
-| `PUT recipes/default/tiddlers/<title>` | Save (4.4): precondition check, conditional write, list update, purge, backup; for a plugin, its file and the page (4.8). Stored flat, whatever layout it arrives in (4.2). A body that isn't a tiddler (a JSON object whose `title` is text, the same as in the URL), or with a value that isn't text, gets `400`, and so does a title over 999 bytes of UTF-8 (an R2 key holds 1,024 with `recipes/default/tiddlers/`). |
+| `PUT recipes/default/tiddlers/<title>` | Save (4.4): precondition check, conditional write, list update, purge, backup; for a plugin, its file and the page (4.8). Stored flat, whatever layout it arrives in (4.2). A body that isn't a tiddler (a JSON object whose `title` is text, the same as in the URL), or with a value that isn't text (a tag included: a number in the tags is refused, which also keeps it from breaking page builds), gets `400`, and so does a title over 999 bytes of UTF-8 (an R2 key holds 1,024 with `recipes/default/tiddlers/`). |
 | `DELETE bags/<bag>/tiddlers/<title>` (or `recipes/<recipe>/…`) | Delete (4.4): same checks, then removal, purge, backup. A title too long to be stored answers `204`. |
 | `PUT /page/core?v=<version>-<format>` | TiddlyWiki's core file, from the admin wiki, once per TiddlyWiki version (4.9). |
 | `PUT /page/shell` | The page published by the admin wiki, kept and used to build the page (4.9). |
@@ -735,7 +735,7 @@ The tests run the real worker in Cloudflare's local runtime (workerd, through Mi
 - a page build that fails after a plugin save or delete (the page or the plugin file can't be written, through `test/r2-counter.mjs`): the change is still confirmed, the page is marked outdated, and the next page load builds it with the change;
 - overlapping page builds: a save's build that read the shell before a new one was published (its page write delayed) doesn't put the old shell back;
 - titles: a save whose title isn't text, or isn't the one in its URL, or is too long for an R2 key, is refused (`400`; the longest that fits is stored and deleted, and one too long is "deleted" with a `204`), a path that isn't valid percent-encoding refused (`400`) by reads, saves and deletes, and such tiddlers stored by hand are listed under their key instead of stopping the rebuild or being listed under the wrong title;
-- a field called `fields` stored nested, as TiddlyWeb's layout has it; a value that's an object refused (`400`); custom fields named like built-in properties (`constructor`) kept, and a `text` among the custom fields doesn't move the text;
+- a field called `fields` stored nested, as TiddlyWeb's layout has it; a value that's an object refused (`400`), and a tag that isn't text (in either layout), while one already listed doesn't stop the page from being built; custom fields named like built-in properties (`constructor`) kept, and a `text` among the custom fields doesn't move the text;
 - a save of a tiddler whose text never loaded (`_is_skinny`), in both layouts, keeping the stored text without storing the mark, and one the worker doesn't have stored without text;
 - tiddlers titled `Draft of '…'` saved and deleted like any other, while real drafts still aren't stored;
 - `.gitignore` covering `wrangler.toml`, `.dev.vars` and `.wrangler/`.

@@ -305,8 +305,9 @@ const MODULE_TYPES = ["application/javascript", "application/json", "application
 // These take a saved tiddler or an entry of the tiddler list
 function isStartupTiddler(tiddler) {
   const title = tiddler.title || "", tags = tiddler.tags;
+  // (A list entry stored before field values had to be text, or by hand, may hold a tag that isn't)
   return STARTUP_TITLES.includes(title) || title.startsWith(DISABLED_PLUGIN_PREFIX) || (Array.isArray(tags)
-    ? tags.some(tag => tag.includes("$:/tags/StartupAction"))
+    ? tags.some(tag => String(tag).includes("$:/tags/StartupAction"))
     : typeof tags === "string" && tags.includes("$:/tags/StartupAction"));
 }
 
@@ -384,12 +385,12 @@ function parseJsonBody(text) {
 // "fields" stays nested as { fields: value }, the way TiddlyWeb's layout has it, because a flat
 // "fields" is where TiddlyWiki's loader looks for nested custom fields.
 function isFieldValue(value) {
-  return value === null || typeof value !== "object" || (Array.isArray(value) && value.every(item => item === null || typeof item !== "object"));
+  return typeof value === "string" || (Array.isArray(value) && value.every(item => typeof item === "string"));
 }
 function isStorable(name, value) {
   if (name !== "fields") return isFieldValue(value);
   return value !== null && typeof value === "object" && !Array.isArray(value) && Object.keys(value).length === 1 &&
-    Object.hasOwn(value, "fields") && (value.fields === null || typeof value.fields !== "object");
+    Object.hasOwn(value, "fields") && typeof value.fields === "string";
 }
 
 // TiddlyWiki unpacks that nested "fields" when it loads a tiddler through sync, but not the tiddlers
