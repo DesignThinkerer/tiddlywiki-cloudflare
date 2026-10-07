@@ -12,7 +12,7 @@ const blobSha = buf => sha1(Buffer.concat([Buffer.from(`blob ${buf.length}\0`), 
 const files = new Map();      // decoded path -> { sha, text }
 const commits = [];           // { message, path, text|null }
 let inFlight = 0, maxInFlight = 0, latencyMs = 50;
-const faults = { badCredentials: false, rateLimitPuts: 0, outage: false, failOnce: new Set(), refuse: new Set(), failPutOnceOfText: new Map(), garbleContent: new Set() };
+const faults = { badCredentials: false, rateLimitPuts: 0, outage: false, failOnce: new Set(), refuse: new Set(), refuseText: new Set(), failPutOnceOfText: new Map(), garbleContent: new Set() };
 const ghCalls = [];
 const json = (obj, status = 200, headers = {}) => new Response(JSON.stringify(obj), { status, headers: { "Content-Type": "application/json", ...headers } });
 
@@ -29,6 +29,10 @@ async function fakeGitHub(req) {
   if (req.method !== "GET") {
     const key = `${req.method} ${path}`;
     if (faults.refuse.has(path)) return json({ message: "This path isn't allowed" }, 422);
+    // (refuseText: content GitHub refuses, as its push protection does a text containing a secret)
+    if (req.method === "PUT" && [...faults.refuseText].some(mark => Buffer.from(body.content, "base64").toString("utf8").includes(mark))) {
+      return json({ message: "Secret detected in content" }, 409);
+    }
     if (req.method === "PUT" && faults.failPutOnceOfText.get(path) === JSON.parse(Buffer.from(body.content, "base64").toString("utf8")).text) {
       faults.failPutOnceOfText.delete(path);
       return json({ message: "Server Error" }, 500);
@@ -314,6 +318,30 @@ check("...and the admin wiki is told that file isn't backed up, and why", refuse
 faults.refuse.clear();
 check("...and goes through once GitHub accepts it", await until(async () => textOf(repoText("Refused")) === "never accepted", 30000));
 check("...after which there's nothing to report", await until(async () => await backupStatus() === "ok" && !(await bucket.head("_backup/status.json")), 10000));
+
+// 13b. A version GitHub refuses for good (here a text with a secret in it) doesn't hold up that
+// tiddler's later versions: the next one, without the secret, goes through, even saved right after
+// (the two then come in one batch). The refused version is then dropped, as the newer one is on
+// GitHub, and so is one whose tiddler was deleted since: neither is retried forever
+faults.refuseText.add("SECRET-TOKEN");
+latencyMs = 1500;
+await put("Slow before secret", "s");                      // keeps the consumer busy: the next saves arrive in one batch
+await new Promise(r => setTimeout(r, 300));
+latencyMs = 30;
+await put("Secret note", "pasted SECRET-TOKEN by mistake");
+await put("Secret note", "secret removed");
+await put("Secret gone", "SECRET-TOKEN here too");
+await new Promise(r => setTimeout(r, 300));
+await del("Secret gone");
+const cleanIn = await until(async () => textOf(repoText("Secret note")) === "secret removed", 20000);
+const secretTries = () => ghCalls.filter(c => c === "GET tiddlers/Secret note.json" || c === "GET tiddlers/Secret gone.json").length;
+await until(async () => await backupStatus() === "ok", 30000);
+const triesThen = secretTries();
+await new Promise(r => setTimeout(r, 8000));
+check("a version GitHub refuses for good doesn't hold up the tiddler's next one, and is dropped once a newer one is on GitHub, or the tiddler deleted",
+  cleanIn && await backupStatus() === "ok" && secretTries() === triesThen && !commits.some(c => (c.text || "").includes("SECRET-TOKEN")),
+  `clean version in ${cleanIn}, status ${JSON.stringify(await backupStatus())}, GitHub calls for them after ${secretTries() - triesThen}`);
+faults.refuseText.clear();
 
 // 16. Every backup failing (here a token GitHub no longer accepts): reported with the oldest one and
 // how many are waiting, only to a request that asks; cleared once they go through

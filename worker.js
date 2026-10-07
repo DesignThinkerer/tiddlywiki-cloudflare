@@ -1593,7 +1593,7 @@ async function processBackupBatch(batch, env) {
     } catch (e) {
       const delay = backupRetryDelay(env, msg.body.tries, e.retryAfter);
       console.error(`[Backup] '${msg.body.title}' not backed up yet (${e.message}); retrying in ${delay}s`);
-      await requeueBackup(env, msg, delay, true);
+      await requeueBackup(env, msg, delay, true, isRefusal(e) ? { refused: true } : undefined);
       if (isRateLimit(e)) {
         // GitHub asks to slow down: everything left waits and retries with it, in order. (Not a
         // failure to report: a big import waits like this for hours.)
@@ -1602,13 +1602,21 @@ async function processBackupBatch(batch, env) {
         }
         break;
       }
-      // Anything else may concern this file only (GitHub refusing its path, say): its later
-      // versions wait with it, so they stay in order, and other tiddlers' backups go ahead
-      held.set(msg.body.title, delay);
+      // Anything else may concern this file only, and other tiddlers' backups go ahead. Its later
+      // versions wait with it, so they stay in order, unless GitHub refuses this version for good
+      // (its path, or a secret in its text): the next one may be fine, and goes ahead (the late
+      // versions logic keeps GitHub on the newest)
+      if (!isRefusal(e)) held.set(msg.body.title, delay);
       failures.push(backupFailure(msg.body, e));
     }
   }
   if (failures.length || cleared.length) await recordBackupResults(env, failures, cleared);
+}
+
+// GitHub refusing this file for good: its path, or its content (a secret in it, which its push
+// protection refuses with a 409; a 409 that's only a race over the file's sha passes on its retry)
+function isRefusal(e) {
+  return e.status === 409 || e.status === 422;
 }
 
 // GitHub asking to slow down: Retry-After or an exhausted rate limit, 429, or its "rate limit"
@@ -1624,9 +1632,9 @@ function backupRetryDelay(env, tries, retryAfter) {
 }
 
 // Sends the message again as a fresh one, so neither the queue's retry limit nor its retention
-// period can drop a backup that keeps failing
-async function requeueBackup(env, msg, delaySeconds, countTry) {
-  const body = countTry ? { ...msg.body, tries: (msg.body.tries || 0) + 1 } : msg.body;
+// period can drop a backup that keeps failing. extra: fields to add to it
+async function requeueBackup(env, msg, delaySeconds, countTry, extra) {
+  const body = { ...msg.body, ...(countTry ? { tries: (msg.body.tries || 0) + 1 } : {}), ...extra };
   try {
     await env.BACKUP_QUEUE.send(body, delaySeconds > 0 ? { delaySeconds } : undefined);
     msg.ack();
@@ -1660,6 +1668,9 @@ async function backupJob(env, job) {
   const existing = await github.get(job.title);
   let sha = existing ? existing.sha : null;
   const newer = await newerInWiki(env, job, current, sha);
+  // A version GitHub refused for good, now replaced there by a newer one, or whose tiddler has been
+  // deleted since: dropped, rather than tried forever (it would only have been history)
+  if (job.refused && (newer || !current)) return;
   // (A retry after the restore below failed: this version is already in the history, even if a
   // newer one has been committed on top since)
   if (!job.restore && sha !== await gitBlobSha(content)) {
