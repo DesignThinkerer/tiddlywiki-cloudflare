@@ -279,7 +279,10 @@ check("baked startup tiddler has flattened custom field", baked.includes('"my-fi
 check("$-patterns in tiddler text survive baking", baked.includes("$1 $& done"));
 
 // --- 11. Public cache purges and the tiddler-list 304 ------------------------------------------
-const PUBLIC_LIST = PUB + "/recipes/default/tiddlers.json?filter=%5Ball%5Btiddlers%5D%5D%20-%5B%5B%24%3A%2FisEncrypted%5D%5D%20-%5Bprefix%5B%24%3A%2Ftemp%2F%5D%5D%20-%5Bprefix%5B%24%3A%2Fstatus%2F%5D%5D%20-%5B%5B%24%3A%2Fboot%2Fboot.js%5D%5D%20-%5B%5B%24%3A%2Fboot%2Fbootprefix.js%5D%5D%20-%5Bhas%5Bplugin-type%5Dfield%3Aplatform%5Bserver%5D%5D%20-%5B%5B%24%3A%2Flibrary%2Fsjcl.js%5D%5D%20-%5B%5B%24%3A%2Fcore%5D%5D";
+// The list URL TiddlyWiki itself asks for (the worker purges its public copy): taken from a tab's
+// request, not copied from the worker, so a TiddlyWiki that changed it would fail here
+const listRequest = requests.find(r => r.origin === "worker" && /^\/recipes\/default\/tiddlers\.json\?filter=/.test(r.path) && !r.url.includes("cfworker-retry"));
+const PUBLIC_LIST = listRequest ? PUB + new URL(listRequest.url).pathname + new URL(listRequest.url).search : "(no list request seen)";
 await sync(A);
 let before = outbound.length;
 await editViaUI(A, "Zeta", "purge me"); await settle(A);

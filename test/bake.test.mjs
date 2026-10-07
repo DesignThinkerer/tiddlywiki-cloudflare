@@ -222,6 +222,20 @@ res = await putShell(fakeShell({ title: "For the new engine" }), { fingerprint: 
 page = await (await mf.dispatchFetch(base + "/")).text();
 check("...and a shell for it is used once published", res.status === 204 && page.includes("<title>For the new engine</title>") && pageSource(page)?.fingerprint === "f3");
 
+// CONFLICT_GUARD = "off": the page is built without the browser modules (and still served)
+const mfOff = new Miniflare({
+  modules: true, scriptPath: WORKER, compatibilityDate: "2024-09-23", r2Buckets: ["WIKI_BUCKET"], port: 0,
+  bindings: { CONFLICT_GUARD: "off" },
+  outboundService: async () => new Response("{}", { status: 404 }),
+});
+const baseOff = (await mfOff.ready).toString().replace(/\/$/, "");
+await (await mfOff.getR2Bucket("WIKI_BUCKET")).put("index.html", html("engine without the modules"));
+const offResponse = await mfOff.dispatchFetch(baseOff + "/");
+const offPage = await offResponse.text();
+check("CONFLICT_GUARD off: the page is served without the browser modules", offResponse.status === 200 && offPage.includes("engine without the modules") &&
+  !offPage.includes("$:/cfworker/conflict-guard.js") && !offPage.includes("$:/cfworker/page-publisher.js"), `status ${offResponse.status}`);
+await mfOff.dispose();
+
 console.log(`\n${results.filter(Boolean).length}/${results.length} passed`);
 await mf.dispose();
 process.exit(results.every(Boolean) ? 0 : 1);
