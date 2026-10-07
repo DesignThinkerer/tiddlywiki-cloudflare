@@ -7,6 +7,7 @@
 // queue operations since the last time, { sends, deliveries, acks, retries, maxAttempts (the most
 // deliveries of one message) }, and starts a new count:
 // Cloudflare counts a send, a delivery and an ack as one operation each (a retry is the next delivery).
+// POST /__qfail with { times } makes the next sends to the queue throw, as when it refuses them.
 // Used by test/r2-ops.test.mjs, test/integrity.test.mjs and test/queue-backup.test.mjs; never deployed.
 import worker from "../worker.js";
 
@@ -15,12 +16,20 @@ let overlaps = [];          // "get list + head tiddler": a call that started wh
 let failures = [];          // { call, times, delay }: calls to make fail, or wait first
 let runs = [];              // the R2 calls of each queue run
 let qops = { sends: 0, deliveries: 0, acks: 0, retries: 0, maxAttempts: 0 };
+let qfail = 0;              // sends left to refuse
 
 // The queue binding, counting what's sent
 function countedQueue(queue) {
   if (!queue) return queue;
   return {
-    send(body, options) { qops.sends++; return queue.send(body, options); },
+    send(body, options) {
+      if (qfail > 0) {
+        qfail--;
+        return Promise.reject(new Error("queue send refused (test)"));
+      }
+      qops.sends++;
+      return queue.send(body, options);
+    },
     sendBatch(messages, options) { qops.sends += messages.length; return queue.sendBatch(messages, options); }
   };
 }
@@ -72,6 +81,10 @@ export default {
     if (new URL(request.url).pathname === "/__r2fail") {
       const { call, times = 1, delay = 0 } = await request.json();
       failures.push({ call, times, delay });
+      return new Response(null, { status: 204 });
+    }
+    if (new URL(request.url).pathname === "/__qfail") {
+      qfail = (await request.json()).times || 1;
       return new Response(null, { status: 204 });
     }
     if (new URL(request.url).pathname === "/__qops") {
