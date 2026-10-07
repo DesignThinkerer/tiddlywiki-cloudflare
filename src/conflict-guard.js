@@ -117,14 +117,15 @@ exports.startup = function() {
 		var originalGetSyncedTiddlers = $tw.Syncer.prototype.getSyncedTiddlers,
 			originalChooseNextTask = $tw.Syncer.prototype.chooseNextTask;
 		$tw.Syncer.prototype.cfworkerPatched = true;
-		// Keep drafts and the story list out of syncing: the worker never stores them. For drafts it
-		// also matters because after the next poll the syncer would see them as "missing from the
+		// Keep drafts and the story list out of syncing: the worker never stores them (the same rule:
+		// $:/StoryList itself, and a draft.of field, even empty, as TiddlyWiki tells drafts). For drafts
+		// it also matters because after the next poll the syncer would see them as "missing from the
 		// server" and delete the open draft, closing the editor.
 		$tw.Syncer.prototype.getSyncedTiddlers = function(source) {
 			var syncerWiki = this.wiki;
 			return originalGetSyncedTiddlers.call(this,source).filter(function(title) {
 				var tiddler = syncerWiki.getTiddler(title);
-				return title !== "$:/StoryList" && !(tiddler && tiddler.fields["draft.of"]);
+				return title !== "$:/StoryList" && !(tiddler && tiddler.hasField("draft.of"));
 			});
 		};
 		// Don't poll for changes while the tab is in the background (saves still go out)

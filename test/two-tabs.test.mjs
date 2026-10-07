@@ -610,6 +610,24 @@ check("a tiddler tagged 2024, with a field year: 2024, and a field a script set 
   JSON.stringify(report?.tags) === '["2024","year 2024"]' && report?.year === "2024" && report?.count === "42" &&
   JSON.stringify(await A.evaluate(() => $tw.wiki.filterTiddlers("[tag[2024]]"))) === '["Report"]', JSON.stringify(report));
 
+// --- 18. What the worker doesn't store isn't sent, and what's sent is stored ----------------------
+// TiddlyWiki takes any tiddler with a draft.of field for a draft, even an empty one: never sent (the
+// worker would answer without storing it, and the next poll would delete it from the tab). A second
+// story river's $:/StoryList/2 is sent and stored, so a new tab has it.
+mark = net.length;
+await A.evaluate(() => {
+  $tw.wiki.addTiddler(new $tw.Tiddler({ title: "Empty draft.of", "draft.of": "", text: "kept in the tab" }));
+  $tw.wiki.addTiddler(new $tw.Tiddler({ title: "$:/StoryList/2", list: "Alpha" }));
+});
+await settle(A);
+await sync(A);
+const emptyDraftSent = netSince(mark).some(x => x.path.endsWith("/Empty draft.of"));
+const emptyDraftKept = await A.evaluate(() => $tw.wiki.getTiddlerText("Empty draft.of"));
+check("a tiddler with an empty draft.of field (a draft, for TiddlyWiki) isn't sent, and stays in the tab after a poll",
+  !emptyDraftSent && emptyDraftKept === "kept in the tab", JSON.stringify({ sent: emptyDraftSent, kept: emptyDraftKept }));
+const secondRiver = await server("$:/StoryList/2");
+check("a second story river's $:/StoryList/2 is stored, for the next tab", secondRiver?.list === "Alpha", JSON.stringify(secondRiver));
+
 // --- Summary --------------------------------------------------------------------------------
 const bad = net.filter(x => x.status === 428 || x.status >= 500);
 check("no 428/5xx responses anywhere", bad.length === 0, JSON.stringify(bad));

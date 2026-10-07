@@ -83,11 +83,11 @@ flowchart LR
 ├── package.json              build and test scripts
 └── test/
     ├── make-fixture.mjs      builds a test TiddlyWiki (test/fixtures/index.html)
-    ├── two-tabs.test.mjs     real TiddlyWiki in Chromium, several tabs (84 checks)
+    ├── two-tabs.test.mjs     real TiddlyWiki in Chromium, several tabs (86 checks)
     ├── plugins.test.mjs      real plugins on the admin and public sites (66 checks)
     ├── page-publish.test.mjs the page published from a real TiddlyWiki (55 checks)
     ├── queue-backup.test.mjs queue backup against an imitation of GitHub (40 checks)
-    ├── integrity.test.mjs    the tiddler list's integrity, a failed page build, draft-like titles, .gitignore (70 checks)
+    ├── integrity.test.mjs    the tiddler list's integrity, a failed page build, draft-like titles, .gitignore (71 checks)
     ├── r2-ops.test.mjs       R2 calls per kind of request, against a budget (29 checks)
     ├── r2-counter.mjs        test-only wrapper that counts the worker's R2 calls
     ├── browser-harness.mjs   the browser suites' shared setup (worker, public site stand-in, Chromium, helpers)
@@ -245,7 +245,7 @@ This lets the admin wiki read tiddler contents from the public site (see 4.5 and
 
 A path that isn't valid percent-encoding (`%E0%A4%A`, say) gets `400`, in any request.
 
-**Ephemeral titles.** These are never stored or backed up: `$:/StoryList`, `$:/HistoryList`, anything under `$:/state/`, `$:/temp/` or `$:/status/`, and drafts, recognised by their `draft.of` field. A title alone doesn't make a draft: a tiddler called `Draft of 'Chapter 1'` is saved like any other. A `PUT` of one answers `204` with a throwaway ETag, and a `DELETE` answers `204`. In practice the browser doesn't send them: TiddlyWiki's own sync filter leaves out `$:/HistoryList`, `$:/state/`, `$:/temp/` and `$:/status/`, and the conflict guard also leaves out drafts and `$:/StoryList` (4.5).
+**Ephemeral titles.** These are never stored or backed up: `$:/StoryList`, `$:/HistoryList`, anything under `$:/state/`, `$:/temp/` or `$:/status/`, and drafts, recognised by their `draft.of` field (even an empty one, as TiddlyWiki tells them). A title alone doesn't make a draft: a tiddler called `Draft of 'Chapter 1'` is saved like any other, and only `$:/StoryList` itself is a tab's own: a second story river's `$:/StoryList/2` is stored like any tiddler. A `PUT` of one answers `204` with a throwaway ETag, and a `DELETE` answers `204`. In practice the browser doesn't send them: TiddlyWiki's own sync filter leaves out `$:/HistoryList`, `$:/state/`, `$:/temp/` and `$:/status/`, and the conflict guard also leaves out drafts and `$:/StoryList` (4.5).
 
 ### 4.2 Storage, revisions and ETags
 
@@ -747,7 +747,7 @@ The tests run the real worker in Cloudflare's local runtime (workerd, through Mi
 - titles: a save whose title isn't text, or isn't the one in its URL, or is too long for an R2 key, is refused (`400`; the longest that fits is stored and deleted, and one too long is "deleted" with a `204`), a path that isn't valid percent-encoding refused (`400`) by reads, saves and deletes, and such tiddlers stored by hand are listed under their key instead of stopping the rebuild or being listed under the wrong title;
 - a field called `fields` stored nested, as TiddlyWeb's layout has it; a value that's an object refused (`400`), and a tag that isn't text (in either layout), while one already listed doesn't stop the page from being built; custom fields named like built-in properties (`constructor`) kept, and a `text` among the custom fields doesn't move the text;
 - a save of a tiddler whose text never loaded (`_is_skinny`), in both layouts, keeping the stored text without storing the mark, and one the worker doesn't have stored without text;
-- tiddlers titled `Draft of '…'` saved and deleted like any other, while real drafts still aren't stored;
+- tiddlers titled `Draft of '…'` saved and deleted like any other, while real drafts still aren't stored; titles starting like `$:/StoryList` (`$:/StoryList/2`) stored, `$:/StoryList` itself not;
 - `.gitignore` covering `wrangler.toml`, `.dev.vars` and `.wrangler/`.
 
 `test:r2` runs the worker unchanged behind `test/r2-counter.mjs`, which counts every R2 call it makes, including work left running after the answer (and can make chosen calls fail, which `test:integrity` and `test:backup` use, and tells which queue run made each, for `test:backup`). Each kind of request has a budget, and a change that makes more calls fails. It also checks that a save reads the stored tiddler and the list at the same time. These are the counts now:
@@ -800,6 +800,7 @@ Backups don't appear here: with the queue bound, as deployed, they run later in 
 - **A tiddler changed before its text loaded** (its text held back): the stored text kept with the change, and the tab then loads it.
 - **Failing backups:** a page load asks how backups go with its first tiddler list request, shows an alert (since when, how many, the oldest, GitHub's answer, what to do), asks at each request while it shows, removes it once backups get through, then asks no more than hourly.
 - **Leaving with an editor open:** the browser asks before closing a tab whose editor holds changes, not one left unchanged.
+- **What's sent is what's stored:** a tiddler with an empty `draft.of` field (a draft, for TiddlyWiki) isn't sent and stays in the tab after a poll; a second story river's `$:/StoryList/2` is stored.
 
 `test:plugins` uses the markdown and KaTeX plugins shipped with TiddlyWiki and covers:
 - **Install** through the import messages a drop sends: the flat save, the stored tiddler, the file (byte for byte the template format), the script tag, no purge of plugin files.

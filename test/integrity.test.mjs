@@ -533,6 +533,16 @@ res = await save(NOT_A_DRAFT, { text: "my chapter" });
 check("a tiddler titled \"Draft of '…'\" is stored", !!(await storedRevision(NOT_A_DRAFT)) && !!(await entry(NOT_A_DRAFT)), `status ${res.status}`);
 res = await save("Draft of 'Old note'", { "draft.of": "Old note", "draft.title": "Old note", text: "editing" });
 check("a real draft (draft.of field) still isn't stored", res.status === 204 && !(await storedRevision("Draft of 'Old note'")));
+// Only $:/StoryList itself is a tab's own: a second story river's $:/StoryList/2, or a tiddler named
+// $:/StoryListBackup, is stored like any other (the browser sends them, as TiddlyWiki syncs them)
+const storyLike = ["$:/StoryList/2", "$:/StoryListBackup"];
+const storyLikeSaves = [];
+for (const t of storyLike) storyLikeSaves.push((await save(t, { list: "A B", text: "" })).status);
+res = await save("$:/StoryList", { list: "A B" });
+const storyLikeStored = await Promise.all(storyLike.map(async t => !!(await storedRevision(t)) && !!(await entry(t))));
+check("titles that start like $:/StoryList are stored and listed; $:/StoryList itself isn't",
+  storyLikeSaves.every(s => s === 204) && storyLikeStored.every(Boolean) && res.status === 204 && !(await storedRevision("$:/StoryList")) && !(await entry("$:/StoryList")),
+  `saves ${JSON.stringify(storyLikeSaves)}, stored ${JSON.stringify(storyLikeStored)}`);
 await bucket.put("recipes/default/tiddlers/Draft 2 of 'Ideas'", JSON.stringify({ title: "Draft 2 of 'Ideas'", text: "kept", revision: "5" }), { customMetadata: { revision: "5" } });
 const withIdeas = await list();
 withIdeas.push({ title: "Draft 2 of 'Ideas'", revision: "5", tags: [], type: "text/vnd.tiddlywiki" });
