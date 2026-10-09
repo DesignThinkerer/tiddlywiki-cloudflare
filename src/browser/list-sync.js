@@ -72,7 +72,8 @@ exports.startup = function() {
 		fetching = 0,                          // network fetches under way, and who waits for a slot
 		fetchQueue = [],
 		fillHoldUntil = 0,
-		fillTimer = null;
+		fillTimer = null,
+		deliveryTimer = null;
 
 	// The "put" saver probes the page URL (OPTIONS + HEAD) on every load, but it can't save to the
 	// worker (saving goes through the sync adaptor), so switch it off
@@ -473,9 +474,37 @@ exports.startup = function() {
 		var entry = {promise: null, fields: undefined};
 		entry.promise = lookUp(adaptor,title).then(function(fields) {
 			entry.fields = fields;
+			scheduleDelivery(adaptor);
 			return fields;
 		});
 		return entry;
+	}
+	// Once the tiddlers looked up ahead stop arriving for a moment, they're delivered together, and
+	// the next ones looked up: the fill goes on in batches, without waiting for TiddlyWiki's loads
+	var DELIVERY_PAUSE = 40;
+	function scheduleDelivery(adaptor) {
+		clearTimeout(deliveryTimer);
+		deliveryTimer = setTimeout(function() {
+			deliveryTimer = null;
+			deliverAhead();
+			readAhead(adaptor);
+		},DELIVERY_PAUSE);
+	}
+	// The tiddlers looked up ahead still on their way, waited for: all of them, or DELIVERY_PAUSE at
+	// most (the device answers within it; the network needn't)
+	function settleAhead() {
+		var pending = [];
+		$tw.utils.each(ahead,function(entry) {
+			if(entry.fields === undefined) {
+				pending.push(entry.promise);
+			}
+		});
+		if(!pending.length) {
+			return Promise.resolve();
+		}
+		return Promise.race([Promise.all(pending),new Promise(function(resolve) {
+			setTimeout(resolve,DELIVERY_PAUSE);
+		})]);
 	}
 	// Tiddlers looked up ahead that have arrived, stored now, together (one refresh for all of them),
 	// so TiddlyWiki needn't load them one by one. (One the list has moved on from meanwhile is
@@ -728,9 +757,13 @@ exports.startup = function() {
 				return done(null,null);
 			}
 			if(fields) {
-				deliverAhead();
-				readAhead(self);
-				return done(null,fields);
+				// Delivered with the tiddlers looked up ahead that arrive meanwhile: one refresh for
+				// all of them, and TiddlyWiki's next load finds the queue that much shorter
+				return settleAhead().then(function() {
+					deliverAhead();
+					readAhead(self);
+					done(null,fields);
+				});
 			}
 			originalLoadTiddler.call(self,title,function(err,fields) {
 				if(!err && fields && hasUnsavedChanges(title)) {

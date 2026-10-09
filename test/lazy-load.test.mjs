@@ -38,7 +38,9 @@ for (let i = 1; i <= N; i++) await put(`Tiddler ${i}`, { text: text(i) });
 const tiddlerGets = (from, tag, origin) => requests.slice(from).filter(r => r.tag === tag && r.origin === origin && r.method === "GET" && r.path.startsWith(TIDDLER_PATH))
   .map(r => decodeURIComponent(r.path.slice(TIDDLER_PATH.length)));
 const overlap = {};   // tag -> the most tiddler requests in flight at once
-async function open(context, url, tag, { hidden = false } = {}) {
+// hidden: true or false installs a visibility the test controls (window.__hidden, then a visibilitychange
+// event); noStore: no IndexedDB in this page. Every page counts TiddlyWiki's load steps (window.__loadSteps).
+async function open(context, url, tag, { hidden, noStore = false } = {}) {
   const page = await context.newPage();
   await watch(page, tag);
   page.on("console", m => { if (m.type() === "error" && !m.text().startsWith("Failed to load resource")) pageErrors.push(`${tag} console: ${m.text()}`); });
@@ -48,13 +50,23 @@ async function open(context, url, tag, { hidden = false } = {}) {
   page.on("request", q => { if (isTiddler(q)) overlap[tag] = Math.max(overlap[tag], ++inFlight); });
   page.on("requestfinished", q => { if (isTiddler(q)) inFlight--; });
   page.on("requestfailed", q => { if (isTiddler(q)) inFlight--; });
-  if (hidden) {
-    await page.addInitScript(() => {
-      window.__hidden = true;
+  if (hidden !== undefined) {
+    await page.addInitScript(hidden => {
+      window.__hidden = hidden;
       Object.defineProperty(document, "hidden", { get: () => !!window.__hidden, configurable: true });
       Object.defineProperty(document, "visibilityState", { get: () => window.__hidden ? "hidden" : "visible", configurable: true });
-    });
+    }, hidden);
   }
+  if (noStore) await page.addInitScript(() => Object.defineProperty(window, "indexedDB", { get: () => undefined, configurable: true }));
+  await page.addInitScript(() => {
+    window.__loadSteps = 0;
+    const timer = setInterval(() => {
+      if (!window.$tw || !$tw.syncadaptor) return;
+      clearInterval(timer);
+      const load = $tw.syncadaptor.loadTiddler;
+      $tw.syncadaptor.loadTiddler = function() { window.__loadSteps++; return load.apply(this, arguments); };
+    }, 1);
+  });
   await page.goto(url);
   await page.waitForFunction(() => window.$tw && $tw.syncer && $tw.syncer.timestampLastSyncFromServer, null, { timeout: 30000 });
   return page;
@@ -63,6 +75,14 @@ async function open(context, url, tag, { hidden = false } = {}) {
 const allLoaded = page => page.evaluate(entries => entries.every(([title, text]) => $tw.wiki.getTiddlerText(title, null) === text), [...expected]);
 const loadedCount = page => page.evaluate(() => $tw.wiki.filterTiddlers("[prefix[Tiddler ]!is[system]]").filter(t => !$tw.wiki.getTiddler(t).hasField("_is_skinny")).length);
 const pending = page => page.evaluate(() => Object.keys($tw.syncer.titlesToBeLoaded).length);
+const loadSteps = page => page.evaluate(() => window.__loadSteps);
+const alerts = page => page.evaluate(() => $tw.wiki.filterTiddlers("[tag[$:/tags/Alert]]").map(t => $tw.wiki.getTiddlerText(t)));
+const show = page => page.evaluate(() => { window.__hidden = false; document.dispatchEvent(new Event("visibilitychange")); });
+const hide = page => page.evaluate(() => { window.__hidden = true; document.dispatchEvent(new Event("visibilitychange")); });
+async function reload(page) {
+  await page.reload();
+  await page.waitForFunction(() => window.$tw && $tw.syncer && $tw.syncer.timestampLastSyncFromServer, null, { timeout: 30000 });
+}
 const storedKeys = page => page.evaluate(() => new Promise(resolve => {
   const open = indexedDB.open("cfworker-tiddlers");
   open.onerror = () => resolve(null);
@@ -98,6 +118,7 @@ check("a refresh fetches no tiddler at all: they come from the device", await al
   JSON.stringify(tiddlerGets(mark, "A", "public").concat(tiddlerGets(mark, "A", "worker")).slice(0, 5)));
 check("...the worker only served the page and the tiddler list", requests.slice(mark).filter(r => r.tag === "A" && r.origin === "worker" && !r.cached).map(r => r.path.replace(/\?.*/, "")).sort().join(" ") === "/ /recipes/default/tiddlers.json",
   requests.slice(mark).filter(r => r.tag === "A" && r.origin === "worker" && !r.cached).map(r => r.path).join(", "));
+check("...and they arrive together, in far fewer load steps than there are tiddlers", (await loadSteps(A)) <= N / 3, `${await loadSteps(A)} load steps for ${N} tiddlers`);
 
 // --- 3. Only what changed is fetched ------------------------------------------------------------------
 await put("Tiddler 7", { text: text(7) + " (changed elsewhere)" });
@@ -116,6 +137,24 @@ check("after a change elsewhere, a refresh fetches that tiddler only, and has th
 check("...a tiddler saved in this tab wasn't fetched, and has the saved text", after[2] === text(9) + " (edited here)");
 keys = await storedKeys(A);
 check("...a tiddler deleted elsewhere is gone from the tab and from the device", after[1] === false && Array.isArray(keys) && !keys.includes("Tiddler 8") && keys.includes("Tiddler 7"), `${keys && keys.length} stored`);
+// A tiddler this tab deletes leaves the device too
+await A.evaluate(() => $tw.wiki.deleteTiddler("Tiddler 10"));
+expected.delete("Tiddler 10");
+await settle(A);
+keys = await storedKeys(A);
+check("a tiddler deleted in this tab is gone from the worker and from the device", !(await bucket.head("recipes/default/tiddlers/Tiddler 10")) && Array.isArray(keys) && !keys.includes("Tiddler 10"), `${keys && keys.length} stored`);
+// The admin site too refuses a copy a cache kept after a change, and gets the new one past the cache: no worker request
+const old11 = await (await bucket.get("recipes/default/tiddlers/Tiddler 11")).text();
+await put("Tiddler 11", { text: text(11) + " (changed elsewhere)" });
+stale.set("recipes/default/tiddlers/Tiddler 11", old11);
+mark = requests.length;
+await reload(A);
+await settle(A, 60000);
+const retried11 = requests.slice(mark).filter(r => r.tag === "A" && r.path.startsWith(TIDDLER_PATH + "Tiddler 11"));
+check("a stale copy from a cache is refused on the admin site too, and fetched again past the cache, without the worker",
+  (await A.evaluate(() => $tw.wiki.getTiddlerText("Tiddler 11", null))) === text(11) + " (changed elsewhere)" && retried11.some(r => r.origin === "public" && r.path.includes("cfworker-retry")) &&
+  !retried11.some(r => r.origin === "worker"), JSON.stringify(retried11.map(r => `${r.origin} ${r.path}`)));
+stale.clear();
 await A.close();
 
 // --- 4. The page publisher doesn't wait for the fill --------------------------------------------------
@@ -148,10 +187,31 @@ const shownHidden = await waitFor(() => C.evaluate(() => $tw.wiki.getTiddlerText
 await sleep(2500);
 const hiddenGets = tiddlerGets(mark, "C", "public");
 check("a hidden tab loads what it shows and nothing more", shownHidden && JSON.stringify(hiddenGets) === '["Tiddler 30"]' && (await loadedCount(C)) === 1, `${JSON.stringify(hiddenGets.slice(0, 5))}, ${await loadedCount(C)} loaded`);
-await C.evaluate(() => { window.__hidden = false; document.dispatchEvent(new Event("visibilitychange")); });
+// A tiddler deleted elsewhere while the fill is held: not loaded once shown (no error)
+await remove("Tiddler 31");
+await C.evaluate(() => $tw.syncer.syncFromServer());
+await waitFor(() => C.evaluate(() => !$tw.wiki.tiddlerExists("Tiddler 31")), 10000);
+mark = requests.length;
+await show(C);
 await settle(C, 60000);
-check("...and fills once shown", await allLoaded(C));
+check("...and fills once shown, leaving out a tiddler deleted meanwhile, without an error", await allLoaded(C) && !tiddlerGets(mark, "C", "public").includes("Tiddler 31") && (await alerts(C)).length === 0,
+  JSON.stringify(await alerts(C)));
 await C.close();
+// Hidden in the middle of the fill: it pauses (what was already asked for arrives), and goes on once shown
+slow = 400;
+const E = await open(admin3, `${base}/`, "E", { hidden: false });
+await waitFor(async () => (await loadedCount(E)) >= 10, 20000);
+await hide(E);
+await sleep(3000);   // what was under way finishes
+mark = requests.length;
+await sleep(1500);
+const whileHidden = tiddlerGets(mark, "E", "public").length, loadedWhileHidden = await loadedCount(E);
+await show(E);
+slow = 0;
+await settle(E, 60000);
+check("hidden in the middle of the fill, a tab stops fetching, and goes on once shown", whileHidden === 0 && loadedWhileHidden < expected.size && await allLoaded(E),
+  `${whileHidden} fetched while hidden, ${loadedWhileHidden} of ${expected.size} loaded then`);
+await E.close();
 
 // --- 6. The fill turned off: a tiddler loads when shown, the rest stays skinny -------------------------
 await put("$:/config/cfworker/LoadAll", { text: "no" });
@@ -164,13 +224,37 @@ await sleep(2500);
 const offGets = tiddlerGets(mark, "D", "public").concat(tiddlerGets(mark, "D", "worker"));
 check("with $:/config/cfworker/LoadAll set to no, only the tiddler shown is fetched", shown50 && JSON.stringify(offGets) === '["Tiddler 50"]' && (await pending(D)) === 0 && (await loadedCount(D)) === 1,
   `${JSON.stringify(offGets.slice(0, 5))}, ${await pending(D)} pending, ${await loadedCount(D)} loaded`);
-check("...the others are there, skinny: titles and fields, no text", (await D.evaluate(() => $tw.wiki.filterTiddlers("[prefix[Tiddler ]]").length)) === N - 1 &&
+check("...the others are there, skinny: titles and fields, no text", (await D.evaluate(() => $tw.wiki.filterTiddlers("[prefix[Tiddler ]]").length)) === expected.size &&
   await D.evaluate(() => $tw.wiki.getTiddler("Tiddler 51").hasField("_is_skinny")));
 mark = requests.length;
 await D.evaluate(() => $tw.wiki.getTiddlerText("Tiddler 51"));   // what a transclusion does
 const shown51 = await waitFor(() => D.evaluate(() => $tw.wiki.getTiddlerText("Tiddler 51", null) !== null), 15000);
 check("...and another loads the moment it's needed", shown51 && JSON.stringify(tiddlerGets(mark, "D", "public")) === '["Tiddler 51"]');
+// What the tab holds in full and the worker has a newer version of is still reloaded
+await put("Tiddler 50", { text: text(50) + " (changed elsewhere)" });
+mark = requests.length;
+await D.evaluate(() => $tw.syncer.syncFromServer());
+const reloaded50 = await waitFor(() => D.evaluate(t => $tw.wiki.getTiddlerText("Tiddler 50", null) === t, text(50) + " (changed elsewhere)"), 15000);
+check("...a loaded tiddler changed elsewhere is still reloaded", reloaded50 && JSON.stringify(tiddlerGets(mark, "D", "public")) === '["Tiddler 50"]', JSON.stringify(tiddlerGets(mark, "D", "public")));
+// A skinny tiddler changed before its text loaded (a tag added, say) is saved without the text: the
+// worker keeps the stored text, and the tab then loads it (a load a module asks for isn't dropped)
+mark = requests.length;
+await D.evaluate(() => { const t = $tw.wiki.getTiddler("Tiddler 52"); $tw.wiki.addTiddler(new $tw.Tiddler(t, { tags: ["done"] }, $tw.wiki.getModificationFields())); });
+await settle(D);
+const loaded52 = await waitFor(() => D.evaluate(() => $tw.wiki.getTiddlerText("Tiddler 52", null) !== null && !$tw.wiki.getTiddler("Tiddler 52").hasField("_is_skinny")), 15000);
+const stored52 = await (await bucket.get("recipes/default/tiddlers/Tiddler 52")).json();
+check("...a skinny tiddler changed before its text loaded keeps its text on the worker, and the tab loads it",
+  loaded52 && stored52.text === text(52) && JSON.stringify(stored52.tags) === '["done"]' && (await D.evaluate(() => $tw.wiki.getTiddlerText("Tiddler 52"))) === text(52) && tiddlerGets(mark, "D", "public").includes("Tiddler 52"),
+  JSON.stringify(tiddlerGets(mark, "D", "public")));
 await D.close();
+// With TiddlyWiki's own lazy loading off, every tiddler has to be loaded in full: the setting is ignored
+await put("$:/config/SyncDisableLazyLoading", { text: "yes" });
+const admin5 = await browser.newContext();
+const F = await open(admin5, `${base}/`, "F");
+await settle(F, 60000);
+check("with TiddlyWiki's lazy loading off ($:/config/SyncDisableLazyLoading), the fill runs whatever the setting", await allLoaded(F));
+await F.close();
+await remove("$:/config/SyncDisableLazyLoading");
 await remove("$:/config/cfworker/LoadAll");
 
 // --- 7. The public site --------------------------------------------------------------------------------
@@ -188,6 +272,7 @@ await V.reload();
 await V.waitForFunction(() => window.$tw && $tw.syncer && $tw.syncer.timestampLastSyncFromServer, null, { timeout: 30000 });
 await settle(V, 60000);
 check("a visitor's refresh fetches no tiddler: they come from the device", await allLoaded(V) && tiddlerGets(mark, "V", "public").length === 0, JSON.stringify(tiddlerGets(mark, "V", "public").slice(0, 5)));
+check("...in far fewer load steps than there are tiddlers", (await loadSteps(V)) <= N / 3, `${await loadSteps(V)} load steps for ${expected.size} tiddlers`);
 // A copy a cache kept after a change: refused, and fetched again past the cache
 const old3 = await (await bucket.get("recipes/default/tiddlers/Tiddler 3")).text();
 await put("Tiddler 3", { text: text(3) + " (changed again)" });
@@ -201,5 +286,18 @@ check("a stale copy from a cache is refused, and the tiddler fetched again past 
   retried.some(r => r.path.includes("cfworker-retry")), JSON.stringify(retried.map(r => r.path)));
 stale.clear();
 await V.close();
+
+// --- 8. Without IndexedDB (a browser that refuses it): loads go over the network, as before ---------------
+const noStore = await browser.newContext();
+mark = requests.length;
+const W = await open(noStore, `${PUB}/`, "W", { noStore: true });
+await settle(W, 60000);
+const firstWithout = tiddlerGets(mark, "W", "public").length;
+mark = requests.length;
+await reload(W);
+await settle(W, 60000);
+check("without IndexedDB, a tab loads everything over the network, and again at the next load", await allLoaded(W) && firstWithout >= expected.size && tiddlerGets(mark, "W", "public").length >= expected.size,
+  `${firstWithout} then ${tiddlerGets(mark, "W", "public").length} fetched for ${expected.size} tiddlers`);
+await W.close();
 
 await finish({ check, results, pageErrors, browser, site });

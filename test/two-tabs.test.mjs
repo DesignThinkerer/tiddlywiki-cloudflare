@@ -610,6 +610,7 @@ await K.close();
 // it: the worker keeps the stored text, and the tab then loads it
 await create(A, "Task", "important text that must not be lost", { tags: ["todo"] });
 await settle(A);
+await forgetDevice(A);   // (so the new tab fetches the text, which the test holds back)
 const skinnyTab = await context.newPage();
 await watch(skinnyTab, "S");
 let releaseText;
