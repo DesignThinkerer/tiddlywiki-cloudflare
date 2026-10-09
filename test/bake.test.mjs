@@ -7,7 +7,8 @@ const WORKER = fileURLToPath(new URL("../worker.js", import.meta.url));
 
 const mf = new Miniflare({
   modules: true, scriptPath: WORKER, compatibilityDate: "2024-09-23", r2Buckets: ["WIKI_BUCKET"], port: 0,
-  bindings: { ACCESS: "off" },   // no Cloudflare Access in front of the tests (see the end of this file)
+  // No Cloudflare Access in front of the tests, and the public site's address (see the end of this file)
+  bindings: { ACCESS: "off", PUBLIC_WIKI_URL: "https://my-tiddlywiki.theophile.dev" },
   outboundService: async () => new Response("{}", { status: 404 }),
 });
 const base = (await mf.ready).toString().replace(/\/$/, "");
@@ -235,7 +236,7 @@ check("...and a shell for it is used once published", res.status === 204 && page
 // CONFLICT_GUARD = "off": the page is built without the browser modules (and still served)
 const mfOff = new Miniflare({
   modules: true, scriptPath: WORKER, compatibilityDate: "2024-09-23", r2Buckets: ["WIKI_BUCKET"], port: 0,
-  bindings: { ACCESS: "off", CONFLICT_GUARD: "off" },
+  bindings: { ACCESS: "off", PUBLIC_WIKI_URL: "https://my-tiddlywiki.theophile.dev", CONFLICT_GUARD: "off" },
   outboundService: async () => new Response("{}", { status: 404 }),
 });
 const baseOff = (await mfOff.ready).toString().replace(/\/$/, "");
@@ -275,15 +276,53 @@ await mfClosed.dispose();
 // worker's own function, from a copy of worker.js that exports it
 const os = await import("node:os"), path = await import("node:path"), fs = await import("node:fs");
 const copy = path.join(os.tmpdir(), `worker-access-${process.pid}.mjs`);
-fs.writeFileSync(copy, fs.readFileSync(WORKER, "utf8") + "\nexport { withoutAccess };\n");
-let withoutAccess = () => { throw new Error("withoutAccess isn't exported by worker.js"); };
-try { ({ withoutAccess } = await import((await import("node:url")).pathToFileURL(copy).href)); } catch (e) { console.log("  (" + e.message + ")"); }
+fs.writeFileSync(copy, fs.readFileSync(WORKER, "utf8") + "\nexport { withoutAccess, publicSiteError };\n");
+let withoutAccess = () => { throw new Error("withoutAccess isn't exported by worker.js"); }, publicSiteError = withoutAccess;
+try { ({ withoutAccess, publicSiteError } = await import((await import("node:url")).pathToFileURL(copy).href)); } catch (e) { console.log("  (" + e.message + ")"); }
 fs.unlinkSync(copy);
 const decide = (ctx, env) => { try { return withoutAccess(ctx, env); } catch { return "error"; } };
 check("a request Access authenticated (ctx.access) is let through", decide({ access: { aud: "app" } }, {}) === false);
 check("one without ctx.access is refused", decide({}, {}) === true);
 check("ACCESS = off lets it through, for tests and local runs", decide({}, { ACCESS: "off" }) === false);
 check("...and nothing else does (not ACCESS = no)", decide({}, { ACCESS: "no" }) === true && decide({}, { ACCESS: "" }) === true);
+
+// --- The public site's address --------------------------------------------------------------------
+// PUBLIC_WIKI_URL is required: the page loads its plugin files and TiddlyWiki's core from it, so a
+// wiki must never fall back to someone else's site. Without it, or with one that isn't a site's
+// address, every request answers 500 saying so, and nothing is built or stored.
+async function withPublicUrl(value, run) {
+  const instance = new Miniflare({
+    modules: true, scriptPath: WORKER, compatibilityDate: "2024-09-23", r2Buckets: ["WIKI_BUCKET"], port: 0,
+    bindings: { ACCESS: "off", ...(value === undefined ? {} : { PUBLIC_WIKI_URL: value }) },
+    outboundService: async () => new Response("{}", { status: 404 }),
+  });
+  const root = (await instance.ready).toString().replace(/\/$/, "");
+  const store = await instance.getR2Bucket("WIKI_BUCKET");
+  await store.put("index.html", html("engine"));
+  try { return await run(root, instance, store); } finally { await instance.dispose(); }
+}
+await withPublicUrl(undefined, async (root, instance, store) => {
+  const page = await instance.dispatchFetch(root + "/"), pageText = await page.text();
+  const save = await instance.dispatchFetch(root + "/recipes/default/tiddlers/x", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title: "x", text: "t" }) });
+  await save.text();
+  check("PUBLIC_WIKI_URL missing: the page answers 500 and says which variable", page.status === 500 && pageText.includes("PUBLIC_WIKI_URL"), `status ${page.status}: ${pageText.slice(0, 60)}`);
+  check("...a save too, and nothing is built or stored", save.status === 500 && !(await store.head("baked.html")) && !(await store.head("recipes/default/tiddlers/x")), `status ${save.status}`);
+});
+for (const [value, why] of [["wiki.example.com", "without https://"], ["https://wiki.example.com/wiki", "with a path"]]) {
+  await withPublicUrl(value, async (root, instance) => {
+    const page = await instance.dispatchFetch(root + "/"), pageText = await page.text();
+    check(`PUBLIC_WIKI_URL ${why} (${value}): 500, naming the variable and the value`, page.status === 500 && pageText.includes("PUBLIC_WIKI_URL") && pageText.includes(value), `status ${page.status}: ${pageText.slice(0, 80)}`);
+  });
+}
+await withPublicUrl("https://wiki.example.com/", async (root, instance) => {
+  const page = await instance.dispatchFetch(root + "/"), pageText = await page.text();
+  check("a trailing slash is fine: the page is built, with the address baked in once", page.status === 200 && pageText.includes('"https://wiki.example.com/"') && !pageText.includes("wiki.example.com//"), `status ${page.status}`);
+});
+// The check itself, including the case Miniflare can't show: the address being this worker's own
+const site = (value, origin = "https://admin.example.com") => { try { return publicSiteError(value === undefined ? {} : { PUBLIC_WIKI_URL: value }, origin); } catch { return "error"; } };
+check("the public site's address: a site is accepted, with or without a trailing slash", site("https://wiki.example.com") === null && site("https://wiki.example.com/") === null && site("http://127.0.0.1:8787") === null);
+check("...the worker's own address is refused, saying so", /own address|this worker/.test(site("https://admin.example.com") || "") && /own address|this worker/.test(site("https://admin.example.com/", "https://admin.example.com") || ""));
+check("...and so are a missing value, no scheme, another scheme, a path, a query", [undefined, "", "wiki.example.com", "ftp://wiki.example.com", "https://wiki.example.com/wiki", "https://wiki.example.com/?x"].every(v => typeof site(v) === "string" && site(v).includes("PUBLIC_WIKI_URL")));
 
 console.log(`\n${results.filter(Boolean).length}/${results.length} passed`);
 await mf.dispose();
