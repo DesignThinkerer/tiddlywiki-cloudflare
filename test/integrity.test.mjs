@@ -465,6 +465,44 @@ check("a page load whose build fails serves the last page built, not the bare in
   outdated && servedWhileFailing.includes(tagOf(P2)) && text.includes(tagOf(P5)),
   `outdated ${outdated}, served the last page ${servedWhileFailing.includes(tagOf(P2))}, then built ${text.includes(tagOf(P5))}`);
 
+// A page build that fails twice: the page can't be written, nor marked outdated right after (R2
+// allows one write a second to a key, and the mark writes the same one). The mark is tried again a
+// second later; if that fails too, the delete or save answers 500 (the change itself is stored), and
+// its retry finds the plugin file still there, the only trace left, and finishes: the page built
+// without the plugin, the file deleted. Without that, the deleted plugin stayed in the page and in
+// its file, loaded at every page load on both sites, and nothing would ever take it out.
+const failTimes = (call, times) => mf.dispatchFetch(`${base}/__r2fail`, { method: "POST", body: JSON.stringify({ call, times }) });
+const P6 = "$:/plugins/test/page-six", P7 = "$:/plugins/test/page-seven", P8 = "$:/plugins/test/page-eight";
+await save(P6, pagePlugin(P6));
+await save(P7, pagePlugin(P7));
+await save(P8, pagePlugin(P8));
+const builtWithAll = (await storedPage()).includes(tagOf(P6)) && (await storedPage()).includes(tagOf(P7)) && (await storedPage()).includes(tagOf(P8));
+await failTimes("put baked.html", 2);
+const deletedP6 = await del(P6);
+outdated = (await storedPageMeta()).bakeVersion === "outdated";
+text = await loadPage();
+check("a plugin delete whose page build and outdated mark both fail: the mark is tried again, and the next page load builds the page without it",
+  builtWithAll && deletedP6.status === 204 && outdated && !text.includes(tagOf(P6)), `status ${deletedP6.status}, outdated ${outdated}, page loads it: ${text.includes(tagOf(P6))}`);
+await failTimes("put baked.html", 3);
+const failedP7 = await del(P7);
+const stillLoaded = (await storedPage()).includes(tagOf(P7)) && !!(await bucket.head(`_plugins/${P7}.js`));
+const retriedP7 = await del(P7);   // as TiddlyWiki retries a failed delete
+text = await loadPage();
+check("...and if that fails too, the delete answers 500 while the page still loads the plugin; its retry builds the page without it and deletes the file",
+  failedP7.status === 500 && stillLoaded && retriedP7.status === 204 && !text.includes(tagOf(P7)) && !(await bucket.head(`_plugins/${P7}.js`)),
+  `first ${failedP7.status} (page loads it: ${stillLoaded}), retry ${retriedP7.status}, page loads it: ${text.includes(tagOf(P7))}, file ${!!(await bucket.head(`_plugins/${P7}.js`))}`);
+await failTimes("put baked.html", 3);
+const plainP8 = { text: "an ordinary tiddler now" };
+const pluginRevision = (await bucket.head(`recipes/default/tiddlers/${P8}`)).customMetadata.revision;
+const failedP8 = await save(P8, plainP8, { "If-Match": pluginRevision });
+const stillLoadedP8 = (await storedPage()).includes(tagOf(P8)) && !!(await bucket.head(`_plugins/${P8}.js`));
+// The same save again, based on the plugin's revision as the tab still has it: finished, not refused
+const retriedP8 = await save(P8, plainP8, { "If-Match": pluginRevision });
+text = await loadPage();
+check("the same for a plugin saved as an ordinary tiddler: the retried save builds the page without it and deletes the file",
+  failedP8.status === 500 && stillLoadedP8 && retriedP8.status === 204 && !text.includes(tagOf(P8)) && !(await bucket.head(`_plugins/${P8}.js`)),
+  `first ${failedP8.status} (page loads it: ${stillLoadedP8}), retry ${retriedP8.status}, page loads it: ${text.includes(tagOf(P8))}, file ${!!(await bucket.head(`_plugins/${P8}.js`))}`);
+
 // --- 4. List updates follow revisions --------------------------------------------------------------
 // Two requests for the same title can update the list in the other order (a list write retried after
 // another one): the list keeps the newer version
