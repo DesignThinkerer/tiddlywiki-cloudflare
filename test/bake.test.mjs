@@ -7,6 +7,7 @@ const WORKER = fileURLToPath(new URL("../worker.js", import.meta.url));
 
 const mf = new Miniflare({
   modules: true, scriptPath: WORKER, compatibilityDate: "2024-09-23", r2Buckets: ["WIKI_BUCKET"], port: 0,
+  bindings: { ACCESS: "off" },   // no Cloudflare Access in front of the tests (see the end of this file)
   outboundService: async () => new Response("{}", { status: 404 }),
 });
 const base = (await mf.ready).toString().replace(/\/$/, "");
@@ -234,7 +235,7 @@ check("...and a shell for it is used once published", res.status === 204 && page
 // CONFLICT_GUARD = "off": the page is built without the browser modules (and still served)
 const mfOff = new Miniflare({
   modules: true, scriptPath: WORKER, compatibilityDate: "2024-09-23", r2Buckets: ["WIKI_BUCKET"], port: 0,
-  bindings: { CONFLICT_GUARD: "off" },
+  bindings: { ACCESS: "off", CONFLICT_GUARD: "off" },
   outboundService: async () => new Response("{}", { status: 404 }),
 });
 const baseOff = (await mfOff.ready).toString().replace(/\/$/, "");
@@ -244,6 +245,45 @@ const offPage = await offResponse.text();
 check("CONFLICT_GUARD off: the page is served without the browser modules", offResponse.status === 200 && offPage.includes("engine without the modules") &&
   !offPage.includes("$:/cfworker/conflict-guard.js") && !offPage.includes("$:/cfworker/page-publisher.js"), `status ${offResponse.status}`);
 await mfOff.dispose();
+
+// --- Cloudflare Access ----------------------------------------------------------------------------
+// The worker refuses any request that didn't come through Cloudflare Access (Cloudflare gives those
+// a ctx.access), unless ACCESS = "off", which every instance above sets. Miniflare never sets
+// ctx.access, so this instance, without the switch, must refuse everything, and build nothing.
+const mfClosed = new Miniflare({
+  modules: true, scriptPath: WORKER, compatibilityDate: "2024-09-23", r2Buckets: ["WIKI_BUCKET"], port: 0,
+  outboundService: async () => new Response("{}", { status: 404 }),
+});
+const baseClosed = (await mfClosed.ready).toString().replace(/\/$/, "");
+const bucketClosed = await mfClosed.getR2Bucket("WIKI_BUCKET");
+await bucketClosed.put("index.html", html("engine behind Access"));
+const refusals = [];
+for (const [method, path, body] of [
+  ["GET", "/"], ["GET", "/status"], ["GET", "/recipes/default/tiddlers.json"], ["GET", "/recipes/default/tiddlers/x"],
+  ["PUT", "/recipes/default/tiddlers/x", JSON.stringify({ title: "x", text: "t" })], ["DELETE", "/bags/default/tiddlers/x"],
+  ["OPTIONS", "/recipes/default/tiddlers/x"], ["HEAD", "/index.html"]
+]) {
+  const res = await mfClosed.dispatchFetch(baseClosed + path, { method, body, headers: body ? { "Content-Type": "application/json" } : {} });
+  const text = await res.text();
+  refusals.push(`${method} ${path} → ${res.status}`);
+  if (res.status !== 403 || (method !== "HEAD" && !text.includes("Cloudflare Access"))) refusals.push("WRONG: " + text.slice(0, 80));
+}
+check("without Access, every request is refused with 403 and says why", refusals.every(r => r.endsWith("403")), refusals.join(", "));
+check("...and nothing was built or stored for them", !(await bucketClosed.head("baked.html")) && !(await bucketClosed.head("recipes/default/tiddlers/x")));
+await mfClosed.dispose();
+// The decision itself, for a request Access did authenticate, which Miniflare can't make: the
+// worker's own function, from a copy of worker.js that exports it
+const os = await import("node:os"), path = await import("node:path"), fs = await import("node:fs");
+const copy = path.join(os.tmpdir(), `worker-access-${process.pid}.mjs`);
+fs.writeFileSync(copy, fs.readFileSync(WORKER, "utf8") + "\nexport { withoutAccess };\n");
+let withoutAccess = () => { throw new Error("withoutAccess isn't exported by worker.js"); };
+try { ({ withoutAccess } = await import((await import("node:url")).pathToFileURL(copy).href)); } catch (e) { console.log("  (" + e.message + ")"); }
+fs.unlinkSync(copy);
+const decide = (ctx, env) => { try { return withoutAccess(ctx, env); } catch { return "error"; } };
+check("a request Access authenticated (ctx.access) is let through", decide({ access: { aud: "app" } }, {}) === false);
+check("one without ctx.access is refused", decide({}, {}) === true);
+check("ACCESS = off lets it through, for tests and local runs", decide({}, { ACCESS: "off" }) === false);
+check("...and nothing else does (not ACCESS = no)", decide({}, { ACCESS: "no" }) === true && decide({}, { ACCESS: "" }) === true);
 
 console.log(`\n${results.filter(Boolean).length}/${results.length} passed`);
 await mf.dispose();

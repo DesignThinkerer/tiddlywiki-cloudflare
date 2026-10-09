@@ -13,6 +13,20 @@ function getTwTimestamp(date = new Date()) {
   return date.toISOString().replace(/\D/g, '').slice(0, 17);
 }
 
+// --- Cloudflare Access ---------------------------------------------------------------------------
+// The worker has no login of its own: Cloudflare Access, in front of it, has (README 3.3). Cloudflare
+// gives a request that came through Access a ctx.access; a request without one didn't, and is refused
+// before anything is read or built. So an Access application missing, or set up on another hostname
+// than the one the request came to, leaves the wiki closed rather than open. ACCESS = "off" lets
+// requests through without it: for the tests and local runs, where there is no Access.
+function withoutAccess(ctx, env) {
+  return !ctx.access && env.ACCESS !== "off";
+}
+
+const ACCESS_REFUSED = "Refused: this request didn't come through Cloudflare Access, which must protect the admin site (README 3.3). " +
+  "If you're setting the worker up, add the Access application for this hostname first. Only for tests and local runs, " +
+  "where there is no Access, the variable ACCESS = off lets requests through.";
+
 // --- Edit-conflict protection ---------------------------------------------------------------
 //
 // How it works:
@@ -398,6 +412,10 @@ function untilDone(ctx, promise) {
 
 export default {
   async fetch(request, env, ctx) {
+    // Before anything else: a request Access didn't authenticate costs nothing but this answer
+    if (withoutAccess(ctx, env)) {
+      return new Response(ACCESS_REFUSED, { status: 403, headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" } });
+    }
     const url = new URL(request.url);
     // The admin page reads tiddlers from the public site too, so both answer cross-origin requests.
     // TiddlyWiki reads the ETag of each save, which a browser only shows a page that's told it may.

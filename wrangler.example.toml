@@ -4,7 +4,8 @@
 name = "tiddlywiki-admin"                 # your worker's name
 main = "worker.js"                        # the generated file (npm run build)
 compatibility_date = "2024-09-23"         # keep the date your worker already uses
-workers_dev = false                       # optional: no workers.dev address (Worker Access covers it anyway)
+workers_dev = false                       # no workers.dev address (Worker Access covers it anyway, and the worker refuses requests without Access)
+preview_urls = false                      # no preview URLs either
 
 routes = [
   { pattern = "admin.my-tiddlywiki.theophile.dev", custom_domain = true }
@@ -33,6 +34,7 @@ CF_ZONE_ID = "YOUR-ZONE-ID"
 # CONFLICT_GUARD = "off"                                     # stop baking the browser module
 # BACKUP_ALERT_MINUTES = "60"                                # the default: show backups failing for an hour
 # BACKUP_RETRY_SECONDS = "60"                                # the default: first wait before a failed backup is tried again
+# ACCESS = "off"                                             # NEVER on a deployed worker: lets requests through without Cloudflare Access (tests and local runs only)
 
 # Secrets: set with `npx wrangler secret put NAME`, never in this file
 #   GITHUB_TOKEN   fine-grained token with Contents: read and write on the backup repository

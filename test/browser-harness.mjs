@@ -74,7 +74,7 @@ export async function startSite({ index, publicStatus = false, bindings = {}, ou
   const mf = new Miniflare({
     modules: true, scriptPath: WORKER, compatibilityDate: "2024-09-23", port: 0,
     r2Buckets: ["WIKI_BUCKET"], ...(r2Persist ? { r2Persist } : {}),
-    bindings: { PUBLIC_WIKI_URL: pub, ...bindings },
+    bindings: { ACCESS: "off", PUBLIC_WIKI_URL: pub, ...bindings },
     outboundService: outbound || (async () => new Response('{"success":true}')),
   });
   const base = (await mf.ready).toString().replace(/\/$/, "");
