@@ -309,6 +309,38 @@ await sleep(QUIET_WINDOW);
 html = await shell();
 check("a tab that publishes after another includes that tab's change (it syncs first)", bBefore !== "subtitle from A" &&
   html.includes("subtitle from A") && html.includes("window.__footerRan = 'B'"), `B had "${bBefore}"`);
+// Two tabs publishing moments apart: A's page reaches the worker after B's, though rendered before
+// B's change (held back here). The worker refuses it, since another tab published since the page A
+// sends was built, and A syncs and sends its page again, with B's change. Otherwise the older page
+// would replace the newer one, and neither tab would know.
+mark = requests.length;
+let releaseA, aHeld = false, aAttempted = false;
+const held = new Promise(resolve => { releaseA = resolve; });
+await A.route("**/page/shell", async route => {
+  aAttempted = true;
+  if (!aHeld) {
+    aHeld = true;
+    await held;
+  }
+  await route.continue();
+});
+const aAnswers = [];
+A.on("response", r => { if (r.request().method() === "PUT" && r.url().endsWith("/page/shell")) aAnswers.push(r.status()); });
+await add(A, { title: "$:/SiteSubtitle", text: "subtitle A2" });
+await waitFor(async () => aAttempted, 15000);
+await add(B, { title: "Footer B2", tags: "$:/tags/RawMarkupWikified/BottomBody", text: RAW + "<script>window.__footerB2 = true;</script>" });
+await settle(B);
+await waitFor(async () => shellPuts("B", mark) > 0, 15000);
+await sleep(QUIET_WINDOW);
+const bPublished = (await shell()).includes("__footerB2") && (await shell()).includes("subtitle A2");
+releaseA();
+await waitFor(async () => aAnswers.length >= 2 && (await status(A))?.state !== "waiting", 20000);
+await sleep(QUIET_WINDOW);
+html = await shell();
+check("a page that reaches the worker after another tab's, rendered before that tab's change, is refused, and the tab sends it again with the change",
+  bPublished && aAnswers[0] === 409 && aAnswers[1] === 204 && shellPuts("A", mark) === 2 && html.includes("subtitle A2") && html.includes("__footerB2") && (await status(A))?.state === "published",
+  `B published both ${bPublished}, A's answers ${aAnswers.join(", ")}, A's PUTs ${shellPuts("A", mark)}, shell has A's ${html.includes("subtitle A2")} and B's ${html.includes("__footerB2")}, A ${JSON.stringify(await status(A))}`);
+await A.unroute("**/page/shell");
 // A change another tab published, undone in this one: this tab then renders the page it published
 // last, but that's no longer the one published, so it publishes
 const UNDONE = "$:/cfw-test/undone";
@@ -325,9 +357,10 @@ await B.evaluate(t => $tw.wiki.deleteTiddler(t), UNDONE);
 await settle(B);
 await waitFor(async () => shellPuts("B", mark) > 0, 10000);
 await sleep(QUIET_WINDOW);
+// (B's page was built before A published, so B's first send is refused and it sends again: two PUTs)
 check("a change another tab published, undone in this one, is published by it (its last page is no longer the one published)",
-  undonePublished && shellPuts("B", mark) === 1 && !(await shell()).includes("cfw-undone"),
-  `published by A ${undonePublished}, B's publishes ${shellPuts("B", mark)}, still in the shell ${(await shell()).includes("cfw-undone")}`);
+  undonePublished && shellPuts("B", mark) >= 1 && shellPuts("B", mark) <= 2 && !(await shell()).includes("cfw-undone") && (await status(B))?.state === "published",
+  `published by A ${undonePublished}, B's publishes ${shellPuts("B", mark)}, still in the shell ${(await shell()).includes("cfw-undone")}, B ${JSON.stringify(await status(B))}`);
 await contextB.close();
 
 // --- 8. What was deleted stays deleted ----------------------------------------------------------------

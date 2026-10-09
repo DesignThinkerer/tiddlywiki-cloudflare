@@ -1070,7 +1070,7 @@ async function rebakeHtml(env, ctx, list = null, source = null) {
       });
       store.push({ title: PUBLIC_URL_TITLE, text: publicUrl(env, "/") });
       store.push({ title: PAGE_PUBLISHER_TITLE, type: "application/javascript", "module-type": "startup", text: PAGE_PUBLISHER_SOURCE });
-      store.push({ title: PAGE_SOURCE_TITLE, type: "application/json", text: JSON.stringify({ index: pageSource.index, fingerprint: pageSource.fingerprint, core: pageSource.core }) });
+      store.push({ title: PAGE_SOURCE_TITLE, type: "application/json", text: JSON.stringify({ index: pageSource.index, fingerprint: pageSource.fingerprint, core: pageSource.core, shell: pageSource.shell || "" }) });
     }
 
     // In a shell, plugins load right before the core (they must run before TiddlyWiki starts, which
@@ -1141,19 +1141,20 @@ function coreFileUrl(env, version) {
 }
 
 // What a page is built from: { html (bytes), index: index.html's ETag, fingerprint: the shell's
-// ("" for index.html itself), core: the stored core file's version ("" if none) }, or null if
-// there's no index.html
+// ("" for index.html itself), core: the stored core file's version ("" if none), shell: the stored
+// shell's ETag ("" for index.html itself), the version a tab sends back with the page it publishes
+// (publishShell) }, or null if there's no index.html
 async function readPageSource(env) {
   const [index, shell, coreFile] = await Promise.all([
     env.WIKI_BUCKET.head("index.html"), env.WIKI_BUCKET.get(SHELL_KEY), env.WIKI_BUCKET.head(CORE_KEY)
   ]);
   const core = coreFile?.customMetadata?.v || "";
   if (shell && index && shell.customMetadata?.index === index.etag) {
-    return { html: new Uint8Array(await shell.arrayBuffer()), index: index.etag, fingerprint: shell.customMetadata.fingerprint || "", core, shellVersion: shell.uploaded.getTime() };
+    return { html: new Uint8Array(await shell.arrayBuffer()), index: index.etag, fingerprint: shell.customMetadata.fingerprint || "", core, shellVersion: shell.uploaded.getTime(), shell: shell.etag };
   }
   if (shell) await shell.body.cancel();
   const full = await env.WIKI_BUCKET.get("index.html");
-  return full && { html: new Uint8Array(await full.arrayBuffer()), index: full.etag, fingerprint: "", core };
+  return full && { html: new Uint8Array(await full.arrayBuffer()), index: full.etag, fingerprint: "", core, shell: "" };
 }
 
 function refusal(message, corsHeaders, status = 400) {
@@ -1204,9 +1205,13 @@ async function publishCoreFile(request, env, url, corsHeaders) {
 
 // PUT /page/shell: the page rendered by the admin wiki, without the core. X-Page-Fingerprint: its
 // fingerprint (computed by the admin wiki); X-Page-Index: the index.html the admin page was built
-// for. Refused unless it's a page that works: TiddlyWiki's tiddler store with the TiddlyWeb plugin,
-// and the stored core file loaded at the end. The same shell again only makes sure the page is
-// built from it.
+// for; X-Page-Shell: the stored shell the page was built from, or last published over (its ETag, ""
+// when built from index.html), so a page older than the shell stored (another tab published since)
+// is refused rather than replacing it, 409 with the current version in X-Page-Shell: the tab syncs
+// and sends its page again, with that tab's change in it. (A tab that sends no version is from before
+// this check: reload.) Refused unless it's a page that works: TiddlyWiki's tiddler store with the
+// TiddlyWeb plugin, and the stored core file loaded at the end. The same shell again only makes sure
+// the page is built from it. Every answer that kept or keeps a shell gives its version.
 async function publishShell(request, env, ctx, corsHeaders) {
   const fingerprint = request.headers.get("X-Page-Fingerprint") || "";
   if (!fingerprint || fingerprint.length > 100) return refusal("The shell has no fingerprint (X-Page-Fingerprint).", corsHeaders);
@@ -1217,11 +1222,19 @@ async function publishShell(request, env, ctx, corsHeaders) {
   if (!index || request.headers.get("X-Page-Index") !== index.etag) {
     return refusal("index.html has changed since this page was loaded: reload the admin wiki.", corsHeaders, 409);
   }
+  const withShell = (headers, shell) => ({ ...headers, "X-Page-Shell": shell });
   if (kept?.customMetadata?.index === index.etag && kept.customMetadata.fingerprint === fingerprint) {
     const page = await env.WIKI_BUCKET.head("baked.html");
     if (page?.customMetadata?.sourceEtag === index.etag && page.customMetadata.shell === fingerprint) {
-      return new Response(null, { status: 204, headers: corsHeaders });
+      return new Response(null, { status: 204, headers: withShell(corsHeaders, kept.etag) });
     }
+  }
+  // The shell stored for this index.html, if any, is the one the page must have been built from
+  const base = kept?.customMetadata?.index === index.etag ? kept : null;
+  const sent = request.headers.get("X-Page-Shell");
+  if (base && sent !== base.etag) {
+    const why = sent === null ? "This page is from before the worker checked that: reload the admin wiki." : "It's sent again by itself, with that change.";
+    return new Response(`Another tab published the page since this one was loaded. ${why}`, { status: 409, headers: withShell({ ...corsHeaders, "Content-Type": "text/plain; charset=utf-8" }, base.etag) });
   }
   const bytes = new Uint8Array(await request.arrayBuffer());
   if (bytes.length > SHELL_LIMIT) return refusal("The shell is too big.", corsHeaders);
@@ -1239,15 +1252,21 @@ async function publishShell(request, env, ctx, corsHeaders) {
   if (!text.includes(`<script src="${coreFileUrl(env, version)}"`)) {
     return refusal(`The shell doesn't load the stored core file (${coreFileUrl(env, version)}).`, corsHeaders);
   }
+  // Over the shell checked above, or none: two tabs sending at once can't both win
   const storedShell = await env.WIKI_BUCKET.put(SHELL_KEY, bytes, {
     httpMetadata: { contentType: "text/html; charset=utf-8" },
-    customMetadata: { index: index.etag, fingerprint }
+    customMetadata: { index: index.etag, fingerprint },
+    onlyIf: kept ? { etagMatches: kept.etag } : new Headers({ "If-None-Match": "*" })
   });
-  const rebuilt = await untilDone(ctx, rebakeHtml(env, ctx, null, { html: bytes, index: index.etag, fingerprint, core: version, shellVersion: storedShell.uploaded.getTime() }));
-  if (rebuilt) return new Response(null, { status: 204, headers: corsHeaders });
+  if (!storedShell) {
+    const now = await env.WIKI_BUCKET.head(SHELL_KEY);
+    return new Response("Another tab published the page at the same moment. It's sent again by itself, with that change.", { status: 409, headers: withShell({ ...corsHeaders, "Content-Type": "text/plain; charset=utf-8" }, now?.etag || "") });
+  }
+  const rebuilt = await untilDone(ctx, rebakeHtml(env, ctx, null, { html: bytes, index: index.etag, fingerprint, core: version, shellVersion: storedShell.uploaded.getTime(), shell: storedShell.etag }));
+  if (rebuilt) return new Response(null, { status: 204, headers: withShell(corsHeaders, storedShell.etag) });
   // Kept, but the page couldn't be built now (see the logs): the next admin page load builds it
   ctx.waitUntil(markPageOutdated(env));
-  return refusal("The shell is kept, but the page couldn't be rebuilt now: it will be at the next admin page load.", corsHeaders, 503);
+  return new Response("The shell is kept, but the page couldn't be rebuilt now: it will be at the next admin page load.", { status: 503, headers: withShell({ ...corsHeaders, "Content-Type": "text/plain; charset=utf-8" }, storedShell.etag) });
 }
 
 const MANIFEST_KEY = "recipes/default/tiddlers.json";
