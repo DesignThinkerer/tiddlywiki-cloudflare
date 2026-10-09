@@ -1,19 +1,22 @@
-# Example wrangler configuration for deploying with `npx wrangler deploy`.
-# Copy to wrangler.toml and replace the placeholders. Everything here can also be set in the dashboard.
+# The worker's name, bindings and settings: what Wrangler deploys, from your repository through
+# Workers Builds, or with `npx wrangler deploy` (README 2.5). Put in the names you chose (README 2.1).
+# No secret goes in this file: GITHUB_TOKEN and CF_API_TOKEN are set as secrets (README 2.5).
 
-name = "tiddlywiki-admin"                 # your worker's name
-main = "worker.js"                        # the generated file (npm run build)
-compatibility_date = "2024-09-23"         # keep the date your worker already uses
-workers_dev = false                       # no workers.dev address (Worker Access covers it anyway, and the worker refuses requests without Access)
-preview_urls = false                      # no preview URLs either
+name = "wiki-admin"                  # the worker's name
+main = "worker.js"                   # the built file (npm run build): deployed as it is, the one the tests ran on
+no_bundle = true
+find_additional_modules = false
+compatibility_date = "2024-09-23"
+workers_dev = false                  # no workers.dev address: the admin site is its custom domain, behind Access
+preview_urls = false                 # no preview URLs either
 
 routes = [
-  { pattern = "admin.my-tiddlywiki.theophile.dev", custom_domain = true }
+  { pattern = "admin.wiki.example.com", custom_domain = true }   # the admin site (README 2.1)
 ]
 
 [[r2_buckets]]
 binding = "WIKI_BUCKET"
-bucket_name = "YOUR-BUCKET-NAME"
+bucket_name = "wiki"                 # the bucket you created (README 2.2); must exist: a missing name would make Wrangler create one
 
 # The empty wiki a new bucket starts from (assets/empty.html, made by npm run build), deployed with
 # the worker. run_worker_first: the worker answers every request; the asset is only read by it.
@@ -22,27 +25,32 @@ directory = "./assets"
 binding = "ASSETS"
 run_worker_first = true
 
-# GitHub backup queue: the worker sends to it and consumes it, one batch at a time
+# The backup queue (README 2.3): the worker sends to it and consumes it, one batch at a time
 [[queues.producers]]
 binding = "BACKUP_QUEUE"
 queue = "wiki-backup"
 
 [[queues.consumers]]
 queue = "wiki-backup"
-max_batch_size = 10
-max_batch_timeout = 5
-max_concurrency = 1
+max_batch_size = 10                  # one run stays within the free plan's subrequest limit
+max_batch_timeout = 5                # commits appear a few seconds after a save
+max_concurrency = 1                  # backups run one at a time, so commits never collide
+max_retries = 3                      # Cloudflare's default, which the worker counts on for its waits: don't lower it
 
 [vars]
-GITHUB_REPO = "OWNER/REPO"
+PUBLIC_WIKI_URL = "https://wiki.example.com"   # required: the public site, the bucket's custom domain (README 2.2)
+GITHUB_REPO = "OWNER/REPO"                     # the backup repository (README 2.4); leave as is for no backups
 GITHUB_BRANCH = "main"
-CF_ZONE_ID = "YOUR-ZONE-ID"
-PUBLIC_WIKI_URL = "https://my-tiddlywiki.theophile.dev"     # required: the public site, the bucket's custom domain (README 3.1)
-# CONFLICT_GUARD = "off"                                     # stop baking the browser module
-# BACKUP_ALERT_MINUTES = "60"                                # the default: show backups failing for an hour
-# BACKUP_RETRY_SECONDS = "60"                                # the default: first wait before a failed backup is tried again
-# ACCESS = "off"                                             # NEVER on a deployed worker: lets requests through without Cloudflare Access (tests and local runs only)
+CF_ZONE_ID = "YOUR-ZONE-ID"                    # the zone of the public site, for cache purges (README 2.5)
+# CONFLICT_GUARD = "off"                       # build the page without the browser modules (README 3)
+# BACKUP_ALERT_MINUTES = "60"                  # the default: show backups failing for an hour
+# BACKUP_RETRY_SECONDS = "60"                  # the default: first wait before a failed backup is tried again
+# ACCESS = "off"                               # NEVER on a deployed worker: lets requests through without Cloudflare Access (tests and local runs only)
 
-# Secrets: set with `npx wrangler secret put NAME`, never in this file
+# Secrets, set in the dashboard (Settings → Variables and Secrets) or with `npx wrangler secret put NAME`:
 #   GITHUB_TOKEN   fine-grained token with Contents: read and write on the backup repository
-#   CF_API_TOKEN   API token with Zone > Cache Purge on the zone
+#   CF_API_TOKEN   API token with Zone → Cache Purge on the zone
+
+# Workers Logs (README 3): what the worker prints, kept 3 days on the free plan
+[observability]
+enabled = true

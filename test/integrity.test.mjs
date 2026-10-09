@@ -622,9 +622,15 @@ res = await del("Draft 2 of 'Ideas'");
 check("deleting a tiddler titled \"Draft 2 of '…'\" deletes it", !(await storedRevision("Draft 2 of 'Ideas'")) && !(await entry("Draft 2 of 'Ideas'")), `status ${res.status}`);
 
 // --- 6. Local secrets and Wrangler's files stay out of git ---------------------------------------
+// wrangler.toml is part of the repository (the worker's names and settings, no secret in it: those are
+// set as secrets); Wrangler's local files aren't
 const ignored = fs.readFileSync(path.join(ROOT, ".gitignore"), "utf8").split(/\r?\n/).map(l => l.trim());
-const missing = ["wrangler.toml", ".dev.vars", ".wrangler/"].filter(p => !ignored.includes(p));
-check(".gitignore covers wrangler.toml, .dev.vars and .wrangler/", missing.length === 0, missing.length ? "missing: " + missing.join(", ") : "");
+const missing = [".dev.vars", ".wrangler/"].filter(p => !ignored.includes(p));
+check(".gitignore covers .dev.vars and .wrangler/, and not wrangler.toml", missing.length === 0 && !ignored.includes("wrangler.toml") && fs.existsSync(path.join(ROOT, "wrangler.toml")),
+  missing.length ? "missing: " + missing.join(", ") : ignored.includes("wrangler.toml") ? "wrangler.toml is ignored" : fs.existsSync(path.join(ROOT, "wrangler.toml")) ? "" : "no wrangler.toml");
+const toml = fs.existsSync(path.join(ROOT, "wrangler.toml")) ? fs.readFileSync(path.join(ROOT, "wrangler.toml"), "utf8") : "";
+check("wrangler.toml holds no secret, and every binding and setting the worker needs",
+  !/GITHUB_TOKEN\s*=|CF_API_TOKEN\s*=/.test(toml) && ["WIKI_BUCKET", "BACKUP_QUEUE", "ASSETS", "run_worker_first = true", "PUBLIC_WIKI_URL", "max_retries = 3", "max_concurrency = 1", "workers_dev = false", "preview_urls = false"].every(k => toml.includes(k)));
 
 console.log(`\n${results.filter(Boolean).length}/${results.length} passed`);
 await mf.dispose();
