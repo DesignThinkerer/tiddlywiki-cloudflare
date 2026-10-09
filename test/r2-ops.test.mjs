@@ -27,6 +27,10 @@ const BUDGETS = {
   // The same bytes as stored: read once to compare, then the list update is finished
   "save sent again, already stored": { "head tiddler": 1, "get tiddler": 1, "get list": 1, "put list": 1 },
   "delete": { "get list": 1, "head tiddler": 1, "delete tiddler": 1, "put list": 1 },
+  // Once per wiki: the page request's two reads, the engine and the status file written (create-only), the
+  // engine looked up again, then the page build: its sources, the engine read in full, the missing list
+  // made from the stored tiddlers (none), the page written
+  "first visit of a new wiki (empty bucket)": { "get baked.html": 1, "head index.html": 3, "put index.html": 1, "put status": 1, "get page shell": 1, "head core file": 1, "get index.html": 1, "get list": 1, "list tiddlers": 1, "get repair": 1, "put list": 2, "head baked.html": 1, "put baked.html": 1 },
   // The page build reuses the list the save has just written. It's built from the published shell
   // when there is one for the current index.html (looked up at the same time as index.html's
   // version and the stored core file's), from index.html otherwise.
@@ -154,6 +158,34 @@ res = await measure("save a plugin, page built from the shell", () => save(PLUGI
   text: JSON.stringify({ tiddlers: { "$:/plugins/test/counted/readme": { text: "again" } } })
 }, { "If-None-Match": "*" }));
 check("...saved", res.status === 204, `status ${res.status}`);
+
+// The first visit of a new wiki (an empty bucket, the empty wiki as the worker's static asset): the
+// engine and the status file put in the bucket, then the page built as for any new index.html,
+// which also makes the empty tiddler list from the (no) stored tiddlers. Once per wiki.
+const mfNew = new Miniflare({
+  modules: true, scriptPath: "test/r2-counter.mjs", modulesRoot: ROOT,
+  modulesRules: [{ type: "ESModule", include: ["**/*.js", "**/*.mjs"] }],
+  compatibilityDate: "2024-09-23", r2Buckets: ["WIKI_BUCKET"], port: 0,
+  bindings: { ACCESS: "off", PUBLIC_WIKI_URL: "https://my-tiddlywiki.theophile.dev" },
+  assets: { directory: fileURLToPath(new URL("../assets/", import.meta.url)), binding: "ASSETS", routerConfig: { has_user_worker: true, invoke_user_worker_ahead_of_assets: true } },
+  outboundService: async () => new Response('{"success":true}'),
+});
+const baseNew = (await mfNew.ready).toString().replace(/\/$/, "");
+{
+  const name = "first visit of a new wiki (empty bucket)";
+  await (await mfNew.dispatchFetch(baseNew + "/__r2ops")).json();
+  const res = await mfNew.dispatchFetch(baseNew + "/");
+  await res.arrayBuffer();
+  await new Promise(r => setTimeout(r, 300));
+  const { calls } = await (await mfNew.dispatchFetch(baseNew + "/__r2ops")).json();
+  const counts = {};
+  for (const call of calls) counts[call] = (counts[call] || 0) + 1;
+  const budget = BUDGETS[name];
+  const over = Object.entries(counts).filter(([call, n]) => n > (budget[call] ?? 0)).map(([call, n]) => `${call} ×${n} (budget ${budget[call] ?? 0})`);
+  check(`${name}: ${calls.length} R2 calls`, res.status === 200 && over.length === 0,
+    (over.length ? "over budget: " + over.join(", ") + " | " : "") + `status ${res.status}, ` + Object.entries(counts).map(([c, n]) => `${c} ×${n}`).join(", "));
+}
+await mfNew.dispose();
 
 console.log(`\n${results.filter(Boolean).length}/${results.length} passed`);
 await mf.dispose();

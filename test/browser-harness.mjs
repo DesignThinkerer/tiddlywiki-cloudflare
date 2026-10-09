@@ -9,11 +9,15 @@ import { fileURLToPath } from "node:url";
 
 const WORKER = fileURLToPath(new URL("../worker.js", import.meta.url));
 
-// The wiki file the suites start from: test/fixtures/index.html, or the one in WIKI_HTML
+// The empty wiki the build makes (what a new wiki starts from), the file the suites start from too
+export const EMPTY_WIKI = fileURLToPath(new URL("../assets/empty.html", import.meta.url));
+export const ASSETS_DIR = fileURLToPath(new URL("../assets/", import.meta.url));
+
+// The wiki file the suites start from: assets/empty.html, or the one in WIKI_HTML
 export function readWikiFile() {
-  const file = process.env.WIKI_HTML || fileURLToPath(new URL("./fixtures/index.html", import.meta.url));
+  const file = process.env.WIKI_HTML || EMPTY_WIKI;
   if (!fs.existsSync(file)) {
-    console.error(`No wiki file at ${file}. Run "npm run fixture" first, or set WIKI_HTML.`);
+    console.error(`No wiki file at ${file}. Run "npm run build" first, or set WIKI_HTML.`);
     process.exit(1);
   }
   return fs.readFileSync(file, "utf8");
@@ -31,7 +35,10 @@ export const PUBLIC_STATUS = { username: "GUEST", read_only: true, anonymous: tr
 // Starts the site: a stand-in for the public site, then the worker, which points at it.
 // The stand-in serves the R2 bucket directly, as its custom domain does: "/" is baked.html, with the
 // zone's CORS header, and each object's content type and cache control.
-//   index: the index.html to start from (stored with an empty tiddler list)
+//   index: the index.html to start from (stored with an empty tiddler list); left out, the bucket
+//     starts empty, as a new wiki's does
+//   assets: true to deploy assets/empty.html as the worker's static asset, as Wrangler does (with the
+//     worker answering every request first), so the first visit puts it in the bucket by itself
 //   publicStatus: also store the public site's status file
 //   bindings: the worker's other variables
 //   outbound(request): answers the worker's own requests (Cloudflare's API, GitHub); {"success":true} by default
@@ -39,7 +46,7 @@ export const PUBLIC_STATUS = { username: "GUEST", read_only: true, anonymous: tr
 //   publicSite: hooks for the stand-in: cors() returns false to leave the CORS header out,
 //     override(key) returns text to serve instead of the object, rewrite(url, bytes) returns the bytes to send
 // Returns { mf, base, pub, bucket, publicRequests (each path and query, decoded), close() }
-export async function startSite({ index, publicStatus = false, bindings = {}, outbound, r2Persist, publicSite = {} } = {}) {
+export async function startSite({ index, assets = false, publicStatus = false, bindings = {}, outbound, r2Persist, publicSite = {} } = {}) {
   let bucket = null;
   const publicRequests = [];
   const publicServer = http.createServer(async (req, res) => {
@@ -74,6 +81,7 @@ export async function startSite({ index, publicStatus = false, bindings = {}, ou
   const mf = new Miniflare({
     modules: true, scriptPath: WORKER, compatibilityDate: "2024-09-23", port: 0,
     r2Buckets: ["WIKI_BUCKET"], ...(r2Persist ? { r2Persist } : {}),
+    ...(assets ? { assets: { directory: ASSETS_DIR, binding: "ASSETS", routerConfig: { has_user_worker: true, invoke_user_worker_ahead_of_assets: true } } } : {}),
     bindings: { ACCESS: "off", PUBLIC_WIKI_URL: pub, ...bindings },
     outboundService: outbound || (async () => new Response('{"success":true}')),
   });

@@ -810,10 +810,12 @@ async function serveWiki(request, env, ctx, corsHeaders) {
   const known = parseEtagList(ifNoneMatch).find(token => token.endsWith(PAGE_ETAG_SUFFIX));
   // Only without an ETag, as HTTP says
   const since = ifNoneMatch ? NaN : Math.floor(Date.parse(request.headers.get("If-Modified-Since") || "") / 1000);
-  const [baked, source] = await Promise.all([
+  let [baked, source] = await Promise.all([
     env.WIKI_BUCKET.get("baked.html", known ? { onlyIf: { etagDoesNotMatch: known.slice(0, -PAGE_ETAG_SUFFIX.length) } } : undefined),
     env.WIKI_BUCKET.head("index.html")
   ]);
+  // A new bucket, or an engine deleted by hand: the empty wiki the build made goes there first
+  if (!source && await seedWiki(env)) source = await env.WIKI_BUCKET.head("index.html");
   if (baked) {
     const meta = baked.customMetadata || {};
     // A conditional get whose precondition fails returns the object without a body: the browser has it
@@ -834,8 +836,42 @@ async function serveWiki(request, env, ctx, corsHeaders) {
   const lastPage = baked && await env.WIKI_BUCKET.get("baked.html");
   if (lastPage) return new Response(lastPage.body, { headers: htmlHeaders });
   const fallback = await env.WIKI_BUCKET.get("index.html");
-  if (!fallback) return new Response("Wiki not found", { status: 404 });
+  if (!fallback) return new Response(NO_WIKI, { status: 404, headers: { "Content-Type": "text/plain; charset=utf-8" } });
   return new Response(fallback.body, { headers: htmlHeaders });
+}
+
+// --- The first visit ------------------------------------------------------------------------------
+// A new bucket is empty. The build makes assets/empty.html, an empty TiddlyWiki with the TiddlyWeb
+// plugin, which a deploy through Wrangler or Workers Builds ships as a static asset (ASSETS, README
+// 3.1): the first page request puts it in the bucket as index.html, with the public site's status
+// file, and the wiki starts from there. Nothing already in the bucket is replaced, so an engine
+// deleted by hand gets a fresh one and the stored tiddlers stay. The empty tiddler list isn't
+// written: the first list request makes it from the stored tiddlers (none, or the ones that stayed).
+// A worker deployed by hand has no asset: the page then says what to upload.
+const EMPTY_WIKI_ASSET = "https://assets.local/empty.html";
+const PUBLIC_STATUS = { username: "GUEST", read_only: true, anonymous: true, logout_is_available: false, space: { recipe: "default" } };
+const NO_WIKI = "There's no wiki yet: the bucket has no index.html, and this worker was deployed without the empty wiki that would " +
+  "go there by itself (a deploy through Wrangler or Workers Builds ships it, README 3.1). Upload an index.html, a TiddlyWiki " +
+  "with the TiddlyWeb plugin, and the status file (README 3.1), then open this page again.";
+
+async function seedWiki(env) {
+  if (!env.ASSETS) return false;
+  let asset;
+  try {
+    asset = await env.ASSETS.fetch(EMPTY_WIKI_ASSET);
+  } catch (e) {
+    console.error("The empty wiki can't be read from the assets:", e.message);
+    return false;
+  }
+  if (!asset.ok) {
+    console.error(`The empty wiki isn't among the assets (${asset.status}): the build didn't make assets/empty.html?`);
+    return false;
+  }
+  const html = new Uint8Array(await asset.arrayBuffer());
+  await putIfAbsent(env, "index.html", html, { httpMetadata: { contentType: "text/html; charset=utf-8" } });
+  await putIfAbsent(env, "status", JSON.stringify(PUBLIC_STATUS), { httpMetadata: { contentType: "application/json" } });
+  console.log("New wiki: index.html and the status file put in the bucket");
+  return true;
 }
 
 // --- Plugin files -------------------------------------------------------------------------------

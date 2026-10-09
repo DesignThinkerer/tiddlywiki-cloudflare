@@ -324,6 +324,78 @@ check("the public site's address: a site is accepted, with or without a trailing
 check("...the worker's own address is refused, saying so", /own address|this worker/.test(site("https://admin.example.com") || "") && /own address|this worker/.test(site("https://admin.example.com/", "https://admin.example.com") || ""));
 check("...and so are a missing value, no scheme, another scheme, a path, a query", [undefined, "", "wiki.example.com", "ftp://wiki.example.com", "https://wiki.example.com/wiki", "https://wiki.example.com/?x"].every(v => typeof site(v) === "string" && site(v).includes("PUBLIC_WIKI_URL")));
 
+// --- The first visit ------------------------------------------------------------------------------
+// A new bucket is empty. The build makes assets/empty.html (an empty TiddlyWiki with the TiddlyWeb
+// plugin), deployed as a static asset: on the first page request the worker puts it in the bucket as
+// index.html, with the public site's status file, and the wiki starts. Nothing to upload (README 3.1).
+const ASSETS_DIR = fileURLToPath(new URL("../assets/", import.meta.url));
+const emptyWiki = fs.readFileSync(path.join(ASSETS_DIR, "empty.html"));
+function withAssets(extra = {}) {
+  return new Miniflare({
+    modules: true, scriptPath: WORKER, compatibilityDate: "2024-09-23", r2Buckets: ["WIKI_BUCKET"], port: 0,
+    bindings: { ACCESS: "off", PUBLIC_WIKI_URL: "https://wiki.example.com" },
+    // As deployed with run_worker_first = true: the worker gets every request, the asset is never served by itself
+    assets: { directory: ASSETS_DIR, binding: "ASSETS", routerConfig: { has_user_worker: true, invoke_user_worker_ahead_of_assets: true } },
+    outboundService: async () => new Response("{}", { status: 404 }),
+    ...extra,
+  });
+}
+{
+  const mfNew = withAssets();
+  const root = (await mfNew.ready).toString().replace(/\/$/, "");
+  const store = await mfNew.getR2Bucket("WIKI_BUCKET");
+  const first = await mfNew.dispatchFetch(root + "/"), firstPage = await first.text();
+  const stored = await store.get("index.html"), status = await store.get("status");
+  const storedBytes = stored ? Buffer.from(await stored.arrayBuffer()) : null;
+  check("first visit of an empty bucket: the page is served, a TiddlyWiki with TiddlyWeb and the browser modules",
+    first.status === 200 && firstPage.includes('"title":"$:/plugins/tiddlywiki/tiddlyweb"') && firstPage.includes("$:/cfworker/conflict-guard.js"), `status ${first.status}`);
+  check("...the asset is stored as index.html, byte for byte, as HTML", storedBytes?.equals(emptyWiki) && stored.httpMetadata?.contentType?.startsWith("text/html"), `${storedBytes?.length} bytes, ${stored?.httpMetadata?.contentType}`);
+  const statusJson = status ? await status.json().catch(() => null) : null;
+  check("...and the public site's status file: a read-only, anonymous view of the recipe", statusJson?.read_only === true && statusJson?.anonymous === true && statusJson?.space?.recipe === "default" && status.httpMetadata?.contentType === "application/json", JSON.stringify(statusJson));
+  const indexEtag = stored?.etag, statusEtag = status?.etag;
+  const second = await mfNew.dispatchFetch(root + "/");
+  await second.text();
+  check("the next visit changes nothing: the same index.html and status", second.status === 200 && !!indexEtag && (await store.head("index.html"))?.etag === indexEtag && (await store.head("status"))?.etag === statusEtag);
+  const direct = await mfNew.dispatchFetch(root + "/empty.html");
+  await direct.text();
+  check("the asset isn't served at its own path (the worker answers, and has no such object)", direct.status === 404, `status ${direct.status}`);
+  await mfNew.dispose();
+}
+{
+  // An index.html already there is never replaced (nor its status file), asset or not
+  const mfOwn = withAssets();
+  const root = (await mfOwn.ready).toString().replace(/\/$/, "");
+  const store = await mfOwn.getR2Bucket("WIKI_BUCKET");
+  await store.put("index.html", html("my own engine"));
+  await store.put("status", '{"custom":true}', { httpMetadata: { contentType: "application/json" } });
+  const own = await mfOwn.dispatchFetch(root + "/"), ownPage = await own.text();
+  check("an index.html already in the bucket is used, not replaced", own.status === 200 && ownPage.includes("my own engine") && (await store.get("status").then(o => o?.text())) === '{"custom":true}');
+  await mfOwn.dispose();
+}
+{
+  // An engine deleted by hand (the tiddlers stay): the next visit puts a fresh one there, and the
+  // page served is built from it, not the old page
+  const mfLost = withAssets();
+  const root = (await mfLost.ready).toString().replace(/\/$/, "");
+  const store = await mfLost.getR2Bucket("WIKI_BUCKET");
+  await store.put("baked.html", html("the old page"), { customMetadata: { bakeVersion: "0-old", sourceEtag: "gone" } });
+  const lost = await mfLost.dispatchFetch(root + "/"), lostPage = await lost.text();
+  check("index.html deleted by hand: a fresh engine is put there and the page rebuilt from it", lost.status === 200 && lostPage.includes('"title":"$:/plugins/tiddlywiki/tiddlyweb"') && !lostPage.includes("the old page") && !!(await store.head("index.html")));
+  await mfLost.dispose();
+}
+{
+  // Without the asset (a worker deployed by hand): the 404 says what to upload
+  const mfNoAsset = new Miniflare({
+    modules: true, scriptPath: WORKER, compatibilityDate: "2024-09-23", r2Buckets: ["WIKI_BUCKET"], port: 0,
+    bindings: { ACCESS: "off", PUBLIC_WIKI_URL: "https://wiki.example.com" },
+    outboundService: async () => new Response("{}", { status: 404 }),
+  });
+  const root = (await mfNoAsset.ready).toString().replace(/\/$/, "");
+  const none = await mfNoAsset.dispatchFetch(root + "/"), noneText = await none.text();
+  check("no asset and no index.html: 404 saying to upload one", none.status === 404 && noneText.includes("index.html") && /TiddlyWeb/.test(noneText), `status ${none.status}: ${noneText.slice(0, 80)}`);
+  await mfNoAsset.dispose();
+}
+
 console.log(`\n${results.filter(Boolean).length}/${results.length} passed`);
 await mf.dispose();
 process.exit(results.every(Boolean) ? 0 : 1);

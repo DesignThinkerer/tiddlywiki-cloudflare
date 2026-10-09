@@ -1,5 +1,5 @@
 node_modules
-test/fixtures/
+assets/
 # Local Wrangler configuration, secrets and state
 wrangler.toml
 .dev.vars
