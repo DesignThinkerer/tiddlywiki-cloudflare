@@ -7,10 +7,11 @@
 // while the queue is empty. Without a BACKUP_QUEUE binding (or if the queue is unavailable) the
 // same backup runs directly.
 
-import { backupRetryDelay, gitBlobSha, githubContents, isAccountWide, isRateLimit, isRefusal } from "./github.js";
-import { backupFailure, backupPause, nextPause, readBackupStatus, recordBackupResults } from "./status.js";
 import { decoder, encoder } from "../bytes.js";
+import { github } from "../settings.js";
 import { isNewerRevision, revisionOf, tiddlerKey } from "../tiddlers.js";
+import { backupRetryDelay, gitBlobSha, githubContents, isAccountWide, isRateLimit, isRefusal } from "./github.js";
+import { backupFailure, nextPause, readBackupStatus, recordBackupResults } from "./status.js";
 
 // A queue message, as sent: a version that would make it bigger waits in R2. (The queue takes up to
 // 128 KB, but counts an operation per 64 KB of message: over 64 KB, a backup would cost 6 instead of 3.)
@@ -36,7 +37,7 @@ function queueMessageSize(message) {
 
 // Called after a save or delete has been stored; job.content is the stored bytes
 export async function queueBackup(env, job) {
-  if (!env.GITHUB_REPO || !env.GITHUB_TOKEN) return;
+  if (!github(env)) return;
   const message = { action: job.action, title: job.title, revision: job.revision ?? null, time: Date.now(), tries: 0 };
   if (env.BACKUP_QUEUE) {
     try {
@@ -75,6 +76,9 @@ export async function queueBackup(env, job) {
     }
   }
 }
+
+// The pause of every backup, if one is on (nextPause in status.js), kept for the later runs in this isolate
+let backupPause = null;
 
 // Queue consumer
 export async function processBackupBatch(batch, env) {

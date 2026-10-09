@@ -5,7 +5,7 @@ import { queueBackup } from "./backup/queue.js";
 import { purgePublicCache, tiddlerPurgeUrls } from "./cache.js";
 import { checkPreconditions, conflictResponse, decodePath, invalidPath, savedResponse, untilDone } from "./http.js";
 import { BadSave, FLAT_LAYOUT, keepStoredText, readSave, storedFields, storesSameContent } from "./layout.js";
-import { failureResponse, listedRevision, readableList, removeFromManifest, updateManifest } from "./list.js";
+import { failureResponse, listedRevision, readableList, removeFromList, updateList } from "./list.js";
 import { rebuildPage } from "./page.js";
 import { deletePluginFile, pluginFileKey } from "./plugins.js";
 import { TIDDLER_PREFIX } from "./storage.js";
@@ -97,7 +97,7 @@ export async function handleSave(request, env, ctx, url, corsHeaders) {
 // DELETE bags/<bag>/tiddlers/<title> (or recipes/<recipe>/...): a delete (README 4.4)
 export async function handleDelete(request, env, ctx, url, corsHeaders) {
   try {
-    const match = url.pathname.match(/^\/(?:bags|recipes)\/[^\/]+\/tiddlers\/(.+)$/);
+    const match = url.pathname.match(/^\/(?:bags|recipes)\/[^/]+\/tiddlers\/(.+)$/);
     if (!match) return new Response("Invalid DELETE path", { status: 400, headers: corsHeaders });
 
     const title = decodePath(match[1]);
@@ -121,13 +121,13 @@ export async function handleDelete(request, env, ctx, url, corsHeaders) {
     if (found) ctx.waitUntil(queueBackup(env, { action: "delete", title, revision: currentRevision }));
     await untilDone(ctx, (async () => {
       // If it was neither stored nor listed, there is nothing to back up or purge
-      let { removed, list: stored, recreated } = await removeFromManifest(env, ctx, title, list, found ? currentRevision : null);
+      let { removed, list: stored, recreated } = await removeFromList(env, ctx, title, list, found ? currentRevision : null);
       if (recreated) {
         // Saved again since: that save's purge, plugin file and page build are the ones. Unless that
         // save landed between the check above and the delete, which then removed it too (an R2
         // delete can't be conditional): nothing is stored, so the entry goes as well
         if (await env.WIKI_BUCKET.head(tiddlerKey(title))) return;
-        ({ removed, list: stored } = await removeFromManifest(env, ctx, title, stored));
+        ({ removed, list: stored } = await removeFromList(env, ctx, title, stored));
       }
       if (!found && removed) ctx.waitUntil(queueBackup(env, { action: "delete", title, revision: currentRevision }));
       if (found || removed) ctx.waitUntil(purgePublicCache(env, tiddlerPurgeUrls(env, title, url.origin)));
@@ -155,7 +155,7 @@ export async function handleDelete(request, env, ctx, url, corsHeaders) {
 // retried: this is a save sent again (its first answer lost, or its list update failed): the list
 // may already say what it would say, so what's left of the first attempt is found another way.
 async function finishSave(env, ctx, title, fields, revision, list, adminOrigin, retried = false) {
-  const { previous, list: stored, superseded } = await updateManifest(env, ctx, title, fields, revision, list);
+  const { previous, list: stored, superseded } = await updateList(env, ctx, title, fields, revision, list);
   // A newer save of this tiddler got there first: its purge, plugin file and page build are the ones
   if (superseded) return;
   // Only once the new list is in R2: a public request between the purge and the list update

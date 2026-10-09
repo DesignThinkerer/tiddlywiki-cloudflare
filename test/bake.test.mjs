@@ -1,7 +1,11 @@
 // Tests how the wiki page is served and rebuilt (baked.html), plus a few small worker responses.
 // Run: npm run test:bake
 import { Miniflare } from "miniflare";
+import fs from "node:fs";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { withoutAccess } from "../src/worker/access.js";
+import { publicSiteError } from "../src/worker/settings.js";
 
 const WORKER = fileURLToPath(new URL("../worker.js", import.meta.url));
 
@@ -304,13 +308,7 @@ check("without Access, every request is refused with 403 and says why", refusals
 check("...and nothing was built or stored for them", !(await bucketClosed.head("baked.html")) && !(await bucketClosed.head("recipes/default/tiddlers/x")));
 await mfClosed.dispose();
 // The decision itself, for a request Access did authenticate, which Miniflare can't make: the
-// worker's own function, from a copy of worker.js that exports it
-const os = await import("node:os"), path = await import("node:path"), fs = await import("node:fs");
-const copy = path.join(os.tmpdir(), `worker-access-${process.pid}.mjs`);
-fs.writeFileSync(copy, fs.readFileSync(WORKER, "utf8") + "\nexport { withoutAccess, publicSiteError };\n");
-let withoutAccess = () => { throw new Error("withoutAccess isn't exported by worker.js"); }, publicSiteError = withoutAccess;
-try { ({ withoutAccess, publicSiteError } = await import((await import("node:url")).pathToFileURL(copy).href)); } catch (e) { console.log("  (" + e.message + ")"); }
-fs.unlinkSync(copy);
+// worker's own function, from its module
 const decide = (ctx, env) => { try { return withoutAccess(ctx, env); } catch { return "error"; } };
 check("a request Access authenticated (ctx.access) is let through", decide({ access: { aud: "app" } }, {}) === false);
 check("one without ctx.access is refused", decide({}, {}) === true);

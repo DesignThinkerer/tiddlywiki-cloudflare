@@ -7,8 +7,9 @@
 // before. The admin wiki asks with its tiddler list request (X-Backup-Status: ask) when it loads,
 // then hourly, and shows an alert.
 
-import { backupRetryDelay, isRateLimit } from "./github.js";
+import { backupAlertMinutes } from "../settings.js";
 import { BACKUP_STATUS_KEY } from "../storage.js";
+import { backupRetryDelay, isRateLimit } from "./github.js";
 
 // An entry not retried for a day belongs to a backup no longer waiting (one still waiting is retried
 // at least every 6 hours: BACKUP_MAX_DELAY), and is dropped
@@ -76,8 +77,7 @@ async function updateBackupStatus(env, failures, cleared, pause, stored) {
 // What the admin wiki is told: "ok", or the backups failing for at least BACKUP_ALERT_MINUTES (60
 // by default), as encoded JSON: { count, title, since, error, status } of the oldest
 export function backupReport(env, failing) {
-  const minutes = parseFloat(env.BACKUP_ALERT_MINUTES);
-  const after = (minutes >= 0 ? minutes : 60) * 60000;
+  const after = backupAlertMinutes(env) * 60000;
   const now = Date.now();
   const due = [...failing].filter(([, e]) => now - e.last <= BACKUP_STATUS_STALE && now - e.since >= after).sort((a, b) => a[1].since - b[1].since);
   if (!due.length) return "ok";
@@ -90,15 +90,14 @@ export function backupReport(env, failing) {
 // and more queue operations. While it lasts, the backups delivered are sent again to wait for its
 // end, without calling GitHub; then the first one tries. If GitHub still refuses, the next pause is
 // twice as long (up to BACKUP_MAX_DELAY, or as long as GitHub asks).
-// { until (ms), count (pauses in a row, from 0), error (GitHub's, from the call that started it),
-// all (GitHub refuses every backup, not just asking to wait: the ones waiting are recorded as
-// failing, for the alert) }. Known to the later runs in this isolate; until and count are also kept
-// in the status file, for a run in a new one.
-export let backupPause = null;
-
 // A failure within this time after a pause ended: the next pause is twice as long
 const PAUSE_CONTINUES = 3600 * 1000;
 
+// The next pause of every backup, after a failure e: { until (ms), count (pauses in a row, from 0),
+// error (GitHub's, from the call that started it), all (GitHub refuses every backup, not just asking
+// to wait: the ones waiting are recorded as failing, for the alert) }. last: the pause before, if any.
+// The consumer keeps the pause for the later runs in its isolate (queue.js); until and count are
+// also kept in the status file, for a run in a new one.
 export function nextPause(env, last, e) {
   const now = Date.now();
   // Still paused (a run that only knew from the status file): the same pause, for at least as long

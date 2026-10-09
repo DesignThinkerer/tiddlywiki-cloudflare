@@ -15,12 +15,12 @@
 import { concatBytes, decoder, encoder } from "./bytes.js";
 import { listPurgeUrls, purgePublicCache } from "./cache.js";
 import { BadSave, FLAT_LAYOUT, readStoredFields } from "./layout.js";
-import { MANIFEST_KEY, REPAIR_PROGRESS_KEY, TIDDLER_PREFIX, mapLimit, markPageOutdated, putIfAbsent } from "./storage.js";
+import { LIST_KEY, REPAIR_PROGRESS_KEY, TIDDLER_PREFIX, mapLimit, markPageOutdated, putIfAbsent } from "./storage.js";
 import { getTwTimestamp, isDraft, isEphemeralTitle, isNewerRevision, revisionOf } from "./tiddlers.js";
 
 // Drops anything that should never have been listed (drafts, story list, state...)
-function scrubManifest(manifest) {
-  return manifest.filter(t => !isEphemeralTitle(t.title || "") && !isDraft(t));
+function scrubList(list) {
+  return list.filter(t => !isEphemeralTitle(t.title || "") && !isDraft(t));
 }
 
 // The list's entries, or null if it isn't a JSON array of tiddlers
@@ -35,7 +35,7 @@ export function parseList(text) {
 
 // The list as stored: entries is null if it's missing (object null) or damaged
 async function getList(env) {
-  const object = await env.WIKI_BUCKET.get(MANIFEST_KEY);
+  const object = await env.WIKI_BUCKET.get(LIST_KEY);
   if (!object) return { object: null, text: null, entries: null };
   const text = await object.text();
   return { object, text, entries: parseList(text) };
@@ -58,27 +58,27 @@ export async function readableList(env, ctx, options) {
   return { object: rebuilt.object, text: rebuilt.text, entries };
 }
 
-// mutator returns the new manifest, or null when nothing needs to change. list: the list already
+// mutator(entries) returns the new list, or null when nothing needs to change. list: the list already
 // read (readableList), used for the first attempt. Returns the list as now stored,
 // { object, text, entries }, so a page build right after needn't read it again.
-async function mutateManifest(env, ctx, mutator, list = null, attempts = 5) {
+async function changeList(env, ctx, mutator, list = null, attempts = 5) {
   for (let attempt = 1; attempt <= attempts; attempt++) {
     const { object: existing, text: existingText, entries } = list || await readableList(env, ctx);
     list = null;
     const etag = existing.etag || existing.httpEtag.replace(/"/g, "");
 
-    const current = scrubManifest(entries);
-    const manifest = mutator(current);
-    if (manifest === null) return { object: existing, text: existingText, entries: current };
+    const current = scrubList(entries);
+    const changed = mutator(current);
+    if (changed === null) return { object: existing, text: existingText, entries: current };
 
     // Only if the list is still the one we read
-    const text = JSON.stringify(manifest);   // compact: a third smaller than indented, cheaper to write and read
-    const written = await env.WIKI_BUCKET.put(MANIFEST_KEY, text, {
+    const text = JSON.stringify(changed);   // compact: a third smaller than indented, cheaper to write and read
+    const written = await env.WIKI_BUCKET.put(LIST_KEY, text, {
       httpMetadata: { contentType: "application/json" },
       onlyIf: { etagMatches: etag }
     });
 
-    if (written !== null) return { object: written, text, entries: manifest };
+    if (written !== null) return { object: written, text, entries: changed };
 
     console.warn(`[Manifest] Write conflict detected, retrying (${attempt}/${attempts})...`);
     // A short, growing, slightly random pause, so saves that collided don't collide again
@@ -114,21 +114,21 @@ function listEntry(title, fields, revision, date = getTwTimestamp()) {
 // Returns { previous: the entry it replaced, or null; list: the list as now stored; superseded: a
 // newer save of the tiddler is already listed (this save's list write was retried after it), so the
 // list keeps that one }
-export async function updateManifest(env, ctx, title, fields, revision, list = null) {
+export async function updateList(env, ctx, title, fields, revision, list = null) {
   const entry = listEntry(title, fields, revision);
   let previous = null, superseded = false;
-  const stored = await mutateManifest(env, ctx, (manifest) => {
-    const idx = manifest.findIndex(t => t.title === title);
-    previous = idx >= 0 ? manifest[idx] : null;
+  const stored = await changeList(env, ctx, (entries) => {
+    const idx = entries.findIndex(t => t.title === title);
+    previous = idx >= 0 ? entries[idx] : null;
     superseded = !!previous && isNewerRevision(String(previous.revision), revision);
     if (superseded) return null;
     if (idx < 0) {
-      manifest.push(entry);
-      return manifest;
+      entries.push(entry);
+      return entries;
     }
-    manifest[idx] = entry;
+    entries[idx] = entry;
     // Listed twice (a hand edit, say): listed once from now on
-    return manifest.some((t, i) => i > idx && t.title === title) ? manifest.filter((t, i) => i <= idx || t.title !== title) : manifest;
+    return entries.some((t, i) => i > idx && t.title === title) ? entries.filter((t, i) => i <= idx || t.title !== title) : entries;
   }, list);
   return { previous, list: stored, superseded };
 }
@@ -136,13 +136,13 @@ export async function updateManifest(env, ctx, title, fields, revision, list = n
 // Returns { removed: the entry it removed, or null if the title wasn't listed; list: the list as now
 // stored; recreated: the title was saved again since the deleted revision (this delete's list write
 // was retried after that save), so its entry stays }
-export async function removeFromManifest(env, ctx, title, list = null, deletedRevision = null) {
+export async function removeFromList(env, ctx, title, list = null, deletedRevision = null) {
   let removed = null, recreated = false;
-  const stored = await mutateManifest(env, ctx, (manifest) => {
-    removed = manifest.find(t => t.title === title) || null;
+  const stored = await changeList(env, ctx, (entries) => {
+    removed = entries.find(t => t.title === title) || null;
     recreated = !!removed && !!deletedRevision && isNewerRevision(String(removed.revision), deletedRevision);
     if (recreated) removed = null;
-    return removed ? manifest.filter(t => t.title !== title) : null;
+    return removed ? entries.filter(t => t.title !== title) : null;
   }, list);
   return { removed, list: stored, recreated };
 }
@@ -215,7 +215,7 @@ export async function rebuildList(env, ctx, damaged, { pageBuild = false } = {})
   let list = damaged.object;
   if (!list) {
     // Missing: a stand-in takes its place, so this rebuild has a list of its own to replace
-    list = await putIfAbsent(env, MANIFEST_KEY, listStandIn(), { httpMetadata: { contentType: "text/plain; charset=utf-8" } });
+    list = await putIfAbsent(env, LIST_KEY, listStandIn(), { httpMetadata: { contentType: "text/plain; charset=utf-8" } });
     if (!list) return getList(env);   // created meanwhile
   }
   // Identifies this damaged list: the same content uploaded again later is another rebuild
@@ -249,7 +249,7 @@ export async function rebuildList(env, ctx, damaged, { pageBuild = false } = {})
     // Only if the damaged list is still there (a request that read it just before another one
     // finished the rebuild would otherwise start a new one)
     if (!resume) {
-      const current = await env.WIKI_BUCKET.head(MANIFEST_KEY);
+      const current = await env.WIKI_BUCKET.head(LIST_KEY);
       if (!current || `${current.etag}/${current.uploaded.getTime()}` !== rebuildId) return getList(env);
     }
     // Where the next step starts (list() may return an empty page that isn't the last); the key is
@@ -267,7 +267,7 @@ export async function rebuildList(env, ctx, damaged, { pageBuild = false } = {})
   // key is read once (each step adds to the progress it read, and only if no other request did
   // meanwhile), and each key is one title.
   const text = `[${decoder.decode(all)}]`;
-  const written = await env.WIKI_BUCKET.put(MANIFEST_KEY, text, {
+  const written = await env.WIKI_BUCKET.put(LIST_KEY, text, {
     httpMetadata: { contentType: "application/json" },
     onlyIf: { etagMatches: list.etag }
   });

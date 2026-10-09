@@ -1,5 +1,7 @@
 # Plugins as files the page loads
 
+> The code excerpts below show the worker as it was when plugin files were added (one file, `src/worker.src.js`). The worker is now split into modules under `src/worker/` (README 2); the design and its reasons haven't changed. Read the current code there.
+
 **Status: implemented and deployed (October 2026).** These are the design notes behind README section 4.8: the problem, the design and why it was chosen over baking plugins into the page, what it costs, the change step by step, and how to operate it.
 
 The change is covered by the tests: `test/plugins.test.mjs` (66 checks) runs real plugins shipped with TiddlyWiki, markdown and KaTeX, on the admin site and on a stand-in for the public site. All eight suites pass (`npm test`).

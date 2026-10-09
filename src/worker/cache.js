@@ -2,7 +2,7 @@
 // Cloudflare's cache, so after a change the worker purges exactly the public URLs that serve it
 // (single-file purge, not purge_everything; README 4.6).
 
-import { publicUrl } from "./settings.js";
+import { publicUrl, purges } from "./settings.js";
 
 // The query string is part of the cache key, so the tiddler list is purged under each URL
 // TiddlyWiki requests it with: the TiddlyWiki 5.4 filter, the filter of earlier versions, and bare.
@@ -30,12 +30,13 @@ export function listPurgeUrls(env) {
 }
 
 export async function purgePublicCache(env, urls) {
-  if (!env.CF_ZONE_ID || !env.CF_API_TOKEN || urls.length === 0) return;
+  const zone = purges(env);
+  if (!zone || urls.length === 0) return;
   try {
-    const res = await fetch(`https://api.cloudflare.com/client/v4/zones/${env.CF_ZONE_ID}/purge_cache`, {
+    const res = await fetch(`https://api.cloudflare.com/client/v4/zones/${zone.zoneId}/purge_cache`, {
       method: "POST",
       headers: {
-        "Authorization": `Bearer ${env.CF_API_TOKEN}`,
+        "Authorization": `Bearer ${zone.token}`,
         "Content-Type": "application/json"
       },
       body: JSON.stringify({ files: urls })

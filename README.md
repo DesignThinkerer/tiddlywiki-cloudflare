@@ -75,12 +75,24 @@ flowchart LR
 │   └── external-plugins.md   design notes for plugin files (4.8)
 ├── .github/workflows/ci.yml  runs the tests on GitHub for every pull request and push to main
 ├── src/
-│   ├── worker.src.js         the worker's source
+│   ├── worker/               the worker's source, one module per concern (below)
+│   │   ├── index.js          the entry point: the Access and settings checks, the route table, the queue consumer
+│   │   ├── bytes.js, tiddlers.js, storage.js, settings.js, access.js, http.js
+│   │   │                     the shared pieces: UTF-8, what a tiddler is, every bucket key, every variable, Access, HTTP helpers
+│   │   ├── layout.js         how a tiddler is stored, and how a save is read (4.2)
+│   │   ├── cache.js          public-site purges (4.6)
+│   │   ├── list.js           the tiddler list and its rebuild (4.2)
+│   │   ├── plugins.js        plugin files (4.8)
+│   │   ├── build.js          building the page (4.3)
+│   │   ├── page.js           serving the page, and the page the admin wiki publishes (4.9)
+│   │   ├── reads.js, saves.js  the handlers: status, list and objects; saves and deletes (4.4)
+│   │   └── backup/           the GitHub backup: queue.js (the consumer), github.js (the API), status.js (how backups go, 4.7)
 │   ├── conflict-guard.js     the browser module, embedded into worker.js by the build
 │   └── page-publisher.js     the second browser module (4.9), embedded the same way
-├── build.mjs                 inserts both modules into src/worker.src.js → worker.js
+├── build.mjs                 inlines the modules into worker.js, in dependency order, with the browser modules embedded
+├── eslint.config.js          the lint rules (npm run lint): names that don't exist, unused ones, an import assigned to
 ├── wrangler.example.toml     all bindings and settings, for deploying with wrangler
-├── package.json              build and test scripts
+├── package.json              build, lint and test scripts
 └── test/
     ├── first-visit.test.mjs  a new wiki from an empty bucket, in Chromium (10 checks)
     ├── two-tabs.test.mjs     real TiddlyWiki in Chromium, several tabs (93 checks)
@@ -95,7 +107,9 @@ flowchart LR
     └── bake.test.mjs         page serving and rebuilding, the published page, the Access check, the public address, the first visit (77 checks)
 ```
 
-The browser modules live in their own files so they can be read and edited as normal JavaScript. The build embeds them in `worker.js` as strings (`CONFLICT_GUARD_SOURCE`, `PAGE_PUBLISHER_SOURCE`), so only one file is deployed, which you can paste into the dashboard. The strings are written as JSON, so a module can contain any character, backticks and `${` included.
+The worker is written as ES modules, each importing only from the ones below it: the entry point, the handlers, the page, the list, the layout, then the shared pieces (`src/worker/index.js` lists the order). The build inlines them into `worker.js` in that order, so one file is deployed, which you can paste into the dashboard, with every comment kept; it refuses two modules that import each other, an import of something not exported, and a name declared twice. The tests run the built `worker.js` in Miniflare, and import a module's functions directly where they test one (`test/cpu.test.mjs`, the checks in `test/bake.test.mjs`).
+
+The browser modules live in their own files so they can be read and edited as normal JavaScript. The build embeds them in `worker.js` as strings (`CONFLICT_GUARD_SOURCE`, `PAGE_PUBLISHER_SOURCE`). The strings are written as JSON, so a module can contain any character, backticks and `${` included.
 
 ---
 
@@ -629,7 +643,7 @@ The queue solves the cause instead of working around it:
 
 ## 6. Operating it
 
-**Deploying a change:** edit `src/`, run `npm run build` and `npm test`, then deploy `worker.js`, either by pasting it into the dashboard editor or with `npx wrangler deploy`. If a browser module changed, the next admin page load rebuilds `baked.html`. If you changed how the page itself is built, also bump the number in front of `bakeVersion` (now `7-`), or existing pages keep the old format until something else rebuilds them; plugin files are only rewritten when their plugin changes, so after changing their format, delete `_plugins/` and open the admin wiki. Reload any open admin tabs: tabs opened before a change keep the old module, and tabs older than the module have no conflict protection.
+**Deploying a change:** edit `src/`, run `npm run build`, `npm run lint` and `npm test`, then deploy `worker.js`, either by pasting it into the dashboard editor or with `npx wrangler deploy`. If a browser module changed, the next admin page load rebuilds `baked.html`. If you changed how the page itself is built, also bump the number in front of `bakeVersion` (now `7-`), or existing pages keep the old format until something else rebuilds them; plugin files are only rewritten when their plugin changes, so after changing their format, delete `_plugins/` and open the admin wiki. Reload any open admin tabs: tabs opened before a change keep the old module, and tabs older than the module have no conflict protection.
 
 **Updating the wiki engine:** update the `tiddlywiki` package in `package.json` (a pull request, so the tests run on the new version) and deploy; for a wiki that already runs, delete `index.html` in R2 and open the admin wiki: the worker puts the new empty wiki there (4.3), and your tiddlers, plugins and published page are untouched. Or upload a new `index.html` (an empty TiddlyWiki with the TiddlyWeb plugin) to R2 yourself. Either way, the next admin page load rebuilds `baked.html` from it and purges the public page, then publishes the core file and the page for the new version by itself (4.9). If a TiddlyWiki upgrade changes the filter in `tiddlers.json?filter=…`, add the new filter to `SKINNY_LIST_FILTERS`, or the public tiddler list won't be purged after saves. You'll see the exact URL in the browser's Network tab. Plugins installed through the wiki override the copies in `index.html`: after an upgrade, update the version in the plugin library's URL (`$:/config/OfficialPluginLibrary`) and update your plugins from its Updates tab.
 
@@ -737,6 +751,7 @@ npm test                             # build (worker.js and assets/empty.html), 
 |---|---|
 | `npm run build` | Writes `worker.js`, and `assets/empty.html`, an empty TiddlyWiki with the TiddlyWeb plugin, from the installed `tiddlywiki` package (kept when it's already of that version; `node tools/build-wiki.mjs --force` rebuilds it). |
 | `npm run check:build` | Fails, writing nothing, if `worker.js` isn't what the sources build (run it before committing, so `worker.js` is never out of date). |
+| `npm run lint` | ESLint, with its recommended rules only: a name that doesn't exist (a function moved without its import, say), an unused one, an import assigned to. CI runs it first. |
 | `npm run test:fast` | The five suites that need no browser (a few minutes). |
 | `npm run test:browser` | The four suites that run a real TiddlyWiki in Chromium. |
 | `npm run test:first` | A new wiki from an empty bucket, in Chromium (see below). |
@@ -749,7 +764,7 @@ npm test                             # build (worker.js and assets/empty.html), 
 | `npm run test:plugins` | Real plugins in Chromium, on the admin site and a stand-in for the public site (see below). |
 | `npm run test:publish` | The page published from a real TiddlyWiki in Chromium (see below). |
 
-GitHub runs the same two groups, as two jobs side by side, for every pull request and every push to `main` (`.github/workflows/ci.yml`), after checking that `worker.js` is what `src/` builds.
+GitHub runs the same two groups, as two jobs side by side, for every pull request and every push to `main` (`.github/workflows/ci.yml`), after the lint and after checking that `worker.js` is what `src/` builds.
 
 The tests run the real worker in Cloudflare's local runtime (workerd, through Miniflare) with a local R2 bucket and queue. Outgoing calls to GitHub and Cloudflare's API are answered by imitations, so nothing touches your accounts. Every suite takes free local ports, so they can run at the same time. The four browser suites share their setup, `test/browser-harness.mjs`: the worker, the stand-in for the public site, Chromium, and the helpers that wait for TiddlyWiki or record each tab's requests (marking the ones the browser answered from its cache, which never reached a server). (On a machine too busy to keep up, such as with the browser suites running alongside, the backup suite's "never overlapped" check can fail: Miniflare then starts a second batch before the first ends, which `max_concurrency = 1` prevents on Cloudflare. A browser suite can also time out waiting for TiddlyWiki there. Each passes run on its own.)
 

@@ -13,79 +13,62 @@
 
 import { ACCESS_REFUSED, withoutAccess } from "./access.js";
 import { processBackupBatch } from "./backup/queue.js";
-import { decodePath, invalidPath, objectHeaders, tiddlerEtag } from "./http.js";
+import { decodePath, invalidPath } from "./http.js";
 import { publishCoreFile, publishShell, serveWiki } from "./page.js";
-import { ADMIN_STATUS, STATUS_CACHE, serveManifest } from "./reads.js";
+import { serveList, serveObject, serveStatus } from "./reads.js";
 import { handleDelete, handleSave } from "./saves.js";
 import { publicSiteError } from "./settings.js";
-import { MANIFEST_KEY, TIDDLER_PREFIX } from "./storage.js";
-import { keyTooLong, revisionOf } from "./tiddlers.js";
+import { LIST_KEY } from "./storage.js";
+
+// The admin page reads tiddlers from the public site too, so both answer cross-origin requests.
+// TiddlyWiki reads the ETag of each save, which a browser only shows a page that's told it may.
+const CORS_HEADERS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET, PUT, DELETE, OPTIONS, HEAD",
+  "Access-Control-Allow-Headers": "Content-Type, X-Requested-With, X-Tiddler-Layout, If-Match, If-None-Match, Accept",
+  "Access-Control-Expose-Headers": "ETag, X-Tiddler-List, Retry-After",
+};
+
+const PAGE_PATHS = ["/", "/index.html", "/baked.html"];
+
+// The routes, in the order they're tried: { methods, matches(path) → what the handler gets (false:
+// not this route; null: a path that isn't valid percent-encoding, 400), handle(...) }
+const ROUTES = [
+  { methods: ["OPTIONS"], matches: () => true, handle: (request, env, ctx, url, match, headers) => new Response(null, { headers }) },
+  { methods: ["GET"], matches: path => path === "/status", handle: (request, env, ctx, url, match, headers) => serveStatus(headers) },
+  { methods: ["GET"], matches: path => PAGE_PATHS.includes(path), handle: (request, env, ctx, url, match, headers) => serveWiki(request, env, ctx, headers) },
+  // Any other read is an object of the bucket, by its key: the tiddler list, a tiddler, a file
+  { methods: ["GET", "HEAD"], matches: path => decodePath(path.substring(1)), handle: (request, env, ctx, url, key, headers) =>
+    key === LIST_KEY ? serveList(request, env, ctx, headers) : serveObject(request, env, key, headers) },
+  { methods: ["PUT"], matches: path => path === "/page/core", handle: (request, env, ctx, url, match, headers) => publishCoreFile(request, env, url, headers) },
+  { methods: ["PUT"], matches: path => path === "/page/shell", handle: (request, env, ctx, url, match, headers) => publishShell(request, env, ctx, headers) },
+  { methods: ["PUT"], matches: () => true, handle: (request, env, ctx, url, match, headers) => handleSave(request, env, ctx, url, headers) },
+  { methods: ["DELETE"], matches: () => true, handle: (request, env, ctx, url, match, headers) => handleDelete(request, env, ctx, url, headers) },
+];
+
+const plainText = (text, status) => new Response(text, { status, headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" } });
 
 export default {
   async fetch(request, env, ctx) {
     // Before anything else: a request Access didn't authenticate costs nothing but this answer
-    if (withoutAccess(ctx, env)) {
-      return new Response(ACCESS_REFUSED, { status: 403, headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" } });
-    }
+    if (withoutAccess(ctx, env)) return plainText(ACCESS_REFUSED, 403);
     const url = new URL(request.url);
     // Nor anything without the public site's address (the page would load its code from nowhere)
     const notSetUp = publicSiteError(env, url.origin);
-    if (notSetUp) return new Response(notSetUp, { status: 500, headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" } });
-    // The admin page reads tiddlers from the public site too, so both answer cross-origin requests.
-    // TiddlyWiki reads the ETag of each save, which a browser only shows a page that's told it may.
-    const corsHeaders = {
-      "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Methods": "GET, PUT, DELETE, OPTIONS, HEAD",
-      "Access-Control-Allow-Headers": "Content-Type, X-Requested-With, X-Tiddler-Layout, If-Match, If-None-Match, Accept",
-      "Access-Control-Expose-Headers": "ETag, X-Tiddler-List, Retry-After",
-    };
+    if (notSetUp) return plainText(notSetUp, 500);
 
-    if (request.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
-
-    // 1. STATUS ENDPOINT: the same answer always, so the browser keeps it (ADMIN_STATUS)
-    if (request.method === "GET" && url.pathname === "/status") {
-      return new Response(JSON.stringify(ADMIN_STATUS), { headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": STATUS_CACHE } });
+    for (const route of ROUTES) {
+      if (!route.methods.includes(request.method)) continue;
+      const match = route.matches(url.pathname);
+      if (match === null) return invalidPath(CORS_HEADERS);
+      if (match === false) continue;
+      return route.handle(request, env, ctx, url, match, CORS_HEADERS);
     }
-
-    // 2. SERVE WIKI UI (baked.html is rebuilt automatically when index.html or the conflict guard changes)
-    if (request.method === "GET" && (url.pathname === "/" || url.pathname === "/index.html" || url.pathname === "/baked.html")) {
-      return serveWiki(request, env, ctx, corsHeaders);
-    }
-
-    // 3. READS
-    if (request.method === "GET" || request.method === "HEAD") {
-      const key = decodePath(url.pathname.substring(1));
-      if (key === null) return invalidPath(corsHeaders);
-      if (key === MANIFEST_KEY) return serveManifest(request, env, ctx, corsHeaders);
-
-      const object = keyTooLong(key) ? null : await env.WIKI_BUCKET.get(key);
-      if (!object) return new Response("Not found", { status: 404, headers: corsHeaders });
-      const headers = objectHeaders(object, corsHeaders);
-      const body = request.method === "GET" ? object.body : null;
-
-      if (key.startsWith(TIDDLER_PREFIX)) {
-        // Stored with its revision, bag and recipe already in place: served as is
-        headers.set("Cache-Control", "no-cache");
-        headers.set("ETag", tiddlerEtag(key.slice(TIDDLER_PREFIX.length), revisionOf(object)));
-        return new Response(body, { headers });
-      }
-      headers.set("ETag", object.httpEtag);
-      return new Response(body, { headers });
-    }
-
-    // 4. WRITES
-    if (request.method === "PUT" && url.pathname === "/page/core") return publishCoreFile(request, env, url, corsHeaders);
-    if (request.method === "PUT" && url.pathname === "/page/shell") return publishShell(request, env, ctx, corsHeaders);
-    if (request.method === "PUT") return handleSave(request, env, ctx, url, corsHeaders);
-
-    // 5. DELETES
-    if (request.method === "DELETE") return handleDelete(request, env, ctx, url, corsHeaders);
-
-    return new Response("Method not allowed", { status: 405, headers: corsHeaders });
+    return new Response("Method not allowed", { status: 405, headers: CORS_HEADERS });
   },
 
   // Queue consumer: commits queued saves and deletes to GitHub, one at a time
-  async queue(batch, env, ctx) {
+  async queue(batch, env) {
     await processBackupBatch(batch, env);
   }
 };

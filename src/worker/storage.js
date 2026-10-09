@@ -16,19 +16,16 @@
 // | _backup/status.json                  | how backups go (backup/status.js)                 |
 // | _backup/versions/…                   | versions too big for a queue message (backup/queue.js) |
 
+export const INDEX_KEY = "index.html";
+export const PAGE_KEY = "baked.html";
+export const STATUS_KEY = "status";
 // Each tiddler is stored under its title
 export const TIDDLER_PREFIX = "recipes/default/tiddlers/";
-
-export const MANIFEST_KEY = "recipes/default/tiddlers.json";
-
+export const LIST_KEY = "recipes/default/tiddlers.json";
 export const SHELL_KEY = "_page/shell.html";
-
-export const CORE_KEY = "_plugins/tiddlywikicore.js";
-
 export const PLUGIN_FILE_DIR = "_plugins/";
-
+export const CORE_KEY = "_plugins/tiddlywikicore.js";
 export const REPAIR_PROGRESS_KEY = "_repair/tiddler-list-progress.json";
-
 export const BACKUP_STATUS_KEY = "_backup/status.json";
 
 // A create-only write, with the same fallback as the save handler: if it's refused but nothing is
@@ -56,9 +53,9 @@ export async function mapLimit(items, limit, fn) {
 // from a list that missed a plugin (a save whose list update failed and was never retried), or a
 // build after a change failed
 export async function markPageOutdated(env) {
-  const page = await env.WIKI_BUCKET.get("baked.html");
+  const page = await env.WIKI_BUCKET.get(PAGE_KEY);
   if (!page) return;
-  await env.WIKI_BUCKET.put("baked.html", await page.arrayBuffer(), {
+  await env.WIKI_BUCKET.put(PAGE_KEY, await page.arrayBuffer(), {
     httpMetadata: page.httpMetadata,
     customMetadata: { ...page.customMetadata, bakeVersion: "outdated" },
     onlyIf: { etagMatches: page.etag }

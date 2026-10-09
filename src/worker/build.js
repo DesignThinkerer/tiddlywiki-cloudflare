@@ -11,7 +11,7 @@ import { hasNestedFields } from "./layout.js";
 import { readableList } from "./list.js";
 import { pluginScriptTags } from "./plugins.js";
 import { conflictGuardEnabled, publicUrl } from "./settings.js";
-import { CORE_KEY, SHELL_KEY } from "./storage.js";
+import { CORE_KEY, INDEX_KEY, PAGE_KEY, SHELL_KEY } from "./storage.js";
 import { isStartupTiddler, needsPluginFile, tiddlerKey } from "./tiddlers.js";
 
 const CONFLICT_GUARD_TITLE = "$:/cfworker/conflict-guard.js";
@@ -108,7 +108,7 @@ function insertBeforeLast(html, marker, markup) {
 // effort.
 async function storePage(env, html, meta) {
   for (let attempt = 1; attempt <= 3; attempt++) {
-    const current = await env.WIKI_BUCKET.head("baked.html");
+    const current = await env.WIKI_BUCKET.head(PAGE_KEY);
     const theirs = current?.customMetadata || {};
     let stored = meta;
     if (current && theirs.bakeVersion === meta.bakeVersion && theirs.sourceEtag === meta.sourceEtag) {
@@ -118,7 +118,7 @@ async function storePage(env, html, meta) {
       if (newerList > 0 || newerShell > 0) stored = { ...meta, bakeVersion: "outdated" };
     }
     const pageTime = Math.max(Math.floor(Date.now() / 1000), Number(theirs.pageTime || 0) + 1);
-    const written = await env.WIKI_BUCKET.put("baked.html", html, {
+    const written = await env.WIKI_BUCKET.put(PAGE_KEY, html, {
       httpMetadata: { contentType: "text/html; charset=utf-8" },
       customMetadata: { ...stored, pageTime: String(pageTime) },
       ...(current && attempt < 3 ? { onlyIf: { etagMatches: current.etag } } : {})
@@ -126,6 +126,62 @@ async function storePage(env, html, meta) {
     if (written) return written;
   }
   return null;
+}
+
+// What the page preloads ($tw.preloadTiddlers): the listed startup tiddlers, read from the bucket
+// (every stored tiddler is listed, so only listed ones are read), and the browser modules with
+// their settings, unless CONFLICT_GUARD is off
+async function preloadedTiddlers(env, entries, pageSource) {
+  const store = [];
+  const startupTitles = entries.filter(t => t.title && isStartupTiddler(t)).map(t => t.title);
+  await Promise.all(startupTitles.map(async (title) => {
+    const obj = await env.WIKI_BUCKET.get(tiddlerKey(title));
+    if (!obj) return;
+    try {
+      const tiddler = await obj.json();
+      if (hasNestedFields(tiddler)) tiddler.fields = tiddler.fields.fields;
+      store.push(tiddler);
+    } catch (e) {}
+  }));
+  if (conflictGuardEnabled(env)) {
+    store.push({ title: CONFLICT_GUARD_TITLE, type: "application/javascript", "module-type": "startup", text: CONFLICT_GUARD_SOURCE });
+    store.push({ title: PUBLIC_URL_TITLE, text: publicUrl(env, "/") });
+    store.push({ title: PAGE_PUBLISHER_TITLE, type: "application/javascript", "module-type": "startup", text: PAGE_PUBLISHER_SOURCE });
+    store.push({ title: PAGE_SOURCE_TITLE, type: "application/json", text: JSON.stringify({ index: pageSource.index, fingerprint: pageSource.fingerprint, core: pageSource.core, shell: pageSource.shell || "" }) });
+  }
+  return store;
+}
+
+// The page source with the preloaded tiddlers (as a script right after <head>) and the plugin
+// script tags in it. In a shell, plugins load right before the core (they must run before
+// TiddlyWiki starts, which the core does), so they don't hold up the top of the page (a splash
+// screen). In a full index.html, where TiddlyWiki starts from code inside the page, from <head>.
+// (Only a shell is searched: in index.html, the marker is only in TiddlyWiki's templates, so the
+// search would decode the whole page for nothing, and one in raw markup isn't the place.)
+function pageWithPreloads(pageSource, store, pluginTags) {
+  let html = pageSource.html;
+  let pluginsPlaced = false;
+  if (pluginTags && pageSource.fingerprint) {
+    const placed = insertBeforeLast(html, EXTERNAL_SCRIPTS_MARKER, `${pluginTags}\n`);
+    if (placed) {
+      html = placed;
+      pluginsPlaced = true;
+    }
+  }
+  let injected = "";
+  if (store.length > 0) {
+    const safeJson = JSON.stringify(store).replace(/</g, '\\u003c');
+    injected = `
+        <script>
+          window.$tw = window.$tw || {};
+          window.$tw.preloadTiddlers = window.$tw.preloadTiddlers || [];
+          window.$tw.preloadTiddlers = window.$tw.preloadTiddlers.concat(${safeJson});
+        </script>
+      `;
+  }
+  if (pluginTags && !pluginsPlaced) injected += `\n${pluginTags}\n`;
+  if (injected) html = insertAfterHead(html, `\n${injected}\n`);
+  return html;
 }
 
 // Builds baked.html = the page source (the published shell, or index.html, see readPageSource) +
@@ -136,75 +192,21 @@ export async function rebakeHtml(env, ctx, list = null, source = null) {
   try {
     const pageSource = source || await readPageSource(env);
     if (!pageSource) return null;
-    let html = pageSource.html;
-
     // list: the list a save or delete has just written. Otherwise it's read, and a missing or
     // damaged one rebuilt first (a page built without it would have no plugins); while that takes
     // more requests, this throws and the page stays as it is.
-    const { object: manifestObj, entries: manifest } = list || await readableList(env, ctx, { pageBuild: true });
-    // Every stored tiddler is listed, so only listed startup tiddlers are read
-    const startupTitles = manifest.filter(t => t.title && isStartupTiddler(t)).map(t => t.title);
-
-    const store = [];
-    const [, pluginTags] = await Promise.all([
-      Promise.all(startupTitles.map(async (title) => {
-        const obj = await env.WIKI_BUCKET.get(tiddlerKey(title));
-        if (!obj) return;
-        try {
-          const tiddler = await obj.json();
-          if (hasNestedFields(tiddler)) tiddler.fields = tiddler.fields.fields;
-          store.push(tiddler);
-        } catch (e) {}
-      })),
-      pluginScriptTags(env, manifest.filter(t => t.title && needsPluginFile(t)))
+    const { object: listObject, entries } = list || await readableList(env, ctx, { pageBuild: true });
+    const [store, pluginTags] = await Promise.all([
+      preloadedTiddlers(env, entries, pageSource),
+      pluginScriptTags(env, entries.filter(t => t.title && needsPluginFile(t)))
     ]);
-
-    if (conflictGuardEnabled(env)) {
-      store.push({
-        title: CONFLICT_GUARD_TITLE,
-        type: "application/javascript",
-        "module-type": "startup",
-        text: CONFLICT_GUARD_SOURCE
-      });
-      store.push({ title: PUBLIC_URL_TITLE, text: publicUrl(env, "/") });
-      store.push({ title: PAGE_PUBLISHER_TITLE, type: "application/javascript", "module-type": "startup", text: PAGE_PUBLISHER_SOURCE });
-      store.push({ title: PAGE_SOURCE_TITLE, type: "application/json", text: JSON.stringify({ index: pageSource.index, fingerprint: pageSource.fingerprint, core: pageSource.core, shell: pageSource.shell || "" }) });
-    }
-
-    // In a shell, plugins load right before the core (they must run before TiddlyWiki starts, which
-    // the core does), so they don't hold up the top of the page (a splash screen). In a full
-    // index.html, where TiddlyWiki starts from code inside the page, from <head>.
-    // (Only a shell is searched: in index.html, the marker is only in TiddlyWiki's templates, so
-    // the search would decode the whole page for nothing, and one in raw markup isn't the place.)
-    let pluginsPlaced = false;
-    if (pluginTags && pageSource.fingerprint) {
-      const placed = insertBeforeLast(html, EXTERNAL_SCRIPTS_MARKER, `${pluginTags}\n`);
-      if (placed) {
-        html = placed;
-        pluginsPlaced = true;
-      }
-    }
-
-    let injected = "";
-    if (store.length > 0) {
-      const safeJson = JSON.stringify(store).replace(/</g, '\\u003c');
-      injected = `
-        <script>
-          window.$tw = window.$tw || {};
-          window.$tw.preloadTiddlers = window.$tw.preloadTiddlers || [];
-          window.$tw.preloadTiddlers = window.$tw.preloadTiddlers.concat(${safeJson});
-        </script>
-      `;
-    }
-    if (pluginTags && !pluginsPlaced) injected += `\n${pluginTags}\n`;
-    if (injected) html = insertAfterHead(html, `\n${injected}\n`);
-
+    const html = pageWithPreloads(pageSource, store, pluginTags);
     const stored = await storePage(env, html, {
       bakeVersion: bakeVersion(env),
       sourceEtag: pageSource.index,
       shell: pageSource.fingerprint,
       shellVersion: String(pageSource.shellVersion || 0),
-      listVersion: String(manifestObj ? manifestObj.uploaded.getTime() : 0)
+      listVersion: String(listObject ? listObject.uploaded.getTime() : 0)
     });
     if (stored) ctx.waitUntil(purgePublicCache(env, PUBLIC_PAGE_PATHS.map(path => publicUrl(env, path))));
     return { html, page: stored };
@@ -220,14 +222,14 @@ export async function rebakeHtml(env, ctx, list = null, source = null) {
 // (publishShell) }, or null if there's no index.html
 async function readPageSource(env) {
   const [index, shell, coreFile] = await Promise.all([
-    env.WIKI_BUCKET.head("index.html"), env.WIKI_BUCKET.get(SHELL_KEY), env.WIKI_BUCKET.head(CORE_KEY)
+    env.WIKI_BUCKET.head(INDEX_KEY), env.WIKI_BUCKET.get(SHELL_KEY), env.WIKI_BUCKET.head(CORE_KEY)
   ]);
   const core = coreFile?.customMetadata?.v || "";
   if (shell && index && shell.customMetadata?.index === index.etag) {
     return { html: new Uint8Array(await shell.arrayBuffer()), index: index.etag, fingerprint: shell.customMetadata.fingerprint || "", core, shellVersion: shell.uploaded.getTime(), shell: shell.etag };
   }
   if (shell) await shell.body.cancel();
-  const full = await env.WIKI_BUCKET.get("index.html");
+  const full = await env.WIKI_BUCKET.get(INDEX_KEY);
   return full && { html: new Uint8Array(await full.arrayBuffer()), index: full.etag, fingerprint: "", core, shell: "" };
 }
 

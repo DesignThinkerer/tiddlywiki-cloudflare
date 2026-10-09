@@ -7,7 +7,6 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
-const WORKER = path.join(ROOT, "worker.js");
 const LIST = "recipes/default/tiddlers.json";
 
 // The worker behind test/r2-counter.mjs, which can make chosen R2 calls fail. Cache purges are

@@ -11,6 +11,12 @@
 // | BACKUP_RETRY_SECONDS | backupRetrySeconds      |
 // | BACKUP_ALERT_MINUTES | backupAlertMinutes      |
 
+// PUBLIC_WIKI_URL, the public site's address (the bucket's custom domain, README 3.1): the page
+// loads its plugin files and TiddlyWiki's core file from it, the browser module reads tiddlers from
+// it, and purges name its URLs. Required, with no default: a wiki must never load its code from a
+// site that isn't its own. Checked at every request (index.js), so a worker without it does nothing
+// but say so.
+//
 // Why the setting can't be used, or null. requestOrigin: where the request came to, which the
 // public site can't be: the worker isn't the public site, and the browser modules take a page at
 // the public address for the public site's (read-only, publishing nothing).
@@ -35,6 +41,38 @@ export function publicUrl(env, path) {
   return env.PUBLIC_WIKI_URL.replace(/\/+$/, "") + path;
 }
 
+// ACCESS = "off" lets requests through without Cloudflare Access (access.js): for the tests and
+// local runs, where there is no Access. Never on a deployed worker.
+export function accessCheckOff(env) {
+  return env.ACCESS === "off";
+}
+
+// CONFLICT_GUARD = "off" builds the page without the browser modules (README 6)
 export function conflictGuardEnabled(env) {
   return String(env.CONFLICT_GUARD || "").toLowerCase() !== "off";
+}
+
+// The GitHub backup's repository (owner/repo), token and branch, or null when backups are off
+// (no repository or no token: README 3.2)
+export function github(env) {
+  if (!env.GITHUB_REPO || !env.GITHUB_TOKEN) return null;
+  return { repo: env.GITHUB_REPO, token: env.GITHUB_TOKEN, branch: env.GITHUB_BRANCH || "main" };
+}
+
+// The zone and token public-site purges use, or null when purges are off (README 3.2)
+export function purges(env) {
+  if (!env.CF_ZONE_ID || !env.CF_API_TOKEN) return null;
+  return { zoneId: env.CF_ZONE_ID, token: env.CF_API_TOKEN };
+}
+
+// The first wait before a failed backup is tried again (BACKUP_RETRY_SECONDS, 60 by default)
+export function backupRetrySeconds(env) {
+  return parseInt(env.BACKUP_RETRY_SECONDS, 10) || 60;
+}
+
+// How long backups have to keep failing before the admin wiki shows it (BACKUP_ALERT_MINUTES, 60
+// by default)
+export function backupAlertMinutes(env) {
+  const minutes = parseFloat(env.BACKUP_ALERT_MINUTES);
+  return minutes >= 0 ? minutes : 60;
 }

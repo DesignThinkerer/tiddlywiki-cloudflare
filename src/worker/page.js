@@ -11,7 +11,7 @@
 
 import { EXTERNAL_SCRIPTS_MARKER, PAGE_ETAG_SUFFIX, bakeVersion, charStart, coreFileUrl, pageDecoder, rebakeHtml } from "./build.js";
 import { parseEtagList, refusal, untilDone } from "./http.js";
-import { CORE_KEY, SHELL_KEY, markPageOutdated, putIfAbsent } from "./storage.js";
+import { CORE_KEY, INDEX_KEY, PAGE_KEY, SHELL_KEY, STATUS_KEY, markPageOutdated, putIfAbsent } from "./storage.js";
 
 function pageHeaders(htmlHeaders, page) {
   const headers = { ...htmlHeaders, ETag: `"${page.etag}${PAGE_ETAG_SUFFIX}"` };
@@ -27,11 +27,11 @@ export async function serveWiki(request, env, ctx, corsHeaders) {
   // Only without an ETag, as HTTP says
   const since = ifNoneMatch ? NaN : Math.floor(Date.parse(request.headers.get("If-Modified-Since") || "") / 1000);
   let [baked, source] = await Promise.all([
-    env.WIKI_BUCKET.get("baked.html", known ? { onlyIf: { etagDoesNotMatch: known.slice(0, -PAGE_ETAG_SUFFIX.length) } } : undefined),
-    env.WIKI_BUCKET.head("index.html")
+    env.WIKI_BUCKET.get(PAGE_KEY, known ? { onlyIf: { etagDoesNotMatch: known.slice(0, -PAGE_ETAG_SUFFIX.length) } } : undefined),
+    env.WIKI_BUCKET.head(INDEX_KEY)
   ]);
   // A new bucket, or an engine deleted by hand: the empty wiki the build made goes there first
-  if (!source && await seedWiki(env)) source = await env.WIKI_BUCKET.head("index.html");
+  if (!source && await seedWiki(env)) source = await env.WIKI_BUCKET.head(INDEX_KEY);
   if (baked) {
     const meta = baked.customMetadata || {};
     // A conditional get whose precondition fails returns the object without a body: the browser has it
@@ -49,9 +49,9 @@ export async function serveWiki(request, env, ctx, corsHeaders) {
   // With its ETag and date, so the next load is already a 304 (unless another build's page was kept)
   if (rebuilt) return new Response(rebuilt.html, { headers: rebuilt.page ? pageHeaders(htmlHeaders, rebuilt.page) : htmlHeaders });
   // The rebuild failed (see the logs): the last page built is better than the bare engine
-  const lastPage = baked && await env.WIKI_BUCKET.get("baked.html");
+  const lastPage = baked && await env.WIKI_BUCKET.get(PAGE_KEY);
   if (lastPage) return new Response(lastPage.body, { headers: htmlHeaders });
-  const fallback = await env.WIKI_BUCKET.get("index.html");
+  const fallback = await env.WIKI_BUCKET.get(INDEX_KEY);
   if (!fallback) return new Response(NO_WIKI, { status: 404, headers: { "Content-Type": "text/plain; charset=utf-8" } });
   return new Response(fallback.body, { headers: htmlHeaders });
 }
@@ -85,8 +85,8 @@ async function seedWiki(env) {
     return false;
   }
   const html = new Uint8Array(await asset.arrayBuffer());
-  await putIfAbsent(env, "index.html", html, { httpMetadata: { contentType: "text/html; charset=utf-8" } });
-  await putIfAbsent(env, "status", JSON.stringify(PUBLIC_STATUS), { httpMetadata: { contentType: "application/json" } });
+  await putIfAbsent(env, INDEX_KEY, html, { httpMetadata: { contentType: "text/html; charset=utf-8" } });
+  await putIfAbsent(env, STATUS_KEY, JSON.stringify(PUBLIC_STATUS), { httpMetadata: { contentType: "application/json" } });
   console.log("New wiki: index.html and the status file put in the bucket");
   return true;
 }
@@ -126,7 +126,7 @@ export async function publishCoreFile(request, env, url, corsHeaders) {
   // For the index.html the admin page was built for (X-Page-Index), as a shell: a tab opened before
   // a new one (an upgrade) would otherwise replace the core file with its older version, which the
   // public site would then serve under the new version's URL, cached for a year
-  const [index, current] = await Promise.all([env.WIKI_BUCKET.head("index.html"), env.WIKI_BUCKET.head(CORE_KEY)]);
+  const [index, current] = await Promise.all([env.WIKI_BUCKET.head(INDEX_KEY), env.WIKI_BUCKET.head(CORE_KEY)]);
   if (!index || request.headers.get("X-Page-Index") !== index.etag) {
     return refusal("index.html has changed since this page was loaded: reload the admin wiki.", corsHeaders, 409);
   }
@@ -172,14 +172,14 @@ export async function publishShell(request, env, ctx, corsHeaders) {
   if (!fingerprint || fingerprint.length > 100) return refusal("The shell has no fingerprint (X-Page-Fingerprint).", corsHeaders);
   if (Number(request.headers.get("Content-Length")) > SHELL_LIMIT) return refusal("The shell is too big.", corsHeaders);
   const [index, core, kept] = await Promise.all([
-    env.WIKI_BUCKET.head("index.html"), env.WIKI_BUCKET.head(CORE_KEY), env.WIKI_BUCKET.head(SHELL_KEY)
+    env.WIKI_BUCKET.head(INDEX_KEY), env.WIKI_BUCKET.head(CORE_KEY), env.WIKI_BUCKET.head(SHELL_KEY)
   ]);
   if (!index || request.headers.get("X-Page-Index") !== index.etag) {
     return refusal("index.html has changed since this page was loaded: reload the admin wiki.", corsHeaders, 409);
   }
   const withShell = (headers, shell) => ({ ...headers, "X-Page-Shell": shell });
   if (kept?.customMetadata?.index === index.etag && kept.customMetadata.fingerprint === fingerprint) {
-    const page = await env.WIKI_BUCKET.head("baked.html");
+    const page = await env.WIKI_BUCKET.head(PAGE_KEY);
     if (page?.customMetadata?.sourceEtag === index.etag && page.customMetadata.shell === fingerprint) {
       return new Response(null, { status: 204, headers: withShell(corsHeaders, kept.etag) });
     }

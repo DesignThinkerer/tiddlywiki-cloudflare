@@ -2,6 +2,7 @@
 // its answers mean, and how long to wait after a failure.
 
 import { encoder } from "../bytes.js";
+import { backupRetrySeconds, github } from "../settings.js";
 
 // Writes bytes as base64 into out (ASCII bytes) from position at; returns where it ends. GitHub takes
 // a file's content in base64, in a request body sent as bytes: written there directly, it's never a
@@ -58,9 +59,9 @@ class GitHubError extends Error {
 
 // GitHub Contents API, with the same file paths as the original per-save backup
 export function githubContents(env) {
-  const branch = env.GITHUB_BRANCH || "main";
+  const { repo, token, branch } = github(env);
   const headers = {
-    Authorization: `Bearer ${env.GITHUB_TOKEN}`,
+    Authorization: `Bearer ${token}`,
     Accept: "application/vnd.github.v3+json",
     "Content-Type": "application/json",
     "X-GitHub-Api-Version": "2022-11-28",
@@ -68,7 +69,7 @@ export function githubContents(env) {
   };
   // body: the request body, as text or bytes
   async function call(method, title, body) {
-    const apiBase = `https://api.github.com/repos/${env.GITHUB_REPO}/contents/tiddlers/${encodeURIComponent(title)}.json`;
+    const apiBase = `https://api.github.com/repos/${repo}/contents/tiddlers/${encodeURIComponent(title)}.json`;
     // Reads ask for the "object" format: the default one isn't available for files between 1 and
     // 100 MB, so their backups would fail forever and hold up every later one. The object format
     // works for all sizes, with empty content above 1 MB.
@@ -143,7 +144,7 @@ export function isRateLimit(e) {
 }
 
 export function backupRetryDelay(env, tries, retryAfter) {
-  const base = parseInt(env.BACKUP_RETRY_SECONDS, 10) || 60;
+  const base = backupRetrySeconds(env);
   const delay = Math.min(base * 2 ** (tries || 0), BACKUP_MAX_DELAY);
   return Math.ceil(Math.min(Math.max(delay, retryAfter || 0), 24 * 3600));
 }

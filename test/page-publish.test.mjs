@@ -531,7 +531,7 @@ await contextC.route(url => url.pathname.endsWith("/tiddlers/Splash"), async rou
   await route.continue().catch(() => {});
 });
 mark = requests.length;
-const { p: C } = await openAdmin("C", contextC);
+await openAdmin("C", contextC);
 await waitFor(async () => shellPuts("C", mark) > 0, 30000);
 await sleep(QUIET_WINDOW);
 html = await shell();
@@ -666,7 +666,7 @@ check("...and the tab publishes again at its next save", (await shell()).include
 await bucket.put("index.html", ENGINE.replace("</head>", "<!-- new upload -->\n</head>"));
 const contextD = await browser.newContext();
 mark = requests.length;
-const { p: D, response: firstD } = await openAdmin("D", contextD);
+const { response: firstD } = await openAdmin("D", contextD);
 const firstBody = await firstD.body();
 await waitFor(async () => shellPuts("D", mark) > 0, 30000);
 await sleep(QUIET_WINDOW);

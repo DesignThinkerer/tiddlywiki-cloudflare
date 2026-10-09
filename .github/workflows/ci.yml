@@ -23,6 +23,7 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - run: npm run lint
       # worker.js is committed: it must be what src/ builds
       - run: npm run check:build
       - run: npm run test:fast
