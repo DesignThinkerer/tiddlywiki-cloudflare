@@ -4,7 +4,7 @@
 // (its HTTP status, 0 without one). The entry goes when that tiddler's backup gets through. The file
 // also keeps a pause of every backup, { until, count }, while there's one (queue.js). Written only
 // when something changes, read only by a batch with a failure or a version that failed or waited
-// before. The admin wiki asks with its tiddler list request (X-Backup-Status: ask) when it loads,
+// before. The admin wiki (src/browser/backup-alert.js) asks with its tiddler list request (X-Backup-Status: ask) when it loads,
 // then hourly, and shows an alert.
 
 import { backupAlertMinutes } from "../settings.js";

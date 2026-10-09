@@ -40,11 +40,12 @@ exports.platforms = ["browser"];
 exports.after = ["rootwidget"];
 exports.synchronous = true;
 
+var lib = require("$:/cfworker/lib.js");
+
 var TEMPLATE = "$:/core/templates/tiddlywiki5-external-js.html",
 	CORE_TEMPLATE = "$:/core/templates/tiddlywiki5.js",
 	CORE_FORMAT = "1",   // changes when the core file is rendered differently: a new URL for it
 	SOURCE = "$:/cfworker/page-source",
-	PUBLIC_URL = "$:/cfworker/public-url",
 	STATUS = "$:/temp/cfworker/page-publisher",
 	RAW_MARKUP_TAGS = [
 		"$:/core/wiki/rawmarkup", "$:/tags/RawMarkup", "$:/tags/RawMarkupWikified",
@@ -73,26 +74,17 @@ function fingerprint(text) {
 	return text.length.toString(36) + "-" + hash.toString(36);
 }
 
-// The site a URL is on, whatever the protocol: the public site visited over http while its URL says
-// https (or the other way round) is still the public site
-function siteOf(url) {
-	return String(url || "").replace(/^[a-z][a-z0-9+.-]*:/i,"").toLowerCase();
-}
-
 exports.startup = function() {
 	var wiki = $tw.wiki,
 		adaptor = $tw.syncadaptor,
 		syncer = $tw.syncer,
-		publicBase = (wiki.getTiddlerText(PUBLIC_URL,"") || "").trim(),
+		publicBase = lib.publicBase(),
 		source = null;
 	try {
 		source = JSON.parse(wiki.getTiddlerText(SOURCE,"") || "null");
 	} catch(e) {}
-	if(publicBase && publicBase.charAt(publicBase.length - 1) !== "/") {
-		publicBase += "/";
-	}
-	// Only on the admin site, with the worker's browser module
-	if($tw.safeMode || !adaptor || !syncer || !source || !publicBase || siteOf(adaptor.host) === siteOf(publicBase) || typeof adaptor.cfworkerListed !== "function") {
+	// Only on the admin site, with the list sync ($:/cfworker/list-sync.js)
+	if($tw.safeMode || !adaptor || !syncer || !source || !publicBase || lib.siteOf(adaptor.host) === lib.siteOf(publicBase) || typeof adaptor.cfworkerListed !== "function") {
 		return;
 	}
 	var coreVersion = $tw.version + "-" + CORE_FORMAT,

@@ -14,21 +14,24 @@ import { conflictGuardEnabled, publicUrl } from "./settings.js";
 import { CORE_KEY, INDEX_KEY, PAGE_KEY, SHELL_KEY } from "./storage.js";
 import { isStartupTiddler, needsPluginFile, tiddlerKey } from "./tiddlers.js";
 
-const CONFLICT_GUARD_TITLE = "$:/cfworker/conflict-guard.js";
+// The browser modules (src/browser/, README 3), baked into the page as TiddlyWiki modules: the
+// library the others require, the conflict guard, the list sync, the backup alert and the page
+// publisher (see "The page" below). Each source is a placeholder here, which build.mjs replaces
+// with the file's text (the first with src/browser/lib.js, and so on).
+const BROWSER_MODULES = [
+  { title: "$:/cfworker/lib.js", type: "library", source: "__LIB_SOURCE__" },
+  { title: "$:/cfworker/conflict-guard.js", type: "startup", source: "__CONFLICT_GUARD_SOURCE__" },
+  { title: "$:/cfworker/list-sync.js", type: "startup", source: "__LIST_SYNC_SOURCE__" },
+  { title: "$:/cfworker/backup-alert.js", type: "startup", source: "__BACKUP_ALERT_SOURCE__" },
+  { title: "$:/cfworker/page-publisher.js", type: "startup", source: "__PAGE_PUBLISHER_SOURCE__" }
+];
 
-// Tells the browser module where the public copy is, so the admin wiki can load tiddler contents
-// from there (no worker request) and only ask the worker when that copy isn't current
+// Their settings. The public site's address: the admin wiki loads tiddler contents from there (no
+// worker request) and only asks the worker when that copy isn't current.
 const PUBLIC_URL_TITLE = "$:/cfworker/public-url";
 
-const CONFLICT_GUARD_SOURCE = "__CONFLICT_GUARD_SOURCE__";
-
-// The second browser module: publishes the page from the admin wiki (see "The page" below). Baked
-// with the first, with what the page was built from, so it can tell when it needs publishing again.
-const PAGE_PUBLISHER_TITLE = "$:/cfworker/page-publisher.js";
-
+// What the page was built from, so the page publisher can tell when it needs publishing again
 const PAGE_SOURCE_TITLE = "$:/cfworker/page-source";
-
-const PAGE_PUBLISHER_SOURCE = "__PAGE_PUBLISHER_SOURCE__";
 
 // Changes whenever the browser modules or the public URL change, so baked.html is rebuilt after a
 // deploy (the number in front changes when the way pages are built changes). Asked at every page
@@ -39,7 +42,7 @@ let lastBakeVersion = { settings: null, version: "" };
 export function bakeVersion(env) {
   const enabled = conflictGuardEnabled(env), settings = enabled + "\n" + publicUrl(env, "/");
   if (lastBakeVersion.settings !== settings) {
-    const input = (enabled ? CONFLICT_GUARD_SOURCE + "\n" + PAGE_PUBLISHER_SOURCE : "off") + "\n" + publicUrl(env, "/");
+    const input = (enabled ? BROWSER_MODULES.map(m => m.source).join("\n") : "off") + "\n" + publicUrl(env, "/");
     let hash = 5381;
     for (let i = 0; i < input.length; i++) {
       hash = ((hash * 33) ^ input.charCodeAt(i)) >>> 0;
@@ -144,9 +147,8 @@ async function preloadedTiddlers(env, entries, pageSource) {
     } catch (e) {}
   }));
   if (conflictGuardEnabled(env)) {
-    store.push({ title: CONFLICT_GUARD_TITLE, type: "application/javascript", "module-type": "startup", text: CONFLICT_GUARD_SOURCE });
+    for (const m of BROWSER_MODULES) store.push({ title: m.title, type: "application/javascript", "module-type": m.type, text: m.source });
     store.push({ title: PUBLIC_URL_TITLE, text: publicUrl(env, "/") });
-    store.push({ title: PAGE_PUBLISHER_TITLE, type: "application/javascript", "module-type": "startup", text: PAGE_PUBLISHER_SOURCE });
     store.push({ title: PAGE_SOURCE_TITLE, type: "application/json", text: JSON.stringify({ index: pageSource.index, fingerprint: pageSource.fingerprint, core: pageSource.core, shell: pageSource.shell || "" }) });
   }
   return store;

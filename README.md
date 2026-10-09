@@ -55,8 +55,7 @@ flowchart LR
 | Piece | Role |
 |---|---|
 | **The worker** (`worker.js`, built from `src/worker/`) | Serves the admin wiki: the page, the TiddlyWeb endpoints, saves and deletes with their conflict checks, cache purges. Writes a file for each plugin, and consumes the backup queue. |
-| **Conflict guard** (`src/browser/conflict-guard.js`) | A TiddlyWiki startup module the worker builds into the page. It makes the browser say which version each edit is based on, handles conflicts, cuts unneeded requests, and sends saves in the layout the worker stores. |
-| **Page publisher** (`src/browser/page-publisher.js`) | A second startup module built into the page. In the admin wiki, it renders the page with TiddlyWiki's own template and sends it to the worker whenever it changes. |
+| **Browser modules** (`src/browser/`) | TiddlyWiki modules the worker builds into the page. The conflict guard makes the browser say which version each edit is based on, handles conflicts, and sends saves in the layout the worker stores; the list sync keeps the tiddler list, cuts unneeded requests and reads from the public site; the backup alert shows backups that keep failing; the page publisher, in the admin wiki, renders the page with TiddlyWiki's own template and sends it to the worker whenever it changes. |
 | **R2 bucket** | Holds everything: the wiki engine (`index.html`), the page both sites serve, the tiddler list, one JSON file per tiddler, one script per plugin, and TiddlyWiki's core file. |
 | **Public site** | The bucket's custom domain. Cloudflare caches it, and nothing on it runs the worker. |
 | **Queue** `wiki-backup` | Holds one message per save or delete until it has been committed to GitHub. |
@@ -215,7 +214,7 @@ A second wiki is a second worker with its own bucket, queue and two hostnames: s
 
 ## 3. Operating it
 
-**Deploying a change:** edit `src/`, run `npm run build`, `npm run lint` and `npm test`, and push to `main` (through a pull request, so CI runs the tests too): Workers Builds deploys it (2.5). Without it, `npx wrangler deploy`, or paste `worker.js` into the dashboard's editor. If a browser module changed, the next admin page load rebuilds `baked.html`. If you changed how the page itself is built, also bump the number in front of `bakeVersion` (now `7-`), or existing pages keep the old format until something else rebuilds them; plugin files are only rewritten when their plugin changes, so after changing their format, delete `_plugins/` and open the admin wiki. Reload any open admin tabs: tabs opened before a change keep the old module, and tabs older than the module have no conflict protection.
+**Deploying a change:** edit `src/`, run `npm run build`, `npm run lint` and `npm test`, and push to `main` (through a pull request, so CI runs the tests too): Workers Builds deploys it (2.5). Without it, `npx wrangler deploy`, or paste `worker.js` into the dashboard's editor. If a browser module changed, the next admin page load rebuilds `baked.html`. If you changed how the page itself is built, also bump the number in front of `bakeVersion` (now `7-`), or existing pages keep the old format until something else rebuilds them; plugin files are only rewritten when their plugin changes, so after changing their format, delete `_plugins/` and open the admin wiki. Reload any open admin tabs: tabs opened before a change keep the old modules, and tabs older than the modules have no conflict protection.
 
 **Updating the wiki engine:** update the `tiddlywiki` package in `package.json` (a pull request, so the tests run on the new version) and deploy; for a wiki that already runs, delete `index.html` in R2 and open the admin wiki: the worker puts the new empty wiki there (design 1.3), and your tiddlers, plugins and published page are untouched. Or upload a new `index.html` (an empty TiddlyWiki with the TiddlyWeb plugin) to R2 yourself. Either way, the next admin page load rebuilds `baked.html` from it and purges the public page, then publishes the core file and the page for the new version by itself (design 1.9). If a TiddlyWiki upgrade changes the filter in `tiddlers.json?filter=…`, add the new filter to `SKINNY_LIST_FILTERS`, or the public tiddler list won't be purged after saves. You'll see the exact URL in the browser's Network tab. Plugins installed through the wiki override the copies in `index.html`: after an upgrade, update the version in the plugin library's URL (`$:/config/OfficialPluginLibrary`) and update your plugins from its Updates tab.
 
@@ -239,7 +238,7 @@ If the page is rebuilt before step 4 (by a deploy, or by saving another plugin, 
 2. Purge everything from Cloudflare's cache.
 3. Open the admin wiki. The worker rebuilds the tiddler list from the stored tiddlers (design 1.2) and the page from `index.html`, both without the plugin, and the admin wiki then publishes its page. The GitHub backup still has the plugin (`tiddlers/<plugin title>.json`), to install again once fixed.
 
-**Checking the module is active:** in the admin wiki's browser console, `$tw.syncadaptor.conflictGuardInstalled` should be `true`.
+**Checking the modules are active:** in the admin wiki's browser console, `$tw.syncadaptor.conflictGuardInstalled` should be `true` (the conflict guard), and `$tw.syncadaptor.cfworkerBackupAlert` too (the backup alert, which runs after the list sync).
 
 **Log lines** (the worker's logs, under its Logs tab in the dashboard):
 
@@ -258,7 +257,7 @@ If the page is rebuilt before step 4 (by a deploy, or by saving another plugin, 
 
 **Manual purge:** Cloudflare dashboard → Caching → Configuration → Purge Cache. Use it if something on the public site looks stuck, for example after uploading files to R2 by hand.
 
-**Turning the browser module off:** set `CONFLICT_GUARD` to `off`. The next page load rebuilds `baked.html` without it. Saves then go back to TiddlyWiki's default behaviour, without protection or request savings.
+**Turning the browser modules off:** set `CONFLICT_GUARD` to `off`. The next page load rebuilds `baked.html` without them. Saves then go back to TiddlyWiki's default behaviour, without protection or request savings, and the page is no longer published.
 
 ---
 
@@ -361,30 +360,33 @@ GitHub runs the same two groups, as two jobs side by side, for every pull reques
 │   │   ├── page.js           serving the page, and the page the admin wiki publishes (design 1.9)
 │   │   ├── reads.js, saves.js  the handlers: status, list and objects; saves and deletes (design 1.4)
 │   │   └── backup/           the GitHub backup: queue.js (the consumer), github.js (the API), status.js (how backups go, 4.7)
-│   └── browser/              the browser modules, embedded into worker.js by the build
-│       ├── conflict-guard.js the browser module
-│       └── page-publisher.js the second browser module (design 1.9)
+│   └── browser/              the browser modules, embedded into worker.js by the build (3)
+│       ├── lib.js            what they share: the sync adaptor, the public site's address, titles in alerts (a TiddlyWiki library module)
+│       ├── conflict-guard.js saves and deletes: the revision each is based on, conflicts, the flat layout
+│       ├── list-sync.js      the tiddler list, reads from the public site, what isn't sent, background tabs
+│       ├── backup-alert.js   the alert while backups to GitHub keep failing (4.7)
+│       └── page-publisher.js the page published from the admin wiki (design 1.9)
 ├── build.mjs                 inlines the modules into worker.js, in dependency order, with the browser modules embedded
 ├── eslint.config.js          the lint rules (npm run lint): names that don't exist, unused ones, an import assigned to
 ├── wrangler.toml             the worker's name, bindings and settings: what Wrangler deploys (2.5)
 ├── package.json              build, lint and test scripts
 └── test/
-    ├── first-visit.test.mjs  a new wiki from an empty bucket, in Chromium (11 checks)
+    ├── first-visit.test.mjs  a new wiki from an empty bucket, in Chromium (13 checks)
     ├── two-tabs.test.mjs     real TiddlyWiki in Chromium, several tabs (93 checks)
     ├── plugins.test.mjs      real plugins on the admin and public sites (66 checks)
     ├── page-publish.test.mjs the page published from a real TiddlyWiki (57 checks)
     ├── queue-backup.test.mjs queue backup against an imitation of GitHub (42 checks)
-    ├── integrity.test.mjs    the tiddler list's integrity, a failed page build, draft-like titles, .gitignore (76 checks)
+    ├── integrity.test.mjs    the tiddler list's integrity, a failed page build, draft-like titles, .gitignore (77 checks)
     ├── r2-ops.test.mjs       R2 calls per kind of request, against a budget (30 checks)
     ├── cpu.test.mjs          CPU of a big plugin's save and backup, against a budget (2 checks)
     ├── r2-counter.mjs        test-only wrapper that counts the worker's R2 calls
     ├── browser-harness.mjs   the browser suites' shared setup (worker, public site stand-in, Chromium, helpers)
-    └── bake.test.mjs         page serving and rebuilding, the published page, the Access check, the public address, the first visit (77 checks)
+    └── bake.test.mjs         page serving and rebuilding, the published page, the Access check, the public address, the first visit (78 checks)
 ```
 
 The worker is written as ES modules, each importing only from the ones below it: the entry point, the handlers, the page, the list, the layout, then the shared pieces (`src/worker/index.js` lists the order). The build inlines them into `worker.js` in that order, so one file is deployed, which you can paste into the dashboard, with every comment kept; it refuses two modules that import each other, an import of something not exported, and a name declared twice. The tests run the built `worker.js` in Miniflare, and import a module's functions directly where they test one (`test/cpu.test.mjs`, the checks in `test/bake.test.mjs`).
 
-The browser modules live in their own files so they can be read and edited as normal JavaScript. The build embeds each file of `src/browser/` in `worker.js` as a string, in place of a placeholder named after it (`"__CONFLICT_GUARD_SOURCE__"` for `conflict-guard.js`) in `src/worker/build.js`, and refuses a file without its placeholder, or the reverse. The strings are written as JSON, so a module can contain any character, backticks and `${` included.
+The browser modules live in their own files so they can be read and edited as normal JavaScript, one per concern, each a TiddlyWiki module that requires the shared library (`$:/cfworker/lib.js`). The build embeds each file of `src/browser/` in `worker.js` as a string, in place of a placeholder named after it (`"__LIST_SYNC_SOURCE__"` for `list-sync.js`) in `src/worker/build.js`'s table of them, and refuses a file without its placeholder, or the reverse. The strings are written as JSON, so a module can contain any character, backticks and `${` included.
 
 ---
 
@@ -468,7 +470,7 @@ Reading the save in full, or building the backup's request through strings, fail
 - the fallback without a queue.
 
 `test:first` starts from an empty bucket, with `assets/empty.html` as the worker's static asset, and covers:
-- the first admin page load, which puts the engine and the status file in the bucket and boots a logged-in, writable wiki with the browser module and nothing to load, and publishes the core file and the page for the public site;
+- the first admin page load, which puts the engine and the status file in the bucket and boots a logged-in, writable wiki with the browser modules (the library and the four startup modules, loaded in order, each part of the sync in place) and nothing to load, and publishes the core file and the page for the public site;
 - a tiddler saved from it, stored and listed;
 - the public site (the stand-in) serving the page to a visitor who sees the tiddler, read-only, without ever using the worker.
 

@@ -16,7 +16,7 @@ export function getTwTimestamp(date = new Date()) {
 // Titles the wiki keeps only in the browser: never stored, never backed up. Drafts are recognised by
 // their draft.of field (isDraft), not their title: a tiddler can be called "Draft of 'Chapter 1'".
 // (TiddlyWiki doesn't sync $:/HistoryList…, $:/state/, $:/temp/ or $:/status/ anyway. Only
-// $:/StoryList itself is a tab's own: the browser module doesn't send it, while $:/StoryList/2 or
+// $:/StoryList itself is a tab's own: the list sync (src/browser/list-sync.js) doesn't send it, while $:/StoryList/2 or
 // $:/StoryListBackup are sent, and stored like any tiddler.)
 export function isEphemeralTitle(title) {
   return title === "$:/StoryList" ||
@@ -26,7 +26,7 @@ export function isEphemeralTitle(title) {
          title.startsWith("$:/status/");
 }
 
-// TiddlyWiki's own test (a draft.of field, even empty), which the browser module uses too
+// TiddlyWiki's own test (a draft.of field, even empty), which the list sync uses too
 export function isDraft(tiddler) {
   return tiddler["draft.of"] !== undefined;
 }

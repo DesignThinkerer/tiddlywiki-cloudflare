@@ -8,8 +8,8 @@
 // publishing it); reads and saves (the handlers); backup/ (the GitHub backup through the queue).
 // Each imports only from the ones before it (build.mjs refuses a cycle).
 //
-// worker.js is built from these by `npm run build` (build.mjs), with the browser modules
-// src/browser/conflict-guard.js and src/browser/page-publisher.js embedded as text.
+// worker.js is built from these by `npm run build` (build.mjs), with the browser modules of
+// src/browser/ embedded as text (build.js lists them).
 
 import { ACCESS_REFUSED, withoutAccess } from "./access.js";
 import { processBackupBatch } from "./backup/queue.js";
