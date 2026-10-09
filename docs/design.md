@@ -92,9 +92,9 @@ TiddlyWiki only runs JavaScript modules, plugins and startup actions that are pr
 - the sync settings `$:/config/SyncPollingInterval`, `$:/config/SyncThrottleInterval`, `$:/config/SyncFilter`, `$:/config/SyncDisableLazyLoading`: TiddlyWiki's syncer reads them once, when it starts
 - plugin disable flags, `$:/config/Plugins/Disabled/…`: read at boot too
 - every tiddler tagged `$:/tags/StartupAction` or one of its variants (`$:/tags/StartupAction/Browser`, `…/PostRender`)
-- the conflict guard module `$:/cfworker/conflict-guard.js`
-- `$:/cfworker/public-url`: the public address, read by the module. A page on that site, whatever the protocol (visited over `http` while the address says `https`, say), is the public site: read-only, nothing published
-- the page publisher `$:/cfworker/page-publisher.js`, and `$:/cfworker/page-source`: what the page was built from (the `index.html` ETag, the shell's fingerprint, the stored core file's version), read by the publisher (1.9)
+- the browser modules (`src/browser/`): the library `$:/cfworker/lib.js` the others require, the conflict guard `$:/cfworker/conflict-guard.js` (saves and deletes, section 2), the list sync `$:/cfworker/list-sync.js` (the tiddler list, reads from the public site, what isn't sent: 1.5), the backup alert `$:/cfworker/backup-alert.js` (1.7), and the page publisher `$:/cfworker/page-publisher.js` (1.9)
+- `$:/cfworker/public-url`: the public address, read by the modules. A page on that site, whatever the protocol (visited over `http` while the address says `https`, say), is the public site: read-only, nothing published
+- `$:/cfworker/page-source`: what the page was built from (the `index.html` ETag, the shell's fingerprint, the stored core file's version), read by the page publisher (1.9)
 
 then one `<script src="…">` per plugin and JavaScript module (1.8). In a page built from the shell, those tags go right before TiddlyWiki's `<!--~~ Load external JavaScripts ~~-->`, at the end of the page: they still run before TiddlyWiki starts (the core file starts it), but no longer hold up the top of the page, such as a splash screen. In a full `index.html`, where TiddlyWiki starts from code inside the page, they go in `<head>`. The browser modules, the public address and the page source are left out when `CONFLICT_GUARD` is `off`.
 
@@ -309,12 +309,14 @@ The first suspicion was Cloudflare compression turning strong ETags into weak on
 
 A "strict" server that requires the header blocks every client that doesn't send it, which is exactly how saving broke. It can also stall TiddlyWiki's sync: a save that keeps failing is retried forever and blocks everything after it. So the server only refuses a save when it can prove a conflict, and the browser module makes sure the proof is available.
 
-### 2.3 The browser module is built into the page by the worker
+### 2.3 The browser modules are built into the page by the worker
 
-TiddlyWiki only runs JavaScript modules that exist when the page boots, so the module can't simply be another synced tiddler. Building it into `baked.html` gives three things:
+TiddlyWiki only runs JavaScript modules that exist when the page boots, so the modules can't simply be synced tiddlers. Building them into `baked.html` gives three things:
 - **One deploy:** the worker and the browser half always change together.
 - **Nothing to install** in the wiki.
-- **Automatic updates:** a page built with an older module is rebuilt on the next load.
+- **Automatic updates:** a page built with older modules is rebuilt on the next load.
+
+They're one file per concern (`src/browser/`, README 6.1): the conflict guard only patches saves and deletes; the tiddler list, the reads from the public site and what isn't sent are the list sync, which the guard, the backup alert and the page publisher use through the adaptor (`cfworkerListed`, `cfworkerOnList`, `cfworkerOnListRequest`, `cfworkerNoteListed`); what they share is a TiddlyWiki library module. Each startup module declares what it runs after, so the alert registers its request once the list sync is in place.
 
 ### 2.4 Drafts carry their own base revision
 

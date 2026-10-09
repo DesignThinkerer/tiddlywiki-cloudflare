@@ -4,7 +4,7 @@
 // Edit-conflict protection, in short:
 //  * Every tiddler has a revision: customMetadata.revision, a millisecond timestamp set on each
 //    save. GET returns it in the body and in the ETag "default/<title>/<revision>:auto".
-//  * The browser module (src/conflict-guard.js, built into the page) sends the revision its edit
+//  * The conflict guard (src/browser/conflict-guard.js, built into the page) sends the revision its edit
 //    is based on as If-Match, or If-None-Match: * for a brand new tiddler.
 //  * PUT/DELETE answer 412 when that revision is no longer current (checkPreconditions), and the R2
 //    write itself is conditional (saves.js), so two saves arriving at the same moment can't both win.

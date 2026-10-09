@@ -12,7 +12,7 @@
 // | BACKUP_ALERT_MINUTES | backupAlertMinutes      |
 
 // PUBLIC_WIKI_URL, the public site's address (the bucket's custom domain, README 2.2): the page
-// loads its plugin files and TiddlyWiki's core file from it, the browser module reads tiddlers from
+// loads its plugin files and TiddlyWiki's core file from it, the list sync reads tiddlers from
 // it, and purges name its URLs. Required, with no default: a wiki must never load its code from a
 // site that isn't its own. Checked at every request (index.js), so a worker without it does nothing
 // but say so.

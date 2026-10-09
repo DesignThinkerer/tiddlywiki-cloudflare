@@ -1,8 +1,8 @@
 // How a tiddler is stored, and how a save is read (design 1.2).
 //
 // Every tiddler is stored "flat": every field at the top level, compact JSON, "text" last, then the
-// worker's revision, bag and recipe; customMetadata { revision, layout: "flat" }. The browser module
-// sends exactly that, without revision, bag or recipe (header X-Tiddler-Layout: flat): the worker
+// worker's revision, bag and recipe; customMetadata { revision, layout: "flat" }. The conflict guard
+// (src/browser/conflict-guard.js) sends exactly that, without revision, bag or recipe (header X-Tiddler-Layout: flat): the worker
 // parses only the fields before "text" and appends its own, working on the raw bytes, so the text
 // itself (a whole plugin, an image...) is never decoded, parsed or re-encoded. Anything else, such
 // as TiddlyWeb JSON (custom fields under "fields", the text anywhere) from a tab without the module,
@@ -81,7 +81,7 @@ function flatFields(bytes, end) {
 // closing brace), as the flat layout has it: it opens with a quote, and the body ends with one that
 // isn't escaped. Up to FLAT_CHECK_BYTES, also that no other field follows: the first quote that isn't
 // escaped (inside a JSON string, every quote is) must be that last one. A bigger body (a plugin) isn't
-// scanned: it costs milliseconds of CPU a megabyte, and the browser module always puts the text last.
+// scanned: it costs milliseconds of CPU a megabyte, and the conflict guard always puts the text last.
 // Otherwise the body is read in full (toFlat).
 const FLAT_CHECK_BYTES = 256 * 1024;
 

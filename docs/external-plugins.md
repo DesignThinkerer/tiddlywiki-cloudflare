@@ -234,7 +234,7 @@ These figures come from the same test machine as in section 3, so read them as p
 
 ## 5. Where it is now
 
-- **The code:** `src/worker/plugins.js` (the files), `src/worker/build.js` (the page build, which writes them and puts the `<script>` tags in), `src/worker/layout.js` (the flat layout a save arrives in and is stored in), `src/worker/saves.js` (a plugin's save or delete rebuilding the page), and in `src/conflict-guard.js` the part that sends saves in the flat layout.
+- **The code:** `src/worker/plugins.js` (the files), `src/worker/build.js` (the page build, which writes them and puts the `<script>` tags in), `src/worker/layout.js` (the flat layout a save arrives in and is stored in), `src/worker/saves.js` (a plugin's save or delete rebuilding the page), and in `src/browser/conflict-guard.js` the part that sends saves in the flat layout.
 - **The tests:** `test/plugins.test.mjs`, and the plugin cases of `test/integrity.test.mjs` and `test/r2-ops.test.mjs` (README 6.2).
 - **The cache rule for plugin files:** README 2.7.
 - **A plugin that breaks the page:** README 3.
