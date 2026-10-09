@@ -28,7 +28,7 @@ export default [
   },
   {
     // The browser modules: TiddlyWiki modules, run in the browser, written as CommonJS
-    files: ["src/conflict-guard.js", "src/page-publisher.js"],
+    files: ["src/browser/*.js"],
     languageOptions: { ecmaVersion: 2015, sourceType: "commonjs", globals: { ...globals.browser, $tw: "readonly" } },
     rules: RULES
   }

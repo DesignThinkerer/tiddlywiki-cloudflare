@@ -1,7 +1,7 @@
 // Serving the page, and the page the admin wiki publishes (design 1.3, 4.9).
 //
 // The admin wiki renders the page itself, with TiddlyWiki's own $:/core/templates/tiddlywiki5-external-js.html
-// (src/page-publisher.js): the shell, which is everything TiddlyWiki writes in its file (title,
+// (src/browser/page-publisher.js): the shell, which is everything TiddlyWiki writes in its file (title,
 // language, raw markup...) but the core, and the core file, loaded at the end of the shell. The shell
 // is kept in _page/shell.html, with the index.html it was rendered for; the page is built from it
 // while that's the current index.html, and from index.html itself otherwise (a new upload, until

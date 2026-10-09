@@ -9,7 +9,7 @@
 // Each imports only from the ones before it (build.mjs refuses a cycle).
 //
 // worker.js is built from these by `npm run build` (build.mjs), with the browser modules
-// src/conflict-guard.js and src/page-publisher.js embedded as text.
+// src/browser/conflict-guard.js and src/browser/page-publisher.js embedded as text.
 
 import { ACCESS_REFUSED, withoutAccess } from "./access.js";
 import { processBackupBatch } from "./backup/queue.js";

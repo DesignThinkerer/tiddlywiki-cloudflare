@@ -55,8 +55,8 @@ flowchart LR
 | Piece | Role |
 |---|---|
 | **The worker** (`worker.js`, built from `src/worker/`) | Serves the admin wiki: the page, the TiddlyWeb endpoints, saves and deletes with their conflict checks, cache purges. Writes a file for each plugin, and consumes the backup queue. |
-| **Conflict guard** (`src/conflict-guard.js`) | A TiddlyWiki startup module the worker builds into the page. It makes the browser say which version each edit is based on, handles conflicts, cuts unneeded requests, and sends saves in the layout the worker stores. |
-| **Page publisher** (`src/page-publisher.js`) | A second startup module built into the page. In the admin wiki, it renders the page with TiddlyWiki's own template and sends it to the worker whenever it changes. |
+| **Conflict guard** (`src/browser/conflict-guard.js`) | A TiddlyWiki startup module the worker builds into the page. It makes the browser say which version each edit is based on, handles conflicts, cuts unneeded requests, and sends saves in the layout the worker stores. |
+| **Page publisher** (`src/browser/page-publisher.js`) | A second startup module built into the page. In the admin wiki, it renders the page with TiddlyWiki's own template and sends it to the worker whenever it changes. |
 | **R2 bucket** | Holds everything: the wiki engine (`index.html`), the page both sites serve, the tiddler list, one JSON file per tiddler, one script per plugin, and TiddlyWiki's core file. |
 | **Public site** | The bucket's custom domain. Cloudflare caches it, and nothing on it runs the worker. |
 | **Queue** `wiki-backup` | Holds one message per save or delete until it has been committed to GitHub. |
@@ -361,8 +361,9 @@ GitHub runs the same two groups, as two jobs side by side, for every pull reques
 │   │   ├── page.js           serving the page, and the page the admin wiki publishes (design 1.9)
 │   │   ├── reads.js, saves.js  the handlers: status, list and objects; saves and deletes (design 1.4)
 │   │   └── backup/           the GitHub backup: queue.js (the consumer), github.js (the API), status.js (how backups go, 4.7)
-│   ├── conflict-guard.js     the browser module, embedded into worker.js by the build
-│   └── page-publisher.js     the second browser module (design 1.9), embedded the same way
+│   └── browser/              the browser modules, embedded into worker.js by the build
+│       ├── conflict-guard.js the browser module
+│       └── page-publisher.js the second browser module (design 1.9)
 ├── build.mjs                 inlines the modules into worker.js, in dependency order, with the browser modules embedded
 ├── eslint.config.js          the lint rules (npm run lint): names that don't exist, unused ones, an import assigned to
 ├── wrangler.toml             the worker's name, bindings and settings: what Wrangler deploys (2.5)
@@ -383,7 +384,7 @@ GitHub runs the same two groups, as two jobs side by side, for every pull reques
 
 The worker is written as ES modules, each importing only from the ones below it: the entry point, the handlers, the page, the list, the layout, then the shared pieces (`src/worker/index.js` lists the order). The build inlines them into `worker.js` in that order, so one file is deployed, which you can paste into the dashboard, with every comment kept; it refuses two modules that import each other, an import of something not exported, and a name declared twice. The tests run the built `worker.js` in Miniflare, and import a module's functions directly where they test one (`test/cpu.test.mjs`, the checks in `test/bake.test.mjs`).
 
-The browser modules live in their own files so they can be read and edited as normal JavaScript. The build embeds them in `worker.js` as strings (`CONFLICT_GUARD_SOURCE`, `PAGE_PUBLISHER_SOURCE`). The strings are written as JSON, so a module can contain any character, backticks and `${` included.
+The browser modules live in their own files so they can be read and edited as normal JavaScript. The build embeds each file of `src/browser/` in `worker.js` as a string, in place of a placeholder named after it (`"__CONFLICT_GUARD_SOURCE__"` for `conflict-guard.js`) in `src/worker/build.js`, and refuses a file without its placeholder, or the reverse. The strings are written as JSON, so a module can contain any character, backticks and `${` included.
 
 ---
 
