@@ -492,7 +492,7 @@ check("deleting the update of a plugin that came with the page removes it, as in
   !inStore(html, BUNDLED) && !inStore(html, NEVER_UPDATED) && leftInV[0] === null && leftInV[1] === null && !(await bucket.head("recipes/default/tiddlers/" + BUNDLED)),
   `in the shell ${inStore(html, BUNDLED)} / ${inStore(html, NEVER_UPDATED)}, in a new tab ${JSON.stringify(leftInV)}`);
 await contextV.close();
-// To get index.html's version back (README 6): delete the published shell and the page in R2, then open
+// To get index.html's version back (README 3): delete the published shell and the page in R2, then open
 // the admin wiki. The page is built from index.html, with the plugin, and that tab publishes it again.
 await bucket.delete("_page/shell.html");
 await bucket.delete("baked.html");

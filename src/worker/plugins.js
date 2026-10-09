@@ -1,4 +1,4 @@
-// Plugin files (README 4.8): _plugins/<title>.js holds the stored tiddler, untouched, inside the
+// Plugin files (design 1.8): _plugins/<title>.js holds the stored tiddler, untouched, inside the
 // same code the external-plugins export template produces: it adds the tiddler to
 // $tw.preloadTiddlers before TiddlyWiki boots. The file name never changes; the page loads it as
 // <title>.js?v=<revision>, so every version has its own URL and nothing needs purging. Files are

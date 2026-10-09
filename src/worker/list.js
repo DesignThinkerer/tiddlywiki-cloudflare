@@ -1,4 +1,4 @@
-// The tiddler list (recipes/default/tiddlers.json, README 4.2): what TiddlyWiki loads at boot, one
+// The tiddler list (recipes/default/tiddlers.json, design 1.2): what TiddlyWiki loads at boot, one
 // entry per stored tiddler with every field but the text. Changed with conditional writes, so two
 // saves can't lose each other's entry, and rebuilt from the stored tiddlers when missing or damaged.
 //

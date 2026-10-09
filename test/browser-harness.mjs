@@ -29,7 +29,7 @@ export async function listen(server) {
   return `http://127.0.0.1:${server.address().port}`;
 }
 
-// The public site's TiddlyWeb status, the file uploaded once (README 3.1)
+// The public site's TiddlyWeb status, the file uploaded once (README 2.8)
 export const PUBLIC_STATUS = { username: "GUEST", read_only: true, anonymous: true, logout_is_available: false, space: { recipe: "default" } };
 
 // Starts the site: a stand-in for the public site, then the worker, which points at it.

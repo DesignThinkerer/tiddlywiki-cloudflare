@@ -1,5 +1,5 @@
 // The reads: the TiddlyWeb status, the tiddler list, and any object of the bucket by its key (a
-// tiddler, a file). README 4.1.
+// tiddler, a file). design 1.1.
 
 import { backupReport, readBackupStatus } from "./backup/status.js";
 import { objectHeaders, parseEtagList, tiddlerEtag, untilDone } from "./http.js";
@@ -10,7 +10,7 @@ import { keyTooLong, revisionOf } from "./tiddlers.js";
 // What /status answers on the admin site: TiddlyWeb's status. TiddlyWiki asks for it at every page
 // load, before the tiddler list. It never changes, so the browser keeps it for a week (private: for
 // that browser only): the next loads don't ask the worker, nor wait for its answer. (The public site
-// has its own file, README 3.1.)
+// has its own file, README 2.2.)
 export const ADMIN_STATUS = { username: "admin", read_only: false, anonymous: false, logout_is_available: true, space: { recipe: "default" } };
 
 export const STATUS_CACHE = "private, max-age=604800";
@@ -41,7 +41,7 @@ export async function serveObject(request, env, key, corsHeaders) {
 export async function serveList(request, env, ctx, corsHeaders) {
   // Our ETag is "<R2 etag>-patched"; Cloudflare's compression may hand it back weakened as W/"..."
   const known = parseEtagList(request.headers.get("If-None-Match")).find(token => token.endsWith("-patched"));
-  // The admin wiki asks how backups go with this request (README 4.7): read at the same time
+  // The admin wiki asks how backups go with this request (design 1.7): read at the same time
   const [listObject, backups] = await Promise.all([
     env.WIKI_BUCKET.get(LIST_KEY, known ? { onlyIf: { etagDoesNotMatch: known.slice(0, -"-patched".length) } } : undefined),
     request.headers.get("X-Backup-Status") === "ask" ? readBackupStatus(env) : null

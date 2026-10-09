@@ -356,7 +356,7 @@ check("...and so are a missing value, no scheme, another scheme, a path, a query
 // --- The first visit ------------------------------------------------------------------------------
 // A new bucket is empty. The build makes assets/empty.html (an empty TiddlyWiki with the TiddlyWeb
 // plugin), deployed as a static asset: on the first page request the worker puts it in the bucket as
-// index.html, with the public site's status file, and the wiki starts. Nothing to upload (README 3.1).
+// index.html, with the public site's status file, and the wiki starts. Nothing to upload (README 2.8).
 const ASSETS_DIR = fileURLToPath(new URL("../assets/", import.meta.url));
 const emptyWiki = fs.readFileSync(path.join(ASSETS_DIR, "empty.html"));
 function withAssets(extra = {}) {

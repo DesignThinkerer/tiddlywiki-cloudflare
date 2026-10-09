@@ -1,4 +1,4 @@
-// The GitHub backup through a Cloudflare Queue (README 4.7): every save or delete becomes one
+// The GitHub backup through a Cloudflare Queue (design 1.7): every save or delete becomes one
 // message. The queue consumer (processBackupBatch, configured with max_concurrency 1) commits them
 // one at a time, in order, one commit per save, so commits never collide, and GitHub rate limits or
 // outages only delay backups: failed messages are put back with a growing delay until they go
@@ -154,7 +154,7 @@ export async function processBackupBatch(batch, env) {
   if (failures.length || cleared.length || pause !== undefined) await recordBackupResults(env, failures, cleared, pause, stored);
 }
 
-// The queue's retry limit, which the worker can't read: Cloudflare's default (README 3.4: leave it)
+// The queue's retry limit, which the worker can't read: Cloudflare's default (README 2.3: leave it)
 const QUEUE_RETRIES = 3;
 
 // How long the queue keeps a message from when it was sent: 24 hours on the free plan (the least)

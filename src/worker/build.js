@@ -1,4 +1,4 @@
-// Building the page, baked.html (README 4.3): the page source (the published shell, or index.html)
+// Building the page, baked.html (design 1.3): the page source (the published shell, or index.html)
 // with, right after <head>, a script that preloads what the page needs at boot (the startup
 // tiddlers, the browser modules and their settings), and the plugin files and the core file loaded
 // before TiddlyWiki boots. Rebuilt when the page source, the browser modules or a page tiddler

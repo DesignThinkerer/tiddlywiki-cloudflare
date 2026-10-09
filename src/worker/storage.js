@@ -1,4 +1,4 @@
-// Everything the worker keeps in the bucket, by key (README 4.2 has the same table), and the small
+// Everything the worker keeps in the bucket, by key (design 1.2 has the same table), and the small
 // R2 helpers every module shares. The bucket is public through its custom domain: nothing private
 // belongs in it.
 //

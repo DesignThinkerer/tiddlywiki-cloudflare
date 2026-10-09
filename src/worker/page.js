@@ -1,4 +1,4 @@
-// Serving the page, and the page the admin wiki publishes (README 4.3, 4.9).
+// Serving the page, and the page the admin wiki publishes (design 1.3, 4.9).
 //
 // The admin wiki renders the page itself, with TiddlyWiki's own $:/core/templates/tiddlywiki5-external-js.html
 // (src/page-publisher.js): the shell, which is everything TiddlyWiki writes in its file (title,
@@ -68,8 +68,8 @@ const EMPTY_WIKI_ASSET = "https://assets.local/empty.html";
 const PUBLIC_STATUS = { username: "GUEST", read_only: true, anonymous: true, logout_is_available: false, space: { recipe: "default" } };
 
 const NO_WIKI = "There's no wiki yet: the bucket has no index.html, and this worker was deployed without the empty wiki that would " +
-  "go there by itself (a deploy through Wrangler or Workers Builds ships it, README 3.1). Upload an index.html, a TiddlyWiki " +
-  "with the TiddlyWeb plugin, and the status file (README 3.1), then open this page again.";
+  "go there by itself (a deploy through Wrangler or Workers Builds ships it, README 2.8). Upload an index.html, a TiddlyWiki " +
+  "with the TiddlyWeb plugin, and the status file (README 2.8), then open this page again.";
 
 async function seedWiki(env) {
   if (!env.ASSETS) return false;
