@@ -1,6 +1,6 @@
 // The public site's cache: the public wiki is served straight from the R2 bucket through
 // Cloudflare's cache, so after a change the worker purges exactly the public URLs that serve it
-// (single-file purge, not purge_everything; README 4.6).
+// (single-file purge, not purge_everything; design 1.6).
 
 import { publicUrl, purges } from "./settings.js";
 

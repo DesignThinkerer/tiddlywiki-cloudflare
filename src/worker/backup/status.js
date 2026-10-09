@@ -1,4 +1,4 @@
-// How backups go, for the admin wiki (README 4.7): backups GitHub keeps refusing (not a rate limit:
+// How backups go, for the admin wiki (design 1.7): backups GitHub keeps refusing (not a rate limit:
 // that only delays them) are recorded in _backup/status.json, one entry per tiddler: since (when its
 // oldest waiting version was saved), last (its latest attempt), error (GitHub's answer) and status
 // (its HTTP status, 0 without one). The entry goes when that tiddler's backup gets through. The file

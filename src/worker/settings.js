@@ -1,4 +1,4 @@
-// The worker's settings: every variable it reads from its environment, in one place (README 3.2 has
+// The worker's settings: every variable it reads from its environment, in one place (README 2.5 has
 // the table). The bindings (WIKI_BUCKET, BACKUP_QUEUE, ASSETS) are used where they're needed.
 //
 // | variable             | read by                 |
@@ -11,7 +11,7 @@
 // | BACKUP_RETRY_SECONDS | backupRetrySeconds      |
 // | BACKUP_ALERT_MINUTES | backupAlertMinutes      |
 
-// PUBLIC_WIKI_URL, the public site's address (the bucket's custom domain, README 3.1): the page
+// PUBLIC_WIKI_URL, the public site's address (the bucket's custom domain, README 2.2): the page
 // loads its plugin files and TiddlyWiki's core file from it, the browser module reads tiddlers from
 // it, and purges name its URLs. Required, with no default: a wiki must never load its code from a
 // site that isn't its own. Checked at every request (index.js), so a worker without it does nothing
@@ -22,7 +22,7 @@
 // the public address for the public site's (read-only, publishing nothing).
 export function publicSiteError(env, requestOrigin) {
   const value = env.PUBLIC_WIKI_URL;
-  const expected = "the public site's address, https://<its hostname> (README 3.2)";
+  const expected = "the public site's address, https://<its hostname> (README 2.5)";
   if (!value) return `PUBLIC_WIKI_URL isn't set: the worker needs ${expected}.`;
   let url;
   try { url = new URL(value); } catch { url = null; }
@@ -31,7 +31,7 @@ export function publicSiteError(env, requestOrigin) {
     return `PUBLIC_WIKI_URL is "${value}": it must be ${expected}, nothing after the hostname.`;
   }
   if (requestOrigin && url.origin === new URL(requestOrigin).origin) {
-    return `PUBLIC_WIKI_URL is "${value}", this worker's own address: it must be the public site's, the bucket's custom domain (README 3.1).`;
+    return `PUBLIC_WIKI_URL is "${value}", this worker's own address: it must be the public site's, the bucket's custom domain (README 2.2).`;
   }
   return null;
 }
@@ -47,19 +47,19 @@ export function accessCheckOff(env) {
   return env.ACCESS === "off";
 }
 
-// CONFLICT_GUARD = "off" builds the page without the browser modules (README 6)
+// CONFLICT_GUARD = "off" builds the page without the browser modules (README 3)
 export function conflictGuardEnabled(env) {
   return String(env.CONFLICT_GUARD || "").toLowerCase() !== "off";
 }
 
 // The GitHub backup's repository (owner/repo), token and branch, or null when backups are off
-// (no repository or no token: README 3.2)
+// (no repository or no token: README 2.5)
 export function github(env) {
   if (!env.GITHUB_REPO || !env.GITHUB_TOKEN) return null;
   return { repo: env.GITHUB_REPO, token: env.GITHUB_TOKEN, branch: env.GITHUB_BRANCH || "main" };
 }
 
-// The zone and token public-site purges use, or null when purges are off (README 3.2)
+// The zone and token public-site purges use, or null when purges are off (README 2.5)
 export function purges(env) {
   if (!env.CF_ZONE_ID || !env.CF_API_TOKEN) return null;
   return { zoneId: env.CF_ZONE_ID, token: env.CF_API_TOKEN };

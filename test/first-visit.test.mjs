@@ -22,6 +22,8 @@ await admin.waitForFunction(() => window.$tw && $tw.syncer && $tw.syncer.timesta
 await settle(admin);
 check("the first admin visit serves a page that boots TiddlyWiki, with the browser module", first.status() === 200 && await admin.evaluate(() => $tw.syncadaptor.conflictGuardInstalled === true));
 check("...the engine and the public status file are now in the bucket, and the page built", !!(await bucket.head("index.html")) && !!(await bucket.head("status")) && !!(await bucket.head("baked.html")));
+const published = await waitFor(async () => !!(await bucket.head("_page/shell.html")) && !!(await bucket.head("_plugins/tiddlywikicore.js")), 30000);
+check("...and that load publishes the core file and the page for the public site (README 2.8)", published);
 check("...the tab is logged in and can write", await admin.evaluate(() => $tw.wiki.getTiddlerText("$:/status/IsLoggedIn") === "yes" && $tw.wiki.getTiddlerText("$:/status/IsReadOnly") === "no"));
 check("...the wiki is empty: nothing to load", (await admin.evaluate(() => $tw.wiki.filterTiddlers("[all[tiddlers]!is[system]]").length)) === 0);
 

@@ -1,6 +1,5 @@
 node_modules
 assets/
-# Local Wrangler configuration, secrets and state
-wrangler.toml
+# Wrangler's local secrets and state (wrangler.toml itself is part of the repository: no secret in it)
 .dev.vars
 .wrangler/

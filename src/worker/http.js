@@ -1,4 +1,4 @@
-// The small shared pieces of answering a request: paths, ETags and preconditions (README 4.2),
+// The small shared pieces of answering a request: paths, ETags and preconditions (design 1.2),
 // standard answers, and work that outlives the answer.
 //
 // Edit-conflict protection, in short:

@@ -2,7 +2,7 @@
 
 // ===== src/worker/settings.js =================================================================================
 
-// The worker's settings: every variable it reads from its environment, in one place (README 3.2 has
+// The worker's settings: every variable it reads from its environment, in one place (README 2.5 has
 // the table). The bindings (WIKI_BUCKET, BACKUP_QUEUE, ASSETS) are used where they're needed.
 //
 // | variable             | read by                 |
@@ -15,7 +15,7 @@
 // | BACKUP_RETRY_SECONDS | backupRetrySeconds      |
 // | BACKUP_ALERT_MINUTES | backupAlertMinutes      |
 
-// PUBLIC_WIKI_URL, the public site's address (the bucket's custom domain, README 3.1): the page
+// PUBLIC_WIKI_URL, the public site's address (the bucket's custom domain, README 2.2): the page
 // loads its plugin files and TiddlyWiki's core file from it, the browser module reads tiddlers from
 // it, and purges name its URLs. Required, with no default: a wiki must never load its code from a
 // site that isn't its own. Checked at every request (index.js), so a worker without it does nothing
@@ -26,7 +26,7 @@
 // the public address for the public site's (read-only, publishing nothing).
 function publicSiteError(env, requestOrigin) {
   const value = env.PUBLIC_WIKI_URL;
-  const expected = "the public site's address, https://<its hostname> (README 3.2)";
+  const expected = "the public site's address, https://<its hostname> (README 2.5)";
   if (!value) return `PUBLIC_WIKI_URL isn't set: the worker needs ${expected}.`;
   let url;
   try { url = new URL(value); } catch { url = null; }
@@ -35,7 +35,7 @@ function publicSiteError(env, requestOrigin) {
     return `PUBLIC_WIKI_URL is "${value}": it must be ${expected}, nothing after the hostname.`;
   }
   if (requestOrigin && url.origin === new URL(requestOrigin).origin) {
-    return `PUBLIC_WIKI_URL is "${value}", this worker's own address: it must be the public site's, the bucket's custom domain (README 3.1).`;
+    return `PUBLIC_WIKI_URL is "${value}", this worker's own address: it must be the public site's, the bucket's custom domain (README 2.2).`;
   }
   return null;
 }
@@ -51,19 +51,19 @@ function accessCheckOff(env) {
   return env.ACCESS === "off";
 }
 
-// CONFLICT_GUARD = "off" builds the page without the browser modules (README 6)
+// CONFLICT_GUARD = "off" builds the page without the browser modules (README 3)
 function conflictGuardEnabled(env) {
   return String(env.CONFLICT_GUARD || "").toLowerCase() !== "off";
 }
 
 // The GitHub backup's repository (owner/repo), token and branch, or null when backups are off
-// (no repository or no token: README 3.2)
+// (no repository or no token: README 2.5)
 function github(env) {
   if (!env.GITHUB_REPO || !env.GITHUB_TOKEN) return null;
   return { repo: env.GITHUB_REPO, token: env.GITHUB_TOKEN, branch: env.GITHUB_BRANCH || "main" };
 }
 
-// The zone and token public-site purges use, or null when purges are off (README 3.2)
+// The zone and token public-site purges use, or null when purges are off (README 2.5)
 function purges(env) {
   if (!env.CF_ZONE_ID || !env.CF_API_TOKEN) return null;
   return { zoneId: env.CF_ZONE_ID, token: env.CF_API_TOKEN };
@@ -83,10 +83,10 @@ function backupAlertMinutes(env) {
 
 // ===== src/worker/access.js ===================================================================================
 
-// Cloudflare Access: the worker has no login of its own; Access, in front of it, has (README 3.3).
+// Cloudflare Access: the worker has no login of its own; Access, in front of it, has (README 2.6).
 
 
-// The worker has no login of its own: Cloudflare Access, in front of it, has (README 3.3). Cloudflare
+// The worker has no login of its own: Cloudflare Access, in front of it, has (README 2.6). Cloudflare
 // gives a request that came through Access a ctx.access; a request without one didn't, and is refused
 // before anything is read or built. So an Access application missing, or set up on another hostname
 // than the one the request came to, leaves the wiki closed rather than open. ACCESS = "off" lets
@@ -95,7 +95,7 @@ function withoutAccess(ctx, env) {
   return !ctx.access && !accessCheckOff(env);
 }
 
-const ACCESS_REFUSED = "Refused: this request didn't come through Cloudflare Access, which must protect the admin site (README 3.3). " +
+const ACCESS_REFUSED = "Refused: this request didn't come through Cloudflare Access, which must protect the admin site (README 2.6). " +
   "If you're setting the worker up, add the Access application for this hostname first. Only for tests and local runs, " +
   "where there is no Access, the variable ACCESS = off lets requests through.";
 
@@ -119,7 +119,7 @@ function concatBytes(parts) {
 
 // ===== src/worker/storage.js ==================================================================================
 
-// Everything the worker keeps in the bucket, by key (README 4.2 has the same table), and the small
+// Everything the worker keeps in the bucket, by key (design 1.2 has the same table), and the small
 // R2 helpers every module shares. The bucket is public through its custom domain: nothing private
 // belongs in it.
 //
@@ -426,7 +426,7 @@ function backupRetryDelay(env, tries, retryAfter) {
 
 // ===== src/worker/backup/status.js ============================================================================
 
-// How backups go, for the admin wiki (README 4.7): backups GitHub keeps refusing (not a rate limit:
+// How backups go, for the admin wiki (design 1.7): backups GitHub keeps refusing (not a rate limit:
 // that only delays them) are recorded in _backup/status.json, one entry per tiddler: since (when its
 // oldest waiting version was saved), last (its latest attempt), error (GitHub's answer) and status
 // (its HTTP status, 0 without one). The entry goes when that tiddler's backup gets through. The file
@@ -535,7 +535,7 @@ function nextPause(env, last, e) {
 
 // ===== src/worker/backup/queue.js =============================================================================
 
-// The GitHub backup through a Cloudflare Queue (README 4.7): every save or delete becomes one
+// The GitHub backup through a Cloudflare Queue (design 1.7): every save or delete becomes one
 // message. The queue consumer (processBackupBatch, configured with max_concurrency 1) commits them
 // one at a time, in order, one commit per save, so commits never collide, and GitHub rate limits or
 // outages only delay backups: failed messages are put back with a growing delay until they go
@@ -686,7 +686,7 @@ async function processBackupBatch(batch, env) {
   if (failures.length || cleared.length || pause !== undefined) await recordBackupResults(env, failures, cleared, pause, stored);
 }
 
-// The queue's retry limit, which the worker can't read: Cloudflare's default (README 3.4: leave it)
+// The queue's retry limit, which the worker can't read: Cloudflare's default (README 2.3: leave it)
 const QUEUE_RETRIES = 3;
 
 // How long the queue keeps a message from when it was sent: 24 hours on the free plan (the least)
@@ -779,7 +779,7 @@ async function newerInWiki(env, job, current, githubSha, work) {
 
 // ===== src/worker/http.js =====================================================================================
 
-// The small shared pieces of answering a request: paths, ETags and preconditions (README 4.2),
+// The small shared pieces of answering a request: paths, ETags and preconditions (design 1.2),
 // standard answers, and work that outlives the answer.
 //
 // Edit-conflict protection, in short:
@@ -872,7 +872,7 @@ function untilDone(ctx, promise) {
 
 // The public site's cache: the public wiki is served straight from the R2 bucket through
 // Cloudflare's cache, so after a change the worker purges exactly the public URLs that serve it
-// (single-file purge, not purge_everything; README 4.6).
+// (single-file purge, not purge_everything; design 1.6).
 
 
 // The query string is part of the cache key, so the tiddler list is purged under each URL
@@ -920,7 +920,7 @@ async function purgePublicCache(env, urls) {
 
 // ===== src/worker/layout.js ===================================================================================
 
-// How a tiddler is stored, and how a save is read (README 4.2).
+// How a tiddler is stored, and how a save is read (design 1.2).
 //
 // Every tiddler is stored "flat": every field at the top level, compact JSON, "text" last, then the
 // worker's revision, bag and recipe; customMetadata { revision, layout: "flat" }. The browser module
@@ -1138,7 +1138,7 @@ async function readStoredFields(env, item) {
 
 // ===== src/worker/list.js =====================================================================================
 
-// The tiddler list (recipes/default/tiddlers.json, README 4.2): what TiddlyWiki loads at boot, one
+// The tiddler list (recipes/default/tiddlers.json, design 1.2): what TiddlyWiki loads at boot, one
 // entry per stored tiddler with every field but the text. Changed with conditional writes, so two
 // saves can't lose each other's entry, and rebuilt from the stored tiddlers when missing or damaged.
 //
@@ -1426,7 +1426,7 @@ function failureResponse(what, error, corsHeaders) {
 
 // ===== src/worker/plugins.js ==================================================================================
 
-// Plugin files (README 4.8): _plugins/<title>.js holds the stored tiddler, untouched, inside the
+// Plugin files (design 1.8): _plugins/<title>.js holds the stored tiddler, untouched, inside the
 // same code the external-plugins export template produces: it adds the tiddler to
 // $tw.preloadTiddlers before TiddlyWiki boots. The file name never changes; the page loads it as
 // <title>.js?v=<revision>, so every version has its own URL and nothing needs purging. Files are
@@ -1512,7 +1512,7 @@ async function deletePluginFile(env, title) {
 
 // ===== src/worker/build.js ====================================================================================
 
-// Building the page, baked.html (README 4.3): the page source (the published shell, or index.html)
+// Building the page, baked.html (design 1.3): the page source (the published shell, or index.html)
 // with, right after <head>, a script that preloads what the page needs at boot (the startup
 // tiddlers, the browser modules and their settings), and the plugin files and the core file loaded
 // before TiddlyWiki boots. Rebuilt when the page source, the browser modules or a page tiddler
@@ -1747,7 +1747,7 @@ const EXTERNAL_SCRIPTS_MARKER = "<!--~~ Load external JavaScripts ~~-->";
 
 // ===== src/worker/page.js =====================================================================================
 
-// Serving the page, and the page the admin wiki publishes (README 4.3, 4.9).
+// Serving the page, and the page the admin wiki publishes (design 1.3, 4.9).
 //
 // The admin wiki renders the page itself, with TiddlyWiki's own $:/core/templates/tiddlywiki5-external-js.html
 // (src/page-publisher.js): the shell, which is everything TiddlyWiki writes in its file (title,
@@ -1814,8 +1814,8 @@ const EMPTY_WIKI_ASSET = "https://assets.local/empty.html";
 const PUBLIC_STATUS = { username: "GUEST", read_only: true, anonymous: true, logout_is_available: false, space: { recipe: "default" } };
 
 const NO_WIKI = "There's no wiki yet: the bucket has no index.html, and this worker was deployed without the empty wiki that would " +
-  "go there by itself (a deploy through Wrangler or Workers Builds ships it, README 3.1). Upload an index.html, a TiddlyWiki " +
-  "with the TiddlyWeb plugin, and the status file (README 3.1), then open this page again.";
+  "go there by itself (a deploy through Wrangler or Workers Builds ships it, README 2.8). Upload an index.html, a TiddlyWiki " +
+  "with the TiddlyWeb plugin, and the status file (README 2.8), then open this page again.";
 
 async function seedWiki(env) {
   if (!env.ASSETS) return false;
@@ -1973,13 +1973,13 @@ async function publishShell(request, env, ctx, corsHeaders) {
 // ===== src/worker/reads.js ====================================================================================
 
 // The reads: the TiddlyWeb status, the tiddler list, and any object of the bucket by its key (a
-// tiddler, a file). README 4.1.
+// tiddler, a file). design 1.1.
 
 
 // What /status answers on the admin site: TiddlyWeb's status. TiddlyWiki asks for it at every page
 // load, before the tiddler list. It never changes, so the browser keeps it for a week (private: for
 // that browser only): the next loads don't ask the worker, nor wait for its answer. (The public site
-// has its own file, README 3.1.)
+// has its own file, README 2.2.)
 const ADMIN_STATUS = { username: "admin", read_only: false, anonymous: false, logout_is_available: true, space: { recipe: "default" } };
 
 const STATUS_CACHE = "private, max-age=604800";
@@ -2010,7 +2010,7 @@ async function serveObject(request, env, key, corsHeaders) {
 async function serveList(request, env, ctx, corsHeaders) {
   // Our ETag is "<R2 etag>-patched"; Cloudflare's compression may hand it back weakened as W/"..."
   const known = parseEtagList(request.headers.get("If-None-Match")).find(token => token.endsWith("-patched"));
-  // The admin wiki asks how backups go with this request (README 4.7): read at the same time
+  // The admin wiki asks how backups go with this request (design 1.7): read at the same time
   const [listObject, backups] = await Promise.all([
     env.WIKI_BUCKET.get(LIST_KEY, known ? { onlyIf: { etagDoesNotMatch: known.slice(0, -"-patched".length) } } : undefined),
     request.headers.get("X-Backup-Status") === "ask" ? readBackupStatus(env) : null
@@ -2053,11 +2053,11 @@ function listResponseHeaders(object, corsHeaders) {
 
 // ===== src/worker/saves.js ====================================================================================
 
-// Saves and deletes (README 4.4): the precondition check, the conditional write, the list update,
+// Saves and deletes (design 1.4): the precondition check, the conditional write, the list update,
 // the purge, the backup, and the page and plugin file when the tiddler is one the page needs.
 
 
-// PUT recipes/default/tiddlers/<title>: a save (README 4.4)
+// PUT recipes/default/tiddlers/<title>: a save (design 1.4)
 async function handleSave(request, env, ctx, url, corsHeaders) {
   try {
     const match = url.pathname.match(/^\/recipes\/default\/tiddlers\/(.+)$/);
@@ -2140,7 +2140,7 @@ async function handleSave(request, env, ctx, url, corsHeaders) {
   }
 }
 
-// DELETE bags/<bag>/tiddlers/<title> (or recipes/<recipe>/...): a delete (README 4.4)
+// DELETE bags/<bag>/tiddlers/<title> (or recipes/<recipe>/...): a delete (design 1.4)
 async function handleDelete(request, env, ctx, url, corsHeaders) {
   try {
     const match = url.pathname.match(/^\/(?:bags|recipes)\/[^/]+\/tiddlers\/(.+)$/);

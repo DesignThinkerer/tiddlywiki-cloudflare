@@ -1,4 +1,4 @@
-// How a tiddler is stored, and how a save is read (README 4.2).
+// How a tiddler is stored, and how a save is read (design 1.2).
 //
 // Every tiddler is stored "flat": every field at the top level, compact JSON, "text" last, then the
 // worker's revision, bag and recipe; customMetadata { revision, layout: "flat" }. The browser module

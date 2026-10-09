@@ -1,4 +1,4 @@
-// Saves and deletes (README 4.4): the precondition check, the conditional write, the list update,
+// Saves and deletes (design 1.4): the precondition check, the conditional write, the list update,
 // the purge, the backup, and the page and plugin file when the tiddler is one the page needs.
 
 import { queueBackup } from "./backup/queue.js";
@@ -11,7 +11,7 @@ import { deletePluginFile, pluginFileKey } from "./plugins.js";
 import { TIDDLER_PREFIX } from "./storage.js";
 import { MAX_KEY_BYTES, isDraft, isEphemeralTitle, isPageTiddler, keyTooLong, needsPluginFile, revisionOf, tiddlerKey } from "./tiddlers.js";
 
-// PUT recipes/default/tiddlers/<title>: a save (README 4.4)
+// PUT recipes/default/tiddlers/<title>: a save (design 1.4)
 export async function handleSave(request, env, ctx, url, corsHeaders) {
   try {
     const match = url.pathname.match(/^\/recipes\/default\/tiddlers\/(.+)$/);
@@ -94,7 +94,7 @@ export async function handleSave(request, env, ctx, url, corsHeaders) {
   }
 }
 
-// DELETE bags/<bag>/tiddlers/<title> (or recipes/<recipe>/...): a delete (README 4.4)
+// DELETE bags/<bag>/tiddlers/<title> (or recipes/<recipe>/...): a delete (design 1.4)
 export async function handleDelete(request, env, ctx, url, corsHeaders) {
   try {
     const match = url.pathname.match(/^\/(?:bags|recipes)\/[^/]+\/tiddlers\/(.+)$/);
