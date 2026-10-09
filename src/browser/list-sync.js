@@ -3,7 +3,7 @@ title: $:/cfworker/list-sync.js
 type: application/javascript
 module-type: startup
 
-How the admin tab syncs with the worker, apart from saves and deletes (those are the conflict guard,
+How a tab syncs with the worker, apart from saves and deletes (those are the conflict guard,
 $:/cfworker/conflict-guard.js):
 
 - The tiddler list: which revision the worker lists for each tiddler, kept for the other modules
@@ -12,11 +12,18 @@ $:/cfworker/conflict-guard.js):
   TiddlyWiki would otherwise remove every tiddler it doesn't find in it, or stop with an "Internal
   JavaScript Error". Other modules can add a header to the list request and read its answer
   (cfworkerOnListRequest: the backup alert does).
+- Loading (design 1.5). The list has everything but the text, and TiddlyWiki then loads every
+  tiddler in full, one at a time, in the list's order. Here, the tiddler shown loads first; loaded
+  tiddlers are kept on the device (IndexedDB), by revision, so a later page load fetches only what
+  changed; the rest fills in several at a time, only while the tab is shown, and not at all with
+  $:/config/cfworker/LoadAll set to "no" (then a tiddler loads the moment its text is needed; text
+  search and backlinks only see the loaded ones). A fetch is accepted only at the revision the
+  worker lists, so no cache can serve an older copy: refused, it's asked for again past any cache.
 - Fewer worker requests: tiddler contents are fetched from the public copy of the wiki
-  ($:/cfworker/public-url, served by R2/Cloudflare without the worker) when it holds exactly the
-  revision the worker listed, otherwise from the worker as usual; drafts and $:/StoryList, which the
-  worker never stores, are not sent to it, and the "put" saver no longer probes the page URL on
-  every load; background tabs stop polling for changes and catch up as soon as they are shown again.
+  ($:/cfworker/public-url, served by R2/Cloudflare without the worker), and from the worker only
+  when that copy doesn't have the listed revision; drafts and $:/StoryList, which the worker never
+  stores, are not sent to it, and the "put" saver no longer probes the page URL on every load;
+  background tabs stop polling for changes and catch up as soon as they are shown again.
 - Titles the worker can't store aren't sent either (each save would fail, and be tried again
   forever): the tab asks to rename them instead.
 \*/
@@ -31,6 +38,14 @@ exports.before = ["startup"];
 exports.synchronous = true;
 
 var lib = require("$:/cfworker/lib.js");
+
+var LOAD_ALL_TITLE = "$:/config/cfworker/LoadAll",
+	FILL_PAUSE = 200,     // ms after a list before the fill starts: what the page shows asks for its text first
+	READ_AHEAD = 24,      // tiddlers looked up ahead of the one TiddlyWiki is loading (on the device, or fetched)
+	FETCH_AHEAD = 6,      // ...of which fetched over the network at once
+	PUBLIC_READ_TIMEOUT = 5000,
+	STORE_DB = "cfworker-tiddlers",
+	STORE_NAME = "tiddlers";
 
 exports.startup = function() {
 	var Adaptor = lib.findAdaptor();
@@ -47,7 +62,17 @@ exports.startup = function() {
 		listRequested = 0,                     // when the request for that list was sent
 		listListeners = [],                    // called with each new list (cfworkerOnList)
 		requestHooks = [],                     // {headers(), answer(xhr)} for each list request (cfworkerOnListRequest)
-		listBypassCache = false;               // the last list was the stand-in or unreadable (isListStandIn)
+		listBypassCache = false,               // the last list was the stand-in or unreadable (isListStandIn)
+		lazyLoading = wiki.getTiddlerText("$:/config/SyncDisableLazyLoading") !== "yes",
+		wanted = Object.create(null),          // titles whose text was asked for (shown) and not loaded yet
+		explicit = Object.create(null),        // titles a module asked to load (enqueueLoadTiddler)
+		loading = Object.create(null),         // titles being loaded now (cfworkerLoading)
+		held = Object.create(null),            // the fill's titles, kept aside while it's held
+		ahead = Object.create(null),           // title -> {promise, fields} looked up ahead of TiddlyWiki
+		fetching = 0,                          // network fetches under way, and who waits for a slot
+		fetchQueue = [],
+		fillHoldUntil = 0,
+		fillTimer = null;
 
 	// The "put" saver probes the page URL (OPTIONS + HEAD) on every load, but it can't save to the
 	// worker (saving goes through the sync adaptor), so switch it off
@@ -71,9 +96,100 @@ exports.startup = function() {
 			lib.MAX_TITLE_BYTES + " bytes. Rename it to keep it; until then it's only in this tab.");
 	}
 
+	// --- The fill: TiddlyWiki's loads, arranged -------------------------------------------------------
+
+	// Whether every tiddler is loaded in full in the background, as TiddlyWiki does (the setting's
+	// "no" turns that off, unless TiddlyWiki's own lazy loading is off: then every load must go through)
+	function fillOn() {
+		var setting = wiki.getTiddler(LOAD_ALL_TITLE);
+		return !lazyLoading || !(setting && String(setting.fields.text || "").trim().toLowerCase() === "no");
+	}
+	function isSkinny(title) {
+		var tiddler = wiki.getTiddler(title);
+		return !tiddler || tiddler.hasField("_is_skinny");
+	}
+	// A load TiddlyWiki queued only because the list showed a revision of a tiddler this tab has
+	// skinny: the fill. Anything else is for a tiddler that's shown (wanted), that a module asked for
+	// (explicit), or that the tab holds in full and the worker has a newer version of.
+	function isFill(title) {
+		return !wanted[title] && !explicit[title] && isSkinny(title);
+	}
+	function sameOrder(a,b) {
+		if(a.length !== b.length) {
+			return false;
+		}
+		for(var i = 0; i < a.length; i++) {
+			if(a[i] !== b[i]) {
+				return false;
+			}
+		}
+		return true;
+	}
+	// The loads TiddlyWiki queued (titlesToBeLoaded, loaded one at a time from the first key), arranged
+	// before it picks the next: what's shown first, then what was asked for, the fill after them. The
+	// fill is kept aside (held) while the tab is hidden and for a moment after each list, so what the
+	// page shows asks for its text first; with the fill off, those loads are dropped: the skinny
+	// tiddler stays, and loads the moment its text is needed.
+	function arrangeLoads(syncer) {
+		var queue = syncer.titlesToBeLoaded,
+			titles = Object.keys(queue),
+			on = fillOn(),
+			hold = !on || document.hidden || Date.now() < fillHoldUntil,
+			first = [],
+			then = [],
+			fill = [];
+		$tw.utils.each(titles,function(title) {
+			if(wanted[title]) {
+				first.push(title);
+			} else if(!isFill(title)) {
+				then.push(title);
+			} else if(listedRevisions[title]) {
+				fill.push(title);
+			}
+			// (A fill load of a tiddler the worker no longer lists is dropped: TiddlyWiki has removed it)
+		});
+		// (Titles whose text was asked for and has come since: no longer first)
+		$tw.utils.each(Object.keys(wanted),function(title) {
+			if(!isSkinny(title) && !queue[title]) {
+				delete wanted[title];
+			}
+		});
+		if(!on) {
+			held = Object.create(null);
+			fill = [];
+		} else if(hold) {
+			$tw.utils.each(fill,function(title) {
+				held[title] = true;
+			});
+			if(!document.hidden && !fillTimer && (fill.length || $tw.utils.count(held))) {
+				fillTimer = setTimeout(function() {
+					fillTimer = null;
+					syncer.processTaskQueue();
+				},Math.max(0,fillHoldUntil - Date.now()) + 10);
+			}
+			fill = [];
+		} else {
+			$tw.utils.each(Object.keys(held),function(title) {
+				if(listedRevisions[title] && wiki.tiddlerExists(title) && fill.indexOf(title) === -1 && first.indexOf(title) === -1 && then.indexOf(title) === -1) {
+					fill.push(title);
+				}
+			});
+			held = Object.create(null);
+		}
+		var ordered = first.concat(then,fill);
+		if(!sameOrder(titles,ordered)) {
+			var arranged = Object.create(null);
+			$tw.utils.each(ordered,function(title) {
+				arranged[title] = true;
+			});
+			syncer.titlesToBeLoaded = arranged;
+		}
+	}
+
 	if($tw.Syncer && !$tw.Syncer.prototype.cfworkerPatched) {
 		var originalGetSyncedTiddlers = $tw.Syncer.prototype.getSyncedTiddlers,
-			originalChooseNextTask = $tw.Syncer.prototype.chooseNextTask;
+			originalChooseNextTask = $tw.Syncer.prototype.chooseNextTask,
+			originalEnqueueLoadTiddler = $tw.Syncer.prototype.enqueueLoadTiddler;
 		$tw.Syncer.prototype.cfworkerPatched = true;
 		// Keep drafts and the story list out of syncing: the worker never stores them (the same rule:
 		// $:/StoryList itself, and a draft.of field, even empty, as TiddlyWiki tells drafts). For drafts
@@ -94,18 +210,292 @@ exports.startup = function() {
 				return title !== "$:/StoryList" && !(tiddler && tiddler.hasField("draft.of"));
 			});
 		};
-		// Don't poll for changes while the tab is in the background (saves still go out)
+		// Don't poll for changes while the tab is in the background (saves still go out), and arrange
+		// the loads before TiddlyWiki picks the next
 		$tw.Syncer.prototype.chooseNextTask = function() {
 			if(document.hidden && !this.forceSyncFromServer && this.timestampLastSyncFromServer) {
 				this.timestampLastSyncFromServer = new Date();
 			}
+			arrangeLoads(this);
 			return originalChooseNextTask.call(this);
 		};
-		// ...and catch up as soon as it is shown again
+		// A load a module asks for is never the fill
+		$tw.Syncer.prototype.enqueueLoadTiddler = function(title) {
+			explicit[title] = true;
+			return originalEnqueueLoadTiddler.apply(this,arguments);
+		};
+		// ...and catch up as soon as it is shown again (the fill too)
 		document.addEventListener("visibilitychange",function() {
 			var s = $tw.syncer;
-			if(!document.hidden && s && s.syncadaptor && typeof s.syncadaptor.cfworkerListed === "function" && Date.now() - lastListFetch > 10000) {
-				s.syncFromServer();
+			if(!document.hidden && s && s.syncadaptor && typeof s.syncadaptor.cfworkerListed === "function") {
+				if(Date.now() - lastListFetch > 10000) {
+					s.syncFromServer();
+				}
+				s.processTaskQueue();
+			}
+		});
+	}
+	// What the page shows asks for its text: loaded before anything else
+	if(lazyLoading) {
+		wiki.addEventListener("lazyLoad",function(title) {
+			if(!loading[title]) {
+				wanted[title] = true;
+			}
+		});
+	}
+
+	// --- The device's copy of loaded tiddlers (IndexedDB) ----------------------------------------------
+
+	var storeOff = typeof indexedDB !== "object" || !indexedDB,
+		storeOpening = null;
+	function storeDb() {
+		if(storeOff) {
+			return Promise.resolve(null);
+		}
+		if(!storeOpening) {
+			storeOpening = new Promise(function(resolve) {
+				var request;
+				try {
+					request = indexedDB.open(STORE_DB,1);
+				} catch(e) {
+					storeOff = true;
+					return resolve(null);
+				}
+				request.onupgradeneeded = function() {
+					request.result.createObjectStore(STORE_NAME,{keyPath: "title"});
+				};
+				request.onsuccess = function() {
+					var db = request.result;
+					// Closed when another tab or the browser replaces the database: opened again at the next use
+					db.onversionchange = function() {
+						db.close();
+						storeOpening = null;
+					};
+					resolve(db);
+				};
+				request.onerror = function() {
+					storeOff = true;
+					resolve(null);
+				};
+				request.onblocked = function() {
+					storeOpening = null;   // (being replaced: tried again at the next use)
+					resolve(null);
+				};
+			});
+		}
+		return storeOpening;
+	}
+	// work(objectStore) makes the request; resolves with its result, null for anything that fails
+	function storeRequest(mode,work) {
+		return storeDb().then(function(db) {
+			if(!db) {
+				return null;
+			}
+			return new Promise(function(resolve) {
+				try {
+					var transaction = db.transaction(STORE_NAME,mode),
+						request = work(transaction.objectStore(STORE_NAME));
+					request.onsuccess = function() {
+						resolve(request.result === undefined ? null : request.result);
+					};
+					request.onerror = transaction.onerror = transaction.onabort = function() {
+						resolve(null);
+					};
+				} catch(e) {
+					resolve(null);
+				}
+			});
+		});
+	}
+	function storeGet(title) {
+		return storeRequest("readonly",function(store) {
+			return store.get(title);
+		});
+	}
+	function storeKeys() {
+		return storeRequest("readonly",function(store) {
+			return store.getAllKeys();
+		});
+	}
+	function keep(title,fields) {
+		if(!fields || fields.revision === undefined || fields.revision === null) {
+			return;
+		}
+		storeRequest("readwrite",function(store) {
+			return store.put({title: title, revision: String(fields.revision), fields: fields});
+		});
+	}
+	function forget(titles) {
+		if(!titles.length) {
+			return;
+		}
+		storeRequest("readwrite",function(store) {
+			var request = null;
+			$tw.utils.each(titles,function(title) {
+				request = store["delete"](title);
+			});
+			return request;
+		});
+	}
+	// Entries for tiddlers the worker no longer lists, after the first list of this page load
+	function prune() {
+		storeKeys().then(function(keys) {
+			if(keys) {
+				forget(keys.filter(function(title) {
+					return !$tw.utils.hop(listedRevisions,title);
+				}));
+			}
+		});
+	}
+
+	// --- Reading tiddlers -------------------------------------------------------------------------------
+
+	// Where a tiddler is read from without the worker: {url, sameSite}, the public copy of the wiki
+	// (the admin site reads it from there: another site) or this site itself on the public site;
+	// null when there's none
+	function tiddlerUrl(adaptor,title) {
+		var path = "recipes/" + encodeURIComponent(adaptor.recipe || "default") + "/tiddlers/" + encodeURIComponent(title);
+		if(publicBase && lib.siteOf(publicBase) !== lib.siteOf(adaptor.host)) {
+			return {url: publicBase + path, sameSite: false};
+		}
+		return adaptor.host ? {url: adaptor.host + path, sameSite: true} : null;
+	}
+	// A slot for a network fetch (FETCH_AHEAD at a time); urgent: ahead of those waiting for one
+	function withFetchSlot(work,urgent) {
+		return new Promise(function(resolve) {
+			function start() {
+				fetching++;
+				Promise.resolve().then(work).then(function(value) {
+					release();
+					resolve(value);
+				},function() {
+					release();
+					resolve(null);
+				});
+			}
+			if(fetching < FETCH_AHEAD) {
+				start();
+			} else if(urgent) {
+				fetchQueue.unshift(start);
+			} else {
+				fetchQueue.push(start);
+			}
+		});
+	}
+	function release() {
+		fetching--;
+		var next = fetchQueue.shift();
+		if(next) {
+			next();
+		}
+	}
+	// Fetches the tiddler at url: its fields if it's exactly the expected revision, null if it's
+	// another revision, false if it couldn't be fetched at all. A site that doesn't answer (rather
+	// than fails) mustn't hold up loading: given up after a few seconds. Always revalidated with the
+	// server (no-cache); from another site, without credentials (the public site is another origin
+	// for the admin site, with a plain CORS header).
+	function fetchRevision(adaptor,url,sameSite,title,expected) {
+		var controller = typeof AbortController === "function" ? new AbortController() : null,
+			timer = controller && setTimeout(function() {
+				controller.abort();
+			},PUBLIC_READ_TIMEOUT);
+		return fetch(url,{cache: "no-cache", credentials: sameSite ? "same-origin" : "omit", signal: controller ? controller.signal : undefined})
+			.then(function(response) {
+				return response.ok ? response.json() : false;
+			})
+			.then(function(data) {
+				clearTimeout(timer);
+				if(data === false) {
+					return false;
+				}
+				try {
+					if(data && data.title === title && data.revision !== undefined && data.revision !== null && String(data.revision) === expected) {
+						return adaptor.convertTiddlerFromTiddlyWebFormat(data);
+					}
+				} catch(e) {}
+				return null;
+			},function() {
+				clearTimeout(timer);
+				return false;
+			});
+	}
+	// The listed revision, fetched without the worker; a copy a cache kept from before a change is
+	// refused, and the tiddler asked for again at a URL no cache holds
+	function fetchListed(adaptor,title,expected,urgent) {
+		var at = tiddlerUrl(adaptor,title);
+		if(!at || typeof fetch !== "function") {
+			return Promise.resolve(null);
+		}
+		return withFetchSlot(function() {
+			return fetchRevision(adaptor,at.url,at.sameSite,title,expected).then(function(fields) {
+				return fields === null ? fetchRevision(adaptor,at.url + "?cfworker-retry=" + Date.now(),at.sameSite,title,expected) : fields;
+			}).then(function(fields) {
+				return fields || null;
+			});
+		},urgent);
+	}
+	// The tiddler's fields at the revision the worker lists: from the device, or fetched (and kept);
+	// null if neither has it
+	function lookUp(adaptor,title,urgent) {
+		var expected = listedRevisions[title];
+		if(!expected) {
+			return Promise.resolve(null);
+		}
+		return storeGet(title).then(function(kept) {
+			if(kept && kept.revision === expected && kept.fields) {
+				return kept.fields;
+			}
+			return fetchListed(adaptor,title,expected,urgent).then(function(fields) {
+				if(fields) {
+					keep(title,fields);
+				}
+				return fields;
+			});
+		});
+	}
+	// The next tiddlers TiddlyWiki will load, looked up ahead of it (the fill: not while held)
+	function readAhead(adaptor) {
+		var s = $tw.syncer;
+		if(!s || document.hidden || !fillOn()) {
+			return;
+		}
+		var queued = Object.keys(s.titlesToBeLoaded),
+			count = $tw.utils.count(ahead);
+		for(var i = 0; i < queued.length && count < READ_AHEAD; i++) {
+			var title = queued[i];
+			if(!ahead[title] && !loading[title] && listedRevisions[title]) {
+				ahead[title] = lookAhead(adaptor,title);
+				count++;
+			}
+		}
+	}
+	function lookAhead(adaptor,title) {
+		var entry = {promise: null, fields: undefined};
+		entry.promise = lookUp(adaptor,title).then(function(fields) {
+			entry.fields = fields;
+			return fields;
+		});
+		return entry;
+	}
+	// Tiddlers looked up ahead that have arrived, stored now, together (one refresh for all of them),
+	// so TiddlyWiki needn't load them one by one. (One the list has moved on from meanwhile is
+	// dropped: its load fetches the listed revision.)
+	function deliverAhead() {
+		var s = $tw.syncer;
+		$tw.utils.each(Object.keys(ahead),function(title) {
+			var entry = ahead[title];
+			if(entry.fields === undefined || entry.fields === null) {
+				return;
+			}
+			delete ahead[title];
+			if(String(entry.fields.revision) !== listedRevisions[title]) {
+				return;
+			}
+			if(s && s.titlesToBeLoaded[title] && !loading[title] && !hasUnsavedChanges(title)) {
+				delete s.titlesToBeLoaded[title];
+				delete wanted[title];
+				delete explicit[title];
+				s.storeTiddler(entry.fields);
 			}
 		});
 	}
@@ -238,6 +628,14 @@ exports.startup = function() {
 					});
 					lastListFetch = Date.now();
 					listRequested = requested;
+					fillHoldUntil = Date.now() + FILL_PAUSE;
+					if(previous) {
+						forget(Object.keys(previous).filter(function(title) {
+							return !$tw.utils.hop(listedRevisions,title);
+						}));
+					} else {
+						prune();
+					}
 					$tw.utils.each(listListeners,function(listener) {
 						try {
 							listener(listedRevisions,previous,tiddlers);
@@ -277,71 +675,73 @@ exports.startup = function() {
 		requestHooks.push(hook);
 	};
 
-	// A revision this tab now knows the worker has (a save of its own): what the next read from the
-	// public site expects, until the next list
-	proto.cfworkerNoteListed = function(title,revision) {
+	// A revision this tab now knows the worker has (a save of its own): what the next read expects,
+	// until the next list; tiddler: the tiddler saved, kept on the device at that revision (not a
+	// skinny one: the worker kept the stored text, which this tab doesn't have)
+	proto.cfworkerNoteListed = function(title,revision,tiddler) {
 		listedRevisions[title] = revision;
+		if(tiddler && !tiddler.hasField("_is_skinny")) {
+			var fields = tiddler.getFieldStrings();
+			fields.type = fields.type || "text/vnd.tiddlywiki";
+			fields.revision = String(revision);
+			fields.bag = "default";
+			fields.recipe = "default";
+			keep(title,fields);
+		}
 	};
 
-	// Fetch a tiddler from the public copy of the wiki (R2 + Cloudflare's cache, no worker request).
-	// Only accepted if it is exactly the revision the worker listed; callback(fields) or callback(null).
-	var PUBLIC_READ_TIMEOUT = 5000;
-	function loadFromPublicSite(adaptor,title,callback) {
-		var expected = listedRevisions[title];
-		function done(fields) {
-			setTimeout(function() {
-				callback(fields);
-			},0);
-		}
-		if(!publicBase || lib.siteOf(publicBase) === lib.siteOf(adaptor.host) || !expected || typeof fetch !== "function") {
-			return done(null);
-		}
-		// A public site that doesn't answer (rather than fails) mustn't hold up loading: given up after a
-		// few seconds, and the text comes from the worker
-		var controller = typeof AbortController === "function" ? new AbortController() : null,
-			timer = controller && setTimeout(function() {
-				controller.abort();
-			},PUBLIC_READ_TIMEOUT);
-		fetch(publicBase + "recipes/default/tiddlers/" + encodeURIComponent(title),{cache: "no-cache", credentials: "omit", signal: controller ? controller.signal : undefined})
-			.then(function(response) {
-				return response.ok ? response.json() : null;
-			})
-			.then(function(data) {
-				clearTimeout(timer);
-				var fields = null;
-				try {
-					if(data && data.title === title && data.revision !== undefined && data.revision !== null && String(data.revision) === expected) {
-						fields = adaptor.convertTiddlerFromTiddlyWebFormat(data);
-					}
-				} catch(e) {
-					fields = null;
-				}
-				done(fields);
-			},function() {
-				clearTimeout(timer);
-				done(null);
-			});
-	}
+	// A tiddler this tab deleted: no longer on the device either
+	proto.cfworkerNoteDeleted = function(title) {
+		delete listedRevisions[title];
+		forget([title]);
+	};
 
-	// Never let a background reload overwrite local changes that haven't been uploaded yet;
-	// the pending save will detect any conflict instead
+	// The titles being loaded right now (title -> true): the page publisher waits for the ones its
+	// page needs, not for the fill
+	proto.cfworkerLoading = function() {
+		return loading;
+	};
+
+	// Never let a background reload overwrite local changes that haven't been uploaded yet; the
+	// pending save will detect any conflict instead. Otherwise the device's copy, the public site,
+	// then the worker (loadTiddler as TiddlyWiki has it).
 	proto.loadTiddler = function(title,callback) {
 		var self = this;
+		loading[title] = true;
+		delete wanted[title];
+		delete explicit[title];
+		function done(err,fields) {
+			delete loading[title];
+			callback(err,fields);
+		}
 		if(hasUnsavedChanges(title)) {
-			return callback(null,null);
+			return done(null,null);
 		}
-		function finish(err,tiddlerFields) {
-			if(!err && tiddlerFields && hasUnsavedChanges(title)) {
-				return callback(null,null);
+		var entry = ahead[title],
+			found = entry ? entry.promise.then(function(fields) {
+				// (Looked up ahead, unless the list has moved on since)
+				return fields && String(fields.revision) !== listedRevisions[title] ? lookUp(self,title,true) : fields;
+			}) : lookUp(self,title,true);
+		delete ahead[title];
+		found.then(function(fields) {
+			if(fields && hasUnsavedChanges(title)) {
+				return done(null,null);
 			}
-			callback(err,tiddlerFields);
-		}
-		loadFromPublicSite(this,title,function(tiddlerFields) {
-			if(tiddlerFields) {
-				finish(null,tiddlerFields);
-			} else {
-				originalLoadTiddler.call(self,title,finish);
+			if(fields) {
+				deliverAhead();
+				readAhead(self);
+				return done(null,fields);
 			}
+			originalLoadTiddler.call(self,title,function(err,fields) {
+				if(!err && fields && hasUnsavedChanges(title)) {
+					return done(null,null);
+				}
+				if(!err && fields) {
+					keep(title,fields);
+				}
+				readAhead(self);
+				done(err,fields);
+			});
 		});
 	};
 };

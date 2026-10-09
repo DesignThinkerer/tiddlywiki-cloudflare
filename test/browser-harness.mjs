@@ -44,7 +44,8 @@ export const PUBLIC_STATUS = { username: "GUEST", read_only: true, anonymous: tr
 //   outbound(request): answers the worker's own requests (Cloudflare's API, GitHub); {"success":true} by default
 //   r2Persist: a folder to keep R2 in
 //   publicSite: hooks for the stand-in: cors() returns false to leave the CORS header out,
-//     override(key) returns text to serve instead of the object, rewrite(url, bytes) returns the bytes to send
+//     override(key, url) returns text to serve instead of the object, rewrite(url, bytes) returns the
+//     bytes to send, delay(url) returns milliseconds to wait before answering (a slow connection)
 // Returns { mf, base, pub, bucket, publicRequests (each path and query, decoded), close() }
 export async function startSite({ index, assets = false, publicStatus = false, bindings = {}, outbound, r2Persist, publicSite = {} } = {}) {
   let bucket = null;
@@ -55,7 +56,9 @@ export async function startSite({ index, assets = false, publicStatus = false, b
     const headers = publicSite.cors && !publicSite.cors() ? {} : { "Access-Control-Allow-Origin": "*" };
     try {
       const key = decodeURIComponent(url.pathname.slice(1)) || "baked.html";
-      let body = publicSite.override ? publicSite.override(key) : undefined;
+      const wait = publicSite.delay ? publicSite.delay(url) : 0;
+      if (wait > 0) await new Promise(r => setTimeout(r, wait));
+      let body = publicSite.override ? publicSite.override(key, url) : undefined;
       if (body === undefined) {
         const obj = await bucket.get(key);
         if (!obj) {

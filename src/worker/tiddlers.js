@@ -39,6 +39,9 @@ const STARTUP_TITLES = ["$:/DefaultTiddlers", "$:/SiteTitle", "$:/SiteSubtitle",
 
 const DISABLED_PLUGIN_PREFIX = "$:/config/Plugins/Disabled/";
 
+// The browser modules' own settings ($:/config/cfworker/LoadAll, README 3), read when the page boots
+const MODULE_SETTINGS_PREFIX = "$:/config/cfworker/";
+
 const PLUGIN_FILE_TYPES = ["plugin", "theme", "language"];
 
 const MODULE_TYPES = ["application/javascript", "application/json", "application/x-tiddler-dictionary"];
@@ -47,7 +50,7 @@ const MODULE_TYPES = ["application/javascript", "application/json", "application
 export function isStartupTiddler(tiddler) {
   const title = tiddler.title || "", tags = tiddler.tags;
   // (A list entry stored before field values had to be text, or by hand, may hold a tag that isn't)
-  return STARTUP_TITLES.includes(title) || title.startsWith(DISABLED_PLUGIN_PREFIX) || (Array.isArray(tags)
+  return STARTUP_TITLES.includes(title) || title.startsWith(DISABLED_PLUGIN_PREFIX) || title.startsWith(MODULE_SETTINGS_PREFIX) || (Array.isArray(tags)
     ? tags.some(tag => String(tag).includes("$:/tags/StartupAction"))
     : typeof tags === "string" && tags.includes("$:/tags/StartupAction"));
 }

@@ -90,6 +90,13 @@ const conflictCopies = (page, title) => page.evaluate(t => $tw.wiki.filterTiddle
 const alerts = page => page.evaluate(() => $tw.wiki.filterTiddlers("[tag[$:/tags/Alert]]").map(t => $tw.wiki.getTiddlerText(t)));
 const clearAlerts = page => page.evaluate(() => $tw.wiki.filterTiddlers("[tag[$:/tags/Alert]]").forEach(t => $tw.wiki.deleteTiddler(t)));
 const netSince = n => net.slice(n);
+// Drops the copies of loaded tiddlers kept on the device (shared by every tab of this browser), so
+// the next load fetches them again (the device's copy itself: test:lazy)
+const forgetDevice = page => page.evaluate(() => new Promise(resolve => {
+  const q = indexedDB.deleteDatabase("cfworker-tiddlers");
+  q.onsuccess = q.onerror = () => resolve();
+  setTimeout(resolve, 3000);
+}));
 
 // --- 0. Baked page + legacy clients -------------------------------------------------------
 const home = await (await mf.dispatchFetch(base + "/")).text();
@@ -339,8 +346,8 @@ const publicTiddlerGets = rs => rs.filter(r => r.method === "GET" && r.url.start
 let cReqs = requests.slice(reqMark).filter(r => r.tag === "C");
 const texts = await C.evaluate(() => [1,2,3,4,5].map(i => $tw.wiki.getTiddlerText("Note " + i)));
 check("new tab loads every tiddler correctly", texts.every((t, i) => t === `note text ${i + 1}`), JSON.stringify(texts));
-check("page load fetches tiddlers from the public site, not the worker",
-  workerTiddlerGets(cReqs).length === 0 && publicTiddlerGets(cReqs).length >= 5,
+check("page load takes the tiddlers from the device (the tabs that saved them kept them there), none from the worker",
+  workerTiddlerGets(cReqs).length === 0 && publicTiddlerGets(cReqs).length === 0,
   `worker ${workerTiddlerGets(cReqs).length}, public ${publicTiddlerGets(cReqs).length}`);
 // /status: asked from the worker by the first page load in this browser (tab A), then kept by the browser
 const reachedWorker = rs => rs.filter(r => r.url.startsWith(base) && !r.cached);
@@ -356,10 +363,11 @@ check("...and TiddlyWiki still knows it's logged in as admin, writable", JSON.st
 console.log("      worker requests during C's page load:", reachedWorker(cReqs).map(r => r.method + " " + decodeURIComponent(new URL(r.url).pathname)).join(", "));
 check("no $:/StoryList or draft writes reach the worker", !net.some(x => x.path.includes("$:/StoryList") || x.path.includes("Draft of")));
 
-// public copy is stale -> falls back to the worker
+// public copy is stale (even past the cache) -> falls back to the worker
 await sync(C);
 staleOverride.set("recipes/default/tiddlers/Note 1", await (await bucket.get("recipes/default/tiddlers/Note 1")).text());
 await editViaUI(A, "Note 1", "note 1 edited"); await settle(A);
+await forgetDevice(C);   // (A's save kept the new version on the device: without that copy)
 reqMark = requests.length;
 await sync(C);
 cReqs = requests.slice(reqMark).filter(r => r.tag === "C");
@@ -371,6 +379,7 @@ check("editing after a fallback load saves without conflict", (await server("Not
 
 // no CORS header on the public site -> everything still works through the worker
 publicCors = false;
+await forgetDevice(C);
 reqMark = requests.length;
 const D = await openTab("D");
 const dReqs = requests.slice(reqMark).filter(r => r.tag === "D");
@@ -710,6 +719,7 @@ await clearAlerts(L);
 // A public site that doesn't answer (rather than failing) doesn't hold up loading: after a short wait
 // the text comes from the worker
 await create(A, "Slow public copy", "loaded from the worker"); await settle(A);
+await forgetDevice(A);
 const M = await context.newPage();
 await watch(M, "M");
 await M.route(url => url.origin === PUB && url.pathname.endsWith("/tiddlers/Slow%20public%20copy"), () => {});   // never answered

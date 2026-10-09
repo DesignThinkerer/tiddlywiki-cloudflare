@@ -250,12 +250,31 @@ exports.startup = function() {
 		};
 	}
 
-	// When nothing is being saved or loaded
+	// Whether nothing is being saved, and nothing the page needs is being loaded. The fill of the
+	// other tiddlers (the list sync's, which says what's loading: cfworkerLoading) doesn't count: the
+	// page doesn't render them.
+	function quietNow() {
+		if(syncer.isDirty() || syncer.forceSyncFromServer) {
+			return false;
+		}
+		var loading = adaptor.cfworkerLoading ? adaptor.cfworkerLoading() : null;
+		if(!loading) {
+			return syncer.numTasksInProgress === 0 && $tw.utils.count(syncer.titlesToBeLoaded) === 0;
+		}
+		// A task under way that isn't a load: a save, a delete, the list
+		if(syncer.numTasksInProgress > $tw.utils.count(loading)) {
+			return false;
+		}
+		return !pageTitles().some(function(title) {
+			return !!syncer.titlesToBeLoaded[title] || !!loading[title];
+		});
+	}
+
+	// When nothing is being saved, and nothing the page needs is being loaded
 	function whenQuiet(done,callback) {
 		var waited = 0;
 		(function poll() {
-			var quiet = !syncer.isDirty() && syncer.numTasksInProgress === 0 && $tw.utils.count(syncer.titlesToBeLoaded) === 0 && !syncer.forceSyncFromServer;
-			if(quiet) {
+			if(quietNow()) {
 				return callback(true);
 			}
 			if((waited += 200) >= QUIET_TIMEOUT) {

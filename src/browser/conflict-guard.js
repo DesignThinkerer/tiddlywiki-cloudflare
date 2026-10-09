@@ -390,12 +390,14 @@ exports.startup = function() {
 					}
 					rebase(title,base,etagInfo.revision);
 					callback(null,{bag: etagInfo.bag},etagInfo.revision);
+					// The list sync keeps the saved version (a public copy from before the save
+					// doesn't count): the next read expects this revision, and has it on the device
+					if(self.cfworkerNoteListed) {
+						self.cfworkerNoteListed(title,etagInfo.revision,tiddler);
+					}
 					// Saved before its text had loaded (the worker kept the stored text): load it now,
-					// the version just saved (a public copy from before the save doesn't count)
+					// the version just saved
 					if(tiddler.hasField("_is_skinny") && s) {
-						if(self.cfworkerNoteListed) {
-							self.cfworkerNoteListed(title,etagInfo.revision);
-						}
 						setTimeout(function() {
 							s.enqueueLoadTiddler(title);
 						},0);
@@ -437,6 +439,9 @@ exports.startup = function() {
 					}
 					delete pendingBases[title];
 					delete deleteBases[title];
+					if(self.cfworkerNoteDeleted) {
+						self.cfworkerNoteDeleted(title);
+					}
 					callback(null,null);
 				}
 			});

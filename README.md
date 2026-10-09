@@ -55,7 +55,7 @@ flowchart LR
 | Piece | Role |
 |---|---|
 | **The worker** (`worker.js`, built from `src/worker/`) | Serves the admin wiki: the page, the TiddlyWeb endpoints, saves and deletes with their conflict checks, cache purges. Writes a file for each plugin, and consumes the backup queue. |
-| **Browser modules** (`src/browser/`) | TiddlyWiki modules the worker builds into the page. The conflict guard makes the browser say which version each edit is based on, handles conflicts, and sends saves in the layout the worker stores; the list sync keeps the tiddler list, cuts unneeded requests and reads from the public site; the backup alert shows backups that keep failing; the page publisher, in the admin wiki, renders the page with TiddlyWiki's own template and sends it to the worker whenever it changes. |
+| **Browser modules** (`src/browser/`) | TiddlyWiki modules the worker builds into the page. The conflict guard makes the browser say which version each edit is based on, handles conflicts, and sends saves in the layout the worker stores; the list sync keeps the tiddler list, loads what's shown first and keeps loaded tiddlers on the device, reads from the public site and cuts unneeded requests; the backup alert shows backups that keep failing; the page publisher, in the admin wiki, renders the page with TiddlyWiki's own template and sends it to the worker whenever it changes. |
 | **R2 bucket** | Holds everything: the wiki engine (`index.html`), the page both sites serve, the tiddler list, one JSON file per tiddler, one script per plugin, and TiddlyWiki's core file. |
 | **Public site** | The bucket's custom domain. Cloudflare caches it, and nothing on it runs the worker. |
 | **Queue** `wiki-backup` | Holds one message per save or delete until it has been committed to GitHub. |
@@ -257,6 +257,8 @@ If the page is rebuilt before step 4 (by a deploy, or by saving another plugin, 
 
 **Manual purge:** Cloudflare dashboard → Caching → Configuration → Purge Cache. Use it if something on the public site looks stuck, for example after uploading files to R2 by hand.
 
+**Loading a big wiki:** a tab gets the tiddler list (every field but the text) and loads the tiddler it shows first; the rest fills in in the background, several at a time, only while the tab is visible, so that search and backlinks work on everything. Loaded tiddlers are kept in the browser (IndexedDB, like its cache: clearing the site's data removes them), so the next page load fetches only what changed since, on any device. To skip the fill, create a tiddler `$:/config/cfworker/LoadAll` with the text `no` (it takes effect at the next page load): each tiddler then loads the moment it's shown, and nothing else is fetched, but the sidebar's text search, backlinks and the Missing and Orphans lists only see tiddlers the tab has loaded (titles, tags and fields are always searched). Design 1.5.
+
 **Turning the browser modules off:** set `CONFLICT_GUARD` to `off`. The next page load rebuilds `baked.html` without them. Saves then go back to TiddlyWiki's default behaviour, without protection or request savings, and the page is no longer published.
 
 ---
@@ -363,7 +365,7 @@ GitHub runs the same two groups, as two jobs side by side, for every pull reques
 │   └── browser/              the browser modules, embedded into worker.js by the build (3)
 │       ├── lib.js            what they share: the sync adaptor, the public site's address, titles in alerts (a TiddlyWiki library module)
 │       ├── conflict-guard.js saves and deletes: the revision each is based on, conflicts, the flat layout
-│       ├── list-sync.js      the tiddler list, reads from the public site, what isn't sent, background tabs
+│       ├── list-sync.js      the tiddler list, loading (what's shown first, the device's copy, the fill), what isn't sent
 │       ├── backup-alert.js   the alert while backups to GitHub keep failing (4.7)
 │       └── page-publisher.js the page published from the admin wiki (design 1.9)
 ├── build.mjs                 inlines the modules into worker.js, in dependency order, with the browser modules embedded
@@ -375,6 +377,7 @@ GitHub runs the same two groups, as two jobs side by side, for every pull reques
     ├── two-tabs.test.mjs     real TiddlyWiki in Chromium, several tabs (93 checks)
     ├── plugins.test.mjs      real plugins on the admin and public sites (66 checks)
     ├── page-publish.test.mjs the page published from a real TiddlyWiki (57 checks)
+    ├── lazy-load.test.mjs    loading a big wiki on both sites: what's shown first, the device's copy, the fill (22 checks)
     ├── queue-backup.test.mjs queue backup against an imitation of GitHub (42 checks)
     ├── integrity.test.mjs    the tiddler list's integrity, a failed page build, draft-like titles, .gitignore (77 checks)
     ├── r2-ops.test.mjs       R2 calls per kind of request, against a budget (30 checks)
@@ -392,7 +395,7 @@ The browser modules live in their own files so they can be read and edited as no
 
 ### 6.2 The tests
 
-The tests run the real worker in Cloudflare's local runtime (workerd, through Miniflare) with a local R2 bucket and queue. Outgoing calls to GitHub and Cloudflare's API are answered by imitations, so nothing touches your accounts. Every suite takes free local ports, so they can run at the same time. The four browser suites share their setup, `test/browser-harness.mjs`: the worker, the stand-in for the public site, Chromium, and the helpers that wait for TiddlyWiki or record each tab's requests (marking the ones the browser answered from its cache, which never reached a server). (On a machine too busy to keep up, such as with the browser suites running alongside, the backup suite's "never overlapped" check can fail: Miniflare then starts a second batch before the first ends, which `max_concurrency = 1` prevents on Cloudflare. A browser suite can also time out waiting for TiddlyWiki there. Each passes run on its own.)
+The tests run the real worker in Cloudflare's local runtime (workerd, through Miniflare) with a local R2 bucket and queue. Outgoing calls to GitHub and Cloudflare's API are answered by imitations, so nothing touches your accounts. Every suite takes free local ports, so they can run at the same time. The five browser suites share their setup, `test/browser-harness.mjs`: the worker, the stand-in for the public site, Chromium, and the helpers that wait for TiddlyWiki or record each tab's requests (marking the ones the browser answered from its cache, which never reached a server). (On a machine too busy to keep up, such as with the browser suites running alongside, the backup suite's "never overlapped" check can fail: Miniflare then starts a second batch before the first ends, which `max_concurrency = 1` prevents on Cloudflare. A browser suite can also time out waiting for TiddlyWiki there. Each passes run on its own.)
 
 `test:bake` covers:
 - Page serving: rebuild on an outdated bake or a new `index.html`, the `304` for an unchanged page (also with a weakened ETag, and by date alone, including two pages built within the same second), a byte order mark; CORS, a bad `PUT` path, and `/status`, kept by the browser for a week and no longer baked into the page.
@@ -478,7 +481,7 @@ Reading the save in full, or building the backup's request through strings, fail
 - **Conflicts:** an editor open while another tab saves, a stale tab, a new title created in two tabs, a stale delete, identical edits (also of a tiddler created in the tab), a save stored though its answer was lost and edited again before it's tried again (no conflict copy), rename, a rename or a delete from an editor opened before another tab's save (refused, that version kept, also when fetching it after the refusal fails once), simultaneous saves, conflict copies of a JavaScript module, a plugin and a raw markup tiddler with the older `$:/core/wiki/rawmarkup` tag that don't run (no file, no script tag; a fresh load runs only the version kept), with an alert saying so and how to use that version (also when the original was deleted elsewhere).
 - **Baking:** startup tiddlers with their custom fields.
 - **Public cache:** exact purge URLs (the tiddler list's as TiddlyWiki itself requests it, so a TiddlyWiki that changes it fails the test; also the admin page's copy, purged with its `Origin` header, on a save and a delete) and the `304`.
-- **Request savings:** `/status` asked from the worker once by the first page load in a browser, then answered from the browser's cache: a 2-request page load (TiddlyWiki still knows it's logged in), a reload that downloads none of the page (`304`), also through a stand-in for Cloudflare that removes the page's ETag (the browser asks by date), the stale-public-copy fallback, a missing CORS header, the hidden-tab pause.
+- **Request savings:** `/status` asked from the worker once by the first page load in a browser, then answered from the browser's cache: a 2-request page load (TiddlyWiki still knows it's logged in), the tiddlers taken from the device, a reload that downloads none of the page (`304`), also through a stand-in for Cloudflare that removes the page's ETag (the browser asks by date), the stale-public-copy fallback to the worker, a missing CORS header, the hidden-tab pause.
 - **A damaged tiddler list** rebuilt over several requests while a tab is open: the tab keeps its tiddlers and shows no error; a save answered "rebuilding" is sent again quietly, and any other `503` is reported as before.
 - **A tiddler changed before its text loaded** (its text held back): the stored text kept with the change, and the tab then loads it.
 - **Failing backups:** a page load asks how backups go with its first tiddler list request, shows an alert (since when, how many, the oldest, GitHub's answer, what to do), asks at each request while it shows, removes it once backups get through, then asks no more than hourly.
@@ -509,6 +512,13 @@ Reading the save in full, or building the backup's request through strings, fail
 - **A failed publish** reported and retried (and one the worker kept, its answer lost, then undone: published), a refused one sent again only once the page changes, a refused core file not sent again at the next changes, the core file sent once, not at every load, while the worker keeps refusing the page, and an error while rendering the page too, without stopping later publishes.
 - **A new `index.html`** used at once, then published for (the core file not sent again).
 - **Safe mode** neither publishing nor syncing.
+
+`test:lazy` stores 120 tiddlers and covers, on the admin site and on the public site:
+- **What's shown first:** a tiddler opened directly is the first one fetched, before the background fill.
+- **The fill:** everything loads from the public site, several requests at a time, nothing through the worker; a hidden tab loads what it shows and fills once shown; a save while the fill runs publishes the page without waiting for it.
+- **The device's copy:** a refresh fetches no tiddler (the worker serves the page and the list only); after a change elsewhere, that tiddler only; one saved in the tab isn't fetched; one deleted elsewhere is gone from the tab and the device.
+- **The fill turned off** (`$:/config/cfworker/LoadAll`, built into the page): only the tiddler shown is fetched, the others stay skinny, and another loads the moment it's needed.
+- **A stale copy from a cache** refused and fetched again past the cache.
 
 To run the browser tests against your own wiki file, download `index.html` from the bucket and run `WIKI_HTML=/path/to/index.html npm run test:tabs` (or `test:plugins`).
 
