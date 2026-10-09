@@ -71,7 +71,7 @@ flowchart LR
 ├── worker.js                 GENERATED: the file you deploy (npm run build)
 ├── docs/
 │   └── external-plugins.md   design notes for plugin files (4.8)
-├── tiddlers/                 the GitHub backup (4.7): one JSON file per tiddler, committed by the worker
+├── .github/workflows/ci.yml  runs the tests on GitHub for every pull request and push to main
 ├── src/
 │   ├── worker.src.js         the worker's source
 │   ├── conflict-guard.js     the browser module, embedded into worker.js by the build
@@ -722,6 +722,8 @@ npm test                             # build, make the test wiki, run all eight 
 | `npm run build` | Writes `worker.js`. |
 | `npm run check:build` | Fails, writing nothing, if `worker.js` isn't what the sources build (run it before committing, so `worker.js` is never out of date). |
 | `npm run fixture` | Builds `test/fixtures/index.html`, an empty TiddlyWiki with the TiddlyWeb plugin. It keeps an existing file of the installed TiddlyWiki version, and rebuilds one of another version by itself (after upgrading the `tiddlywiki` package, say); `npm run fixture -- --force` rebuilds it anyway. |
+| `npm run test:fast` | The five suites that need no browser (a few minutes). |
+| `npm run test:browser` | The three suites that run a real TiddlyWiki in Chromium. |
 | `npm run test:bake` | Page serving: rebuild on an outdated bake or a new `index.html`, the `304` for an unchanged page (also with a weakened ETag, and by date alone, including two pages built within the same second), a byte order mark; CORS, a bad `PUT` path, and `/status`, kept by the browser for a week and no longer baked into the page. The published page: the core file stored and each kind refused (also one sent for an older `index.html`, or without saying which) (also one still switching the save template, while the core plugin's escaped mentions of it are accepted), each kind of shell refused, a shell kept and the page built from it, the same again, plugin tags before the core (only in a shell: in a full `index.html` they stay in `<head>`, even with TiddlyWiki's marker in raw markup), a new `index.html` built from until a shell is published for it. `CONFLICT_GUARD = off`: the page built without the browser modules. |
 | `npm run test:integrity` | The tiddler list's integrity, the page after a failed build, draft-like titles and `.gitignore` (see below). |
 | `npm run test:r2` | R2 calls per kind of request, against a budget (see below). |
@@ -730,6 +732,8 @@ npm test                             # build, make the test wiki, run all eight 
 | `npm run test:tabs` | Real TiddlyWiki in Chromium with several tabs (see below). |
 | `npm run test:plugins` | Real plugins in Chromium, on the admin site and a stand-in for the public site (see below). |
 | `npm run test:publish` | The page published from a real TiddlyWiki in Chromium (see below). |
+
+GitHub runs the same two groups, as two jobs side by side, for every pull request and every push to `main` (`.github/workflows/ci.yml`), after checking that `worker.js` is what `src/` builds.
 
 The tests run the real worker in Cloudflare's local runtime (workerd, through Miniflare) with a local R2 bucket and queue. Outgoing calls to GitHub and Cloudflare's API are answered by imitations, so nothing touches your accounts. Every suite takes free local ports, so they can run at the same time. The three browser suites share their setup, `test/browser-harness.mjs`: the worker, the stand-in for the public site, Chromium, and the helpers that wait for TiddlyWiki or record each tab's requests (marking the ones the browser answered from its cache, which never reached a server). (On a machine too busy to keep up, such as with the browser suites running alongside, the backup suite's "never overlapped" check can fail: Miniflare then starts a second batch before the first ends, which `max_concurrency = 1` prevents on Cloudflare. A browser suite can also time out waiting for TiddlyWiki there. Each passes run on its own.)
 
