@@ -377,7 +377,7 @@ GitHub runs the same two groups, as two jobs side by side, for every pull reques
     ├── two-tabs.test.mjs     real TiddlyWiki in Chromium, several tabs (93 checks)
     ├── plugins.test.mjs      real plugins on the admin and public sites (66 checks)
     ├── page-publish.test.mjs the page published from a real TiddlyWiki (57 checks)
-    ├── lazy-load.test.mjs    loading a big wiki on both sites: what's shown first, the device's copy, the fill (22 checks)
+    ├── lazy-load.test.mjs    loading a big wiki on both sites: what's shown first, the device's copy, the fill (31 checks)
     ├── queue-backup.test.mjs queue backup against an imitation of GitHub (42 checks)
     ├── integrity.test.mjs    the tiddler list's integrity, a failed page build, draft-like titles, .gitignore (77 checks)
     ├── r2-ops.test.mjs       R2 calls per kind of request, against a budget (30 checks)
@@ -515,10 +515,10 @@ Reading the save in full, or building the backup's request through strings, fail
 
 `test:lazy` stores 120 tiddlers and covers, on the admin site and on the public site:
 - **What's shown first:** a tiddler opened directly is the first one fetched, before the background fill.
-- **The fill:** everything loads from the public site, several requests at a time, nothing through the worker; a hidden tab loads what it shows and fills once shown; a save while the fill runs publishes the page without waiting for it.
-- **The device's copy:** a refresh fetches no tiddler (the worker serves the page and the list only); after a change elsewhere, that tiddler only; one saved in the tab isn't fetched; one deleted elsewhere is gone from the tab and the device.
-- **The fill turned off** (`$:/config/cfworker/LoadAll`, built into the page): only the tiddler shown is fetched, the others stay skinny, and another loads the moment it's needed.
-- **A stale copy from a cache** refused and fetched again past the cache.
+- **The fill:** everything loads from the public site, several requests at a time, nothing through the worker; a hidden tab loads what it shows and fills once shown (leaving out a tiddler deleted meanwhile, without an error), and one hidden in the middle of the fill stops fetching until shown; a save while the fill runs publishes the page without waiting for it.
+- **The device's copy:** a refresh fetches no tiddler (the worker serves the page and the list only) and stores them in a few load steps rather than one by one; after a change elsewhere, that tiddler only; one saved in the tab isn't fetched; one deleted elsewhere, or in the tab, is gone from the tab and the device; without IndexedDB, loads go over the network each time.
+- **The fill turned off** (`$:/config/cfworker/LoadAll`, built into the page): only the tiddler shown is fetched, the others stay skinny, another loads the moment it's needed, a loaded tiddler changed elsewhere is still reloaded, a skinny tiddler changed before its text loaded keeps its text and gets it; with TiddlyWiki's own lazy loading off, the fill runs whatever the setting.
+- **A stale copy from a cache** refused and fetched again past the cache, on both sites, without the worker.
 
 To run the browser tests against your own wiki file, download `index.html` from the bucket and run `WIKI_HTML=/path/to/index.html npm run test:tabs` (or `test:plugins`).
 
