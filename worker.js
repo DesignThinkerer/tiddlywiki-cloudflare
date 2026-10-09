@@ -418,6 +418,9 @@ export default {
       return new Response(ACCESS_REFUSED, { status: 403, headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" } });
     }
     const url = new URL(request.url);
+    // Nor anything without the public site's address (the page would load its code from nowhere)
+    const notSetUp = publicSiteError(env, url.origin);
+    if (notSetUp) return new Response(notSetUp, { status: 500, headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" } });
     // The admin page reads tiddlers from the public site too, so both answer cross-origin requests.
     // TiddlyWiki reads the ETag of each save, which a browser only shows a page that's told it may.
     const corsHeaders = {
@@ -619,12 +622,31 @@ async function handleDelete(request, env, ctx, url, corsHeaders) {
   }
 }
 
-// --- Public site cache ----------------------------------------------------------------------
-// The public wiki is served straight from the R2 bucket through Cloudflare's cache, so after a
-// change we purge exactly the public URLs that serve it (single-file purge, not purge_everything).
-// Set the worker variable PUBLIC_WIKI_URL to change the public address.
+// --- The public site -----------------------------------------------------------------------------
+// PUBLIC_WIKI_URL, the public site's address (the bucket's custom domain, README 3.1): the page
+// loads its plugin files and TiddlyWiki's core file from it, the browser module reads tiddlers from
+// it, and purges name its URLs. Required, with no default: a wiki must never load its code from a
+// site that isn't its own. Checked at every request (fetch), so a worker without it does nothing
+// but say so.
 
-const DEFAULT_PUBLIC_WIKI_URL = "https://my-tiddlywiki.theophile.dev";
+// Why the setting can't be used, or null. requestOrigin: where the request came to, which the
+// public site can't be: the worker isn't the public site, and the browser modules take a page at
+// the public address for the public site's (read-only, publishing nothing).
+function publicSiteError(env, requestOrigin) {
+  const value = env.PUBLIC_WIKI_URL;
+  const expected = "the public site's address, https://<its hostname> (README 3.2)";
+  if (!value) return `PUBLIC_WIKI_URL isn't set: the worker needs ${expected}.`;
+  let url;
+  try { url = new URL(value); } catch { url = null; }
+  if (!url || (url.protocol !== "https:" && url.protocol !== "http:")) return `PUBLIC_WIKI_URL is "${value}", not ${expected}.`;
+  if (url.pathname.replace(/\/+$/, "") !== "" || url.search || url.hash || url.username || url.password) {
+    return `PUBLIC_WIKI_URL is "${value}": it must be ${expected}, nothing after the hostname.`;
+  }
+  if (requestOrigin && url.origin === new URL(requestOrigin).origin) {
+    return `PUBLIC_WIKI_URL is "${value}", this worker's own address: it must be the public site's, the bucket's custom domain (README 3.1).`;
+  }
+  return null;
+}
 
 // The query string is part of the cache key, so the tiddler list is purged under each URL
 // TiddlyWiki requests it with: the TiddlyWiki 5.4 filter, the filter of earlier versions, and bare.
@@ -636,8 +658,9 @@ const SKINNY_LIST_FILTERS = [
 // URLs that serve the wiki page itself
 const PUBLIC_PAGE_PATHS = ["/", "/baked.html"];
 
+// A URL on the public site (PUBLIC_WIKI_URL, checked before any request is handled)
 function publicUrl(env, path) {
-  return (env.PUBLIC_WIKI_URL || DEFAULT_PUBLIC_WIKI_URL).replace(/\/+$/, "") + path;
+  return env.PUBLIC_WIKI_URL.replace(/\/+$/, "") + path;
 }
 
 // Encoded the same way TiddlyWiki encodes them when it requests them. The admin page reads tiddlers

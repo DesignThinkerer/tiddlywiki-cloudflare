@@ -89,7 +89,7 @@ function makeWorker(port, withQueue, bindings = {}) {
     },
     modules: true, scriptPath: "test/r2-counter.mjs", modulesRoot: ROOT, modulesRules: [{ type: "ESModule", include: ["**/*.js", "**/*.mjs"] }],
     compatibilityDate: "2024-09-23", r2Buckets: ["WIKI_BUCKET"], port,
-    bindings: { ACCESS: "off", GITHUB_REPO: "o/r", GITHUB_TOKEN: "ghtoken", BACKUP_RETRY_SECONDS: "1", ...bindings },
+    bindings: { ACCESS: "off", PUBLIC_WIKI_URL: "https://wiki.example.com", GITHUB_REPO: "o/r", GITHUB_TOKEN: "ghtoken", BACKUP_RETRY_SECONDS: "1", ...bindings },
     ...(withQueue ? {
       queueProducers: { BACKUP_QUEUE: "wiki-backup" },
       queueConsumers: { "wiki-backup": { maxBatchSize: 10, maxBatchTimeout: 0.2, maxRetries: 3 } },
