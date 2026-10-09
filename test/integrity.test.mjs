@@ -7,7 +7,6 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
-const WORKER = path.join(ROOT, "worker.js");
 const LIST = "recipes/default/tiddlers.json";
 
 // The worker behind test/r2-counter.mjs, which can make chosen R2 calls fail. Cache purges are
@@ -560,8 +559,9 @@ const shellNamed = name => ["<!doctype html>", "<html>", "<head>", `<title>${nam
   '<script class="tiddlywiki-tiddler-store" type="application/json">[{"title":"$:/plugins/tiddlywiki/tiddlyweb","plugin-type":"plugin","text":"{}"}\n]</script>',
   MARK("Load external JavaScripts"), `<script src="${coreSrc}"></script>`, "</body>", "</html>"].join("\n");
 const indexEtag = async () => (await bucket.head("index.html")).etag;
+// (X-Page-Shell: the stored shell the page was built from, as the admin wiki sends it: the one stored now)
 const putShell = async (text, fingerprint) => mf.dispatchFetch(`${base}/page/shell`, { method: "PUT", body: text,
-  headers: { "Content-Type": "text/html", "X-Page-Fingerprint": fingerprint, "X-Page-Index": await indexEtag() } });
+  headers: { "Content-Type": "text/html", "X-Page-Fingerprint": fingerprint, "X-Page-Index": await indexEtag(), "X-Page-Shell": (await bucket.head("_page/shell.html"))?.etag || "" } });
 res = await mf.dispatchFetch(`${base}/page/core?v=${CORE_V}`, { method: "PUT", headers: { "Content-Type": "application/javascript", "X-Page-Index": await indexEtag() }, body: [
   "/*\nTiddlyWiki\n*/", "$tw.preloadTiddlers = $tw.preloadTiddlers || [];", '_load(window,{"title":"$:/boot/boot.js","text":""});'].join("\n") });
 const firstShell = await putShell(shellNamed("Shell one"), "s1");

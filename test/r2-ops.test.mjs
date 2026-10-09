@@ -150,7 +150,7 @@ check("...published", res.status === 204, `status ${res.status}`);
 const shellBody = ["<!doctype html>", '<html lang="en-GB">', "<head>", "<title>Shell</title>", "</head>", '<body class="tc-body">', "<!--~~ Ordinary tiddlers ~~-->",
   '<script class="tiddlywiki-tiddler-store" type="application/json">[{"title":"$:/plugins/tiddlywiki/tiddlyweb","plugin-type":"plugin","text":"{}"}\n]</script>',
   "<!--~~ Load external JavaScripts ~~-->", '<script src="https://my-tiddlywiki.theophile.dev/_plugins/tiddlywikicore.js?v=' + CORE_V + '"></script>', "</body>", "</html>"].join("\n");
-const publishShell = () => mf.dispatchFetch(`${base}/page/shell`, { method: "PUT", headers: { "Content-Type": "text/html", "X-Page-Fingerprint": "counted", "X-Page-Index": indexEtag }, body: shellBody });
+const publishShell = async () => mf.dispatchFetch(`${base}/page/shell`, { method: "PUT", headers: { "Content-Type": "text/html", "X-Page-Fingerprint": "counted", "X-Page-Index": indexEtag, "X-Page-Shell": (await bucket.head("_page/shell.html"))?.etag || "" }, body: shellBody });
 res = await measure("publish a shell (page rebuilt)", publishShell);
 check("...published", res.status === 204, `status ${res.status}`);
 res = await measure("publish the same shell again", publishShell);

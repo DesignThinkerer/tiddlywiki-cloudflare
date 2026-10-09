@@ -28,7 +28,10 @@ it published (or loaded) before: a change undone here, say. The same after a fai
 while a tiddler the page needs is still loading, or in safe mode (#:safe). A failure (also an error
 while preparing the page) is shown in a notification and tried again at the next save or load; a
 page the worker refused (400, 409) only once it changes, or at the next load, and after a refused
-core file, only at the next load.
+core file, only at the next load. One refusal is different: the shell says which stored shell the
+page it replaces was built from (X-Page-Shell, from the page source, then from each answer), and a
+page built before another tab published is refused with the current version: this tab then syncs,
+so it has that tab's change, and sends its page again.
 \*/
 "use strict";
 
@@ -95,7 +98,10 @@ exports.startup = function() {
 	var coreVersion = $tw.version + "-" + CORE_FORMAT,
 		coreUrl = publicBase + "_plugins/tiddlywikicore.js?v=" + encodeURIComponent(coreVersion),
 		published = source.fingerprint || "",   // what the page this tab loaded was built from
+		storedShell = source.shell || "",      // the stored shell it was built from, or this tab last published over (its version)
 		storedCore = source.core || "",
+		listGeneration = 0,                    // counts the lists that showed another tab's change (see cfworkerOnList)
+		rebased = 0,                           // pages sent again in a row after another tab's publish
 		refused = "",                          // the page (fingerprint and core version) the worker refused
 		refusedCore = "",                      // the core file version the worker refused
 		ownChanges = Object.create(null),      // title -> {stored: saved (true) or deleted (false), time, revision}
@@ -294,7 +300,7 @@ exports.startup = function() {
 			headers: headers,
 			data: body,
 			callback: function(err,data,xhr) {
-				callback(err ? (data || err) : null,xhr && xhr.status);
+				callback(err ? (data || err) : null,xhr && xhr.status,xhr);
 			}
 		});
 	}
@@ -305,15 +311,43 @@ exports.startup = function() {
 
 	function publish(text,print,done) {
 		function sendShell() {
+			var atSend = listGeneration;
 			send("page/shell",text,{
 				"Content-Type": "text/html; charset=utf-8",
 				"X-Page-Fingerprint": print,
-				"X-Page-Index": source.index
-			},guarded(done,function(err,status) {
+				"X-Page-Index": source.index,
+				"X-Page-Shell": storedShell
+			},guarded(done,function(err,status,xhr) {
+				// Every answer that kept or keeps a shell says which version is stored now
+				var version = xhr && xhr.getResponseHeader ? xhr.getResponseHeader("X-Page-Shell") : null;
+				if(version !== null && version !== undefined) {
+					storedShell = version;
+				}
+				if(err && status === 409 && version !== null && version !== undefined) {
+					// Another tab published since the page this one sends was built: sync, so that
+					// tab's change is here, and send the page again (a few times at most: each needs
+					// another tab's publish in between)
+					published = "";
+					if(++rebased <= 3) {
+						report("waiting","Page not published yet: another tab published it moments ago. It's sent again with that tab's change.");
+						again = true;
+						return done();
+					}
+					rebased = 0;
+					return failed(done,err);
+				}
 				if(err) {
 					return rejected(done,print,err,status);
 				}
-				published = print;
+				rebased = 0;
+				// A list showing another tab's change arrived while this was on its way: that tab may
+				// publish a page with it, so which page is published isn't known after all
+				if(listGeneration === atSend) {
+					published = print;
+				} else {
+					published = "";
+					again = true;
+				}
 				report("published","Page published.");
 				done();
 			}));
@@ -487,6 +521,7 @@ exports.startup = function() {
 			});
 			if(changed) {
 				published = "";
+				listGeneration++;
 			}
 		});
 	}

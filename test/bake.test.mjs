@@ -1,7 +1,11 @@
 // Tests how the wiki page is served and rebuilt (baked.html), plus a few small worker responses.
 // Run: npm run test:bake
 import { Miniflare } from "miniflare";
+import fs from "node:fs";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { withoutAccess } from "../src/worker/access.js";
+import { publicSiteError } from "../src/worker/settings.js";
 
 const WORKER = fileURLToPath(new URL("../worker.js", import.meta.url));
 
@@ -126,12 +130,18 @@ const indexEtag = async () => (await bucket.head("index.html")).etag;
 // index: the index.html it's sent for (X-Page-Index): the current one by default, none with null
 const putCore = async (body, v = CORE_V, index) => mf.dispatchFetch(`${base}/page/core?v=${encodeURIComponent(v)}`, { method: "PUT", body,
   headers: { "Content-Type": "application/javascript", ...(index === null ? {} : { "X-Page-Index": index ?? await indexEtag() }) } });
-const putShell = async (body, { fingerprint = "f1", index } = {}) => {
+// shell: the stored shell the page was built from (X-Page-Shell), as the admin wiki sends it: the
+// one the worker's answers gave last (knownShell), "" for a page built from index.html, null to leave
+// the header out (a tab from before this worker)
+let knownShell = "";
+const putShell = async (body, { fingerprint = "f1", index, shell = knownShell } = {}) => {
   try {
-    return await mf.dispatchFetch(`${base}/page/shell`, {
+    const res = await mf.dispatchFetch(`${base}/page/shell`, {
       method: "PUT", body,
-      headers: { "Content-Type": "text/html", ...(fingerprint ? { "X-Page-Fingerprint": fingerprint } : {}), "X-Page-Index": index ?? await indexEtag() }
+      headers: { "Content-Type": "text/html", ...(fingerprint ? { "X-Page-Fingerprint": fingerprint } : {}), "X-Page-Index": index ?? await indexEtag(), ...(shell === null ? {} : { "X-Page-Shell": shell }) }
     });
+    if (res.headers.get("X-Page-Shell") !== null) knownShell = res.headers.get("X-Page-Shell");
+    return res;
   } catch (e) {
     return new Response(`request failed: ${e.message}`, { status: 599 });
   }
@@ -202,13 +212,38 @@ source = pageSource(page);
 check("a shell is kept with the index.html it was rendered for and its fingerprint", res.status === 204 &&
   shellObj?.customMetadata?.index === await indexEtag() && shellObj?.customMetadata?.fingerprint === "f1", `status ${res.status} ${JSON.stringify(shellObj?.customMetadata)}`);
 check("...the page is built from it", page.includes("<title>Published title</title>") && !page.includes("full engine") && page.includes(coreUrl(CORE_V)) && page.includes("$:/cfworker/conflict-guard.js"));
-check("...and carries it as its source, with the stored core file's version", source?.index === await indexEtag() && source?.fingerprint === "f1" && source?.core === CORE_V, JSON.stringify(source));
+check("...and carries it as its source, with the stored core file's version, and the stored shell's version", source?.index === await indexEtag() && source?.fingerprint === "f1" && source?.core === CORE_V && !!shellObj?.etag && source?.shell === shellObj.etag, JSON.stringify(source));
+check("...which the answer gave too", res.headers.get("X-Page-Shell") === shellObj?.etag, `${res.headers.get("X-Page-Shell")} vs ${shellObj?.etag}`);
 check("index.html is left as uploaded", (await (await bucket.get("index.html")).text()) === html("full engine"));
 let pageEtag2 = (await bucket.head("baked.html")).etag;
 res = await putShell(fakeShell(), { fingerprint: "f1" });
 await res.arrayBuffer();
 check("the same shell again: nothing written, the page not rebuilt", res.status === 204 && (await bucket.head("baked.html")).etag === pageEtag2, `status ${res.status}`);
 check("the page carries the module that publishes", page.includes("$:/cfworker/page-publisher.js"));
+// Two admin tabs: the shell says which stored shell its page was built from, or last published over
+// (X-Page-Shell). One from a page older than the shell stored is refused, with the current version
+// in the answer, so the tab syncs and sends its page again, with the other tab's change in it;
+// otherwise the older page would replace the newer one, and no tab would know.
+const current = knownShell;
+res = await putShell(fakeShell({ title: "From an older page" }), { fingerprint: "f1b", shell: "" });
+let text = await res.text();
+check("a shell from a page older than the one stored (built before it was published) is refused: 409, saying another tab published, with the current version",
+  res.status === 409 && /another tab|published since/i.test(text) && res.headers.get("X-Page-Shell") === current && (await bucket.head("_page/shell.html")).etag === current && (await bucket.head("baked.html")).etag === pageEtag2,
+  `${res.status} ${text.slice(0, 80)}, version ${res.headers.get("X-Page-Shell")} vs ${current}`);
+res = await putShell(fakeShell({ title: "From an older page" }), { fingerprint: "f1b", shell: "stale" });
+await res.text();
+check("...the same for one built from a shell since replaced", res.status === 409 && res.headers.get("X-Page-Shell") === current && (await bucket.head("_page/shell.html")).etag === current, `status ${res.status}`);
+res = await putShell(fakeShell({ title: "From an older page" }), { fingerprint: "f1b", shell: null });
+await res.text();
+check("...and for one that doesn't say (a tab from before this worker): reload", res.status === 409 && (await bucket.head("_page/shell.html")).etag === current, `status ${res.status}`);
+res = await putShell(fakeShell({ title: "Sent again with the current version" }), { fingerprint: "f1c", shell: current });
+const rebased = await bucket.head("_page/shell.html");
+page = await (await mf.dispatchFetch(base + "/")).text();
+check("sent again with the current version: kept, the page built from it, and the answer gives the new version", res.status === 204 && rebased?.customMetadata?.fingerprint === "f1c" && rebased.etag !== current &&
+  res.headers.get("X-Page-Shell") === rebased.etag && pageSource(page)?.shell === rebased.etag && page.includes("<title>Sent again with the current version</title>"), `status ${res.status}`);
+res = await putShell(fakeShell({ title: "Sent again with the current version" }), { fingerprint: "f1c", shell: "whatever" });
+await res.text();
+check("the same shell again, whatever it says: 204 with the current version", res.status === 204 && res.headers.get("X-Page-Shell") === rebased.etag, `status ${res.status}`);
 
 // Plugins load from their files right before the core, not from <head>
 const PLUGIN = "$:/plugins/test/placed";
@@ -273,13 +308,7 @@ check("without Access, every request is refused with 403 and says why", refusals
 check("...and nothing was built or stored for them", !(await bucketClosed.head("baked.html")) && !(await bucketClosed.head("recipes/default/tiddlers/x")));
 await mfClosed.dispose();
 // The decision itself, for a request Access did authenticate, which Miniflare can't make: the
-// worker's own function, from a copy of worker.js that exports it
-const os = await import("node:os"), path = await import("node:path"), fs = await import("node:fs");
-const copy = path.join(os.tmpdir(), `worker-access-${process.pid}.mjs`);
-fs.writeFileSync(copy, fs.readFileSync(WORKER, "utf8") + "\nexport { withoutAccess, publicSiteError };\n");
-let withoutAccess = () => { throw new Error("withoutAccess isn't exported by worker.js"); }, publicSiteError = withoutAccess;
-try { ({ withoutAccess, publicSiteError } = await import((await import("node:url")).pathToFileURL(copy).href)); } catch (e) { console.log("  (" + e.message + ")"); }
-fs.unlinkSync(copy);
+// worker's own function, from its module
 const decide = (ctx, env) => { try { return withoutAccess(ctx, env); } catch { return "error"; } };
 check("a request Access authenticated (ctx.access) is let through", decide({ access: { aud: "app" } }, {}) === false);
 check("one without ctx.access is refused", decide({}, {}) === true);
