@@ -90,7 +90,7 @@ flowchart LR
     ├── cpu.test.mjs          CPU of a big plugin's save and backup, against a budget (2 checks)
     ├── r2-counter.mjs        test-only wrapper that counts the worker's R2 calls
     ├── browser-harness.mjs   the browser suites' shared setup (worker, public site stand-in, Chromium, helpers)
-    └── bake.test.mjs         page serving and rebuilding, the published page (49 checks)
+    └── bake.test.mjs         page serving and rebuilding, the published page, the Access check (55 checks)
 ```
 
 The browser modules live in their own files so they can be read and edited as normal JavaScript. The build embeds them in `worker.js` as strings (`CONFLICT_GUARD_SOURCE`, `PAGE_PUBLISHER_SOURCE`), so only one file is deployed, which you can paste into the dashboard. The strings are written as JSON, so a module can contain any character, backticks and `${` included.
@@ -151,14 +151,17 @@ Everything in the bucket is public through the custom domain, including tiddlers
    | `CONFLICT_GUARD` | variable, optional | `off` stops building the browser module into the page |
    | `BACKUP_RETRY_SECONDS` | variable, optional | first retry delay for failed backups (default 60) |
    | `BACKUP_ALERT_MINUTES` | variable, optional | how long a backup has to keep failing before the admin wiki shows it (default 60, 4.7) |
+   | `ACCESS` | variable, optional | `off` lets requests through that didn't come through Cloudflare Access (3.3). **Only for tests and local runs:** the admin site is then open to anyone. |
 
-   The worker doesn't check who's saving: Cloudflare Access protects the admin host (3.3).
+   The worker checks that each request came through Cloudflare Access (3.3), not who made it.
 
    Purges are skipped without `CF_ZONE_ID`/`CF_API_TOKEN`, and backups without `GITHUB_REPO`/`GITHUB_TOKEN`.
 
 ### 3.3 Cloudflare Access
 
 Protect the worker with **Worker Access → All traffic** (production and preview URLs) and a policy allowing your Cloudflare account members. This covers the custom domain, the worker's `workers.dev` address and its preview URLs. Requests Access blocks never reach the worker, so they cost no quota.
+
+The worker has no login of its own, so it relies on this, and checks it: Cloudflare marks a request that came through Access (`ctx.access`), and the worker answers `403` to any request without that mark, before reading or building anything. So if the Access application is missing, or covers another hostname than the one a request came to (the `workers.dev` address with a hostname-only application, say), the wiki is closed rather than open. The `403` says what to do. Only the tests and local runs, where there is no Access, switch the check off with `ACCESS = off` (3.2).
 
 ### 3.4 Backup queue
 
@@ -230,6 +233,7 @@ This lets the admin wiki read tiddler contents from the public site (see 4.5 and
 
 | Request | What happens |
 |---|---|
+| any, without Cloudflare Access | `403`, before anything else: the request didn't come through Access (3.3). |
 | `OPTIONS *` | CORS headers (allows `If-Match`, `If-None-Match`, `X-Tiddler-Layout`, exposes `ETag`, `X-Tiddler-List` and `Retry-After`). |
 | `GET /status` | TiddlyWeb status: user `admin`, writable, recipe `default`. Kept by the browser for a week (`Cache-Control: private, max-age=604800`), so admin pages rarely ask (4.5). |
 | `GET /`, `/index.html`, `/baked.html` | The wiki page, rebuilt first if outdated, or `304 Not Modified` when the browser has it (4.3). |
@@ -667,6 +671,7 @@ If the page is rebuilt before step 4 (by a deploy, or by saving another plugin, 
 
 | Symptom | Likely cause | What to do |
 |---|---|---|
+| Every request answers 403 "didn't come through Cloudflare Access" | No Access application covers the hostname you're using (3.3): Access isn't set up yet, or it's set up on the custom domain only and you're on `workers.dev` or a preview URL | Set Access up as **Worker Access → All traffic**, or use the hostname it covers. For a local run without Access, set `ACCESS = off` (3.2). |
 | Every save fails with 428 | The previous ("strict") worker is still deployed | Deploy this `worker.js`. |
 | Alert "Edit conflict: … was changed in another tab or browser" | Another tab, device or script saved that tiddler after you started editing | Compare the tiddler with its `(conflict …)` copy, keep what you want and delete the copy. |
 | Console shows "blocked by CORS policy" for `my-tiddlywiki…` | The transform rule is missing or scoped wrong | Add or fix it (3.5). Until then, tiddlers simply load through the worker. |
@@ -724,7 +729,7 @@ npm test                             # build, make the test wiki, run all eight 
 | `npm run fixture` | Builds `test/fixtures/index.html`, an empty TiddlyWiki with the TiddlyWeb plugin. It keeps an existing file of the installed TiddlyWiki version, and rebuilds one of another version by itself (after upgrading the `tiddlywiki` package, say); `npm run fixture -- --force` rebuilds it anyway. |
 | `npm run test:fast` | The five suites that need no browser (a few minutes). |
 | `npm run test:browser` | The three suites that run a real TiddlyWiki in Chromium. |
-| `npm run test:bake` | Page serving: rebuild on an outdated bake or a new `index.html`, the `304` for an unchanged page (also with a weakened ETag, and by date alone, including two pages built within the same second), a byte order mark; CORS, a bad `PUT` path, and `/status`, kept by the browser for a week and no longer baked into the page. The published page: the core file stored and each kind refused (also one sent for an older `index.html`, or without saying which) (also one still switching the save template, while the core plugin's escaped mentions of it are accepted), each kind of shell refused, a shell kept and the page built from it, the same again, plugin tags before the core (only in a shell: in a full `index.html` they stay in `<head>`, even with TiddlyWiki's marker in raw markup), a new `index.html` built from until a shell is published for it. `CONFLICT_GUARD = off`: the page built without the browser modules. |
+| `npm run test:bake` | Page serving: rebuild on an outdated bake or a new `index.html`, the `304` for an unchanged page (also with a weakened ETag, and by date alone, including two pages built within the same second), a byte order mark; CORS, a bad `PUT` path, and `/status`, kept by the browser for a week and no longer baked into the page. The published page: the core file stored and each kind refused (also one sent for an older `index.html`, or without saying which) (also one still switching the save template, while the core plugin's escaped mentions of it are accepted), each kind of shell refused, a shell kept and the page built from it, the same again, plugin tags before the core (only in a shell: in a full `index.html` they stay in `<head>`, even with TiddlyWiki's marker in raw markup), a new `index.html` built from until a shell is published for it. `CONFLICT_GUARD = off`: the page built without the browser modules. Cloudflare Access: without `ACCESS = off`, every request (page, status, list, tiddler, save, delete, preflight) answers `403` and nothing is built or stored; the decision itself lets a request through that Access marked (`ctx.access`), refuses one without, and takes only `off` as the switch. |
 | `npm run test:integrity` | The tiddler list's integrity, the page after a failed build, draft-like titles and `.gitignore` (see below). |
 | `npm run test:r2` | R2 calls per kind of request, against a budget (see below). |
 | `npm run test:cpu` | CPU of the heaviest steps, a big plugin's save and backup, against a budget (see below). |

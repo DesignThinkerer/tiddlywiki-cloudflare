@@ -17,7 +17,7 @@ const mf = new Miniflare({
   modules: true, scriptPath: "test/r2-counter.mjs", modulesRoot: ROOT,
   modulesRules: [{ type: "ESModule", include: ["**/*.js", "**/*.mjs"] }],
   compatibilityDate: "2024-09-23", r2Buckets: ["WIKI_BUCKET"], port: 0,
-  bindings: { CF_ZONE_ID: "zone", CF_API_TOKEN: "token" },
+  bindings: { ACCESS: "off", CF_ZONE_ID: "zone", CF_API_TOKEN: "token" },
   outboundService: async req => {
     // (A purged file is a URL, or { url, headers } for a copy cached with those request headers)
     if (req.url.includes("/purge_cache")) purges.push({ time: Date.now(), files: ((await req.json()).files || []).map(f => typeof f === "string" ? f : f.url) });
