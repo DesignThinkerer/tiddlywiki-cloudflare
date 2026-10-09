@@ -352,7 +352,9 @@ async function keepStoredText(save, current) {
 // The rest of a save once the tiddler is stored: the tiddler list, the public cache and the page.
 // list: the list as read before the tiddler was stored (readableList), or null to read it here.
 // adminOrigin: the admin site's origin (where this request came to), see tiddlerPurgeUrls.
-async function finishSave(env, ctx, title, fields, revision, list, adminOrigin) {
+// retried: this is a save sent again (its first answer lost, or its list update failed): the list
+// may already say what it would say, so what's left of the first attempt is found another way.
+async function finishSave(env, ctx, title, fields, revision, list, adminOrigin, retried = false) {
   const { previous, list: stored, superseded } = await updateManifest(env, ctx, title, fields, revision, list);
   // A newer save of this tiddler got there first: its purge, plugin file and page build are the ones
   if (superseded) return;
@@ -360,13 +362,17 @@ async function finishSave(env, ctx, title, fields, revision, list, adminOrigin) 
   // would put the old list back in Cloudflare's cache
   ctx.waitUntil(purgePublicCache(env, tiddlerPurgeUrls(env, title, adminOrigin)));
   const saved = { ...fields, title };
+  const wasPlugin = previous && needsPluginFile(previous);
+  // A plugin saved as an ordinary tiddler, whose page build failed and was never marked outdated:
+  // the retry's list already has the ordinary tiddler, and the file is the only trace left
+  const leftover = retried && !wasPlugin && !needsPluginFile(saved) && !!(await env.WIKI_BUCKET.head(pluginFileKey(title)));
   // Something the page needs at boot was added, changed or is no longer needed: rebuild the
   // page (which writes the plugin file) before confirming, so a reload right after has it
-  if (isPageTiddler(saved) || (previous && isPageTiddler(previous))) {
+  if (isPageTiddler(saved) || (previous && isPageTiddler(previous)) || leftover) {
     await rebuildPage(env, ctx, stored);
   }
   // No longer a plugin: its file goes, now that the page doesn't load it
-  if (previous && needsPluginFile(previous) && !needsPluginFile(saved)) await deletePluginFile(env, title);
+  if ((wasPlugin || leftover) && !needsPluginFile(saved)) await deletePluginFile(env, title);
 }
 
 // After the page has been rebuilt without it, so a page load in between doesn't miss it. If this
@@ -382,9 +388,19 @@ async function deletePluginFile(env, title) {
 
 // Rebuilds the page after a save or delete. If that fails (an R2 error), the change itself is
 // stored: the page is marked outdated instead, so the next page load builds it (and writes any
-// missing plugin file) rather than keep serving it without the change.
+// missing plugin file) rather than keep serving it without the change. The mark writes the same
+// key the build just failed on, and R2 takes one write a second to a key: if it fails too, it's
+// tried once more a second later. If that fails as well, the request fails (500), the change
+// stored: the browser's retry finds what's left to do (finishSave, handleDelete).
 async function rebuildPage(env, ctx, list) {
-  if (!(await rebakeHtml(env, ctx, list))) await markPageOutdated(env);
+  if (await rebakeHtml(env, ctx, list)) return;
+  try {
+    await markPageOutdated(env);
+  } catch (e) {
+    console.error("Could not mark the page outdated, trying again in a second:", e.message);
+    await new Promise(resolve => setTimeout(resolve, 1100));
+    await markPageOutdated(env);
+  }
 }
 
 // Whether the stored object holds exactly what this save would store with that revision
@@ -516,7 +532,7 @@ async function handleSave(request, env, ctx, url, corsHeaders) {
       // is exactly what this save would store, so finish that save instead of refusing it.
       // (Otherwise the browser sees the identical copy, adopts it, and the list is never fixed.)
       if (current && await storesSameContent(env, current, save, currentRevision)) {
-        await untilDone(ctx, finishSave(env, ctx, title, save.fields, currentRevision, list, url.origin));
+        await untilDone(ctx, finishSave(env, ctx, title, save.fields, currentRevision, list, url.origin, true));
         return savedResponse(title, currentRevision, corsHeaders);
       }
       // The stored tiddler isn't the version the list has: a save whose list update failed, retried
@@ -525,7 +541,7 @@ async function handleSave(request, env, ctx, url, corsHeaders) {
       // 4.4), but that save is finished: the list, the public cache and the page catch up with it.
       if (current && listedRevision(list, title) !== currentRevision) {
         const fields = await storedFields(env, current);
-        if (fields) await untilDone(ctx, finishSave(env, ctx, title, fields, currentRevision, list, url.origin));
+        if (fields) await untilDone(ctx, finishSave(env, ctx, title, fields, currentRevision, list, url.origin, true));
       }
       return conflictResponse(title, reason, currentRevision, corsHeaders);
     }
@@ -606,13 +622,16 @@ async function handleDelete(request, env, ctx, url, corsHeaders) {
       }
       if (!found && removed) ctx.waitUntil(queueBackup(env, { action: "delete", title, revision: currentRevision }));
       if (found || removed) ctx.waitUntil(purgePublicCache(env, tiddlerPurgeUrls(env, title, url.origin)));
+      // Neither stored nor listed: a retry of a delete that failed after both were done, whose page
+      // build failed and was never marked outdated (rebuildPage): the plugin file is the only trace left
+      const leftover = !found && !removed && !!(await env.WIKI_BUCKET.head(pluginFileKey(title)));
       // The list entry says what it was; if it wasn't listed, rebuild the page for system tiddlers,
       // and delete any plugin file anyway (deleting a missing object is free), once the page is
       // rebuilt without it (see deletePluginFile)
-      if (removed ? isPageTiddler(removed) : found && title.startsWith("$:/")) {
+      if (removed ? isPageTiddler(removed) : (found && title.startsWith("$:/")) || leftover) {
         await rebuildPage(env, ctx, stored);
       }
-      if (removed ? needsPluginFile(removed) : found) await deletePluginFile(env, title);
+      if (removed ? needsPluginFile(removed) : found || leftover) await deletePluginFile(env, title);
     })());
 
     return new Response(null, { status: 204, headers: corsHeaders });

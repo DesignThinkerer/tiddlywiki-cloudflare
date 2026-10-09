@@ -24,8 +24,10 @@ const BUDGETS = {
   // Different content, so different bytes: the stored tiddler isn't read to compare them. (The list
   // is read at the same time as the lookup, for every save: one round trip less when it goes through.)
   "save refused (412)": { "head tiddler": 1, "get list": 1 },
-  // The same bytes as stored: read once to compare, then the list update is finished
-  "save sent again, already stored": { "head tiddler": 1, "get tiddler": 1, "get list": 1, "put list": 1 },
+  // The same bytes as stored: read once to compare, then the list update is finished, and a look for
+  // a plugin file the first attempt may have left (a plugin saved as an ordinary tiddler whose page
+  // build failed twice): the one place that can repair it, on a path only retries take
+  "save sent again, already stored": { "head tiddler": 1, "get tiddler": 1, "get list": 1, "put list": 1, "head plugin file": 1 },
   "delete": { "get list": 1, "head tiddler": 1, "delete tiddler": 1, "put list": 1 },
   // Once per wiki: the page request's two reads, the engine and the status file written (create-only), the
   // engine looked up again, then the page build: its sources, the engine read in full, the missing list
