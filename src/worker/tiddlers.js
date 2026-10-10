@@ -9,6 +9,8 @@
 import { encoder } from "./bytes.js";
 import { TIDDLER_PREFIX } from "./storage.js";
 
+// A date as TiddlyWiki writes one (YYYYMMDDhhmmssSSS, in UTC, like its own created and modified
+// fields: $tw.utils.stringifyDate)
 export function getTwTimestamp(date = new Date()) {
   return date.toISOString().replace(/\D/g, '').slice(0, 17);
 }
@@ -86,7 +88,8 @@ export function revisionOf(obj) {
   return obj.customMetadata?.revision || obj.etag;
 }
 
-// Revisions written by this worker are millisecond timestamps
+// Revisions written by this worker are millisecond timestamps (13 digits: compared as numbers,
+// which are exact up to 2^53, so for another 285,000 years)
 export function isNewerRevision(a, b) {
   return /^\d+$/.test(a) && /^\d+$/.test(String(b)) && Number(a) > Number(b);
 }

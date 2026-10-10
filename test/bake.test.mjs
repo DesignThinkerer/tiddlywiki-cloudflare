@@ -99,6 +99,35 @@ check("...and the browser keeps it for a week, for itself only (private)",
   /\bprivate\b/.test(statusCache) && Number((/max-age=(\d+)/.exec(statusCache) || [])[1]) >= 7 * 24 * 3600, statusCache);
 check("...so it isn't baked into the page", !page.includes("$:/cfworker/status"));
 
+// A tiddler or a file read from the worker: the browser keeps it (no-cache) and asks with its ETag,
+// and one that hasn't changed is answered 304 without a body, like the list and the page
+const keptUrl = base + "/recipes/default/tiddlers/Kept";
+let res = await mf.dispatchFetch(keptUrl, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title: "Kept", text: "v1" }) });
+const keptEtag = res.headers.get("ETag");
+res = await mf.dispatchFetch(keptUrl);
+check("a tiddler read carries its revision as its ETag", res.status === 200 && !!keptEtag && res.headers.get("ETag") === keptEtag && (await res.json()).text === "v1", `${res.status} ${res.headers.get("ETag")} vs ${keptEtag}`);
+res = await mf.dispatchFetch(keptUrl, { headers: { "If-None-Match": keptEtag } });
+check("an unchanged tiddler answers 304 to a browser that has it, with its ETag and no body", res.status === 304 && res.headers.get("ETag") === keptEtag && (await res.text()) === "", `status ${res.status}`);
+res = await mf.dispatchFetch(keptUrl, { headers: { "If-None-Match": "W/" + keptEtag } });
+check("...also with the ETag weakened (W/)", res.status === 304, `status ${res.status}`);
+res = await mf.dispatchFetch(keptUrl, { method: "HEAD", headers: { "If-None-Match": keptEtag } });
+check("...and to a HEAD", res.status === 304 && res.headers.get("ETag") === keptEtag, `status ${res.status}`);
+res = await mf.dispatchFetch(keptUrl, { headers: { "If-None-Match": '"default/Kept/1:auto"' } });
+check("a browser with another revision gets the tiddler", res.status === 200 && res.headers.get("ETag") === keptEtag && (await res.json()).text === "v1", `status ${res.status}`);
+await bucket.put("files/note.txt", "a file", { httpMetadata: { contentType: "text/plain" } });
+res = await mf.dispatchFetch(base + "/files/note.txt");
+const fileEtag = res.headers.get("ETag");
+check("a file read carries R2's ETag", res.status === 200 && fileEtag === (await bucket.head("files/note.txt")).httpEtag && (await res.text()) === "a file", `${res.status} ${fileEtag}`);
+res = await mf.dispatchFetch(base + "/files/note.txt", { headers: { "If-None-Match": fileEtag } });
+check("an unchanged file answers 304, with its ETag and no body", res.status === 304 && res.headers.get("ETag") === fileEtag && (await res.text()) === "", `status ${res.status}`);
+res = await mf.dispatchFetch(base + "/files/note.txt", { headers: { "If-None-Match": "W/" + fileEtag } });
+check("...also weakened (W/)", res.status === 304, `status ${res.status}`);
+await bucket.put("files/note.txt", "a changed file", { httpMetadata: { contentType: "text/plain" } });
+res = await mf.dispatchFetch(base + "/files/note.txt", { headers: { "If-None-Match": fileEtag } });
+check("a changed file is sent, with its new ETag", res.status === 200 && !!res.headers.get("ETag") && res.headers.get("ETag") !== fileEtag && (await res.text()) === "a changed file", `status ${res.status}`);
+await mf.dispatchFetch(keptUrl, { method: "DELETE" });
+await bucket.delete("files/note.txt");
+
 // --- The page shell, published from the admin wiki ------------------------------------------------
 // The admin wiki renders the page with TiddlyWiki's $:/core/templates/tiddlywiki5-external-js.html:
 // everything but the core, which is a separate file (_plugins/tiddlywikicore.js?v=<version>-<format>).
@@ -164,7 +193,7 @@ let source = pageSource(page);
 check("a page built from index.html carries its source: that index.html, no shell", !!source && source.index === await indexEtag() && source.fingerprint === "", JSON.stringify(source));
 
 // The core file
-let res = await putCore(fakeCore());
+res = await putCore(fakeCore());
 let core = await bucket.head("_plugins/tiddlywikicore.js");
 check("the core file is stored, cached for a year, with its version", res.status === 204 && core?.customMetadata?.v === CORE_V &&
   /immutable/.test(core?.httpMetadata?.cacheControl || "") && /javascript/.test(core?.httpMetadata?.contentType || ""), `status ${res.status}`);

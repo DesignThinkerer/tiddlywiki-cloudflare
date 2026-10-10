@@ -19,6 +19,11 @@ const BUDGETS = {
   "tiddler list, unchanged (304)": { "get list": 1 },
   "tiddler list, asking how backups go (page load, then hourly)": { "get list": 1, "get backup status": 1 },
   "tiddler list, unchanged (304), asking how backups go": { "get list": 1, "get backup status": 1 },
+  // The fallback read (a public copy that's stale or missing, or the conflict guard reading the
+  // server's version): one read, which the 304 doesn't save (the revision is in the object's
+  // metadata), only the transfer
+  "tiddler read": { "get tiddler": 1 },
+  "tiddler read, unchanged (304)": { "get tiddler": 1 },
   "save a new tiddler": { "head tiddler": 1, "get list": 1, "put tiddler": 1, "put list": 1 },
   "save an update": { "head tiddler": 1, "get list": 1, "put tiddler": 1, "put list": 1 },
   // Different content, so different bytes: the stored tiddler isn't read to compare them. (The list
@@ -126,6 +131,10 @@ check("...the lookup and the list read run at the same time", res.overlaps.inclu
 const v1 = etagOf("Note", res);
 res = await measure("save an update", () => save("Note", { text: "v2" }, { "If-Match": v1 }));
 const v2 = etagOf("Note", res);
+const read = await measure("tiddler read", () => mf.dispatchFetch(url("Note")));
+check("...served with its revision as its ETag", read.status === 200 && read.headers.get("ETag") === v2, `${read.status} ${read.headers.get("ETag")} vs ${v2}`);
+const unchanged = await measure("tiddler read, unchanged (304)", () => mf.dispatchFetch(url("Note"), { headers: { "If-None-Match": v2 } }));
+check("...answered 304", unchanged.status === 304, `status ${unchanged.status}`);
 await measure("save refused (412)", () => save("Note", { text: "from a stale tab" }, { "If-Match": v1 }));
 await measure("save sent again, already stored", () => save("Note", { text: "v2" }, { "If-Match": v1 }));
 await measure("delete", () => del("Note", { "If-Match": v2 }));

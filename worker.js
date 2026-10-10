@@ -198,6 +198,8 @@ async function markPageOutdated(env) {
 // which the page loads from the public site with a <script> tag before TiddlyWiki boots.
 
 
+// A date as TiddlyWiki writes one (YYYYMMDDhhmmssSSS, in UTC, like its own created and modified
+// fields: $tw.utils.stringifyDate)
 function getTwTimestamp(date = new Date()) {
   return date.toISOString().replace(/\D/g, '').slice(0, 17);
 }
@@ -275,7 +277,8 @@ function revisionOf(obj) {
   return obj.customMetadata?.revision || obj.etag;
 }
 
-// Revisions written by this worker are millisecond timestamps
+// Revisions written by this worker are millisecond timestamps (13 digits: compared as numbers,
+// which are exact up to 2^53, so for another 285,000 years)
 function isNewerRevision(a, b) {
   return /^\d+$/.test(a) && /^\d+$/.test(String(b)) && Number(a) > Number(b);
 }
@@ -1839,9 +1842,12 @@ async function seedWiki(env) {
     console.error("The empty wiki module is empty: the build didn't make seed/empty.html?");
     return false;
   }
-  await putIfAbsent(env, INDEX_KEY, html, { httpMetadata: { contentType: "text/html; charset=utf-8" } });
-  await putIfAbsent(env, STATUS_KEY, JSON.stringify(PUBLIC_STATUS), { httpMetadata: { contentType: "application/json" } });
-  console.log("New wiki: index.html and the status file put in the bucket");
+  const index = await putIfAbsent(env, INDEX_KEY, html, { httpMetadata: { contentType: "text/html; charset=utf-8" } });
+  const status = await putIfAbsent(env, STATUS_KEY, JSON.stringify(PUBLIC_STATUS), { httpMetadata: { contentType: "application/json" } });
+  // (Either may have been there: the status file kept when the engine was deleted, or both put by
+  // a request that got there first)
+  const put = [index && "index.html", status && "the status file"].filter(Boolean);
+  if (put.length > 0) console.log(`New wiki: ${put.join(" and ")} put in the bucket`);
   return true;
 }
 
@@ -1998,20 +2004,34 @@ function serveStatus(corsHeaders) {
 }
 
 // GET or HEAD of an object of the bucket, by its key (already decoded): a tiddler, with its
-// revision in the ETag, or anything else as stored
+// revision in the ETag, or anything else as stored. A browser that has it asks with that ETag
+// (If-None-Match, maybe weakened to W/ by Cloudflare's compression) and is answered 304, no body:
+// a file isn't even read from R2 (its ETag is R2's); a tiddler is, as its revision is in its
+// metadata, and the read is the one R2 operation either way. (The admin wiki reads tiddlers from
+// the public site, or has them on the device: it asks the worker for one whose public copy is
+// stale or missing, and the conflict guard for the server's version. design 1.5.)
 async function serveObject(request, env, key, corsHeaders) {
-  const object = keyTooLong(key) ? null : await env.WIKI_BUCKET.get(key);
+  if (keyTooLong(key)) return new Response("Not found", { status: 404, headers: corsHeaders });
+  const tiddler = key.startsWith(TIDDLER_PREFIX);
+  const known = parseEtagList(request.headers.get("If-None-Match")).filter(token => token !== "*");
+  const object = await env.WIKI_BUCKET.get(key, !tiddler && known.length > 0 ? { onlyIf: { etagDoesNotMatch: known[0] } } : undefined);
   if (!object) return new Response("Not found", { status: 404, headers: corsHeaders });
   const headers = objectHeaders(object, corsHeaders);
-  const body = request.method === "GET" ? object.body : null;
-  if (key.startsWith(TIDDLER_PREFIX)) {
+  let unchanged = !("body" in object);   // a conditional get whose precondition failed: the browser has it
+  if (tiddler) {
     // Stored with its revision, bag and recipe already in place: served as is
+    const revision = revisionOf(object);
     headers.set("Cache-Control", "no-cache");
-    headers.set("ETag", tiddlerEtag(key.slice(TIDDLER_PREFIX.length), revisionOf(object)));
-    return new Response(body, { headers });
+    headers.set("ETag", tiddlerEtag(key.slice(TIDDLER_PREFIX.length), revision));
+    unchanged = known.includes(revision);
+  } else {
+    headers.set("ETag", object.httpEtag);
   }
-  headers.set("ETag", object.httpEtag);
-  return new Response(body, { headers });
+  if (unchanged || request.method !== "GET") {
+    if ("body" in object) await object.body.cancel();
+    return new Response(null, { status: unchanged ? 304 : 200, headers });
+  }
+  return new Response(object.body, { headers });
 }
 
 // Serves the tiddler list, answering 304 when the browser already has the current version
@@ -2245,8 +2265,12 @@ async function finishSave(env, ctx, title, fields, revision, list, adminOrigin, 
 // src/browser/ embedded as text (build.js lists them).
 
 
-// The admin page reads tiddlers from the public site too, so both answer cross-origin requests.
-// TiddlyWiki reads the ETag of each save, which a browser only shows a page that's told it may.
+// The admin wiki is served by this worker and talks to it from its own origin (its reads of the
+// public site are allowed there, by the zone's CORS rule, README 2.7); these headers let a page from
+// elsewhere talk to it too. "*" gives nothing away: Access answers before the worker, and a browser
+// shows a page from another site no response it asked for with credentials when the origin allowed
+// is "*" (credentials need a named one), so such a page gets either a refusal or nothing. TiddlyWiki
+// reads the ETag of each save, which a browser only shows a page that's told it may (Expose-Headers).
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, PUT, DELETE, OPTIONS, HEAD",
