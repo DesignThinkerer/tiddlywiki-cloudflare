@@ -2,7 +2,7 @@
 
 Host your own [TiddlyWiki](https://tiddlywiki.com) on Cloudflare's free plan: a worker for editing, R2 for storage, a public read-only site served from the cache, and every save backed up to GitHub as its own commit.
 
-- **The admin wiki,** `https://admin.wiki.example.com`, is yours to edit, behind Cloudflare Access. A Cloudflare Worker speaks TiddlyWiki's own sync protocol (TiddlyWeb) and stores every tiddler in an R2 bucket.
+- **The admin wiki,** at the worker's own address (`https://wiki-admin.<your subdomain>.workers.dev`, or a custom domain such as `admin.wiki.example.com`), is yours to edit, behind Cloudflare Access. A Cloudflare Worker speaks TiddlyWiki's own sync protocol (TiddlyWeb) and stores every tiddler in an R2 bucket.
 - **The public wiki,** `https://wiki.example.com`, is the same bucket served directly through its custom domain and Cloudflare's cache: read-only, and no worker involved, so visitors cost no worker requests.
 
 What the worker adds to a plain TiddlyWeb server:
@@ -41,7 +41,7 @@ flowchart LR
     T["Admin wiki tab<br/>TiddlyWiki + conflict guard<br/>+ page publisher"]
     V["Public visitor"]
   end
-  T -- "page, tiddler list,<br/>saves and deletes, published page" --> W["worker<br/>admin.wiki.example.com<br/>(Cloudflare Access)"]
+  T -- "page, tiddler list,<br/>saves and deletes, published page" --> W["worker<br/>the admin site<br/>(Cloudflare Access)"]
   T -- "tiddler contents, plugin files, core file<br/>(read-only, cached)" --> P["Public site<br/>wiki.example.com<br/>(R2 custom domain + cache)"]
   V --> P
   W <--> R2[("R2 bucket")]
@@ -69,17 +69,17 @@ About ten minutes, in this order. Each step names what the next ones need.
 
 ### 2.1 Before you start
 
-Choose the names; the examples below use these:
+The names, and where each goes. With the defaults, nothing in the repository needs editing: the worker is deployed as it is, and your settings are entered in the dashboard (2.5).
 
-| Name | Example | Where it goes |
+| Name | Default or example | Where it goes |
 |---|---|---|
-| the public site | `wiki.example.com` | the bucket's custom domain (2.2), `PUBLIC_WIKI_URL` and the zone rules (2.7) |
-| the admin site | `admin.wiki.example.com` | the worker's custom domain (`wrangler.toml`), Access (2.6), the CORS rule (2.7) |
-| the bucket | `wiki` | 2.2 and `wrangler.toml` |
-| the queue | `wiki-backup` | 2.3 and `wrangler.toml` |
-| the worker | `wiki-admin` | `wrangler.toml` and the Workers Builds project (2.5) |
+| the public site | `wiki.example.com`, yours | the bucket's custom domain (2.2), the setting `PUBLIC_WIKI_URL` (2.5) and the zone rules (2.7) |
+| the admin site | `wiki-admin.<your subdomain>.workers.dev` | the worker's own address, behind Access (2.6), allowed by the CORS rule (2.7); a custom domain instead, if you like (2.5) |
+| the bucket | `wiki` | 2.2; `wrangler.toml` if you name it otherwise |
+| the queue | `wiki-backup` | 2.3; `wrangler.toml` if you name it otherwise |
+| the worker | `wiki-admin` | the name you give it in 2.5; `wrangler.toml` if you name it otherwise |
 
-Then make your own copy of this repository (a fork, or a copy from the template). Cloudflare deploys the worker from its `main` branch (2.5), and that's where you'll change the settings: open `wrangler.toml` and put in your names: `name`, the route's `pattern`, `bucket_name`, `PUBLIC_WIKI_URL`, `CF_ZONE_ID` (the zone ID of your domain, on the domain's overview page in the dashboard), and `GITHUB_REPO` once you have the backup repository (2.4). Every other value in the file is a working default; the comments say what each is for. No secret goes in the file: the two secrets are set in 2.5.
+Make your own copy of this repository (a fork, or a copy from the template): Cloudflare deploys the worker from its `main` branch (2.5). `wrangler.toml` holds the bindings and the defaults above; its comments say what each is for. No secret goes in it, ever: the two secrets are entered in 2.5, with the settings.
 
 ### 2.2 The bucket and the public site
 
@@ -108,40 +108,37 @@ Without a repository and a token, the worker skips backups.
 
 The worker is deployed from your repository by Cloudflare's **Workers Builds**: every push to `main` builds `worker.js` and deploys it, with the bindings and settings from `wrangler.toml`.
 
-1. Under **Workers & Pages**, create the worker from your repository (**Create → Import a repository**, or for a worker that already exists, its **Settings → Builds → Connect**). Cloudflare's GitHub app needs access to that repository.
+1. Under **Workers & Pages**, create the worker from your repository (**Create → Import a repository**, or for a worker that already exists, its **Settings → Builds → Connect**). Cloudflare's GitHub app needs access to that repository. Name the worker `wiki-admin`: the name must be the `name` in `wrangler.toml`.
 2. The build settings:
    - **Production branch:** `main`.
    - **Build command:** `npm run build`. It writes `worker.js` and `assets/empty.html`, the empty wiki a new bucket starts from.
    - **Deploy command:** the default, `npx wrangler deploy`.
    - **Builds for non-production branches:** off. A branch's preview would use the real bucket and queue.
    - **Build watch paths:** include only `src/*`, `build.mjs`, `tools/*`, `package.json`, `package-lock.json` and `wrangler.toml`, so a change to the README, or anything else, doesn't deploy.
-3. **Secrets,** under the worker's **Settings → Variables and Secrets**, as secrets (not plain variables):
+3. **The settings and the secrets,** under the worker's **Settings → Variables and Secrets**. A deploy keeps them all (`keep_vars` in `wrangler.toml`), so nothing of yours is in the repository. The settings can be plain variables or secrets, as you prefer; the two tokens must be secrets.
 
-   | Secret | What |
+   | Name | What |
    |---|---|
-   | `GITHUB_TOKEN` | the token of 2.4 |
-   | `CF_API_TOKEN` | an API token (**My Profile → API Tokens**) with *Zone → Cache Purge* on your domain's zone, for the public site's purges |
+   | `PUBLIC_WIKI_URL` | **required:** the public site's address, `https://` and the bucket's custom domain (2.2), nothing after the hostname. The page loads its plugin files and TiddlyWiki's core from it, so there is no default: without it, or with an address that isn't a site's, or the worker's own, every request answers `500` saying so. |
+   | `CF_ZONE_ID` | the zone ID of the public site's domain (on the domain's overview page), for the public site's purges |
+   | `CF_API_TOKEN` | *secret:* an API token (**My Profile → API Tokens**) with *Zone → Cache Purge* on that zone. Without it and `CF_ZONE_ID`, no purges. |
+   | `GITHUB_REPO`, `GITHUB_BRANCH` | `owner/repo` of the backup repository (2.4), and its branch (default `main`) |
+   | `GITHUB_TOKEN` | *secret:* the token of 2.4. Without it and `GITHUB_REPO`, no backups. |
+   | `CONFLICT_GUARD` | `off` builds the page without the browser modules (3). |
+   | `BACKUP_RETRY_SECONDS` | the first wait before a failed backup is tried again (default 60). |
+   | `BACKUP_ALERT_MINUTES` | how long backups have to keep failing before the admin wiki shows it (default 60, design 1.7). |
+   | `ACCESS` | `off` lets requests through that didn't come through Cloudflare Access (2.6). **Only for the tests and local runs:** the admin site is then open to anyone. |
 
-   A deploy never removes a secret. The plain variables are in `wrangler.toml`; one set in the dashboard instead is replaced by the file's at the next deploy.
-4. The first deploy runs when you push, or at once if the dashboard offers it. The worker's name in the dashboard must be the `name` in `wrangler.toml`.
+   Saving a variable deploys it at once; the first page load after that uses it.
+4. The first deploy runs when you push, or at once if the dashboard offers it. The worker then answers at `https://wiki-admin.<your subdomain>.workers.dev` (your account's `workers.dev` subdomain is shown under Workers & Pages); that's the admin site, once Access protects it (2.6).
 
-The variables, for reference (the required one is in `wrangler.toml`; the others are optional):
+**A custom domain for the admin site** (`admin.wiki.example.com`, say) instead of the `workers.dev` address: add it under the worker's **Settings → Domains & Routes** (Cloudflare creates the DNS record), and use it in the CORS rule (2.7) and in Access (2.6). Or put it in `wrangler.toml` (the `routes` block in comments) if you'd rather have it in the repository; then set `workers_dev = false` there, so the worker has one address.
 
-| Variable | Purpose |
-|---|---|
-| `PUBLIC_WIKI_URL` | **required:** the public site's address, `https://` and the bucket's custom domain, nothing after the hostname. The page loads its plugin files and TiddlyWiki's core from it, so there is no default: without it, or with an address that isn't a site's, or the worker's own, every request answers `500` saying so. |
-| `GITHUB_REPO`, `GITHUB_BRANCH` | `owner/repo` of the backup repository, and the branch (default `main`). Without a repository and `GITHUB_TOKEN`, no backups. |
-| `CF_ZONE_ID` | the zone ID of the public site's domain. Without it and `CF_API_TOKEN`, no purges. |
-| `CONFLICT_GUARD` | `off` builds the page without the browser modules (3). |
-| `BACKUP_RETRY_SECONDS` | the first wait before a failed backup is tried again (default 60). |
-| `BACKUP_ALERT_MINUTES` | how long backups have to keep failing before the admin wiki shows it (default 60, design 1.7). |
-| `ACCESS` | `off` lets requests through that didn't come through Cloudflare Access (2.6). **Only for the tests and local runs:** the admin site is then open to anyone. |
-
-**Without Workers Builds,** two other ways work: `npx wrangler deploy` from your computer, after `npm install` and `npm run build`, with the same `wrangler.toml`; or pasting `worker.js` into the dashboard's editor, in which case you add the bindings and variables of `wrangler.toml` by hand in the worker's settings, and the empty wiki too (2.8), since a pasted worker carries no asset.
+**Without Workers Builds,** two other ways work: `npx wrangler deploy` from your computer, after `npm install` and `npm run build`, with the same `wrangler.toml` and the settings in the dashboard; or pasting `worker.js` into the dashboard's editor, in which case you add the bindings of `wrangler.toml` by hand in the worker's settings too, and the empty wiki (2.8), since a pasted worker carries no asset.
 
 ### 2.6 Cloudflare Access
 
-Protect the worker with **Worker Access → All traffic** (production and preview URLs) and a policy allowing you (your Cloudflare account's e-mail, say). This covers the custom domain, the worker's `workers.dev` address and its preview URLs, which `wrangler.toml` turns off anyway. Requests Access blocks never reach the worker, so they cost no quota.
+Protect the worker with **Worker Access → All traffic** (production and preview URLs) and a policy allowing you (your Cloudflare account's e-mail, say). This covers the worker's `workers.dev` address, a custom domain, and its preview URLs, which `wrangler.toml` turns off anyway. Requests Access blocks never reach the worker, so they cost no quota.
 
 The worker has no login of its own, so it relies on this, and checks it: Cloudflare marks a request that came through Access, and the worker answers `403` to any request without that mark, before reading or building anything. So if the Access application is missing, or covers another hostname than the one a request came to, the wiki is closed rather than open; the `403` says what to do. Only the tests and local runs, where there is no Access, switch the check off with `ACCESS = off`.
 
@@ -180,7 +177,7 @@ Public tabs ask for `/status` at every page load, before the tiddler list. With 
 
 **Response header transform rule "CORS for the admin wiki"** (Rules → Transform Rules → Modify Response Header):
 - **When:** `http.host eq "wiki.example.com"` and `starts_with(http.request.uri.path, "/recipes/")`
-- **Then:** set the static header `Access-Control-Allow-Origin` to `https://admin.wiki.example.com` (no trailing slash)
+- **Then:** set the static header `Access-Control-Allow-Origin` to the admin site's origin, `https://wiki-admin.<your subdomain>.workers.dev` (or `https://admin.wiki.example.com` with a custom domain; no trailing slash)
 
 This lets the admin wiki read tiddler contents from the public site (design 1.5, 2.9). Without it everything still works, but every tiddler is fetched through the worker.
 
@@ -188,7 +185,7 @@ A "Bypass cache" rule for the admin hostname is optional: Cloudflare never cache
 
 ### 2.8 The first visit
 
-Open `https://admin.wiki.example.com`. Access asks you to log in, then the worker puts an empty TiddlyWiki in the bucket as `index.html` (the engine; your content lives in the tiddler files) with the public site's `status` file, builds the page, and the wiki opens. That first load also publishes TiddlyWiki's core file and the page for the public site. Open `https://wiki.example.com` to see it.
+Open the admin site (`https://wiki-admin.<your subdomain>.workers.dev`, or your custom domain). Access asks you to log in, then the worker puts an empty TiddlyWiki in the bucket as `index.html` (the engine; your content lives in the tiddler files) with the public site's `status` file, builds the page, and the wiki opens. That first load also publishes TiddlyWiki's core file and the page for the public site. Open `https://wiki.example.com` to see it.
 
 **An existing wiki:** drag its `.html` file onto the admin wiki. TiddlyWiki's import saves every tiddler, plugins included, and each goes to R2 and to the backup. Don't upload your wiki as `index.html` instead: TiddlyWiki deletes, at the first sync, every tiddler the page came with that the server doesn't list, so the content would vanish from view, and the file itself would be public.
 
@@ -208,7 +205,7 @@ Open `https://admin.wiki.example.com`. Access asks you to log in, then the worke
 
 ### 2.9 A second wiki
 
-A second wiki is a second worker with its own bucket, queue and two hostnames: steps 2.2 to 2.8 again with other names. From one repository, Wrangler environments do it: an `[env.notes]` section in `wrangler.toml` with that wiki's `name`, route, bucket, queue and variables, deployed with `npx wrangler deploy --env notes` (as the deploy command of a second Workers Builds project, or from your computer). The zone rules are per hostname, so each wiki gets its own set, and `CF_ZONE_ID` and `CF_API_TOKEN` can be shared. The free plan's limits (5) are per account, whichever way the wikis are deployed.
+A second wiki is a second worker with its own bucket, queue, public site and settings: steps 2.2 to 2.8 again with other names. From one repository, Wrangler environments do it: an `[env.notes]` section in `wrangler.toml` with that wiki's `name`, bucket and queue (and route, with a custom domain), deployed with `npx wrangler deploy --env notes` (as the deploy command of a second Workers Builds project, or from your computer); its settings go in that worker's dashboard like the first one's. The zone rules are per hostname, so each wiki gets its own set, and `CF_ZONE_ID` and `CF_API_TOKEN` can be shared. The free plan's limits (5) are per account, whichever way the wikis are deployed.
 
 ---
 
@@ -370,7 +367,7 @@ GitHub runs the same two groups, as two jobs side by side, for every pull reques
 │       └── page-publisher.js the page published from the admin wiki (design 1.9)
 ├── build.mjs                 inlines the modules into worker.js, in dependency order, with the browser modules embedded
 ├── eslint.config.js          the lint rules (npm run lint): names that don't exist, unused ones, an import assigned to
-├── wrangler.toml             the worker's name, bindings and settings: what Wrangler deploys (2.5)
+├── wrangler.toml             the worker's name, bindings and defaults: what Wrangler deploys, as it is; the settings are in the dashboard (2.5)
 ├── package.json              build, lint and test scripts
 └── test/
     ├── first-visit.test.mjs  a new wiki from an empty bucket, in Chromium (13 checks)
@@ -421,7 +418,7 @@ The tests run the real worker in Cloudflare's local runtime (workerd, through Mi
 - a field called `fields` stored nested, as TiddlyWeb's layout has it; a value that's an object refused (`400`), and a tag that isn't text (in either layout), while one already listed doesn't stop the page from being built; a body sent as the flat layout with a field after the text (listed), and with a text that isn't text or garbage after it (refused); custom fields named like built-in properties (`constructor`) kept, and a `text` among the custom fields doesn't move the text;
 - a save of a tiddler whose text never loaded (`_is_skinny`), in both layouts, keeping the stored text without storing the mark, and one the worker doesn't have stored without text;
 - tiddlers titled `Draft of '…'` saved and deleted like any other, while real drafts still aren't stored; titles starting like `$:/StoryList` (`$:/StoryList/2`) stored, `$:/StoryList` itself not;
-- `wrangler.toml` part of the repository with no secret in it and every binding and setting the worker needs, `.gitignore` covering Wrangler's local files (`.dev.vars`, `.wrangler/`).
+- `wrangler.toml` part of the repository with no secret in it and every binding the worker needs, deployable without an edit (the settings kept in the dashboard, the admin site on `workers.dev`, no value to fill in), `.gitignore` covering Wrangler's local files (`.dev.vars`, `.wrangler/`).
 
 `test:r2` runs the worker unchanged behind `test/r2-counter.mjs`, which counts every R2 call it makes, including work left running after the answer (and can make chosen calls fail, which `test:integrity` and `test:backup` use, and tells which queue run made each, counts queue operations and can make the queue refuse messages, for `test:backup`). Each kind of request has a budget, and a change that makes more calls fails. It also checks that a save reads the stored tiddler and the list at the same time. These are the counts now:
 
