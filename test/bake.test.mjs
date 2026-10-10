@@ -2,15 +2,16 @@
 // Run: npm run test:bake
 import { Miniflare } from "miniflare";
 import fs from "node:fs";
-import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { withoutAccess } from "../src/worker/access.js";
 import { publicSiteError } from "../src/worker/settings.js";
 
 const WORKER = fileURLToPath(new URL("../worker.js", import.meta.url));
+// The worker's modules: worker.js, and the empty wiki as a text module (seed/empty.html), as Wrangler uploads them
+const MODULE_RULES = [{ type: "ESModule", include: ["**/*.js", "**/*.mjs"] }, { type: "Text", include: ["**/*.html"] }];
 
 const mf = new Miniflare({
-  modules: true, scriptPath: WORKER, compatibilityDate: "2024-09-23", r2Buckets: ["WIKI_BUCKET"], port: 0,
+  modules: true, scriptPath: WORKER, modulesRules: MODULE_RULES, compatibilityDate: "2024-09-23", r2Buckets: ["WIKI_BUCKET"], port: 0,
   // No Cloudflare Access in front of the tests, and the public site's address (see the end of this file)
   bindings: { ACCESS: "off", PUBLIC_WIKI_URL: "https://my-tiddlywiki.theophile.dev" },
   outboundService: async () => new Response("{}", { status: 404 }),
@@ -277,7 +278,7 @@ check("...and a shell for it is used once published", res.status === 204 && page
 
 // CONFLICT_GUARD = "off": the page is built without the browser modules (and still served)
 const mfOff = new Miniflare({
-  modules: true, scriptPath: WORKER, compatibilityDate: "2024-09-23", r2Buckets: ["WIKI_BUCKET"], port: 0,
+  modules: true, scriptPath: WORKER, modulesRules: MODULE_RULES, compatibilityDate: "2024-09-23", r2Buckets: ["WIKI_BUCKET"], port: 0,
   bindings: { ACCESS: "off", PUBLIC_WIKI_URL: "https://my-tiddlywiki.theophile.dev", CONFLICT_GUARD: "off" },
   outboundService: async () => new Response("{}", { status: 404 }),
 });
@@ -294,7 +295,7 @@ await mfOff.dispose();
 // a ctx.access), unless ACCESS = "off", which every instance above sets. Miniflare never sets
 // ctx.access, so this instance, without the switch, must refuse everything, and build nothing.
 const mfClosed = new Miniflare({
-  modules: true, scriptPath: WORKER, compatibilityDate: "2024-09-23", r2Buckets: ["WIKI_BUCKET"], port: 0,
+  modules: true, scriptPath: WORKER, modulesRules: MODULE_RULES, compatibilityDate: "2024-09-23", r2Buckets: ["WIKI_BUCKET"], port: 0,
   outboundService: async () => new Response("{}", { status: 404 }),
 });
 const baseClosed = (await mfClosed.ready).toString().replace(/\/$/, "");
@@ -328,7 +329,7 @@ check("...and nothing else does (not ACCESS = no)", decide({}, { ACCESS: "no" })
 // address, every request answers 500 saying so, and nothing is built or stored.
 async function withPublicUrl(value, run) {
   const instance = new Miniflare({
-    modules: true, scriptPath: WORKER, compatibilityDate: "2024-09-23", r2Buckets: ["WIKI_BUCKET"], port: 0,
+    modules: true, scriptPath: WORKER, modulesRules: MODULE_RULES, compatibilityDate: "2024-09-23", r2Buckets: ["WIKI_BUCKET"], port: 0,
     bindings: { ACCESS: "off", ...(value === undefined ? {} : { PUBLIC_WIKI_URL: value }) },
     outboundService: async () => new Response("{}", { status: 404 }),
   });
@@ -361,17 +362,16 @@ check("...the worker's own address is refused, saying so", /own address|this wor
 check("...and so are a missing value, no scheme, another scheme, a path, a query", [undefined, "", "wiki.example.com", "ftp://wiki.example.com", "https://wiki.example.com/wiki", "https://wiki.example.com/?x"].every(v => typeof site(v) === "string" && site(v).includes("PUBLIC_WIKI_URL")));
 
 // --- The first visit ------------------------------------------------------------------------------
-// A new bucket is empty. The build makes assets/empty.html (an empty TiddlyWiki with the TiddlyWeb
-// plugin), deployed as a static asset: on the first page request the worker puts it in the bucket as
-// index.html, with the public site's status file, and the wiki starts. Nothing to upload (README 2.8).
-const ASSETS_DIR = fileURLToPath(new URL("../assets/", import.meta.url));
-const emptyWiki = fs.readFileSync(path.join(ASSETS_DIR, "empty.html"));
+// A new bucket is empty. The build makes seed/empty.html (an empty TiddlyWiki with the TiddlyWeb
+// plugin), uploaded with the worker as a text module: on the first page request the worker puts it
+// in the bucket as index.html, with the public site's status file, and the wiki starts. Nothing to
+// upload (README 2.8). (Not a static asset: those put a router in front of the worker that doesn't
+// pass ctx.access on, which the Access check needs.)
+const emptyWiki = fs.readFileSync(fileURLToPath(new URL("../seed/empty.html", import.meta.url)));
 function withAssets(extra = {}) {
   return new Miniflare({
-    modules: true, scriptPath: WORKER, compatibilityDate: "2024-09-23", r2Buckets: ["WIKI_BUCKET"], port: 0,
+    modules: true, scriptPath: WORKER, modulesRules: MODULE_RULES, compatibilityDate: "2024-09-23", r2Buckets: ["WIKI_BUCKET"], port: 0,
     bindings: { ACCESS: "off", PUBLIC_WIKI_URL: "https://wiki.example.com" },
-    // As deployed with run_worker_first = true: the worker gets every request, the asset is never served by itself
-    assets: { directory: ASSETS_DIR, binding: "ASSETS", routerConfig: { has_user_worker: true, invoke_user_worker_ahead_of_assets: true } },
     outboundService: async () => new Response("{}", { status: 404 }),
     ...extra,
   });
@@ -385,16 +385,16 @@ function withAssets(extra = {}) {
   const storedBytes = stored ? Buffer.from(await stored.arrayBuffer()) : null;
   check("first visit of an empty bucket: the page is served, a TiddlyWiki with TiddlyWeb and the browser modules",
     first.status === 200 && firstPage.includes('"title":"$:/plugins/tiddlywiki/tiddlyweb"') && firstPage.includes("$:/cfworker/conflict-guard.js"), `status ${first.status}`);
-  check("...the asset is stored as index.html, byte for byte, as HTML", storedBytes?.equals(emptyWiki) && stored.httpMetadata?.contentType?.startsWith("text/html"), `${storedBytes?.length} bytes, ${stored?.httpMetadata?.contentType}`);
+  check("...the empty wiki (seed/empty.html) is stored as index.html, byte for byte, as HTML", storedBytes?.equals(emptyWiki) && stored.httpMetadata?.contentType?.startsWith("text/html"), `${storedBytes?.length} bytes, ${stored?.httpMetadata?.contentType}`);
   const statusJson = status ? await status.json().catch(() => null) : null;
   check("...and the public site's status file: a read-only, anonymous view of the recipe", statusJson?.read_only === true && statusJson?.anonymous === true && statusJson?.space?.recipe === "default" && status.httpMetadata?.contentType === "application/json", JSON.stringify(statusJson));
   const indexEtag = stored?.etag, statusEtag = status?.etag;
   const second = await mfNew.dispatchFetch(root + "/");
   await second.text();
   check("the next visit changes nothing: the same index.html and status", second.status === 200 && !!indexEtag && (await store.head("index.html"))?.etag === indexEtag && (await store.head("status"))?.etag === statusEtag);
-  const direct = await mfNew.dispatchFetch(root + "/empty.html");
+  const direct = await mfNew.dispatchFetch(root + "/seed/empty.html");
   await direct.text();
-  check("the asset isn't served at its own path (the worker answers, and has no such object)", direct.status === 404, `status ${direct.status}`);
+  check("the empty wiki isn't served at a path of its own (the worker answers, and has no such object)", direct.status === 404, `status ${direct.status}`);
   await mfNew.dispose();
 }
 {
@@ -420,15 +420,15 @@ function withAssets(extra = {}) {
   await mfLost.dispose();
 }
 {
-  // Without the asset (a worker deployed by hand): the 404 says what to upload
+  // Without the module (worker.js pasted into the dashboard, alone): the 404 says what to upload
   const mfNoAsset = new Miniflare({
-    modules: true, scriptPath: WORKER, compatibilityDate: "2024-09-23", r2Buckets: ["WIKI_BUCKET"], port: 0,
+    modules: [{ type: "ESModule", path: WORKER, contents: fs.readFileSync(WORKER, "utf8") }], compatibilityDate: "2024-09-23", r2Buckets: ["WIKI_BUCKET"], port: 0,
     bindings: { ACCESS: "off", PUBLIC_WIKI_URL: "https://wiki.example.com" },
     outboundService: async () => new Response("{}", { status: 404 }),
   });
   const root = (await mfNoAsset.ready).toString().replace(/\/$/, "");
   const none = await mfNoAsset.dispatchFetch(root + "/"), noneText = await none.text();
-  check("no asset and no index.html: 404 saying to upload one", none.status === 404 && noneText.includes("index.html") && /TiddlyWeb/.test(noneText), `status ${none.status}: ${noneText.slice(0, 80)}`);
+  check("the worker alone (pasted, without the empty wiki) and no index.html: 404 saying to upload one", none.status === 404 && noneText.includes("index.html") && /TiddlyWeb/.test(noneText), `status ${none.status}: ${noneText.slice(0, 80)}`);
   await mfNoAsset.dispose();
 }
 

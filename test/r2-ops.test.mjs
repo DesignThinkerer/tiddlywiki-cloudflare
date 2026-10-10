@@ -64,7 +64,7 @@ const BUDGETS = {
 
 const mf = new Miniflare({
   modules: true, scriptPath: "test/r2-counter.mjs", modulesRoot: ROOT,
-  modulesRules: [{ type: "ESModule", include: ["**/*.js", "**/*.mjs"] }],
+  modulesRules: [{ type: "ESModule", include: ["**/*.js", "**/*.mjs"] }, { type: "Text", include: ["**/*.html"] }],
   compatibilityDate: "2024-09-23", r2Buckets: ["WIKI_BUCKET"], port: 0,
   bindings: { ACCESS: "off", PUBLIC_WIKI_URL: "https://my-tiddlywiki.theophile.dev" },
   queueProducers: { BACKUP_QUEUE: "wiki-backup" },   // as deployed: backups run later, in the queue consumer
@@ -166,10 +166,9 @@ check("...saved", res.status === 204, `status ${res.status}`);
 // which also makes the empty tiddler list from the (no) stored tiddlers. Once per wiki.
 const mfNew = new Miniflare({
   modules: true, scriptPath: "test/r2-counter.mjs", modulesRoot: ROOT,
-  modulesRules: [{ type: "ESModule", include: ["**/*.js", "**/*.mjs"] }],
+  modulesRules: [{ type: "ESModule", include: ["**/*.js", "**/*.mjs"] }, { type: "Text", include: ["**/*.html"] }],
   compatibilityDate: "2024-09-23", r2Buckets: ["WIKI_BUCKET"], port: 0,
   bindings: { ACCESS: "off", PUBLIC_WIKI_URL: "https://my-tiddlywiki.theophile.dev" },
-  assets: { directory: fileURLToPath(new URL("../assets/", import.meta.url)), binding: "ASSETS", routerConfig: { has_user_worker: true, invoke_user_worker_ahead_of_assets: true } },
   outboundService: async () => new Response('{"success":true}'),
 });
 const baseNew = (await mfNew.ready).toString().replace(/\/$/, "");

@@ -8,7 +8,7 @@
 name = "wiki-admin"                  # the worker's name: name the worker this when you create it (README 2.5)
 main = "worker.js"                   # the built file (npm run build): deployed as it is, the one the tests ran on
 no_bundle = true
-find_additional_modules = false
+find_additional_modules = true       # the empty wiki module (the rules below), nothing else
 compatibility_date = "2024-09-23"
 keep_vars = true                     # a deploy keeps the variables set in the dashboard: that's where the settings are
 workers_dev = true                   # the admin site: https://wiki-admin.<your subdomain>.workers.dev, behind Access (README 2.6)
@@ -24,12 +24,24 @@ preview_urls = false                 # no preview URLs: a preview would use the 
 binding = "WIKI_BUCKET"
 bucket_name = "wiki"                 # the bucket you created (README 2.2); must exist: a missing name would make Wrangler create one
 
-# The empty wiki a new bucket starts from (assets/empty.html, made by npm run build), deployed with
-# the worker. run_worker_first: the worker answers every request; the asset is only read by it.
-[assets]
-directory = "./assets"
-binding = "ASSETS"
-run_worker_first = true
+# The empty wiki a new bucket starts from (seed/empty.html, made by npm run build), uploaded with
+# the worker as a text module, which it reads on the first visit (README 2.8). Not a static asset:
+# a worker with static assets runs behind a router that doesn't pass Cloudflare Access's mark
+# (ctx.access) on to it, and the worker refuses requests without that mark (README 2.6).
+[[rules]]
+type = "Text"
+globs = ["seed/*.html"]
+fallthrough = false
+# (Without these, Wrangler's own rules would also upload every .wasm and .bin file found under the
+# repository, node_modules included. The integrity suite checks what a deploy uploads.)
+[[rules]]
+type = "CompiledWasm"
+globs = []
+fallthrough = false
+[[rules]]
+type = "Data"
+globs = []
+fallthrough = false
 
 # The backup queue (README 2.3): the worker sends to it and consumes it, one batch at a time
 [[queues.producers]]

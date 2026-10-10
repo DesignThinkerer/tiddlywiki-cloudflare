@@ -56,14 +56,15 @@ export async function serveWiki(request, env, ctx, corsHeaders) {
   return new Response(fallback.body, { headers: htmlHeaders });
 }
 
-// A new bucket is empty. The build makes assets/empty.html, an empty TiddlyWiki with the TiddlyWeb
-// plugin, which a deploy through Wrangler or Workers Builds ships as a static asset (ASSETS, README
-// 3.1): the first page request puts it in the bucket as index.html, with the public site's status
-// file, and the wiki starts from there. Nothing already in the bucket is replaced, so an engine
-// deleted by hand gets a fresh one and the stored tiddlers stay. The empty tiddler list isn't
-// written: the first list request makes it from the stored tiddlers (none, or the ones that stayed).
-// A worker deployed by hand has no asset: the page then says what to upload.
-const EMPTY_WIKI_ASSET = "https://assets.local/empty.html";
+// A new bucket is empty. The build makes seed/empty.html, an empty TiddlyWiki with the TiddlyWeb
+// plugin, which a deploy through Wrangler or Workers Builds uploads with the worker as a text module
+// (wrangler.toml): the first page request puts it in the bucket as index.html, with the public
+// site's status file, and the wiki starts from there. Nothing already in the bucket is replaced, so
+// an engine deleted by hand gets a fresh one and the stored tiddlers stay. The empty tiddler list
+// isn't written: the first list request makes it from the stored tiddlers (none, or the ones that
+// stayed). A worker pasted into the dashboard has no such module: the page then says what to upload.
+// (A module, not a static asset: a worker with static assets runs behind a router that doesn't pass
+// Cloudflare Access's mark on to it, see access.js.) Loaded only here, when a bucket needs it.
 
 const PUBLIC_STATUS = { username: "GUEST", read_only: true, anonymous: true, logout_is_available: false, space: { recipe: "default" } };
 
@@ -72,19 +73,17 @@ const NO_WIKI = "There's no wiki yet: the bucket has no index.html, and this wor
   "with the TiddlyWeb plugin, and the status file (README 2.8), then open this page again.";
 
 async function seedWiki(env) {
-  if (!env.ASSETS) return false;
-  let asset;
+  let html;
   try {
-    asset = await env.ASSETS.fetch(EMPTY_WIKI_ASSET);
+    ({ default: html } = await import("./seed/empty.html"));   // (a literal: Miniflare resolves the module from it)
   } catch (e) {
-    console.error("The empty wiki can't be read from the assets:", e.message);
+    console.error("The empty wiki isn't among the worker's modules (a pasted worker.js?):", e.message);
     return false;
   }
-  if (!asset.ok) {
-    console.error(`The empty wiki isn't among the assets (${asset.status}): the build didn't make assets/empty.html?`);
+  if (typeof html !== "string" || !html) {
+    console.error("The empty wiki module is empty: the build didn't make seed/empty.html?");
     return false;
   }
-  const html = new Uint8Array(await asset.arrayBuffer());
   await putIfAbsent(env, INDEX_KEY, html, { httpMetadata: { contentType: "text/html; charset=utf-8" } });
   await putIfAbsent(env, STATUS_KEY, JSON.stringify(PUBLIC_STATUS), { httpMetadata: { contentType: "application/json" } });
   console.log("New wiki: index.html and the status file put in the bucket");
