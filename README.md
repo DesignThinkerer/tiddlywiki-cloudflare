@@ -100,7 +100,7 @@ Until the worker is bound to the queue, it runs the same backup directly after e
 ### 2.4 The backup repository (optional)
 
 - **A repository of its own** for the backup, one per wiki, private if you like. Files go in `tiddlers/`. Never use the repository the worker is deployed from: its token would let anyone who got it change the worker's code.
-- **A fine-grained personal access token** limited to that repository, with *Contents: read and write*. You'll store it as the `GITHUB_TOKEN` secret (2.5).
+- **A fine-grained personal access token** limited to that repository, with *Contents: read and write*. [This link](https://github.com/settings/personal-access-tokens/new?name=wiki+backup&description=One+commit+per+save+into+the+backup+repository+%28tiddlywiki-cloudflare%2C+README+2.4%29&expires_in=366&contents=write) opens GitHub's form with the name, the permission and the longest expiry the form allows (a year) filled in; what's left is *Repository access → Only select repositories* → the backup repository, then *Generate token*. You'll store it as the `GITHUB_TOKEN` secret (2.5). When it expires, the admin wiki shows the backup alert (`Bad credentials`): make a new one the same way and replace the secret.
 
 Without a repository and a token, the worker skips backups.
 
