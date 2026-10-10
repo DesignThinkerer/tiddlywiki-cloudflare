@@ -377,11 +377,11 @@ GitHub runs the same two groups, as two jobs side by side, for every pull reques
     ├── lazy-load.test.mjs    loading a big wiki on both sites: what's shown first, the device's copy, the fill (31 checks)
     ├── queue-backup.test.mjs queue backup against an imitation of GitHub (42 checks)
     ├── integrity.test.mjs    the tiddler list's integrity, a failed page build, draft-like titles, .gitignore, what a deploy uploads (80 checks)
-    ├── r2-ops.test.mjs       R2 calls per kind of request, against a budget (30 checks)
+    ├── r2-ops.test.mjs       R2 calls per kind of request, against a budget (34 checks)
     ├── cpu.test.mjs          CPU of a big plugin's save and backup, against a budget (2 checks)
     ├── r2-counter.mjs        test-only wrapper that counts the worker's R2 calls
     ├── browser-harness.mjs   the browser suites' shared setup (worker, public site stand-in, Chromium, helpers)
-    └── bake.test.mjs         page serving and rebuilding, the published page, the Access check, the public address, the first visit (78 checks)
+    └── bake.test.mjs         page serving and rebuilding, tiddler and file reads, the published page, the Access check, the public address, the first visit (87 checks)
 ```
 
 The worker is written as ES modules, each importing only from the ones below it: the entry point, the handlers, the page, the list, the layout, then the shared pieces (`src/worker/index.js` lists the order). The build inlines them into `worker.js` in that order, so one file is deployed, which you can paste into the dashboard, with every comment kept; it refuses two modules that import each other, an import of something not exported, and a name declared twice. The tests run the built `worker.js` in Miniflare, and import a module's functions directly where they test one (`test/cpu.test.mjs`, the checks in `test/bake.test.mjs`).
@@ -395,7 +395,7 @@ The browser modules live in their own files so they can be read and edited as no
 The tests run the real worker in Cloudflare's local runtime (workerd, through Miniflare) with a local R2 bucket and queue. Outgoing calls to GitHub and Cloudflare's API are answered by imitations, so nothing touches your accounts. Every suite takes free local ports, so they can run at the same time. The five browser suites share their setup, `test/browser-harness.mjs`: the worker, the stand-in for the public site, Chromium, and the helpers that wait for TiddlyWiki or record each tab's requests (marking the ones the browser answered from its cache, which never reached a server). (On a machine too busy to keep up, such as with the browser suites running alongside, the backup suite's "never overlapped" check can fail: Miniflare then starts a second batch before the first ends, which `max_concurrency = 1` prevents on Cloudflare. A browser suite can also time out waiting for TiddlyWiki there. Each passes run on its own.)
 
 `test:bake` covers:
-- Page serving: rebuild on an outdated bake or a new `index.html`, the `304` for an unchanged page (also with a weakened ETag, and by date alone, including two pages built within the same second), a byte order mark; CORS, a bad `PUT` path, and `/status`, kept by the browser for a week and no longer baked into the page.
+- Page serving: rebuild on an outdated bake or a new `index.html`, the `304` for an unchanged page (also with a weakened ETag, and by date alone, including two pages built within the same second), a byte order mark; CORS, a bad `PUT` path, and `/status`, kept by the browser for a week and no longer baked into the page; a tiddler read (its revision as ETag) and a file read (R2's), each answered `304` to a browser that has it (also with a weakened ETag, and to a `HEAD`), and sent when it has another version.
 - The published page: the core file stored and each kind refused (also one sent for an older `index.html`, or without saying which) (also one still switching the save template, while the core plugin's escaped mentions of it are accepted), each kind of shell refused, a shell kept and the page built from it (the page and the answer carrying the stored shell's version), the same again, a shell from a page older than the one stored refused with the current version (also one built from a shell since replaced, or saying none), then kept once sent with it, plugin tags before the core (only in a shell: in a full `index.html` they stay in `<head>`, even with TiddlyWiki's marker in raw markup), a new `index.html` built from until a shell is published for it.
 - `CONFLICT_GUARD = off`: the page built without the browser modules.
 - Cloudflare Access: without `ACCESS = off`, every request (page, status, list, tiddler, save, delete, preflight) answers `403` and nothing is built or stored; the decision itself lets a request through that Access marked (`ctx.access`), refuses one without, and takes only `off` as the switch.
@@ -429,6 +429,7 @@ The tests run the real worker in Cloudflare's local runtime (workerd, through Mi
 | Admin page load, the browser has the page (`304`) | 2: check `baked.html` (its body isn't read), check `index.html` |
 | Tiddler list, first fetch or unchanged (`304`) | 1 |
 | Tiddler list asking how backups go (page load, then hourly) | 2, at the same time: the list and `_backup/status.json` |
+| Tiddler read from the worker (a public copy that's stale or missing, or the conflict guard), first or unchanged (`304`) | 1 |
 | Save a new tiddler, or an update | 4: look it up and read the list (both at once), write the tiddler, write the list |
 | Save refused (`412`) | 2: look it up and read the list, both at once (the stored tiddler itself is read only if it's the same size as the save, to recognise a save sent again) |
 | Save sent again, already stored | 5: look it up, read it to compare, read and write the list, and look for a plugin file the first attempt may have left behind (design 1.8) |

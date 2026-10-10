@@ -84,9 +84,12 @@ async function seedWiki(env) {
     console.error("The empty wiki module is empty: the build didn't make seed/empty.html?");
     return false;
   }
-  await putIfAbsent(env, INDEX_KEY, html, { httpMetadata: { contentType: "text/html; charset=utf-8" } });
-  await putIfAbsent(env, STATUS_KEY, JSON.stringify(PUBLIC_STATUS), { httpMetadata: { contentType: "application/json" } });
-  console.log("New wiki: index.html and the status file put in the bucket");
+  const index = await putIfAbsent(env, INDEX_KEY, html, { httpMetadata: { contentType: "text/html; charset=utf-8" } });
+  const status = await putIfAbsent(env, STATUS_KEY, JSON.stringify(PUBLIC_STATUS), { httpMetadata: { contentType: "application/json" } });
+  // (Either may have been there: the status file kept when the engine was deleted, or both put by
+  // a request that got there first)
+  const put = [index && "index.html", status && "the status file"].filter(Boolean);
+  if (put.length > 0) console.log(`New wiki: ${put.join(" and ")} put in the bucket`);
   return true;
 }
 

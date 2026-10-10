@@ -20,8 +20,12 @@ import { handleDelete, handleSave } from "./saves.js";
 import { publicSiteError } from "./settings.js";
 import { LIST_KEY } from "./storage.js";
 
-// The admin page reads tiddlers from the public site too, so both answer cross-origin requests.
-// TiddlyWiki reads the ETag of each save, which a browser only shows a page that's told it may.
+// The admin wiki is served by this worker and talks to it from its own origin (its reads of the
+// public site are allowed there, by the zone's CORS rule, README 2.7); these headers let a page from
+// elsewhere talk to it too. "*" gives nothing away: Access answers before the worker, and a browser
+// shows a page from another site no response it asked for with credentials when the origin allowed
+// is "*" (credentials need a named one), so such a page gets either a refusal or nothing. TiddlyWiki
+// reads the ETag of each save, which a browser only shows a page that's told it may (Expose-Headers).
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, PUT, DELETE, OPTIONS, HEAD",

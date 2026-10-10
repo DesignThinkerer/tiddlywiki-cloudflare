@@ -21,20 +21,34 @@ export function serveStatus(corsHeaders) {
 }
 
 // GET or HEAD of an object of the bucket, by its key (already decoded): a tiddler, with its
-// revision in the ETag, or anything else as stored
+// revision in the ETag, or anything else as stored. A browser that has it asks with that ETag
+// (If-None-Match, maybe weakened to W/ by Cloudflare's compression) and is answered 304, no body:
+// a file isn't even read from R2 (its ETag is R2's); a tiddler is, as its revision is in its
+// metadata, and the read is the one R2 operation either way. (The admin wiki reads tiddlers from
+// the public site, or has them on the device: it asks the worker for one whose public copy is
+// stale or missing, and the conflict guard for the server's version. design 1.5.)
 export async function serveObject(request, env, key, corsHeaders) {
-  const object = keyTooLong(key) ? null : await env.WIKI_BUCKET.get(key);
+  if (keyTooLong(key)) return new Response("Not found", { status: 404, headers: corsHeaders });
+  const tiddler = key.startsWith(TIDDLER_PREFIX);
+  const known = parseEtagList(request.headers.get("If-None-Match")).filter(token => token !== "*");
+  const object = await env.WIKI_BUCKET.get(key, !tiddler && known.length > 0 ? { onlyIf: { etagDoesNotMatch: known[0] } } : undefined);
   if (!object) return new Response("Not found", { status: 404, headers: corsHeaders });
   const headers = objectHeaders(object, corsHeaders);
-  const body = request.method === "GET" ? object.body : null;
-  if (key.startsWith(TIDDLER_PREFIX)) {
+  let unchanged = !("body" in object);   // a conditional get whose precondition failed: the browser has it
+  if (tiddler) {
     // Stored with its revision, bag and recipe already in place: served as is
+    const revision = revisionOf(object);
     headers.set("Cache-Control", "no-cache");
-    headers.set("ETag", tiddlerEtag(key.slice(TIDDLER_PREFIX.length), revisionOf(object)));
-    return new Response(body, { headers });
+    headers.set("ETag", tiddlerEtag(key.slice(TIDDLER_PREFIX.length), revision));
+    unchanged = known.includes(revision);
+  } else {
+    headers.set("ETag", object.httpEtag);
   }
-  headers.set("ETag", object.httpEtag);
-  return new Response(body, { headers });
+  if (unchanged || request.method !== "GET") {
+    if ("body" in object) await object.body.cancel();
+    return new Response(null, { status: unchanged ? 304 : 200, headers });
+  }
+  return new Response(object.body, { headers });
 }
 
 // Serves the tiddler list, answering 304 when the browser already has the current version
