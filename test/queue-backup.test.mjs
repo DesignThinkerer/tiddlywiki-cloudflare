@@ -87,7 +87,7 @@ function makeWorker(port, withQueue, bindings = {}) {
     handleRuntimeStdio(stdout, stderr) {
       for (const stream of [stdout, stderr]) stream.on("data", chunk => { workerLog.push(String(chunk)); process.stdout.write(chunk); });
     },
-    modules: true, scriptPath: "test/r2-counter.mjs", modulesRoot: ROOT, modulesRules: [{ type: "ESModule", include: ["**/*.js", "**/*.mjs"] }],
+    modules: true, scriptPath: "test/r2-counter.mjs", modulesRoot: ROOT, modulesRules: [{ type: "ESModule", include: ["**/*.js", "**/*.mjs"] }, { type: "Text", include: ["**/*.html"] }],
     compatibilityDate: "2024-09-23", r2Buckets: ["WIKI_BUCKET"], port,
     bindings: { ACCESS: "off", PUBLIC_WIKI_URL: "https://wiki.example.com", GITHUB_REPO: "o/r", GITHUB_TOKEN: "ghtoken", BACKUP_RETRY_SECONDS: "1", ...bindings },
     ...(withQueue ? {

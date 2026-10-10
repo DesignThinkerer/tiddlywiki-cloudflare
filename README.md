@@ -111,7 +111,7 @@ The worker is deployed from your repository by Cloudflare's **Workers Builds**: 
 1. Under **Workers & Pages**, create the worker from your repository (**Create → Import a repository**, or for a worker that already exists, its **Settings → Builds → Connect**). Cloudflare's GitHub app needs access to that repository. Name the worker `wiki-admin`: the name must be the `name` in `wrangler.toml`.
 2. The build settings:
    - **Production branch:** `main`.
-   - **Build command:** `npm run build`. It writes `worker.js` and `assets/empty.html`, the empty wiki a new bucket starts from.
+   - **Build command:** `npm run build`. It writes `worker.js` and `seed/empty.html`, the empty wiki a new bucket starts from, which the deploy uploads with the worker (as a text module of it: `wrangler.toml`).
    - **Deploy command:** the default, `npx wrangler deploy`.
    - **Builds for non-production branches:** off. A branch's preview would use the real bucket and queue.
    - **Build watch paths:** include only `src/*`, `build.mjs`, `tools/*`, `package.json`, `package-lock.json` and `wrangler.toml`, so a change to the README, or anything else, doesn't deploy.
@@ -140,7 +140,7 @@ The worker is deployed from your repository by Cloudflare's **Workers Builds**: 
 
 Protect the worker with **Worker Access → All traffic** (production and preview URLs) and a policy allowing you (your Cloudflare account's e-mail, say). This covers the worker's `workers.dev` address, a custom domain, and its preview URLs, which `wrangler.toml` turns off anyway. Requests Access blocks never reach the worker, so they cost no quota.
 
-The worker has no login of its own, so it relies on this, and checks it: Cloudflare marks a request that came through Access, and the worker answers `403` to any request without that mark, before reading or building anything. So if the Access application is missing, or covers another hostname than the one a request came to, the wiki is closed rather than open; the `403` says what to do. Only the tests and local runs, where there is no Access, switch the check off with `ACCESS = off`.
+The worker has no login of its own, so it relies on this, and checks it: Cloudflare marks a request that came through Access (`ctx.access`), and the worker answers `403` to any request without that mark, before reading or building anything. (That mark never reaches a worker deployed with static assets, which run behind a router of Cloudflare's; this worker has none, which is why the empty wiki travels as a module of it, 2.5.) So if the Access application is missing, or covers another hostname than the one a request came to, the wiki is closed rather than open; the `403` says what to do. Only the tests and local runs, where there is no Access, switch the check off with `ACCESS = off`.
 
 ### 2.7 The zone's rules
 
@@ -189,7 +189,7 @@ Open the admin site (`https://wiki-admin.<your subdomain>.workers.dev`, or your 
 
 **An existing wiki:** drag its `.html` file onto the admin wiki. TiddlyWiki's import saves every tiddler, plugins included, and each goes to R2 and to the backup. Don't upload your wiki as `index.html` instead: TiddlyWiki deletes, at the first sync, every tiddler the page came with that the server doesn't list, so the content would vanish from view, and the file itself would be public.
 
-**A pasted worker** (no asset, 2.5): upload `assets/empty.html` (made by `npm run build`) to the bucket as `index.html`, and a file `status` with this content, the TiddlyWeb status for the public site (without it, public tabs don't know the recipe and can't load the tiddler list):
+**A pasted worker** (`worker.js` alone, without the empty wiki, 2.5): upload `seed/empty.html` (made by `npm run build`) to the bucket as `index.html`, and a file `status` with this content, the TiddlyWeb status for the public site (without it, public tabs don't know the recipe and can't load the tiddler list):
 
 ```json
 {
@@ -265,7 +265,7 @@ If the page is rebuilt before step 4 (by a deploy, or by saving another plugin, 
 | Symptom | Likely cause | What to do |
 |---|---|---|
 | Every request answers 403 "didn't come through Cloudflare Access" | No Access application covers the hostname you're using (2.6): Access isn't set up yet, or it's set up on the custom domain only and you're on `workers.dev` or a preview URL | Set Access up as **Worker Access → All traffic**, or use the hostname it covers. For a local run without Access, set `ACCESS = off` (2.5). |
-| The admin page says "There's no wiki yet" (404) | The bucket has no `index.html`, and the worker was deployed without the empty wiki (pasted into the dashboard, or `assets/` wasn't built) | Deploy with Wrangler or Workers Builds after `npm run build`, or upload `index.html` and `status` yourself (2.2). |
+| The admin page says "There's no wiki yet" (404) | The bucket has no `index.html`, and the worker was deployed without the empty wiki (pasted into the dashboard alone, or `seed/` wasn't built) | Deploy with Wrangler or Workers Builds after `npm run build`, or upload `index.html` and `status` yourself (2.2). |
 | Every request answers 500 naming `PUBLIC_WIKI_URL` | The variable is missing, or isn't the public site's address (2.5) | Set it to `https://` + the bucket's custom domain (2.2), nothing after the hostname. |
 | Alert "Edit conflict: … was changed in another tab or browser" | Another tab, device or script saved that tiddler after you started editing | Compare the tiddler with its `(conflict …)` copy, keep what you want and delete the copy. |
 | Console shows "blocked by CORS policy" for the public site | The transform rule is missing or scoped wrong | Add or fix it (2.7). Until then, tiddlers simply load through the worker. |
@@ -308,17 +308,17 @@ If the page is rebuilt before step 4 (by a deploy, or by saving another plugin, 
 
 ## 6. Development and tests
 
-Requirements: Node.js 20 or newer and a Chromium for the browser tests. (`npm run build` also makes `assets/empty.html`, the empty wiki the browser tests start from.)
+Requirements: Node.js 20 or newer and a Chromium for the browser tests. (`npm run build` also makes `seed/empty.html`, the empty wiki the browser tests start from.)
 
 ```bash
 npm install
 npx playwright install chromium      # or: export CHROMIUM_PATH=/path/to/chrome
-npm test                             # build (worker.js and assets/empty.html), run all nine suites
+npm test                             # build (worker.js and seed/empty.html), run all ten suites
 ```
 
 | Command | What it runs |
 |---|---|
-| `npm run build` | Writes `worker.js`, and `assets/empty.html`, an empty TiddlyWiki with the TiddlyWeb plugin, from the installed `tiddlywiki` package (kept when it's already of that version; `node tools/build-wiki.mjs --force` rebuilds it). |
+| `npm run build` | Writes `worker.js`, and `seed/empty.html`, an empty TiddlyWiki with the TiddlyWeb plugin, from the installed `tiddlywiki` package (kept when it's already of that version; `node tools/build-wiki.mjs --force` rebuilds it). |
 | `npm run check:build` | Fails, writing nothing, if `worker.js` isn't what the sources build (run it before committing, so `worker.js` is never out of date). |
 | `npm run lint` | ESLint, with its recommended rules only: a name that doesn't exist (a function moved without its import, say), an unused one, an import assigned to. CI runs it first. |
 | `npm run test:fast` | The five suites that need no browser (a few minutes). |
@@ -340,7 +340,7 @@ GitHub runs the same two groups, as two jobs side by side, for every pull reques
 ```
 ├── README.md                 this document
 ├── worker.js                 GENERATED: the file you deploy (npm run build)
-├── assets/empty.html         GENERATED, not committed: an empty TiddlyWiki with TiddlyWeb, what a new wiki starts from (2.8)
+├── seed/empty.html           GENERATED, not committed: an empty TiddlyWiki with TiddlyWeb, what a new wiki starts from (2.8), uploaded with the worker
 ├── tools/build-wiki.mjs      builds it from the tiddlywiki package (npm run build)
 ├── docs/
 │   ├── design.md             how the worker works, and why it's built this way
@@ -376,7 +376,7 @@ GitHub runs the same two groups, as two jobs side by side, for every pull reques
     ├── page-publish.test.mjs the page published from a real TiddlyWiki (57 checks)
     ├── lazy-load.test.mjs    loading a big wiki on both sites: what's shown first, the device's copy, the fill (31 checks)
     ├── queue-backup.test.mjs queue backup against an imitation of GitHub (42 checks)
-    ├── integrity.test.mjs    the tiddler list's integrity, a failed page build, draft-like titles, .gitignore (77 checks)
+    ├── integrity.test.mjs    the tiddler list's integrity, a failed page build, draft-like titles, .gitignore, what a deploy uploads (80 checks)
     ├── r2-ops.test.mjs       R2 calls per kind of request, against a budget (30 checks)
     ├── cpu.test.mjs          CPU of a big plugin's save and backup, against a budget (2 checks)
     ├── r2-counter.mjs        test-only wrapper that counts the worker's R2 calls
@@ -469,7 +469,7 @@ Reading the save in full, or building the backup's request through strings, fail
 - a message the queue refuses (its daily operations used up, say): the save backed up directly instead, small or big, the big one's R2 copy removed;
 - the fallback without a queue.
 
-`test:first` starts from an empty bucket, with `assets/empty.html` as the worker's static asset, and covers:
+`test:first` starts from an empty bucket, with `seed/empty.html` uploaded with the worker, and covers:
 - the first admin page load, which puts the engine and the status file in the bucket and boots a logged-in, writable wiki with the browser modules (the library and the four startup modules, loaded in order, each part of the sync in place) and nothing to load, and publishes the core file and the page for the public site;
 - a tiddler saved from it, stored and listed;
 - the public site (the stand-in) serving the page to a visitor who sees the tiddler, read-only, without ever using the worker.
@@ -526,7 +526,7 @@ To run the browser tests against your own wiki file, download `index.html` from 
 Limits and behaviours this design relies on (checked October 2026):
 
 - **Workers:** [platform limits](https://developers.cloudflare.com/workers/platform/limits/) (requests per day, CPU and its flexibility for occasional overruns, subrequests); [how the cache works with Workers](https://developers.cloudflare.com/workers/reference/how-the-cache-works/) (worker-generated responses aren't cached).
-- **Static assets:** [configuration and binding](https://developers.cloudflare.com/workers/static-assets/binding/) (`run_worker_first`, `env.ASSETS.fetch`).
+- **Cloudflare Access on Workers:** [`ctx.access`, and why a worker with static assets never gets it](https://developers.cloudflare.com/workers/configuration/cloudflare-access/); [additional modules](https://developers.cloudflare.com/workers/wrangler/configuration/#bundling) (`rules`, how the empty wiki travels with the worker).
 - **R2:** [Workers API](https://developers.cloudflare.com/r2/api/workers/workers-api-reference/), including conditional `put` with `onlyIf`.
 - **Queues:** [limits](https://developers.cloudflare.com/queues/platform/limits/) (128 KB messages, 24-hour retention on free, 100 retries, delays up to 24 hours) and [pricing](https://developers.cloudflare.com/queues/platform/pricing/) (10,000 operations a day on free).
 - **Cache:** [cache rule settings](https://developers.cloudflare.com/cache/how-to/cache-rules/settings/) and [their order](https://developers.cloudflare.com/cache/how-to/cache-rules/order/) (the last matching rule wins); [purge methods and rate limits](https://developers.cloudflare.com/cache/how-to/purge-cache/); [single-file purge](https://developers.cloudflare.com/cache/how-to/purge-cache/purge-by-single-file/); [browser cache TTL](https://developers.cloudflare.com/cache/how-to/edge-browser-cache-ttl/) (4-hour default); [ETag headers](https://developers.cloudflare.com/cache/reference/etag-headers/) and [Replace insecure JavaScript libraries](https://developers.cloudflare.com/waf/tools/replace-insecure-js-libraries/) (removes the ETag of HTML, on by default on Free); [single-file purge with an `Origin` header](https://community.cloudflare.com/t/why-after-purge-cache-the-data-keep-old-when-with-origin/553911) (the header is part of the cache key).

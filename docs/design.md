@@ -83,7 +83,7 @@ Deleting `recipes/default/tiddlers.json` in R2 has the same effect, which makes 
 
 ### 1.3 The wiki page (`baked.html`)
 
-**The first visit.** A page request that finds no `index.html` in the bucket first puts the empty wiki there (the worker's static asset `empty.html`, README 2.2), with the public site's `status` file, both create-only, so nothing already in the bucket is replaced: an `index.html` deleted by hand gets a fresh engine, and the stored tiddlers stay. Then the page is built as for any new `index.html`. Without the asset (a pasted worker) the page answers `404` saying what to upload.
+**The first visit.** A page request that finds no `index.html` in the bucket first puts the empty wiki there (`seed/empty.html`, uploaded with the worker as a text module: not as a static asset, which would put a router in front of the worker that drops Cloudflare Access's mark, README 2.6), with the public site's `status` file, both create-only, so nothing already in the bucket is replaced: an `index.html` deleted by hand gets a fresh engine, and the stored tiddlers stay. Then the page is built as for any new `index.html`. Without the module (a pasted worker) the page answers `404` saying what to upload.
 
 TiddlyWiki only runs JavaScript modules, plugins and startup actions that are present when the page boots. Tiddlers loaded later through sync arrive too late. So the worker builds `baked.html` from the page source, which is the shell the admin wiki published when there's one for the current `index.html`, and `index.html` itself otherwise (1.9). It adds, right after `<head>`, a `<script>` that preloads these tiddlers (`$tw.preloadTiddlers`):
 

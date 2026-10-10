@@ -1,10 +1,10 @@
-// End-to-end test of a new wiki: an empty bucket, the empty wiki the build made as the worker's
-// static asset, a real TiddlyWiki in Chromium. The first admin page load puts the engine and the
+// End-to-end test of a new wiki: an empty bucket, the empty wiki the build made uploaded with the
+// worker, a real TiddlyWiki in Chromium. The first admin page load puts the engine and the
 // public status file in the bucket; the wiki boots, saves, and the public site serves it.
 // Run: npm run test:first
 import { createChecks, createWatcher, finish, launchBrowser, settle, startSite, waitFor } from "./browser-harness.mjs";
 
-const site = await startSite({ assets: true });   // no index: the bucket starts empty
+const site = await startSite();   // no index: the bucket starts empty
 const { base, pub: PUB, bucket } = site;
 const { check, results } = createChecks();
 const browser = await launchBrowser();

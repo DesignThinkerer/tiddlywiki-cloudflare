@@ -1,6 +1,6 @@
-// Builds assets/empty.html: an empty TiddlyWiki with the TiddlyWeb plugin (the server edition of the
-// installed tiddlywiki package). Deployed as a static asset, it's what the worker puts in a new
-// bucket on the first visit (README 2.8); the browser tests start from it too.
+// Builds seed/empty.html: an empty TiddlyWiki with the TiddlyWeb plugin (the server edition of the
+// installed tiddlywiki package). Uploaded with the worker as a text module (wrangler.toml), it's what
+// the worker puts in a new bucket on the first visit (README 2.8); the browser tests start from it too.
 // Run: npm run build   (or node tools/build-wiki.mjs; add --force to rebuild an existing file).
 // An existing file is kept when it's from the installed version of TiddlyWiki, and rebuilt otherwise.
 import { execFileSync } from "node:child_process";
@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 
 const require = createRequire(import.meta.url);
 const tiddlywiki = require.resolve("tiddlywiki/tiddlywiki.js");
-const dir = fileURLToPath(new URL("../assets/", import.meta.url));
+const dir = fileURLToPath(new URL("../seed/", import.meta.url));
 const output = dir + "empty.html";
 
 const installed = require("tiddlywiki/package.json").version;
@@ -29,13 +29,13 @@ function fileVersion() {
 if (existsSync(output) && !process.argv.includes("--force")) {
   const version = fileVersion();
   if (version === installed) {
-    console.log(`assets/empty.html is up to date: TiddlyWiki ${installed} (--force rebuilds it)`);
+    console.log(`seed/empty.html is up to date: TiddlyWiki ${installed} (--force rebuilds it)`);
     process.exit(0);
   }
-  console.log(`assets/empty.html is TiddlyWiki ${version || "of an unknown version"}, the package is ${installed}: rebuilding it`);
+  console.log(`seed/empty.html is TiddlyWiki ${version || "of an unknown version"}, the package is ${installed}: rebuilding it`);
 }
 mkdirSync(dir, { recursive: true });
-// The wiki folder TiddlyWiki renders from, made fresh each time (assets/ holds only what's deployed)
+// The wiki folder TiddlyWiki renders from, made fresh each time (seed/ holds only what's deployed)
 const wikiFolder = mkdtempSync(join(tmpdir(), "empty-wiki-"));
 try {
   execFileSync(process.execPath, [tiddlywiki, wikiFolder, "--init", "server"], { stdio: ["ignore", "ignore", "inherit"] });
@@ -43,4 +43,4 @@ try {
 } finally {
   rmSync(wikiFolder, { recursive: true, force: true });
 }
-console.log(`assets/empty.html written: TiddlyWiki ${installed}`);
+console.log(`seed/empty.html written: TiddlyWiki ${installed}`);

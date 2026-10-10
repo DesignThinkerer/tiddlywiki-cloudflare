@@ -1,5 +1,5 @@
 // The worker's settings: every variable it reads from its environment, in one place (README 2.5 has
-// the table). The bindings (WIKI_BUCKET, BACKUP_QUEUE, ASSETS) are used where they're needed.
+// the table). The bindings (WIKI_BUCKET, BACKUP_QUEUE) are used where they're needed.
 //
 // | variable             | read by                 |
 // |----------------------|-------------------------|

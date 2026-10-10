@@ -2,7 +2,9 @@
 // and files git must not commit.
 // Run: npm run test:integrity
 import { Miniflare } from "miniflare";
-import fs from "node:fs";
+import fs, { mkdtempSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -14,7 +16,7 @@ const LIST = "recipes/default/tiddlers.json";
 const purges = [];
 const mf = new Miniflare({
   modules: true, scriptPath: "test/r2-counter.mjs", modulesRoot: ROOT,
-  modulesRules: [{ type: "ESModule", include: ["**/*.js", "**/*.mjs"] }],
+  modulesRules: [{ type: "ESModule", include: ["**/*.js", "**/*.mjs"] }, { type: "Text", include: ["**/*.html"] }],
   compatibilityDate: "2024-09-23", r2Buckets: ["WIKI_BUCKET"], port: 0,
   bindings: { ACCESS: "off", PUBLIC_WIKI_URL: "https://my-tiddlywiki.theophile.dev", CF_ZONE_ID: "zone", CF_API_TOKEN: "token" },
   outboundService: async req => {
@@ -631,7 +633,26 @@ check(".gitignore covers .dev.vars and .wrangler/, and not wrangler.toml", missi
 const toml = fs.existsSync(path.join(ROOT, "wrangler.toml")) ? fs.readFileSync(path.join(ROOT, "wrangler.toml"), "utf8") : "";
 const tomlActive = toml.split(/\r?\n/).filter(l => !l.trim().startsWith("#")).join("\n");   // (what Wrangler reads: comments aside)
 check("wrangler.toml holds no secret, and every binding the worker needs",
-  !/GITHUB_TOKEN\s*=|CF_API_TOKEN\s*=/.test(tomlActive) && ["WIKI_BUCKET", "BACKUP_QUEUE", "ASSETS", "run_worker_first = true", "max_retries = 3", "max_concurrency = 1", "preview_urls = false"].every(k => tomlActive.includes(k)));
+  !/GITHUB_TOKEN\s*=|CF_API_TOKEN\s*=/.test(tomlActive) && ["WIKI_BUCKET", "BACKUP_QUEUE", "max_retries = 3", "max_concurrency = 1", "preview_urls = false"].every(k => tomlActive.includes(k)));
+// The empty wiki travels with the worker as a text module, never as a static asset: Workers with
+// static assets run behind a router that doesn't pass ctx.access on, which the Access check needs
+// What Wrangler would upload, from the file as it is (a dry run, no account needed): worker.js and
+// the empty wiki, nothing else of the repository (the default rules would sweep up node_modules)
+let attached = null, dryRun = "";
+try {
+  dryRun = execFileSync(process.execPath, [path.join(ROOT, "node_modules/wrangler/bin/wrangler.js"), "deploy", "--dry-run", "--outdir", mkdtempSync(path.join(tmpdir(), "wrangler-dry-"))],
+    { cwd: ROOT, encoding: "utf8", timeout: 120000, env: { ...process.env, WRANGLER_SEND_METRICS: "false", CI: "1" }, stdio: ["ignore", "pipe", "pipe"] });
+  attached = [...dryRun.matchAll(/^│ (\S+)\s+│ (\S+)\s+│ [\d.]+ KiB\s+│$/gm)].map(m => `${m[1]} (${m[2]})`).filter(row => !row.startsWith("Total"));
+} catch (e) {
+  dryRun = String(e.stdout || "") + String(e.stderr || e.message);
+}
+check("a deploy uploads worker.js with the empty wiki as a text module, and nothing else (Wrangler's dry run)",
+  Array.isArray(attached) && attached.length === 1 && attached[0] === "seed/empty.html (text)",
+  attached ? attached.join(", ") || "no module attached" : dryRun.slice(-300));
+check("wrangler.toml ships the empty wiki as a text module (a rule for seed/), and has no static assets",
+  tomlActive.includes("find_additional_modules = true") &&
+  /\[\[rules\]\]\s*type\s*=\s*"Text"\s*globs\s*=\s*\[\s*"seed\/[^"]*"\s*\]\s*fallthrough\s*=\s*false/.test(tomlActive) &&
+  !/\[assets\]|ASSETS|run_worker_first|directory\s*=/.test(tomlActive));
 // Deployed as it is: the settings live in the dashboard (keep_vars), the admin site is the worker's
 // workers.dev address unless a custom domain is added, and nothing in the file is a value to replace
 check("wrangler.toml needs no edit: settings kept in the dashboard, the admin site on workers.dev, nothing to fill in",
