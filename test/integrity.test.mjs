@@ -629,8 +629,15 @@ const missing = [".dev.vars", ".wrangler/"].filter(p => !ignored.includes(p));
 check(".gitignore covers .dev.vars and .wrangler/, and not wrangler.toml", missing.length === 0 && !ignored.includes("wrangler.toml") && fs.existsSync(path.join(ROOT, "wrangler.toml")),
   missing.length ? "missing: " + missing.join(", ") : ignored.includes("wrangler.toml") ? "wrangler.toml is ignored" : fs.existsSync(path.join(ROOT, "wrangler.toml")) ? "" : "no wrangler.toml");
 const toml = fs.existsSync(path.join(ROOT, "wrangler.toml")) ? fs.readFileSync(path.join(ROOT, "wrangler.toml"), "utf8") : "";
-check("wrangler.toml holds no secret, and every binding and setting the worker needs",
-  !/GITHUB_TOKEN\s*=|CF_API_TOKEN\s*=/.test(toml) && ["WIKI_BUCKET", "BACKUP_QUEUE", "ASSETS", "run_worker_first = true", "PUBLIC_WIKI_URL", "max_retries = 3", "max_concurrency = 1", "workers_dev = false", "preview_urls = false"].every(k => toml.includes(k)));
+const tomlActive = toml.split(/\r?\n/).filter(l => !l.trim().startsWith("#")).join("\n");   // (what Wrangler reads: comments aside)
+check("wrangler.toml holds no secret, and every binding the worker needs",
+  !/GITHUB_TOKEN\s*=|CF_API_TOKEN\s*=/.test(tomlActive) && ["WIKI_BUCKET", "BACKUP_QUEUE", "ASSETS", "run_worker_first = true", "max_retries = 3", "max_concurrency = 1", "preview_urls = false"].every(k => tomlActive.includes(k)));
+// Deployed as it is: the settings live in the dashboard (keep_vars), the admin site is the worker's
+// workers.dev address unless a custom domain is added, and nothing in the file is a value to replace
+check("wrangler.toml needs no edit: settings kept in the dashboard, the admin site on workers.dev, nothing to fill in",
+  tomlActive.includes("keep_vars = true") && tomlActive.includes("workers_dev = true") &&
+  !/PUBLIC_WIKI_URL\s*=|CF_ZONE_ID\s*=|GITHUB_REPO\s*=|GITHUB_BRANCH\s*=|example\.com|YOUR-|OWNER\/REPO|^\s*routes?\s*=/m.test(tomlActive),
+  (tomlActive.match(/.*(PUBLIC_WIKI_URL\s*=|CF_ZONE_ID\s*=|GITHUB_REPO\s*=|example\.com|YOUR-|OWNER\/REPO|^\s*routes?\s*=).*/mg) || []).join(" | "));
 
 console.log(`\n${results.filter(Boolean).length}/${results.length} passed`);
 await mf.dispose();
