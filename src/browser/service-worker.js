@@ -17,6 +17,8 @@ By request:
   isn't kept: the page's own <script> load still works online.
 - The status file and the tiddler list: the network first, the cached one when the network fails,
   with X-Served-From: cache so the list sync knows (a device copy then counts whatever its revision).
+- /favicon.ico: the browser asks for it at a navigation when the page has no icon link (TiddlyWiki
+  sets its icon once started): answered here, empty, rather than by the worker.
 - Anything else (a tiddler's contents, a save, a delete, the page published): the network only.
 When a new page is cached, the plugin files it no longer refers to leave the cache.
 \*/
@@ -66,6 +68,8 @@ self.addEventListener("fetch",function(event) {
 	var url = new URL(request.url);
 	if(isPage(request,url)) {
 		event.respondWith(networkFirst(event,request,PAGE_KEY,true));
+	} else if(url.origin === self.location.origin && url.pathname === "/favicon.ico") {
+		event.respondWith(new Response(null,{status: 204}));
 	} else if(isFile(url)) {
 		event.respondWith(cacheFirst(request));
 	} else if(isData(url)) {

@@ -12,7 +12,7 @@
     "lint": "eslint src build.mjs tools test eslint.config.js",
     "test": "npm run test:fast && npm run test:browser",
     "test:fast": "npm run build && node test/bake.test.mjs && node test/integrity.test.mjs && node test/r2-ops.test.mjs && node test/cpu.test.mjs && node test/queue-backup.test.mjs",
-    "test:browser": "npm run build && node test/first-visit.test.mjs && node test/two-tabs.test.mjs && node test/plugins.test.mjs && node test/page-publish.test.mjs && node test/lazy-load.test.mjs && node test/backup-sync.test.mjs && node test/private.test.mjs && node test/offline.test.mjs && node test/cold-start.test.mjs",
+    "test:browser": "npm run build && node test/first-visit.test.mjs && node test/two-tabs.test.mjs && node test/plugins.test.mjs && node test/page-publish.test.mjs && node test/lazy-load.test.mjs && node test/backup-sync.test.mjs && node test/private.test.mjs && node test/offline.test.mjs && node test/cold-start.test.mjs && node test/budget.test.mjs",
     "test:bake": "npm run build && node test/bake.test.mjs",
     "test:first": "npm run build && node test/first-visit.test.mjs",
     "test:integrity": "npm run build && node test/integrity.test.mjs",
@@ -26,7 +26,8 @@
     "test:sync": "npm run build && node test/backup-sync.test.mjs",
     "test:private": "npm run build && node test/private.test.mjs",
     "test:offline": "npm run build && node test/offline.test.mjs",
-    "test:cold": "npm run build && node test/cold-start.test.mjs"
+    "test:cold": "npm run build && node test/cold-start.test.mjs",
+    "test:budget": "npm run build && node test/budget.test.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.5",
