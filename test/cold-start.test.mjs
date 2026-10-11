@@ -94,7 +94,7 @@ await online(contextA);
 check("...and reaches the worker at the network's return", await waitFor(async () => (await stored("Offline note")) === "written with no network", 15000));
 await settle(A);
 
-// --- 4. A tiddler never loaded on this device, opened offline: empty, the network alert, no crash ----
+// --- 4. A tiddler never loaded on this device, opened offline: empty, no alert, no crash -------------
 const contextC = await browser.newContext();
 const { p: C } = await open(contextC, "C");
 await addTiddler(C, { title: "Unseen", text: "never loaded by the other browser" });
@@ -109,9 +109,9 @@ await A.waitForFunction(() => window.$tw && $tw.syncer && $tw.wiki.tiddlerExists
 await sleep(1500);
 await A.evaluate(() => { new $tw.Story().navigateTiddler("Unseen"); });
 await sleep(4000);
-// (TiddlyWiki shows its network alert for the failed load and clears it at once, nothing being unsaved: its own behaviour)
-check("a tiddler never loaded on this device, opened offline: still empty, the wiki saying it's offline, nothing broken",
-  await A.evaluate(() => { const t = $tw.wiki.getTiddler("Unseen"); return !!t && t.fields.text === undefined; }) && (await status(A))?.online === "no" && pageErrors.length === 0,
+// (TiddlyWiki's network alert for the failed load isn't shown on the admin wiki, design 2.17; it would have cleared it at once anyway, nothing being unsaved)
+check("a tiddler never loaded on this device, opened offline: still empty, the wiki saying it's offline, no alert, nothing broken",
+  await A.evaluate(() => { const t = $tw.wiki.getTiddler("Unseen"); return !!t && t.fields.text === undefined; }) && (await status(A))?.online === "no" && await A.evaluate(() => $tw.wiki.getTiddlersWithTag("$:/tags/Alert").length === 0) && pageErrors.length === 0,
   `${JSON.stringify(await A.evaluate(() => { const t = $tw.wiki.getTiddler("Unseen"); return t && t.fields.text; }))} ${JSON.stringify(await status(A))} ${pageErrors.join(" | ")}`);
 await online(contextA);
 await A.evaluate(() => $tw.wiki.deleteTiddler("$:/config/cfworker/LoadAll"));
