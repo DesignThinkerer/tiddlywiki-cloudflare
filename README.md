@@ -57,7 +57,7 @@ flowchart LR
 | Piece | Role |
 |---|---|
 | **The worker** (`worker.js`, built from `src/worker/`) | Serves the admin wiki: the page, the TiddlyWeb endpoints, saves and deletes with their conflict checks, cache purges. Writes a file for each plugin, and consumes the backup queue. |
-| **Browser modules** (`src/browser/`) | TiddlyWiki modules the worker builds into the page. The conflict guard makes the browser say which version each edit is based on, handles conflicts, and sends saves in the layout the worker stores; the list sync keeps the tiddler list, loads what's shown first and keeps loaded tiddlers on the device, reads from the public site and cuts unneeded requests; the backup alert shows backups that keep failing; the page publisher, in the admin wiki, renders the page with TiddlyWiki's own template and sends it to the worker whenever it changes. |
+| **Browser modules** (`src/browser/`) | TiddlyWiki modules the worker builds into the page. The conflict guard makes the browser say which version each edit is based on, handles conflicts, and sends saves in the layout the worker stores; the list sync keeps the tiddler list, loads what's shown first and keeps loaded tiddlers on the device, reads from the public site and cuts unneeded requests; the backup alert shows backups that keep failing; the page publisher, in the admin wiki, renders the page with TiddlyWiki's own template and sends it to the worker whenever it changes; the restore import turns the backup's files, dropped onto the wiki, back into tiddlers. |
 | **R2 bucket** | Holds everything: the wiki engine (`index.html`), the page both sites serve, the tiddler list, one JSON file per tiddler, one script per plugin, and TiddlyWiki's core file. |
 | **Public site** | The bucket's custom domain. Cloudflare caches it, and nothing on it runs the worker. |
 | **Queue** `wiki-backup` | Holds one message per save or delete until it has been committed to GitHub. |
@@ -106,7 +106,7 @@ Until the worker is bound to the queue, it runs the same backup directly after e
 
 Without a repository and a token, the worker skips backups.
 
-**Restoring from the backup:** the backup is the wiki, one file per tiddler, so a wiki can be rebuilt from it in a new bucket or a new account: do 2.2 to 2.8 with an empty bucket, then clone the backup and run `node tools/restore.mjs <the clone>` (from a clone of this repository, Node 22). It writes `restore.json`, which you drag onto the admin wiki, like an existing wiki's file (2.8): every tiddler is saved again, plugins included, each created anew (the old revisions are left behind) and backed up. A thousand tiddlers take a few minutes to save and, at GitHub's pace, a couple of hours to commit (5). The backup's files can't be dragged in as they are: TiddlyWiki's JSON import keeps only text fields, and a stored tiddler has its tags as a list, so every tag would be lost — the tool is what turns them into what the import takes. It does the same for one file: to get back one tiddler, or one of its past versions, download that file from GitHub (its history has every version) and run the tool on it. To get a single-file wiki out of a backup instead, for reading it anywhere: `npx tiddlywiki@5.4.1 wiki --init empty && npx tiddlywiki@5.4.1 wiki --load restore.json --build index` makes `wiki/output/index.html`.
+**Restoring from the backup:** the backup is the wiki, one file per tiddler, so a wiki can be rebuilt from it in a new bucket or a new account: do 2.2 to 2.8 with an empty bucket, clone the backup, and drag its files onto the admin wiki, like an existing wiki's file (2.8). The admin wiki knows these files: TiddlyWiki's own JSON import keeps only text fields, and a stored tiddler has its tags as a list, so dropped onto any other TiddlyWiki they would lose every tag; the admin wiki's restore-import module turns them back into tiddlers, tags included, without the old revision, bag and recipe. Every tiddler is then saved again, plugins included, each created anew and backed up. A thousand tiddlers take a few minutes to save and, at GitHub's pace, a couple of hours to commit (5). For a whole clone, rather than dropping a thousand files, `node tools/restore.mjs <the clone>` (from a clone of this repository, Node 22) merges them into one `restore.json`, which you drag instead; it also makes a file any TiddlyWiki imports, and a single-file wiki out of a backup, for reading it anywhere: `npx tiddlywiki@5.4.1 wiki --init empty && npx tiddlywiki@5.4.1 wiki --load restore.json --build index` makes `wiki/output/index.html`. To get back one tiddler, or one of its past versions: download its file from GitHub (its history has every version) and drop it onto the admin wiki.
 
 ### 2.5 The worker
 
@@ -349,7 +349,7 @@ GitHub runs the same two groups, as two jobs side by side, for every pull reques
 ├── worker.js                 GENERATED: the file you deploy (npm run build)
 ├── seed/empty.html           GENERATED, not committed: an empty TiddlyWiki with TiddlyWeb, what a new wiki starts from (2.8), uploaded with the worker
 ├── tools/build-wiki.mjs      builds it from the tiddlywiki package (npm run build)
-├── tools/restore.mjs         turns a clone of the backup into a file TiddlyWiki imports (2.4)
+├── tools/restore.mjs         merges a clone of the backup into one file any TiddlyWiki imports (2.4)
 ├── docs/
 │   ├── design.md             how the worker works, and why it's built this way
 │   └── external-plugins.md   design notes for plugin files (design 1.8)
@@ -372,14 +372,15 @@ GitHub runs the same two groups, as two jobs side by side, for every pull reques
 │       ├── conflict-guard.js saves and deletes: the revision each is based on, conflicts, the flat layout
 │       ├── list-sync.js      the tiddler list, loading (what's shown first, the device's copy, the fill), what isn't sent
 │       ├── backup-alert.js   the alert while backups to GitHub keep failing (4.7)
-│       └── page-publisher.js the page published from the admin wiki (design 1.9)
+│       ├── page-publisher.js the page published from the admin wiki (design 1.9)
+│       └── restore-import.js the backup's files dropped onto the wiki, imported with their tags (2.4)
 ├── build.mjs                 inlines the modules into worker.js, in dependency order, with the browser modules embedded
 ├── eslint.config.js          the lint rules (npm run lint): names that don't exist, unused ones, an import assigned to
 ├── wrangler.toml             the worker's name, bindings and defaults: what Wrangler deploys, as it is; the settings are in the dashboard (2.5)
 ├── package.json              build, lint and test scripts
 └── test/
     ├── first-visit.test.mjs  a new wiki from an empty bucket, in Chromium (13 checks)
-    ├── two-tabs.test.mjs     real TiddlyWiki in Chromium, several tabs, a restore (95 checks)
+    ├── two-tabs.test.mjs     real TiddlyWiki in Chromium, several tabs, a restore (98 checks)
     ├── plugins.test.mjs      real plugins on the admin and public sites (66 checks)
     ├── page-publish.test.mjs the page published from a real TiddlyWiki (57 checks)
     ├── lazy-load.test.mjs    loading a big wiki on both sites: what's shown first, the device's copy, the fill (31 checks)
@@ -394,7 +395,7 @@ GitHub runs the same two groups, as two jobs side by side, for every pull reques
 
 The worker is written as ES modules, each importing only from the ones below it: the entry point, the handlers, the page, the list, the layout, then the shared pieces (`src/worker/index.js` lists the order). The build inlines them into `worker.js` in that order, so one file is deployed, which you can paste into the dashboard, with every comment kept; it refuses two modules that import each other, an import of something not exported, and a name declared twice. The tests run the built `worker.js` in Miniflare, and import a module's functions directly where they test one (`test/cpu.test.mjs`, the checks in `test/bake.test.mjs`).
 
-The browser modules live in their own files so they can be read and edited as normal JavaScript, one per concern, each a TiddlyWiki module that requires the shared library (`$:/cfworker/lib.js`). The build embeds each file of `src/browser/` in `worker.js` as a string, in place of a placeholder named after it (`"__LIST_SYNC_SOURCE__"` for `list-sync.js`) in `src/worker/build.js`'s table of them, and refuses a file without its placeholder, or the reverse. The strings are written as JSON, so a module can contain any character, backticks and `${` included.
+The browser modules live in their own files so they can be read and edited as normal JavaScript, one per concern, each a TiddlyWiki module, sharing a library (`$:/cfworker/lib.js`) for what the sync modules have in common. The build embeds each file of `src/browser/` in `worker.js` as a string, in place of a placeholder named after it (`"__LIST_SYNC_SOURCE__"` for `list-sync.js`) in `src/worker/build.js`'s table of them, and refuses a file without its placeholder, or the reverse. The strings are written as JSON, so a module can contain any character, backticks and `${` included.
 
 ---
 
@@ -480,7 +481,7 @@ Reading the save in full, or building the backup's request through strings, fail
 - the fallback without a queue.
 
 `test:first` starts from an empty bucket, with `seed/empty.html` uploaded with the worker, and covers:
-- the first admin page load, which puts the engine and the status file in the bucket and boots a logged-in, writable wiki with the browser modules (the library and the four startup modules, loaded in order, each part of the sync in place) and nothing to load, and publishes the core file and the page for the public site;
+- the first admin page load, which puts the engine and the status file in the bucket and boots a logged-in, writable wiki with the browser modules (the library and the five startup modules, loaded in order, each part of the sync in place) and nothing to load, and publishes the core file and the page for the public site;
 - a tiddler saved from it, stored and listed;
 - the public site (the stand-in) serving the page to a visitor who sees the tiddler, read-only, without ever using the worker.
 
@@ -496,7 +497,7 @@ Reading the save in full, or building the backup's request through strings, fail
 - **What's sent is what's stored:** a tiddler with an empty `draft.of` field (a draft, for TiddlyWiki) isn't sent and stays in the tab after a poll; a second story river's `$:/StoryList/2` is stored; tiddlers titled `.` or `..` aren't sent, and the tab asks to rename them.
 - **Titles at the edges:** alert links that work for a title ending in `]` or holding `]]` and `|`; a conflict copy of a tiddler whose title is near the length limit, saved under a shortened name.
 - **A public site that doesn't answer:** the text comes from the worker after 5 seconds, instead of loading waiting for good.
-- **Restoring from the backup:** a stored tiddler's bytes (the backup file), imported as they are, would lose their tags; through `tools/restore.mjs` and TiddlyWiki's own import path, the tiddler is created again on the server with every field the same but the revision, and no conflict.
+- **Restoring from the backup:** TiddlyWiki's own deserializer drops a stored tiddler's tags; dropped onto the admin wiki (TiddlyWiki's file-import path, where the restore-import module runs), a backup file comes through with its tags as text, without the old revision, bag and recipe, also a file of several (a nested custom field called `fields` flat again), while a plain JSON export and an HTML wiki file are read as TiddlyWiki reads them; imported, the tiddler is created again on the server with every field the same but the revision, and no conflict.
 
 `test:plugins` uses the markdown and KaTeX plugins shipped with TiddlyWiki and covers:
 - **Install** through the import messages a drop sends: the flat save, the stored tiddler, the file (byte for byte the template format), the script tag, no purge of plugin files.

@@ -4,7 +4,7 @@ What changed, and what an update asks of you, newest first. Your worker is deplo
 
 ## Unreleased
 
-- **Restoring from the backup** has a tool and a procedure (README 2.4): `node tools/restore.mjs <a clone of the backup>` writes `restore.json`, which you drag onto the admin wiki. The backup's files can't be dragged in as they are: TiddlyWiki's JSON import keeps only text fields, and a stored tiddler has its tags as a list, so every tag would be lost. Also for one tiddler, from any version in its history on GitHub.
+- **Restoring from the backup** has a procedure (README 2.4): drop the backup's files onto the admin wiki. A new browser module turns them back into tiddlers, tags included, without the old revision, bag and recipe — TiddlyWiki's own JSON import keeps only text fields, and a stored tiddler has its tags as a list, so dropped onto any other TiddlyWiki they would lose every tag. For a whole clone, `node tools/restore.mjs <the clone>` merges the files into one `restore.json` to drag instead (a file any TiddlyWiki imports). Also for one tiddler, from any version in its history on GitHub. The page is rebuilt at the next admin load, as after any change to the browser modules.
 - **`ACCESS = off` counts only for a request to a local address** (`localhost`, `127.0.0.1`): what the tests and `wrangler dev` use. On a deployed worker the switch now changes nothing. *If you had left it set on a deployed worker,* that worker refuses every request until you remove the variable and set Access up (README 2.6).
 - Public by design, stated up front; the backup can't be checked out on Windows (README 5); this file.
 - Tests: awkward titles (a comma, `%`, `#`, accents, emoji, slashes…) through every step; the restore round trip through TiddlyWiki's own import.
