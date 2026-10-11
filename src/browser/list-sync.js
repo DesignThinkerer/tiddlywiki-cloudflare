@@ -46,7 +46,9 @@ var LOAD_ALL_TITLE = "$:/config/cfworker/LoadAll",
 	FETCH_AHEAD = 6,      // ...of which fetched over the network at once
 	PUBLIC_READ_TIMEOUT = 5000,
 	STORE_DB = "cfworker-tiddlers",
-	STORE_NAME = "tiddlers";
+	STORE_VERSION = 2,            // 1: the tiddlers table; 2: the outbox table too ($:/cfworker/outbox.js)
+	STORE_NAME = "tiddlers",
+	OUTBOX_NAME = "outbox";
 
 exports.startup = function() {
 	var Adaptor = lib.findAdaptor();
@@ -247,6 +249,8 @@ exports.startup = function() {
 	}
 
 	// --- The device's copy of loaded tiddlers (IndexedDB) ----------------------------------------------
+	// One database, two tables: the tiddlers loaded (here), and the outbox, the changes made on this
+	// device that the worker doesn't have yet ($:/cfworker/outbox.js, through cfworkerDeviceRequest).
 
 	var storeOff = typeof indexedDB !== "object" || !indexedDB,
 		storeOpening = null;
@@ -258,13 +262,18 @@ exports.startup = function() {
 			storeOpening = new Promise(function(resolve) {
 				var request;
 				try {
-					request = indexedDB.open(STORE_DB,1);
+					request = indexedDB.open(STORE_DB,STORE_VERSION);
 				} catch(e) {
 					storeOff = true;
 					return resolve(null);
 				}
 				request.onupgradeneeded = function() {
-					request.result.createObjectStore(STORE_NAME,{keyPath: "title"});
+					var db = request.result;
+					$tw.utils.each([STORE_NAME,OUTBOX_NAME],function(name) {
+						if(!db.objectStoreNames.contains(name)) {
+							db.createObjectStore(name,{keyPath: "title"});
+						}
+					});
 				};
 				request.onsuccess = function() {
 					var db = request.result;
@@ -287,16 +296,17 @@ exports.startup = function() {
 		}
 		return storeOpening;
 	}
-	// work(objectStore) makes the request; resolves with its result, null for anything that fails
-	function storeRequest(mode,work) {
+	// work(objectStore) makes the request on the table named (the tiddlers by default); resolves with
+	// its result, null for anything that fails
+	function storeRequest(mode,work,name) {
 		return storeDb().then(function(db) {
 			if(!db) {
 				return null;
 			}
 			return new Promise(function(resolve) {
 				try {
-					var transaction = db.transaction(STORE_NAME,mode),
-						request = work(transaction.objectStore(STORE_NAME));
+					var transaction = db.transaction(name || STORE_NAME,mode),
+						request = work(transaction.objectStore(name || STORE_NAME));
 					request.onsuccess = function() {
 						resolve(request.result === undefined ? null : request.result);
 					};
@@ -730,6 +740,22 @@ exports.startup = function() {
 	// page needs, not for the fill
 	proto.cfworkerLoading = function() {
 		return loading;
+	};
+
+	// A request on the device database's outbox table, for the outbox module: work(objectStore)
+	// makes it; resolves with its result, null for anything that fails (no IndexedDB, say)
+	proto.cfworkerOutboxRequest = function(mode,work) {
+		return storeRequest(mode,work,OUTBOX_NAME);
+	};
+
+	// A tiddler deleted here before its load came (a delete kept on the device, put back at this
+	// page load): its load is dropped, from TiddlyWiki's queue and from the fill held aside
+	proto.cfworkerDropLoad = function(title) {
+		delete held[title];
+		delete wanted[title];
+		if($tw.syncer) {
+			delete $tw.syncer.titlesToBeLoaded[title];
+		}
 	};
 
 	// Never let a background reload overwrite local changes that haven't been uploaded yet; the

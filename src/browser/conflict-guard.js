@@ -339,6 +339,17 @@ exports.startup = function() {
 		return tiddler;
 	});
 
+	// A change kept on the device ($:/cfworker/outbox.js), made from this server revision, put back
+	// into the wiki: the next save or delete of this title is based on it, not on what the list
+	// says now, so a version saved elsewhere meanwhile is a conflict, as it would have been
+	proto.cfworkerBaseFor = function(title,revision) {
+		var base = revisionBase(revision);
+		pendingBases[title] = {base: base};
+		if(typeof base === "string") {
+			deleteBases[title] = base;
+		}
+	};
+
 	proto.saveTiddler = function(tiddler,callback,options) {
 		var self = this,
 			title = tiddler.fields.title,
