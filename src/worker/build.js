@@ -15,15 +15,17 @@ import { CORE_KEY, INDEX_KEY, PAGE_KEY, SHELL_KEY } from "./storage.js";
 import { isStartupTiddler, needsPluginFile, tiddlerKey } from "./tiddlers.js";
 
 // The browser modules (src/browser/, README 3), baked into the page as TiddlyWiki modules: the
-// library the others require, the conflict guard, the list sync, the backup alert and the page
-// publisher (see "The page" below). Each source is a placeholder here, which build.mjs replaces
-// with the file's text (the first with src/browser/lib.js, and so on).
+// library the others require, the conflict guard, the list sync, the backup alert, the page
+// publisher (see "The page" below) and the restore import (the backup's files dropped onto the
+// wiki). Each source is a placeholder here, which build.mjs replaces with the file's text (the
+// first with src/browser/lib.js, and so on).
 const BROWSER_MODULES = [
   { title: "$:/cfworker/lib.js", type: "library", source: "__LIB_SOURCE__" },
   { title: "$:/cfworker/conflict-guard.js", type: "startup", source: "__CONFLICT_GUARD_SOURCE__" },
   { title: "$:/cfworker/list-sync.js", type: "startup", source: "__LIST_SYNC_SOURCE__" },
   { title: "$:/cfworker/backup-alert.js", type: "startup", source: "__BACKUP_ALERT_SOURCE__" },
-  { title: "$:/cfworker/page-publisher.js", type: "startup", source: "__PAGE_PUBLISHER_SOURCE__" }
+  { title: "$:/cfworker/page-publisher.js", type: "startup", source: "__PAGE_PUBLISHER_SOURCE__" },
+  { title: "$:/cfworker/restore-import.js", type: "startup", source: "__RESTORE_IMPORT_SOURCE__" }
 ];
 
 // Their settings. The public site's address: the admin wiki loads tiddler contents from there (no
