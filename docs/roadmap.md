@@ -9,24 +9,14 @@ A TiddlyWiki anyone hosts on Cloudflare's free plan in about ten minutes, from t
 ## Who it's for
 
 1. **A public wiki** — a blog, documentation, notes you share — edited on a private admin site. What the project does today.
-2. **A private notebook** — the admin site only, behind Access, no domain to own (done: README 2.1), edited offline when needed (done with the page open, README 3; opening it offline is step 1 below).
+2. **A private notebook** — the admin site only, behind Access, no domain to own, edited offline, opened offline (done: README 2.1 and 3).
 3. **Both at once, or one then the other:** a private wiki that later gets a public site, by adding one setting, with nothing to migrate (done, design 2.15).
 
 ## Next, in order
 
 Each step is one pull request, with its tests, its README section, its design entry and its changelog line. "Done when" is written as behaviour, and becomes the list of tests when the step starts.
 
-### 1. A service worker, for cold starts
-
-**Why now:** a page already open works offline (design 1.10); opening the wiki with no network still needs the page, the core file and the plugins from somewhere.
-
-**Done when:**
-- The admin wiki opens with no network, from a cache: page, core file, plugin files; the tiddlers from the device copy.
-- Stale-while-revalidate, as TiddlyPWA does it: served from the cache, fetched again behind, the tab told when the page changed.
-- A Cloudflare Access login page is never cached: only answers that are the worker's own are kept (the page's ETag, the `text/html` check on a navigation).
-- Tests: a browser suite registering the service worker, then reloading offline.
-
-### 2. A setup check, in the Cloudflare tab
+### 1. A setup check, in the Cloudflare tab
 
 **Why now:** Access and the zone rules are set up by hand, and will stay so with the button; today a missing rule shows up as a `403` or a CORS error found by trial.
 
@@ -34,7 +24,7 @@ Each step is one pull request, with its tests, its README section, its design en
 - The tab reports each piece: Access on, the public site reachable at `PUBLIC_WIKI_URL` with the rewrite rule and the CORS header, backups set up, the queue bound; each missing one points at its README section.
 - It runs on demand (a button), so it costs nothing at page load.
 
-### 3. The Deploy to Cloudflare button
+### 2. The Deploy to Cloudflare button
 
 **Why last:** the button is the front door, so it goes on once what's behind it is in place: the private wiki, offline editing, cold starts and the setup check, each of which changes what the README's button section has to say. It clones the repository into the user's GitHub account, creates the bucket and the queue from `wrangler.toml`, asks for the secrets and deploys; it needs the repository public.
 

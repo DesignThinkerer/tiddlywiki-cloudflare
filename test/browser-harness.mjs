@@ -51,8 +51,12 @@ export const PUBLIC_STATUS = { username: "GUEST", read_only: true, anonymous: tr
 //     override(key, url) returns text to serve instead of the object, rewrite(url, bytes) returns the
 //     bytes to send, delay(url) returns milliseconds to wait before answering (a slow connection)
 // Returns { mf, base, pub, bucket, publicRequests (each path and query, decoded), setBindings(extra),
-// close() }. setBindings restarts the worker with other variables (the same bucket, the same address),
-// as a change in the dashboard does: a wiki given a public site, say.
+// stop(), start(), stopPublic(), startPublic(), close() }. setBindings restarts the worker with other
+// variables (the same bucket, the same address), as a change in the dashboard does: a wiki given a
+// public site, say. stop() takes the worker down (its address refuses connections, as an unreachable
+// server does: what a page's service worker sees with no network, which the browser's offline mode
+// doesn't cut for it) and start() brings it back on the same address, with the same bucket when R2
+// is kept on disk (r2Persist); stopPublic() and startPublic() do the same for the stand-in.
 export async function startSite({ index, publicStatus = false, bindings = {}, outbound, r2Persist, queue = false, privateWiki = false, publicSite = {} } = {}) {
   let bucket = null;
   const publicRequests = [];
@@ -94,9 +98,10 @@ export async function startSite({ index, publicStatus = false, bindings = {}, ou
     bindings: { ACCESS: "off", ...(privateWiki ? {} : { PUBLIC_WIKI_URL: pub }), ...bindings },
     outboundService: outbound || (async () => new Response('{"success":true}')),
   };
-  const mf = new Miniflare(options);
+  let mf = new Miniflare(options);
   const base = (await mf.ready).toString().replace(/\/$/, "");
   bucket = await mf.getR2Bucket("WIKI_BUCKET");
+  const port = Number(new URL(base).port);
   if (index !== undefined) {
     await bucket.put("index.html", index);
     await bucket.put("recipes/default/tiddlers.json", "[]");
@@ -104,23 +109,50 @@ export async function startSite({ index, publicStatus = false, bindings = {}, ou
   if (publicStatus) {
     await bucket.put("status", JSON.stringify(PUBLIC_STATUS), { httpMetadata: { contentType: "application/json" } });
   }
-  return {
-    mf, base, pub, bucket, publicRequests,
+  const site = {
+    base, pub, bucket, publicRequests,
+    get mf() { return mf; },
     async setBindings(extra) {
-      await mf.setOptions({ ...options, port: Number(new URL(base).port), bindings: { ...options.bindings, ...extra } });
+      options.bindings = { ...options.bindings, ...extra };
+      await mf.setOptions({ ...options, port });
       await mf.ready;
-      bucket = await mf.getR2Bucket("WIKI_BUCKET");
+      bucket = site.bucket = await mf.getR2Bucket("WIKI_BUCKET");
       return bucket;
+    },
+    async stop() {
+      await mf.dispose();
+    },
+    async start() {
+      mf = new Miniflare({ ...options, port });
+      await mf.ready;
+      bucket = site.bucket = await mf.getR2Bucket("WIKI_BUCKET");
+      return bucket;
+    },
+    stopPublic() {
+      publicServer.closeAllConnections();
+      return new Promise(resolve => publicServer.close(() => resolve()));
+    },
+    startPublic() {
+      return new Promise(resolve => publicServer.listen(Number(new URL(pub).port), "127.0.0.1", () => resolve()));
     },
     async close() {
       await mf.dispose();
       publicServer.close();
     }
   };
+  return site;
 }
 
-export function launchBrowser() {
-  return chromium.launch(process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {});
+// The admin wiki registers a service worker (design 1.11), which answers the page's requests from
+// then on: what a suite watches at the page (the requests, their headers, the 304s) is no longer
+// what reaches the worker. So the suites block it by default and watch the page as before; the
+// cold-start suite, about the service worker, allows it and watches what comes from it.
+export function launchBrowser({ serviceWorkers = "block" } = {}) {
+  return chromium.launch(process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {}).then(browser => {
+    const newContext = browser.newContext.bind(browser);
+    browser.newContext = (options = {}) => newContext({ serviceWorkers, ...options });
+    return browser;
+  });
 }
 
 // check(name, ok, detail) prints a line and records the result

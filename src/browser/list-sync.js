@@ -64,6 +64,7 @@ exports.startup = function() {
 		lastListFetch = 0,
 		listRequested = 0,                     // when the request for that list was sent
 		listListeners = [],                    // called with each new list (cfworkerOnList)
+		listFromCache = false,                 // the last list was the service worker's copy, the network gone (design 1.11)
 		requestHooks = [],                     // {headers(), answer(xhr)} for each list request (cfworkerOnListRequest)
 		listBypassCache = false,               // the last list was the stand-in or unreadable (isListStandIn)
 		lazyLoading = wiki.getTiddlerText("$:/config/SyncDisableLazyLoading") !== "yes",
@@ -454,7 +455,9 @@ exports.startup = function() {
 			return Promise.resolve(null);
 		}
 		return storeGet(title).then(function(kept) {
-			if(kept && kept.revision === expected && kept.fields) {
+			// (With no network, the list is the last one kept: the device's copy is the best there is,
+			// whatever its revision, a save of this device's since then included)
+			if(kept && kept.fields && (kept.revision === expected || listFromCache)) {
 				return kept.fields;
 			}
 			return fetchListed(adaptor,title,expected,urgent).then(function(fields) {
@@ -660,6 +663,7 @@ exports.startup = function() {
 				}
 				if(!err) {
 					var previous = lastListFetch ? listedRevisions : null;
+					listFromCache = !!(request && request.getResponseHeader && request.getResponseHeader("X-Served-From") === "cache");
 					listedRevisions = Object.create(null);
 					$tw.utils.each(tiddlers,function(fields) {
 						if(fields.revision !== undefined && fields.revision !== null) {

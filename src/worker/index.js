@@ -15,6 +15,7 @@ import { ACCESS_REFUSED, withoutAccess } from "./access.js";
 import { processBackupBatch } from "./backup/queue.js";
 import { backupSyncStatus, startBackupSync } from "./backup/sync.js";
 import { decodePath, invalidPath } from "./http.js";
+import { serveServiceWorker } from "./build.js";
 import { publishCoreFile, publishShell, serveWiki } from "./page.js";
 import { serveList, serveObject, serveStatus } from "./reads.js";
 import { handleDelete, handleSave } from "./saves.js";
@@ -41,6 +42,7 @@ const PAGE_PATHS = ["/", "/index.html", "/baked.html"];
 const ROUTES = [
   { methods: ["OPTIONS"], matches: () => true, handle: (request, env, ctx, url, match, headers) => new Response(null, { headers }) },
   { methods: ["GET"], matches: path => path === "/status", handle: (request, env, ctx, url, match, headers) => serveStatus(headers) },
+  { methods: ["GET"], matches: path => path === "/sw.js", handle: (request, env, ctx, url, match, headers) => serveServiceWorker(request, headers) },
   { methods: ["GET"], matches: path => PAGE_PATHS.includes(path), handle: (request, env, ctx, url, match, headers) => serveWiki(request, env, ctx, headers) },
   // A full backup (design 1.7): started by the admin wiki, and how the last one went
   { methods: ["POST"], matches: path => path === "/backup/sync", handle: (request, env, ctx, url, match, headers) => startBackupSync(request, env, ctx, headers) },
