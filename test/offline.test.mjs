@@ -203,4 +203,31 @@ const refusedStored = await waitFor(async () => (await stored("Refused")) === "t
 await waitFor(async () => (await status(A2))?.waiting === "0", 5000);
 check("...and goes through once the worker takes it, clearing the dropdown's item", refusedStored && (await status(A2))?.waiting === "0" && (await line(A2)) === "");
 
+// --- 10. Another open tab holds a draft or a change: a tab opened meanwhile leaves it to that tab ---
+await A2.evaluate(([title, draft]) => $tw.wiki.addTiddler(new $tw.Tiddler($tw.wiki.getTiddler(title), { title: draft, "draft.of": title, "draft.title": title, text: "still typing in the other tab" })), ["Note A", draftTitle]);
+await waitFor(async () => ((await outbox(A2)) || []).some(e => e.title === draftTitle && e.text === "still typing in the other tab"), 10000);
+const A4 = await open(contextA, "A4");
+await sleep(1500);
+check("a tab opened while another tab is typing a draft doesn't adopt it: the draft stays with its tab, and on the device",
+  await A4.evaluate(d => !$tw.wiki.tiddlerExists(d), draftTitle) && await A2.evaluate(d => $tw.wiki.getTiddlerText(d) === "still typing in the other tab", draftTitle) && ((await outbox(A4)) || []).some(e => e.title === draftTitle),
+  `in the new tab: ${await A4.evaluate(d => $tw.wiki.tiddlerExists(d), draftTitle)}`);
+await A4.close();
+await A2.close({ runBeforeUnload: true });   // the guard asks (the draft holds changes); accepted
+await sleep(500);
+const A5 = await open(contextA, "A5");
+await sleep(1500);
+check("...and once that tab is gone, the next tab gets the draft back", await A5.evaluate(d => $tw.wiki.getTiddlerText(d) === "still typing in the other tab", draftTitle));
+await A5.evaluate(d => $tw.wiki.deleteTiddler(d), draftTitle);
+await A5.route("**/recipes/default/tiddlers/**", route => route.request().method() === "PUT" ? route.fulfill({ status: 500, body: "boom" }) : route.continue());
+await addTiddler(A5, { title: "Held change", text: "waiting in the first tab" });
+await waitFor(async () => (await status(A5))?.waiting === "1", 10000);
+mark = requests.length;
+const A6 = await open(contextA, "A6");
+await sleep(2000);
+check("a change an open tab is still trying to send isn't sent by a tab opened meanwhile", (await status(A6))?.waiting === "0" && sent("A6", "PUT", "Held change", mark).length === 0 && (await stored("Held change")) === null && ((await outbox(A6)) || []).some(e => e.title === "Held change"),
+  `waiting ${(await status(A6))?.waiting}, sent by the new tab ${sent("A6", "PUT", "Held change", mark).length}, stored ${JSON.stringify(await stored("Held change"))}`);
+await A5.unroute("**/recipes/default/tiddlers/**");
+await A5.evaluate(() => $tw.syncer.processTaskQueue());
+check("...the first tab sends it once the worker takes it", await waitFor(async () => (await stored("Held change")) === "waiting in the first tab", 25000));
+
 await finish({ check, results, pageErrors, browser, site });

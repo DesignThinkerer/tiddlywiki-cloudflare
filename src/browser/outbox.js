@@ -14,7 +14,9 @@ that failed, every few seconds, and sends everything once the network is back; t
   outbox is put back into the wiki: TiddlyWiki then saves or deletes it as it would have, and the
   conflict guard bases that on the revision the change was made from (cfworkerBaseFor), so a version
   saved elsewhere meanwhile is a conflict, with a copy, as it would have been. A draft comes back as
-  a draft, which TiddlyWiki lists at the top of the page.
+  a draft, which TiddlyWiki lists at the top of the page. Not what another open tab of this browser
+  still holds (the outbox is shared by its tabs): the loading tab asks over a BroadcastChannel and
+  leaves those to their tab, which sends them itself.
 - The network's return (the browser's online event) wakes the syncer at once, rather than at its
   next retry.
 - $:/temp/cfworker/outbox says how many changes wait (waiting), since when (since) and whether the
@@ -38,7 +40,8 @@ var STATUS = "$:/temp/cfworker/outbox",
 	ITEM = "$:/temp/cfworker/outbox-status",
 	DRAFT_PAUSE = 300,   // ms of typing before a draft is written to the device
 	KNOWN_WAIT = 100,    // ms between looks for a tiddler the syncer is about to know (a delete put back)
-	KNOWN_TRIES = 100;
+	KNOWN_TRIES = 100,
+	ASK_WAIT = 300;      // ms a tab waits for the other tabs to say what they hold, before putting back
 
 // In the cloud icon's dropdown ($:/tags/SyncerDropdown), under "You are logged in": what waits
 var ITEM_TEXT = [
@@ -271,48 +274,93 @@ exports.startup = function() {
 			whenKnown(title,then,(tries || 0) + 1);
 		},KNOWN_WAIT);
 	}
+	// The other tabs of this browser share the device's outbox: one asks what they hold before putting
+	// anything back, so a draft being typed, or a change a tab is still sending, stays with that tab.
+	// A tab that can't answer (frozen in the background, say) is taken for gone, as before.
+	var channel = null,
+		asking = null;
+	try {
+		channel = typeof BroadcastChannel === "function" ? new BroadcastChannel("cfworker-outbox:" + window.location.pathname) : null;
+	} catch(e) {
+		channel = null;
+	}
+	if(channel) {
+		channel.onmessage = function(event) {
+			var data = event.data || {};
+			if(data.ask) {
+				var titles = Object.keys(entries);
+				if(titles.length) {
+					channel.postMessage({held: data.ask, titles: titles});
+				}
+			} else if(data.held && asking && data.held === asking.id) {
+				$tw.utils.each(data.titles,function(title) {
+					asking.held[title] = true;
+				});
+			}
+		};
+	}
+	function askOthers(then) {
+		if(!channel) {
+			return then(Object.create(null));
+		}
+		asking = {id: String(Date.now()) + Math.random(), held: Object.create(null)};
+		channel.postMessage({ask: asking.id});
+		setTimeout(function() {
+			var held = asking.held;
+			asking = null;
+			then(held);
+		},ASK_WAIT);
+	}
+
 	function putBack() {
-		var held = fromDevice,
+		var fromOutbox = fromDevice,
 			listed = firstList;
-		if(!held || !listed) {
+		if(!fromOutbox || !listed) {
 			return;
 		}
 		fromDevice = null;
-		$tw.utils.each(held,function(entry) {
-			var title = entry.title;
-			if(entry.kind === "draft") {
-				// (Unless this tab already has a draft of that name: the one being typed wins)
-				if(!wiki.tiddlerExists(title)) {
-					entries[title] = entry;
-					wiki.addTiddler(new $tw.Tiddler(entry.fields));
+		askOthers(function(heldElsewhere) {
+			$tw.utils.each(fromOutbox,function(entry) {
+				if(!heldElsewhere[entry.title]) {
+					putBackEntry(entry,listed);
 				}
-			} else if(entry.kind === "save") {
-				entries[title] = entry;
-				proto.cfworkerBaseFor(title,entry.base);
-				wiki.addTiddler(new $tw.Tiddler(entry.fields));
-				entry.count = wiki.getChangeCount(title);
-			} else if(entry.kind === "delete") {
-				if(!$tw.utils.hop(listed,title)) {
-					// Gone from the worker since: nothing left to delete
-					request("readwrite",function(store) {
-						return store["delete"](title);
-					});
-					return;
-				}
-				entries[title] = entry;
-				whenKnown(title,function(known) {
-					if(!known || !entries[title]) {
-						return forget(title);
-					}
-					proto.cfworkerBaseFor(title,entry.base);
-					if(proto.cfworkerDropLoad) {
-						proto.cfworkerDropLoad(title);
-					}
-					wiki.deleteTiddler(title);
-				});
-			}
+			});
+			updateStatus();
 		});
-		updateStatus();
+	}
+	function putBackEntry(entry,listed) {
+		var title = entry.title;
+		if(entry.kind === "draft") {
+			// (Unless this tab already has a draft of that name: the one being typed wins)
+			if(!wiki.tiddlerExists(title)) {
+				entries[title] = entry;
+				wiki.addTiddler(new $tw.Tiddler(entry.fields));
+			}
+		} else if(entry.kind === "save") {
+			entries[title] = entry;
+			proto.cfworkerBaseFor(title,entry.base);
+			wiki.addTiddler(new $tw.Tiddler(entry.fields));
+			entry.count = wiki.getChangeCount(title);
+		} else if(entry.kind === "delete") {
+			if(!$tw.utils.hop(listed,title)) {
+				// Gone from the worker since: nothing left to delete
+				request("readwrite",function(store) {
+					return store["delete"](title);
+				});
+				return;
+			}
+			entries[title] = entry;
+			whenKnown(title,function(known) {
+				if(!known || !entries[title]) {
+					return forget(title);
+				}
+				proto.cfworkerBaseFor(title,entry.base);
+				if(proto.cfworkerDropLoad) {
+					proto.cfworkerDropLoad(title);
+				}
+				wiki.deleteTiddler(title);
+			});
+		}
 	}
 	proto.cfworkerOnList(function(listed,previous) {
 		if(previous === null) {
