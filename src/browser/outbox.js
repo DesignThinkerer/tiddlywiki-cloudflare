@@ -18,8 +18,9 @@ that failed, every few seconds, and sends everything once the network is back; t
 - The network's return (the browser's online event) wakes the syncer at once, rather than at its
   next retry.
 - $:/temp/cfworker/outbox says how many changes wait (waiting), since when (since) and whether the
-  browser is online (online); $:/temp/cfworker/outbox-line shows that at the top of the page while
-  something waits. TiddlyWiki's own network alert stays: it clears itself once everything is saved.
+  browser is online (online); an item in the dropdown of TiddlyWeb's cloud icon (the "Server
+  status" button, red while something is unsaved) shows that while something waits. TiddlyWiki's
+  own network alert stays: it clears itself once everything is saved.
 \*/
 (function(){
 
@@ -34,24 +35,22 @@ exports.synchronous = true;
 var lib = require("$:/cfworker/lib.js");
 
 var STATUS = "$:/temp/cfworker/outbox",
-	LINE = "$:/temp/cfworker/outbox-line",
-	STYLE = "$:/temp/cfworker/outbox-style",
+	ITEM = "$:/temp/cfworker/outbox-status",
 	DRAFT_PAUSE = 300,   // ms of typing before a draft is written to the device
-	LINE_DELAY = 3000,   // ms a change has to wait, online, before the line shows (a save takes a moment anyway)
 	KNOWN_WAIT = 100,    // ms between looks for a tiddler the syncer is about to know (a delete put back)
 	KNOWN_TRIES = 100;
 
-var LINE_TEXT = [
-	"<$list filter='[[" + STATUS + "]get[show]match[yes]]' variable='n'>",
-	"<div class='tc-cfworker-outbox'>",
-	"<$text text={{{ [[" + STATUS + "]get[waiting]] }}}/> <$text text={{{ [[" + STATUS + "]get[waiting]compare:number:eq[1]then[change]else[changes]] }}}/> waiting since <$view tiddler='" + STATUS + "' field='since' format='date' template='0hh:0mm'/>, kept on this device",
-	"<$list filter='[[" + STATUS + "]get[online]match[no]]' variable='off'> — offline</$list>",
-	"<$list filter='[[" + STATUS + "]get[online]match[yes]]' variable='on'> — sending</$list>",
+// In the cloud icon's dropdown ($:/tags/SyncerDropdown), under "You are logged in": what waits
+var ITEM_TEXT = [
+	"<$list filter='[[" + STATUS + "]get[waiting]!match[0]]' variable='n'>",
+	"<div class='tc-drop-down-info'>",
+	"<$text text={{{ [[" + STATUS + "]get[waiting]] }}}/> <$text text={{{ [[" + STATUS + "]get[waiting]compare:number:eq[1]then[change]else[changes]] }}}/> waiting since <$view tiddler='" + STATUS + "' field='since' format='date' template='0hh:0mm'/><br/>",
+	"<$list filter='[[" + STATUS + "]get[online]match[no]]' variable='off'>offline: kept on this device until sent</$list>",
+	"<$list filter='[[" + STATUS + "]get[online]match[yes]]' variable='on'>sending (kept on this device until then)</$list>",
 	"</div>",
+	"<hr/>",
 	"</$list>"
 ].join("\n");
-
-var STYLE_TEXT = ".tc-cfworker-outbox { margin: 0 0 0.5em 0; padding: 0.4em 1em; border: 1px solid <<colour notification-border>>; background: <<colour notification-background>>; color: <<colour foreground>>; }";
 
 exports.startup = function() {
 	var Adaptor = lib.findAdaptor();
@@ -97,7 +96,7 @@ exports.startup = function() {
 		return !!s && s.getSyncedTiddlers([title]).length > 0;
 	}
 
-	// --- The status, and the line at the top of the page --------------------------------------------
+	// --- The status, and the item in the cloud icon's dropdown ---------------------------------------
 
 	function updateStatus() {
 		if(statusTimer) {
@@ -115,19 +114,13 @@ exports.startup = function() {
 					}
 				}
 			});
-			// The line shows at once when offline; online, only for a change that has waited a while
-			var age = since === null ? 0 : Date.now() - since,
-				show = waiting > 0 && (!online || age >= LINE_DELAY),
-				fields = {title: STATUS, waiting: String(waiting), online: online ? "yes" : "no", show: show ? "yes" : "no"},
+			var fields = {title: STATUS, waiting: String(waiting), online: online ? "yes" : "no"},
 				current = wiki.getTiddler(STATUS);
 			if(since !== null) {
 				fields.since = $tw.utils.stringifyDate(new Date(since));
 			}
-			if(!current || current.fields.waiting !== fields.waiting || current.fields.online !== fields.online || current.fields.since !== fields.since || current.fields.show !== fields.show) {
+			if(!current || current.fields.waiting !== fields.waiting || current.fields.online !== fields.online || current.fields.since !== fields.since) {
 				wiki.addTiddler(new $tw.Tiddler(fields));
-			}
-			if(waiting > 0 && !show) {
-				setTimeout(updateStatus,LINE_DELAY - age + 50);
 			}
 		},0);
 	}
@@ -145,8 +138,7 @@ exports.startup = function() {
 			setOnline(false);
 		}
 	}
-	wiki.addTiddler(new $tw.Tiddler({title: LINE, tags: ["$:/tags/PageTemplate"], "list-after": "$:/core/ui/PageTemplate/alerts", text: LINE_TEXT}));
-	wiki.addTiddler(new $tw.Tiddler({title: STYLE, tags: ["$:/tags/Stylesheet"], text: STYLE_TEXT}));
+	wiki.addTiddler(new $tw.Tiddler({title: ITEM, tags: ["$:/tags/SyncerDropdown"], "list-after": "$:/plugins/tiddlywiki/tiddlyweb/syncer-actions/login-status", text: ITEM_TEXT}));
 	updateStatus();
 
 	window.addEventListener("online",function() {

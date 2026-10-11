@@ -1,7 +1,7 @@
 // Editing offline, with the page open (design 1.10): a real TiddlyWiki in Chromium, the network cut
 // and restored. TiddlyWiki retries by itself; what the outbox module adds is that every change is
-// kept on the device the moment it's made and sent at the next load if the tab didn't get to, a line
-// at the top says what's waiting, and the network's return is acted on at once.
+// kept on the device the moment it's made and sent at the next load if the tab didn't get to, the
+// cloud icon's dropdown says what's waiting, and the network's return is acted on at once.
 // Run: npm run test:offline
 import { addTiddler, createChecks, createWatcher, finish, launchBrowser, readWikiFile, settle, sleep, startSite, waitFor } from "./browser-harness.mjs";
 
@@ -10,7 +10,7 @@ const { base: BASE, bucket } = site;
 const { check, results } = createChecks();
 const browser = await launchBrowser();
 const { requests, pageErrors, watch } = createWatcher(site);
-const STATUS = "$:/temp/cfworker/outbox", LINE = "$:/temp/cfworker/outbox-line";
+const STATUS = "$:/temp/cfworker/outbox", ITEM = "$:/temp/cfworker/outbox-status";
 const TIDDLER = "/recipes/default/tiddlers/";
 
 async function open(context, tag) {
@@ -29,7 +29,8 @@ async function ready(p) {
 const stored = async title => { const obj = await bucket.get(TIDDLER.slice(1) + title); return obj ? (await obj.json()).text : null; };
 const revisionOf = async title => { const obj = await bucket.head(TIDDLER.slice(1) + title); return obj ? obj.customMetadata.revision : null; };
 const status = p => p.evaluate(t => { const x = $tw.wiki.getTiddler(t); return x ? { waiting: x.fields.waiting, since: x.fields.since, online: x.fields.online } : null; }, STATUS);
-const line = p => p.evaluate(t => $tw.wiki.tiddlerExists(t) ? $tw.wiki.renderTiddler("text/plain", t).replace(/\s+/g, " ").trim() : null, LINE);
+// What the cloud icon's dropdown says about the outbox (its item, rendered)
+const line = p => p.evaluate(t => $tw.wiki.tiddlerExists(t) && $tw.wiki.getTiddler(t).fields.tags.includes("$:/tags/SyncerDropdown") ? $tw.wiki.renderTiddler("text/plain", t).replace(/\s+/g, " ").trim() : null, ITEM);
 const alerts = p => p.evaluate(() => $tw.wiki.getTiddlersWithTag("$:/tags/Alert").map(t => { const f = $tw.wiki.getTiddler(t).fields; return { component: f.component, text: String(f.text).slice(0, 60) }; }));
 // What the device holds in its outbox: [{title, kind, base, fields}]
 const outbox = p => p.evaluate(() => new Promise(resolve => {
@@ -53,7 +54,7 @@ await addTiddler(A, { title: "Note A", text: "online text" });
 await addTiddler(A, { title: "Note B", text: "to be deleted offline" });
 await settle(A);
 const noteARevision = await revisionOf("Note A"), noteBRevision = await revisionOf("Note B");
-check("online, nothing waits: no line, the device's outbox is empty", (await line(A)) === "" && JSON.stringify(await outbox(A)) === "[]", `line ${JSON.stringify(await line(A))}, outbox ${JSON.stringify(await outbox(A))}`);
+check("online, nothing waits: the cloud icon's dropdown says nothing of the outbox, the device's outbox is empty", (await line(A)) === "" && JSON.stringify(await outbox(A)) === "[]", `item ${JSON.stringify(await line(A))}, outbox ${JSON.stringify(await outbox(A))}`);
 // TiddlyWiki's own retry made slow, so that what happens when the network is back is the online event's doing
 await A.evaluate(() => { $tw.syncer.errorRetryInterval = 20000; });
 await contextA.setOffline(true);
@@ -63,7 +64,7 @@ await A.evaluate(() => $tw.wiki.addTiddler(new $tw.Tiddler($tw.wiki.getTiddler("
 await A.evaluate(() => $tw.wiki.deleteTiddler("Note B"));
 await waitFor(async () => (await status(A))?.waiting === "3", 10000);
 const s1 = await status(A), l1 = await line(A), a1 = await alerts(A);
-check("offline, the page says 3 changes are waiting since when, kept on this device, offline", s1?.waiting === "3" && s1?.online === "no" && /3 changes waiting since \d\d:\d\d/.test(l1 || "") && /offline/.test(l1 || "") && /this device/.test(l1 || ""), `${JSON.stringify(s1)} ${JSON.stringify(l1)}`);
+check("offline, the cloud icon's dropdown says 3 changes are waiting since when, kept on this device, offline", s1?.waiting === "3" && s1?.online === "no" && /3 changes waiting since \d\d:\d\d/.test(l1 || "") && /offline/.test(l1 || "") && /this device/.test(l1 || ""), `${JSON.stringify(s1)} ${JSON.stringify(l1)}`);
 check("...TiddlyWiki retried a save, with its own network alert and no other", sent("A", "PUT", "Offline 1", mark).length + sent("A", "PUT", "Note A", mark).length >= 1 && a1.length === 1 && a1[0].component === "syncer-browser-tiddlyweb-connection", JSON.stringify(a1));
 const o1 = await outbox(A);
 const entry = title => (o1 || []).find(e => e.title === title);
@@ -82,8 +83,8 @@ const took = (Date.now() - back) / 1000;
 check("the network back: the three changes reach the worker at once (the online event, not the retry 20 s away)", arrived && took < 4, `${took.toFixed(1)} s`);
 await settle(A);
 await waitFor(async () => (await status(A))?.waiting === "0", 5000);
-check("...the line is gone, the alert cleared, the device's outbox empty", (await line(A)) === "" && (await alerts(A)).length === 0 && JSON.stringify(await outbox(A)) === "[]" && (await status(A))?.online === "yes",
-  `line ${JSON.stringify(await line(A))}, alerts ${(await alerts(A)).length}, outbox ${JSON.stringify(await outbox(A))}`);
+check("...the dropdown says nothing more, the alert is cleared, the device's outbox empty", (await line(A)) === "" && (await alerts(A)).length === 0 && JSON.stringify(await outbox(A)) === "[]" && (await status(A))?.online === "yes",
+  `item ${JSON.stringify(await line(A))}, alerts ${(await alerts(A)).length}, outbox ${JSON.stringify(await outbox(A))}`);
 
 // --- 3. A reload once the network is back: the changes come back from the device and are sent ------
 await contextA.setOffline(true);
@@ -193,13 +194,13 @@ await A2.route("**/recipes/default/tiddlers/**", route => route.request().method
 await addTiddler(A2, { title: "Refused", text: "the worker said 500" });
 await waitFor(async () => (await alerts(A2)).length > 0 && (await status(A2))?.waiting === "1", 10000);
 const s9 = await status(A2), a9 = await alerts(A2);
-check("a save refused with 500: shown as waiting, still online, TiddlyWiki's own error alert (not the network one), kept on the device",
-  s9?.waiting === "1" && s9?.online === "yes" && a9.length >= 1 && a9.every(a => a.component !== "syncer-browser-tiddlyweb-connection") && ((await outbox(A2)) || []).some(e => e.title === "Refused"),
-  `${JSON.stringify(s9)} ${JSON.stringify(a9)}`);
+check("a save refused with 500: the dropdown says 1 change waiting, sending (still online), TiddlyWiki's own error alert (not the network one), kept on the device",
+  s9?.waiting === "1" && s9?.online === "yes" && /1 change waiting since/.test((await line(A2)) || "") && /sending/.test((await line(A2)) || "") && a9.length >= 1 && a9.every(a => a.component !== "syncer-browser-tiddlyweb-connection") && ((await outbox(A2)) || []).some(e => e.title === "Refused"),
+  `${JSON.stringify(s9)} ${JSON.stringify(await line(A2))} ${JSON.stringify(a9)}`);
 await A2.unroute("**/recipes/default/tiddlers/**");
 await A2.evaluate(() => $tw.syncer.processTaskQueue());
 const refusedStored = await waitFor(async () => (await stored("Refused")) === "the worker said 500", 25000);
 await waitFor(async () => (await status(A2))?.waiting === "0", 5000);
-check("...and goes through once the worker takes it, clearing the line", refusedStored && (await status(A2))?.waiting === "0");
+check("...and goes through once the worker takes it, clearing the dropdown's item", refusedStored && (await status(A2))?.waiting === "0" && (await line(A2)) === "");
 
 await finish({ check, results, pageErrors, browser, site });
