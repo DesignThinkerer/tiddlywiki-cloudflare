@@ -20,8 +20,10 @@ function pageHeaders(htmlHeaders, page) {
   return headers;
 }
 
+// X-Wiki-Page marks the page as the worker's own: the service worker (design 1.11) keeps only an
+// answer that carries it, never Cloudflare's login page or a refusal
 export async function serveWiki(request, env, ctx, corsHeaders) {
-  const htmlHeaders = { ...corsHeaders, "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-cache" };
+  const htmlHeaders = { ...corsHeaders, "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-cache", "X-Wiki-Page": bakeVersion(env) };
   const ifNoneMatch = request.headers.get("If-None-Match");
   const known = parseEtagList(ifNoneMatch).find(token => token.endsWith(PAGE_ETAG_SUFFIX));
   // Only without an ETag, as HTTP says

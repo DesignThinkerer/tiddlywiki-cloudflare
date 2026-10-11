@@ -17,8 +17,8 @@ import { isStartupTiddler, needsPluginFile, tiddlerKey } from "./tiddlers.js";
 // The browser modules (src/browser/, README 3), baked into the page as TiddlyWiki modules: the
 // library the others require, the conflict guard, the list sync, the backup alert, the page
 // publisher (see "The page" below), the restore import (the backup's files dropped onto the wiki),
-// the control panel's Cloudflare tab and the outbox (changes kept on the device until the worker
-// has them). Each source is a placeholder here, which build.mjs
+// the control panel's Cloudflare tab, the outbox (changes kept on the device until the worker
+// has them) and the cold start (the service worker registered). Each source is a placeholder here, which build.mjs
 // replaces with the file's text (the first with src/browser/lib.js, and so on).
 const BROWSER_MODULES = [
   { title: "$:/cfworker/lib.js", type: "library", source: "__LIB_SOURCE__" },
@@ -28,8 +28,40 @@ const BROWSER_MODULES = [
   { title: "$:/cfworker/page-publisher.js", type: "startup", source: "__PAGE_PUBLISHER_SOURCE__" },
   { title: "$:/cfworker/restore-import.js", type: "startup", source: "__RESTORE_IMPORT_SOURCE__" },
   { title: "$:/cfworker/control-panel.js", type: "startup", source: "__CONTROL_PANEL_SOURCE__" },
-  { title: "$:/cfworker/outbox.js", type: "startup", source: "__OUTBOX_SOURCE__" }
+  { title: "$:/cfworker/outbox.js", type: "startup", source: "__OUTBOX_SOURCE__" },
+  { title: "$:/cfworker/cold-start.js", type: "startup", source: "__COLD_START_SOURCE__" }
 ];
+
+// The admin wiki's service worker (src/browser/service-worker.js, design 1.11): not a module of the
+// page but a script the worker serves at /sw.js, registered by the cold-start module at the address
+// the page carries ($:/cfworker/sw-url), which changes with the script, so a new one takes over at
+// the next load
+const SERVICE_WORKER_SOURCE = "__SERVICE_WORKER_SOURCE__";
+const SW_URL_TITLE = "$:/cfworker/sw-url";
+let serviceWorkerVersion = "";
+
+export function swVersion() {
+  if (!serviceWorkerVersion) serviceWorkerVersion = "1-" + hashText(SERVICE_WORKER_SOURCE).toString(36);
+  return serviceWorkerVersion;
+}
+
+// GET /sw.js: the service worker script. The browser checks the script of a registration at
+// navigations, from its cache while the script is fresh (a day here), past it afterwards: so a
+// page load costs no request for it, and a new version has a new address anyway (the page's).
+export function serveServiceWorker(request, corsHeaders) {
+  const etag = `"sw-${swVersion()}"`;
+  const headers = { ...corsHeaders, "Content-Type": "application/javascript; charset=utf-8", "Cache-Control": "private, max-age=86400", ETag: etag };
+  if ((request.headers.get("If-None-Match") || "").includes(etag)) return new Response(null, { status: 304, headers });
+  return new Response(SERVICE_WORKER_SOURCE, { headers });
+}
+
+function hashText(text) {
+  let hash = 5381;
+  for (let i = 0; i < text.length; i++) {
+    hash = ((hash * 33) ^ text.charCodeAt(i)) >>> 0;
+  }
+  return hash;
+}
 
 // Their settings. The public site's address: the admin wiki loads tiddler contents from there (no
 // worker request) and only asks the worker when that copy isn't current. Empty for a private wiki
@@ -53,12 +85,9 @@ let lastBakeVersion = { settings: null, version: "" };
 export function bakeVersion(env) {
   const enabled = conflictGuardEnabled(env), settings = enabled + "\n" + publicAddress(env);
   if (lastBakeVersion.settings !== settings) {
-    const input = (enabled ? BROWSER_MODULES.map(m => m.source).join("\n") : "off") + "\n" + publicAddress(env);
-    let hash = 5381;
-    for (let i = 0; i < input.length; i++) {
-      hash = ((hash * 33) ^ input.charCodeAt(i)) >>> 0;
-    }
-    lastBakeVersion = { settings, version: "7-" + hash.toString(36) };
+    // (The service worker's address is in the page too: a new script, a new page)
+    const input = (enabled ? BROWSER_MODULES.map(m => m.source).join("\n") + "\n" + swVersion() : "off") + "\n" + publicAddress(env);
+    lastBakeVersion = { settings, version: "7-" + hashText(input).toString(36) };
   }
   return lastBakeVersion.version;
 }
@@ -160,6 +189,7 @@ async function preloadedTiddlers(env, entries, pageSource) {
   if (conflictGuardEnabled(env)) {
     for (const m of BROWSER_MODULES) store.push({ title: m.title, type: "application/javascript", "module-type": m.type, text: m.source });
     store.push({ title: PUBLIC_URL_TITLE, text: publicAddress(env) });
+    store.push({ title: SW_URL_TITLE, text: `/sw.js?v=${swVersion()}` });
     store.push({ title: PAGE_SOURCE_TITLE, type: "application/json", text: JSON.stringify({ index: pageSource.index, fingerprint: pageSource.fingerprint, core: pageSource.core, shell: pageSource.shell || "" }) });
   }
   return store;

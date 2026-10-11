@@ -29,7 +29,14 @@ export default [
   {
     // The browser modules: TiddlyWiki modules, run in the browser, written as CommonJS
     files: ["src/browser/*.js"],
+    ignores: ["src/browser/service-worker.js"],
     languageOptions: { ecmaVersion: 2015, sourceType: "commonjs", globals: { ...globals.browser, $tw: "readonly" } },
+    rules: RULES
+  },
+  {
+    // The admin wiki's service worker: a plain script run by the browser outside the page
+    files: ["src/browser/service-worker.js"],
+    languageOptions: { ecmaVersion: 2015, sourceType: "script", globals: { ...globals.serviceworker } },
     rules: RULES
   }
 ];

@@ -1,0 +1,101 @@
+// What reaches the worker per page load, measured at the worker (CLAUDE.md, the first principle):
+// a counting proxy in front of it, a real TiddlyWiki in Chromium with the service worker allowed.
+// The page's own requests are counted elsewhere (first-visit, lazy-load); this counts what the page
+// can't see: the browser checking the service worker's script on the registration's behalf, which
+// cost a request per load until the script was registered with updateViaCache "all" and served
+// fresh for a day (design 1.11). Chrome starts those checks a minute after installing, so the
+// steady state is measured past that minute.
+// Run: npm run test:budget
+import http from "node:http";
+import { addTiddler, createChecks, finish, launchBrowser, listen, readWikiFile, settle, sleep, startSite, waitFor } from "./browser-harness.mjs";
+
+const site = await startSite({ index: readWikiFile(), publicStatus: true, privateWiki: true });
+const { check, results } = createChecks();
+const pageErrors = [];
+// Every request that reaches the worker: { method, path, status, conditional }
+const arrived = [];
+const proxy = http.createServer((req, res) => {
+  const target = new URL(req.url, site.base);
+  const out = http.request({ hostname: target.hostname, port: target.port, path: req.url, method: req.method, headers: { ...req.headers, host: target.host } }, answer => {
+    arrived.push({ method: req.method, path: req.url.split("?")[0], status: answer.statusCode, conditional: !!(req.headers["if-none-match"] || req.headers["if-modified-since"]) });
+    res.writeHead(answer.statusCode, answer.headers);
+    answer.pipe(res);
+  });
+  out.on("error", () => { res.writeHead(502); res.end(); });
+  req.pipe(out);
+});
+const FRONT = await listen(proxy);
+const browser = await launchBrowser({ serviceWorkers: "allow" });
+const context = await browser.newContext();
+const page = await context.newPage();
+page.on("pageerror", e => pageErrors.push(e.message));
+// A visibility the test controls (headless Chromium doesn't hide a tab for real): window.__hidden, then a visibilitychange event
+await page.addInitScript(() => {
+  window.__hidden = false;
+  Object.defineProperty(document, "hidden", { get: () => !!window.__hidden, configurable: true });
+  Object.defineProperty(document, "visibilityState", { get: () => window.__hidden ? "hidden" : "visible", configurable: true });
+});
+const setHidden = hidden => page.evaluate(h => { window.__hidden = h; document.dispatchEvent(new Event("visibilitychange")); }, hidden);
+const since = mark => arrived.slice(mark).map(r => `${r.method} ${r.path} ${r.status}${r.conditional ? "*" : ""}`);
+async function ready() {
+  await page.waitForFunction(() => window.$tw && $tw.syncer && $tw.syncer.timestampLastSyncFromServer, null, { timeout: 30000 });
+  await settle(page);
+}
+
+// --- 1. The first visit ------------------------------------------------------------------------------
+await page.goto(FRONT + "/");
+await ready();
+await waitFor(() => page.evaluate(async () => { const r = await navigator.serviceWorker.getRegistration(); return !!(r && r.active); }), 15000);
+await waitFor(async () => !!(await site.bucket.head("_page/shell.html")), 30000);   // the first load publishes the core file and the page
+await sleep(1500);
+const first = since(0);
+// (The browser also asks for /favicon.ico at this first visit, before the service worker is in charge: from then on the service worker answers it)
+check("the first visit: the page, the status file, the tiddler list, the service worker's script once, the core file and the page published, and nothing else but the browser's favicon request",
+  first.filter(r => r.startsWith("GET / ")).length === 1 && first.includes("GET /status 200") && first.some(r => r.startsWith("GET /recipes/default/tiddlers.json")) &&
+  first.filter(r => r.startsWith("GET /sw.js")).length === 1 && first.includes("PUT /page/core 204") && first.includes("PUT /page/shell 204") &&
+  first.every(r => /^GET \/ |^GET \/status |^GET \/recipes\/default\/tiddlers.json |^GET \/sw.js |^PUT \/page\/(core|shell) |^GET \/favicon.ico /.test(r)),
+  first.join(", "));
+await addTiddler(page, { title: "A note", text: "so the list isn't empty" });
+await settle(page);
+
+// --- 2. The first reload: the light page and the core file, once -------------------------------------
+let mark = arrived.length;
+await page.reload();
+await ready();
+await sleep(1500);
+const second = since(mark);
+check("the first reload: the light page, the core file (once, kept by the service worker from then on), the list (changed by the save); nothing for the script, nothing for the favicon",
+  second.includes("GET / 200*") && second.includes("GET /_plugins/tiddlywikicore.js 200") && second.some(r => /^GET \/recipes\/default\/tiddlers.json (200|304)\*$/.test(r)) && second.length === 3,
+  second.join(", "));
+
+// --- 3. The steady state, past the browser's first minute: 2 requests a reload, both 304 -------------
+await sleep(65000);
+const loads = [];
+for (let i = 0; i < 3; i++) {
+  mark = arrived.length;
+  await page.reload();
+  await ready();
+  await sleep(1500);
+  loads.push(since(mark));
+}
+check("every later reload reaches the worker exactly twice: the page and the tiddler list, both answered 304, nothing else",
+  loads.every(load => load.length === 2 && load.includes("GET / 304*") && load.includes("GET /recipes/default/tiddlers.json 304*")),
+  loads.map(load => load.join(", ")).join(" | "));
+check("...the service worker's script is never asked for again (the browser's own check uses its cache, the script fresh for a day)",
+  !arrived.slice(first.length).some(r => r.path === "/sw.js"), arrived.slice(first.length).filter(r => r.path === "/sw.js").map(r => `${r.status}${r.conditional ? "*" : ""}`).join(", "));
+
+// --- 4. A background tab asks nothing ------------------------------------------------------------------
+await page.evaluate(() => { $tw.syncer.pollTimerInterval = 2000; $tw.syncer.processTaskQueue(); });   // polls every 2 s from now on
+mark = arrived.length;
+await sleep(5000);
+check("(shown, polls set to every 2 s: the list is asked for, 304)", since(mark).length >= 2 && since(mark).every(r => r === "GET /recipes/default/tiddlers.json 304*"), since(mark).join(", "));
+await setHidden(true);
+await sleep(1000);
+mark = arrived.length;
+await sleep(7000);
+check("a tab in the background asks the worker nothing", since(mark).length === 0, since(mark).join(", "));
+await setHidden(false);
+const caughtUp = await waitFor(() => since(mark).some(r => r.startsWith("GET /recipes/default/tiddlers.json")), 10000);
+check("...and catches up once shown: a list request, nothing else", caughtUp && since(mark).every(r => r.startsWith("GET /recipes/default/tiddlers.json")), since(mark).join(", "));
+
+await finish({ check, results, pageErrors, browser, site, cleanup: () => proxy.close() });
