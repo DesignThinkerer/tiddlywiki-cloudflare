@@ -63,7 +63,9 @@ export async function startSite({ index, publicStatus = false, bindings = {}, ou
   const publicServer = http.createServer(async (req, res) => {
     const url = new URL(req.url, "http://public");
     publicRequests.push(decodeURIComponent(url.pathname) + url.search);
-    const headers = publicSite.cors && !publicSite.cors() ? {} : { "Access-Control-Allow-Origin": "*" };
+    // The CORS header as the zone's rule sends it (README 2.7): under /recipes/ and /_plugins/ only
+    const corsPath = url.pathname.startsWith("/recipes/") || url.pathname.startsWith("/_plugins/");
+    const headers = corsPath && !(publicSite.cors && !publicSite.cors()) ? { "Access-Control-Allow-Origin": "*" } : {};
     try {
       const key = decodeURIComponent(url.pathname.slice(1)) || "baked.html";
       const wait = publicSite.delay ? publicSite.delay(url) : 0;
