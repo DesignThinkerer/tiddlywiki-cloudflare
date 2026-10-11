@@ -22,7 +22,8 @@ that failed, every few seconds, and sends everything once the network is back; t
 - $:/temp/cfworker/outbox says how many changes wait (waiting), since when (since) and whether the
   browser is online (online); an item in the dropdown of TiddlyWeb's cloud icon (the "Server
   status" button, red while something is unsaved) shows that while something waits. TiddlyWiki's
-  own network alert stays: it clears itself once everything is saved.
+  own network alert stays: it clears itself once everything is saved; closed by hand, it stays
+  closed until the network is back (TiddlyWiki would show it again at its next retry).
 \*/
 (function(){
 
@@ -135,6 +136,7 @@ exports.startup = function() {
 	function setOnline(value) {
 		if(online !== value) {
 			online = value;
+			alertDismissed = false;
 			updateStatus();
 		}
 	}
@@ -168,6 +170,53 @@ exports.startup = function() {
 	});
 	window.addEventListener("offline",function() {
 		setOnline(false);
+	});
+
+	// --- TiddlyWiki's network alert, closed by hand: closed until the network is back ------------------
+
+	// TiddlyWiki raises its "Network Error" alert again at every failed retry (every few seconds while
+	// the network is away: the count on the alert climbs), so one closed by hand is back at the next
+	// retry. Closed, it stays closed while the network is away (the dropdown's item still says so),
+	// and shows again the next time the network goes. The one the syncer clears itself, everything
+	// saved, isn't a closing by hand: that happens online.
+	var alertDismissed = false,
+		connectionAlerts = Object.create(null);   // the titles of that alert, as seen
+	var originalDisplayError = $tw.Syncer.prototype.displayError;
+	$tw.Syncer.prototype.displayError = function(msg,err) {
+		var network = err === $tw.language.getString("Error/XMLHttpRequest") + ": 0";
+		if(network) {
+			setOnline(false);   // (a failed load or list, too: the network is away)
+		}
+		if(network && alertDismissed) {
+			this.logger.log(msg + ":",err);
+			return;
+		}
+		return originalDisplayError.apply(this,arguments);
+	};
+	wiki.addEventListener("change",function(changes) {
+		var s = $tw.syncer,
+			component = s && s.loggerConnection ? s.loggerConnection.componentName : null;
+		if(!component) {
+			return;
+		}
+		$tw.utils.each(changes,function(change,title) {
+			if(title.indexOf("$:/temp/alerts/") !== 0) {
+				return;
+			}
+			if(change.deleted) {
+				if(connectionAlerts[title]) {
+					delete connectionAlerts[title];
+					if(!online) {
+						alertDismissed = true;
+					}
+				}
+				return;
+			}
+			var tiddler = wiki.getTiddler(title);
+			if(tiddler && tiddler.fields.component === component && tiddler.hasTag("$:/tags/Alert")) {
+				connectionAlerts[title] = true;
+			}
+		});
 	});
 
 	// --- Every change, kept at once --------------------------------------------------------------------

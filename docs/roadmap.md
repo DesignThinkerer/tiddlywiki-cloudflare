@@ -18,10 +18,10 @@ Each step is one pull request, with its tests, its README section, its design en
 
 ### 1. A setup check, in the Cloudflare tab
 
-**Why now:** Access and the zone rules are set up by hand, and will stay so with the button; today a missing rule shows up as a `403` or a CORS error found by trial.
+**Why now:** Access and the zone rules are set up by hand, and will stay so with the button; today a missing rule shows up as a `403` or a CORS error found by trial — or not at all: a CORS rule without the `/_plugins/` path kept the service worker from keeping the core and plugin files, silently, since the page's own request for a file works without the header (design 2.18).
 
 **Done when:**
-- The tab reports each piece: Access on, the public site reachable at `PUBLIC_WIKI_URL` with the rewrite rule and the CORS header, backups set up, the queue bound; each missing one points at its README section.
+- The tab reports each piece: Access on, the public site reachable at `PUBLIC_WIKI_URL` with the rewrite rule and the CORS header (for the tiddler reads and for the files: the service worker's cache holding the core file is the test of the latter), backups set up, the queue bound; each missing one points at its README section.
 - It runs on demand (a button), so it costs nothing at page load.
 
 ### 2. The Deploy to Cloudflare button

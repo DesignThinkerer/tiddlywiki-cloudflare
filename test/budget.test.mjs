@@ -52,8 +52,11 @@ await waitFor(async () => !!(await site.bucket.head("_page/shell.html")), 30000)
 await sleep(1500);
 const first = since(0);
 // (The browser also asks for /favicon.ico at this first visit, before the service worker is in charge: from then on the service worker answers it)
-check("the first visit: the page, the status file, the tiddler list, the service worker's script once, the core file and the page published, and nothing else but the browser's favicon and manifest requests",
-  first.filter(r => r.startsWith("GET / ")).length === 1 && first.includes("GET /status 200") && first.some(r => r.startsWith("GET /recipes/default/tiddlers.json")) &&
+// (The service worker, once in place, takes its own copy of the page, revalidated (304), and of the list, asked for by its path
+// alone, a full answer: two requests once per device. The status file it takes from the browser's cache: no request.)
+check("the first visit: the page, the status file, the tiddler list, the service worker's script once, the page (304) and the list once more for the service worker's copy, the core file and the page published, and nothing else but the browser's favicon and manifest requests",
+  first.filter(r => r === "GET / 200").length === 1 && first.filter(r => r === "GET / 304*").length === 1 && first.filter(r => r === "GET /status 200").length === 1 &&
+  first.filter(r => r.startsWith("GET /recipes/default/tiddlers.json")).length === 2 && first.filter(r => /^GET \/recipes\/default\/tiddlers.json (200|304)/.test(r)).length === 2 &&
   first.filter(r => r.startsWith("GET /sw.js")).length === 1 && first.includes("PUT /page/core 204") && first.includes("PUT /page/shell 204") &&
   first.every(r => /^GET \/ |^GET \/status |^GET \/recipes\/default\/tiddlers.json |^GET \/sw.js |^GET \/manifest.webmanifest |^PUT \/page\/(core|shell) |^GET \/favicon.ico /.test(r)),
   first.join(", "));

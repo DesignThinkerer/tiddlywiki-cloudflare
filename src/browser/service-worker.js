@@ -14,14 +14,19 @@ By request:
   answer, kept at its real size. Never an "opaque" one (a plain <script> load from another site):
   the browser charges those several megabytes each against the site's storage, whatever their size,
   and storage under pressure is evicted whole, the outbox with it. Without the CORS header the file
-  isn't kept: the page's own <script> load still works online.
+  isn't kept: the page's own <script> load still works online. With no network and no copy of the
+  core file, the page gets a line saying so in place of the browser's "Cannot load" alert.
 - The status file, the tiddler list and the app's manifest: the network first, the cached one when
   the network fails, with X-Served-From: cache so the list sync knows (a device copy then counts
   whatever its revision).
 - /favicon.ico: the browser asks for it at a navigation when the page has no icon link (TiddlyWiki
   sets its icon once started): answered here, empty, rather than by the worker.
 - Anything else (a tiddler's contents, a save, a delete, the page published): the network only.
-When a new page is cached, the plugin files it no longer refers to leave the cache.
+Whenever a page is cached, the files it refers to are kept with it (one missing is fetched) and the
+plugin files it no longer refers to leave the cache. Once in place (the first visit registers it, the
+page and the files already loaded past it), the worker takes the page, its files, the status file and
+the tiddler list by itself, so one visit online is enough: two requests once per device, the page
+(revalidated, 304) and the list; the status file from the browser's own cache.
 \*/
 (function() {
 
@@ -31,14 +36,17 @@ var CACHE = "cfworker-wiki-v1",
 	MARK = "X-Wiki-Page",
 	FROM = "X-Served-From",
 	PAGE_PATHS = ["/", "/index.html", "/baked.html"],
+	DATA_PATHS = ["/status", "/recipes/default/tiddlers.json", "/manifest.webmanifest"],
+	FILL_PATHS = ["/status", "/recipes/default/tiddlers.json"],   // taken with the page once this worker is in place
 	PAGE_KEY = self.location.origin + "/",
-	NETWORK_WAIT = 8000;   // ms before the cached page answers instead of a network that doesn't
+	NETWORK_WAIT = 8000,   // ms before the cached page answers instead of a network that doesn't
+	NO_CORE = "No network, and no copy of TiddlyWiki's core file kept on this device: open the wiki once online first.";
 
 self.addEventListener("install", function() {
 	self.skipWaiting();
 });
 
-// Older caches of ours go; this version takes the open pages over at once
+// Older caches of ours go; this version takes the open pages over at once, then fills its cache
 self.addEventListener("activate", function(event) {
 	event.waitUntil(caches.keys().then(function(names) {
 		return Promise.all(names.filter(function(name) {
@@ -48,7 +56,9 @@ self.addEventListener("activate", function(event) {
 		}));
 	}).then(function() {
 		return self.clients.claim();
-	}));
+	}).then(function() {
+		return fill(event);
+	}).catch(function() {}));
 });
 
 function isPage(request,url) {
@@ -57,8 +67,11 @@ function isPage(request,url) {
 function isFile(url) {
 	return /\/_plugins\/[^/]+\.js$/.test(url.pathname) && url.searchParams.has("v");
 }
+function isCore(url) {
+	return /\/_plugins\/tiddlywikicore\.js$/.test(url.pathname);
+}
 function isData(url) {
-	return url.origin === self.location.origin && (url.pathname === "/status" || url.pathname === "/recipes/default/tiddlers.json" || url.pathname === "/manifest.webmanifest");
+	return url.origin === self.location.origin && DATA_PATHS.indexOf(url.pathname) >= 0;
 }
 
 self.addEventListener("fetch",function(event) {
@@ -72,9 +85,10 @@ self.addEventListener("fetch",function(event) {
 	} else if(url.origin === self.location.origin && url.pathname === "/favicon.ico") {
 		event.respondWith(new Response(null,{status: 204}));
 	} else if(isFile(url)) {
-		event.respondWith(cacheFirst(request));
+		event.respondWith(cacheFirst(event,request));
 	} else if(isData(url)) {
-		event.respondWith(networkFirst(event,request,request.url,false));
+		// (Keyed by path: the list is asked for with a filter in the query, which the worker doesn't read)
+		event.respondWith(networkFirst(event,request,url.origin + url.pathname,false));
 	}
 });
 
@@ -108,14 +122,9 @@ function networkFirst(event,request,key,page) {
 		}
 		var fetching = fetch(request).then(function(response) {
 			if(response && response.ok && (!page || response.headers.get(MARK))) {
-				var forCache = response.clone(),
-					forPrune = page ? response.clone() : null;
+				var forCache = response.clone();
 				event.waitUntil(caches.open(CACHE).then(function(cache) {
-					return cache.put(key,forCache).then(function() {
-						return forPrune ? forPrune.text().then(function(html) {
-							return prune(cache,html);
-						}) : null;
-					});
+					return page ? storePage(cache,forCache,event) : cache.put(key,forCache);
 				}).catch(function() {}));
 			}
 			return response;
@@ -139,35 +148,75 @@ function networkFirst(event,request,key,page) {
 	});
 }
 
-// The cache, else the network, kept if it answered ok. A file on another site (the public one) is
-// asked for with CORS, so the answer can be seen and is stored at its real size; if that site doesn't
-// allow it, the page's own plain request goes out instead, and nothing is kept.
-function cacheFirst(request) {
-	var url = request.url,
-		sameSite = new URL(url).origin === self.location.origin;
+// The cache, else a fetch of the file, kept if it answered ok. If it can't be had that way (a site
+// that doesn't allow CORS), the page's own plain request goes out instead, and nothing is kept; with
+// no network either, the core file is answered with a line that says so, in place of the browser's
+// "Cannot load" alert.
+function cacheFirst(event,request) {
+	var url = request.url;
 	return caches.open(CACHE).then(function(cache) {
 		return cache.match(url).then(function(hit) {
 			if(hit) {
 				return hit;
 			}
-			// (Past the browser's own cache: a copy it took before the site allowed CORS has no
-			// permission in it, and such a file is kept for a year)
-			var asked = sameSite ? fetch(request) : fetch(new Request(url,{mode: "cors", credentials: "omit", cache: "reload"})).catch(function() {
-				return null;
-			});
-			return asked.then(function(response) {
-				if(response && response.ok) {
-					cache.put(url,response.clone()).catch(function() {});
+			return fetchFile(cache,url,event).then(function(response) {
+				if(response) {
 					return response;
 				}
-				return response || fetch(request);
+				return fetch(request).catch(function(err) {
+					if(isCore(new URL(url))) {
+						return new Response("document.body.innerHTML=" + JSON.stringify("<p style=\"font:16px/1.5 sans-serif;max-width:36em;margin:3em auto;padding:0 1em\">" + NO_CORE + "</p>") + ";",
+							{headers: {"Content-Type": "application/javascript; charset=utf-8"}});
+					}
+					throw err;
+				});
 			});
 		});
 	});
 }
 
-// The core file and plugin files the page loads: any other such file in the cache goes
-function prune(cache,html) {
+// A file fetched by its address alone and kept: not the page's own request, whose headers at a
+// reload get a 304 the cache can't keep; through the browser's own cache for a file of this site (a
+// fresh copy costs nothing); with CORS, past the browser's copy, for one from the public site (a copy
+// taken before the site allowed CORS has no permission in it, and such a file is kept for a year).
+// One fetch at a time per file, shared by whoever asks meanwhile; the copy is written under the
+// event's waitUntil, so the browser doesn't stop this worker before it's done. Resolves with the
+// answer (its body for the first asker), or null when the file can't be had that way.
+var inFlight = Object.create(null);   // url -> promise, until the copy is written
+function fetchFile(cache,url,event) {
+	if(inFlight[url]) {
+		return inFlight[url];
+	}
+	var sameSite = new URL(url).origin === self.location.origin,
+		asked = sameSite ? fetch(url) : fetch(new Request(url,{mode: "cors", credentials: "omit", cache: "reload"}));
+	var promise = asked.then(function(response) {
+		if(response && response.ok) {
+			event.waitUntil(cache.put(url,response.clone()).catch(function() {}).then(function() {
+				delete inFlight[url];
+			}));
+			return response;
+		}
+		delete inFlight[url];
+		return null;
+	},function() {
+		delete inFlight[url];
+		return null;
+	});
+	inFlight[url] = promise;
+	return promise;
+}
+
+// A page kept, with the files it refers to: any other core or plugin file in the cache goes, one
+// missing is fetched
+function storePage(cache,response,event) {
+	var forText = response.clone();
+	return cache.put(PAGE_KEY,response).then(function() {
+		return forText.text();
+	}).then(function(html) {
+		return keepFiles(cache,html,event);
+	});
+}
+function keepFiles(cache,html,event) {
 	var keep = Object.create(null),
 		pattern = /<script src="([^"]*\/_plugins\/[^"]*)"/g,
 		found;
@@ -176,11 +225,36 @@ function prune(cache,html) {
 	}
 	return cache.keys().then(function(requests) {
 		return Promise.all(requests.filter(function(cached) {
-			var url = new URL(cached.url);
-			return isFile(url) && !keep[cached.url];
+			return isFile(new URL(cached.url)) && !keep[cached.url];
 		}).map(function(cached) {
 			return cache["delete"](cached);
 		}));
+	}).then(function() {
+		return Promise.all(Object.keys(keep).map(function(url) {
+			return cache.match(url).then(function(hit) {
+				return hit ? null : fetchFile(cache,url,event);
+			});
+		}));
+	});
+}
+
+// Once in place: the page (kept if it carries the worker's mark, with its files), the status file and
+// the tiddler list, which the first visit loaded before this worker was there
+function fill(event) {
+	return caches.open(CACHE).then(function(cache) {
+		var page = fetch(PAGE_KEY).then(function(response) {
+			if(response.ok && response.headers.get(MARK)) {
+				return storePage(cache,response,event);
+			}
+		});
+		return Promise.all([page.catch(function() {})].concat(FILL_PATHS.map(function(path) {
+			var key = self.location.origin + path;
+			return fetch(key).then(function(response) {
+				if(response.ok) {
+					return cache.put(key,response);
+				}
+			}).catch(function() {});
+		})));
 	});
 }
 

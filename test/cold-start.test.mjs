@@ -19,13 +19,14 @@ const browser = await launchBrowser({ serviceWorkers: "allow" });
 const { pageErrors, watch } = createWatcher(site);
 const CACHE = "cfworker-wiki-v1";
 const responses = [];   // every response a page got: { tag, url, status, fromSW }
+const dialogs = [];     // every browser dialog a page showed (the "Cannot load" alert of TiddlyWiki's page, say)
 
 async function open(context, tag, url = BASE + "/", { wait = true } = {}) {
   const p = await context.newPage();
   await watch(p, tag);
   p.on("console", m => { if (m.type() === "error" && !m.text().startsWith("Failed to load resource")) pageErrors.push(`${tag} console: ${m.text()}`); });
   p.on("response", r => responses.push({ tag, url: r.url(), status: r.status(), fromSW: r.fromServiceWorker() }));
-  p.on("dialog", d => d.accept());
+  p.on("dialog", d => { dialogs.push(`${tag}: ${d.message()}`); d.accept(); });
   const response = await p.goto(url);
   if (wait) await ready(p);
   return { p, response };
@@ -46,6 +47,10 @@ async function online(context) { await context.setOffline(false); await site.sta
 const status = p => p.evaluate(() => { const t = $tw.wiki.getTiddler("$:/temp/cfworker/outbox"); return t ? { waiting: t.fields.waiting, online: t.fields.online } : null; });
 const controller = p => p.evaluate(() => navigator.serviceWorker.controller ? navigator.serviceWorker.controller.scriptURL : null);
 const cached = p => p.evaluate(async name => { const c = await caches.open(name); return (await c.keys()).map(r => r.url); }, CACHE);
+const CORE = "/_plugins/tiddlywikicore.js?v=";
+// The core file taken out of the cache (a copy lost: a browser clearing space, a copy that didn't finish)
+const dropCore = p => p.evaluate(async name => { const c = await caches.open(name); for (const k of await c.keys()) if (k.url.includes("/_plugins/tiddlywikicore.js")) await c.delete(k); }, CACHE);
+const holds = async (p, ...parts) => { const keys = await cached(p); return parts.every(part => keys.some(u => u.includes(part))); };
 // How the cache holds a URL: the response's type ("basic" from this site, "cors" from the public one, "opaque" never), or null
 const cachedType = (p, url) => p.evaluate(async ([name, u]) => { const c = await caches.open(name); const r = await c.match(u); return r ? r.type : null; }, [CACHE, url]);
 const got = (tag, from, test) => responses.slice(from).filter(r => r.tag === tag && test(r));
@@ -113,6 +118,25 @@ await A.evaluate(() => $tw.wiki.deleteTiddler("$:/config/cfworker/LoadAll"));
 await settle(A);
 await reload(A);
 
+// --- 4b. Another device, one visit online and no reload: it opens offline ---------------------------
+// (The service worker fills its cache as soon as it's in place: the page, its files, the status file
+// and the tiddler list, which a first visit loaded before it was there)
+const contextB = await browser.newContext();
+const { p: B } = await open(contextB, "B");
+await waitFor(() => B.evaluate(async () => { const r = await navigator.serviceWorker.getRegistration(); return !!(r && r.active); }), 15000);
+const filled = await waitFor(() => holds(B, BASE + "/", CORE, "/status", "/recipes/default/tiddlers.json"), 10000);
+check("another device, after its first visit alone (no reload): the cache holds the page, the core file, the status file and the tiddler list", filled, (await cached(B)).map(u => u.replace(BASE, "")).join(", "));
+await waitFor(() => B.evaluate(() => $tw.wiki.getTiddlerText("First note") === "written online"), 15000);   // (the fill of the device copy)
+await sleep(500);
+await offline(contextB);
+await reload(B, { wait: false });
+const bootedB = await B.waitForFunction(() => window.$tw && $tw.syncer && $tw.wiki.tiddlerExists("$:/core"), null, { timeout: 30000 }).then(() => true).catch(() => false);
+const noteOnB = bootedB && await waitFor(() => B.evaluate(() => $tw.wiki.getTiddlerText("First note") === "written online").catch(() => false), 15000);
+check("...and with no network it opens, the tiddlers from its device copy, logged in and writable", noteOnB && await B.evaluate(() => $tw.wiki.getTiddlerText("$:/status/IsLoggedIn") === "yes" && $tw.wiki.getTiddlerText("$:/status/IsReadOnly") === "no"),
+  `booted ${bootedB}, note ${noteOnB}`);
+await online(contextB);
+await contextB.close();
+
 // --- 5. An answer without the worker's mark (Access refusing): shown as it is, never cached ----------
 await site.setBindings({ ACCESS: "" });   // the worker then refuses every request, as it does without Access
 mark = responses.length;
@@ -148,6 +172,27 @@ await A.waitForFunction(() => window.$tw && $tw.syncer && $tw.wiki.tiddlerExists
 await sleep(1000);
 check("...and runs offline, from the cache", await A.evaluate(() => window.__helloRan === true));
 await online(contextA);
+
+// --- 6b. The core file lost from the cache: back at the next load online; offline, a line, not an alert
+await reload(A);
+await dropCore(A);
+await reload(A);   // (a reload: the page asks for the file conditionally, and the worker answers 304)
+const coreBack = await waitFor(() => holds(A, CORE), 10000);
+check("the core file gone from the cache (a browser clearing space, a copy that didn't finish): back at the next load online", coreBack, (await cached(A)).map(u => u.replace(BASE, "")).join(", "));
+await dropCore(A);
+const cdpA = await contextA.newCDPSession(A);
+await cdpA.send("Network.clearBrowserCache");   // (the browser's own copy gone too, as on a phone short of space)
+await cdpA.detach();
+await offline(contextA);
+const dialogsBefore = dialogs.length;
+await reload(A, { wait: false });
+await sleep(3000);
+const bodyNoCore = await A.evaluate(() => document.body ? document.body.innerText.replace(/\s+/g, " ").trim() : "").catch(() => "");
+check("no network and no core file on the device: the page says so in a line (open the wiki once online), not the browser's \"Cannot load\" alert",
+  /core file/.test(bodyNoCore) && /online/.test(bodyNoCore) && dialogs.length === dialogsBefore, `${JSON.stringify(bodyNoCore.slice(0, 120))}; dialogs: ${dialogs.slice(dialogsBefore).join(" | ")}`);
+await online(contextA);
+await reload(A);
+check("(online again, the wiki is back, its core file kept)", await A.evaluate(() => $tw.wiki.getTiddlerText("First note") === "written online") && await waitFor(() => holds(A, CORE), 10000));
 
 // --- 7. A public wiki: the core and plugin files come from the public site, and are cached too -------
 await site.setBindings({ PUBLIC_WIKI_URL: PUB });
