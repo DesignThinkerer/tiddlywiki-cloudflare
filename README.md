@@ -15,6 +15,8 @@ What the worker adds to a plain TiddlyWeb server:
 
 A new wiki starts by itself: the first time you open the admin site, the worker puts an empty TiddlyWiki in the bucket. To move an existing wiki in, drag its file onto the admin wiki.
 
+**Public by design.** The public site *is* the bucket: every tiddler you save is readable there by anyone, the moment it's saved (drafts are never saved, so they aren't). This is for a wiki you publish — a blog, documentation, notes you share — not for a private notebook.
+
 **What you need:** a Cloudflare account (the free plan is enough), a domain on that account (both sites are hostnames of it), and a GitHub account (the worker is deployed from your copy of this repository; the backup goes to a repository too).
 
 This README covers the setup, operating the wiki, troubleshooting, the limits and the tests. How the worker works, and why it's built this way, are in [docs/design.md](docs/design.md).
@@ -104,6 +106,8 @@ Until the worker is bound to the queue, it runs the same backup directly after e
 
 Without a repository and a token, the worker skips backups.
 
+**Restoring from the backup:** the backup is the wiki, one file per tiddler, so a wiki can be rebuilt from it in a new bucket or a new account: do 2.2 to 2.8 with an empty bucket, then clone the backup and run `node tools/restore.mjs <the clone>` (from a clone of this repository, Node 22). It writes `restore.json`, which you drag onto the admin wiki, like an existing wiki's file (2.8): every tiddler is saved again, plugins included, each created anew (the old revisions are left behind) and backed up. A thousand tiddlers take a few minutes to save and, at GitHub's pace, a couple of hours to commit (5). The backup's files can't be dragged in as they are: TiddlyWiki's JSON import keeps only text fields, and a stored tiddler has its tags as a list, so every tag would be lost — the tool is what turns them into what the import takes. It does the same for one file: to get back one tiddler, or one of its past versions, download that file from GitHub (its history has every version) and run the tool on it. To get a single-file wiki out of a backup instead, for reading it anywhere: `npx tiddlywiki@5.4.1 wiki --init empty && npx tiddlywiki@5.4.1 wiki --load restore.json --build index` makes `wiki/output/index.html`.
+
 ### 2.5 The worker
 
 The worker is deployed from your repository by Cloudflare's **Workers Builds**: every push to `main` builds `worker.js` and deploys it, with the bindings and settings from `wrangler.toml`.
@@ -127,7 +131,7 @@ The worker is deployed from your repository by Cloudflare's **Workers Builds**: 
    | `CONFLICT_GUARD` | `off` builds the page without the browser modules (3). |
    | `BACKUP_RETRY_SECONDS` | the first wait before a failed backup is tried again (default 60). |
    | `BACKUP_ALERT_MINUTES` | how long backups have to keep failing before the admin wiki shows it (default 60, design 1.7). |
-   | `ACCESS` | `off` lets requests through that didn't come through Cloudflare Access (2.6). **Only for the tests and local runs:** the admin site is then open to anyone. |
+   | `ACCESS` | `off` lets requests through that didn't come through Cloudflare Access (2.6), for the tests and local runs: only requests to a local address (`localhost`, `127.0.0.1`), so on a deployed worker it changes nothing. |
 
    Saving a variable deploys it at once; the first page load after that uses it.
 4. The first deploy runs when you push, or at once if the dashboard offers it. The worker then answers at `https://wiki-admin.<your subdomain>.workers.dev` (your account's `workers.dev` subdomain is shown under Workers & Pages); that's the admin site, once Access protects it (2.6).
@@ -140,7 +144,7 @@ The worker is deployed from your repository by Cloudflare's **Workers Builds**: 
 
 Protect the worker with **Worker Access → All traffic** (production and preview URLs) and a policy allowing you (your Cloudflare account's e-mail, say). This covers the worker's `workers.dev` address, a custom domain, and its preview URLs, which `wrangler.toml` turns off anyway. Requests Access blocks never reach the worker, so they cost no quota.
 
-The worker has no login of its own, so it relies on this, and checks it: Cloudflare marks a request that came through Access (`ctx.access`), and the worker answers `403` to any request without that mark, before reading or building anything. (That mark never reaches a worker deployed with static assets, which run behind a router of Cloudflare's; this worker has none, which is why the empty wiki travels as a module of it, 2.5.) So if the Access application is missing, or covers another hostname than the one a request came to, the wiki is closed rather than open; the `403` says what to do. Only the tests and local runs, where there is no Access, switch the check off with `ACCESS = off`.
+The worker has no login of its own, so it relies on this, and checks it: Cloudflare marks a request that came through Access (`ctx.access`), and the worker answers `403` to any request without that mark, before reading or building anything. (That mark never reaches a worker deployed with static assets, which run behind a router of Cloudflare's; this worker has none, which is why the empty wiki travels as a module of it, 2.5.) So if the Access application is missing, or covers another hostname than the one a request came to, the wiki is closed rather than open; the `403` says what to do. Only the tests and local runs, where there is no Access, switch the check off with `ACCESS = off`, and the switch counts only for a request to a local address (`localhost`, `127.0.0.1`): left on by mistake on a deployed worker, it opens nothing.
 
 ### 2.7 The zone's rules
 
@@ -213,6 +217,8 @@ A second wiki is a second worker with its own bucket, queue, public site and set
 
 **Deploying a change:** edit `src/`, run `npm run build`, `npm run lint` and `npm test`, and push to `main` (through a pull request, so CI runs the tests too): Workers Builds deploys it (2.5). Without it, `npx wrangler deploy`, or paste `worker.js` into the dashboard's editor. If a browser module changed, the next admin page load rebuilds `baked.html`. If you changed how the page itself is built, also bump the number in front of `bakeVersion` (now `7-`), or existing pages keep the old format until something else rebuilds them; plugin files are only rewritten when their plugin changes, so after changing their format, delete `_plugins/` and open the admin wiki. Reload any open admin tabs: tabs opened before a change keep the old modules, and tabs older than the modules have no conflict protection.
 
+**Updating your copy:** your worker is deployed from your copy of this repository, which this one keeps changing. To take an update: on GitHub, *Sync fork* on your fork (or `git pull` from this repository, added as a remote, for a copy made from the template); Workers Builds redeploys, and the next admin page load rebuilds the page. Nothing in the repository holds your values (`wrangler.toml` is deployed as it is, the settings live in the dashboard, 2.5), so an update never conflicts with them. [CHANGELOG.md](CHANGELOG.md) lists, for each change, anything to do by hand — a new setting, a new zone rule; unless it says so, nothing is.
+
 **Updating the wiki engine:** update the `tiddlywiki` package in `package.json` (a pull request, so the tests run on the new version) and deploy; for a wiki that already runs, delete `index.html` in R2 and open the admin wiki: the worker puts the new empty wiki there (design 1.3), and your tiddlers, plugins and published page are untouched. Or upload a new `index.html` (an empty TiddlyWiki with the TiddlyWeb plugin) to R2 yourself. Either way, the next admin page load rebuilds `baked.html` from it and purges the public page, then publishes the core file and the page for the new version by itself (design 1.9). If a TiddlyWiki upgrade changes the filter in `tiddlers.json?filter=…`, add the new filter to `SKINNY_LIST_FILTERS`, or the public tiddler list won't be purged after saves. You'll see the exact URL in the browser's Network tab. Plugins installed through the wiki override the copies in `index.html`: after an upgrade, update the version in the plugin library's URL (`$:/config/OfficialPluginLibrary`) and update your plugins from its Updates tab.
 
 **Plugins:** install, update, disable or delete them from the wiki (drag and drop, the plugin library, the Control Panel). When TiddlyWiki asks you to reload, wait until the save has finished, then reload. The public site gets the same plugins. As in a single-file wiki, updating a plugin that came with `index.html` (a theme from the plugin library, say) replaces it, and deleting it afterwards removes it. To get `index.html`'s version back: in R2, delete `_page/shell.html` and `baked.html`, then open the admin wiki. The page is built from `index.html` again, and that load publishes it. Any other plugin from `index.html` you deleted comes back too.
@@ -264,7 +270,7 @@ If the page is rebuilt before step 4 (by a deploy, or by saving another plugin, 
 
 | Symptom | Likely cause | What to do |
 |---|---|---|
-| Every request answers 403 "didn't come through Cloudflare Access" | No Access application covers the hostname you're using (2.6): Access isn't set up yet, or it's set up on the custom domain only and you're on `workers.dev` or a preview URL | Set Access up as **Worker Access → All traffic**, or use the hostname it covers. For a local run without Access, set `ACCESS = off` (2.5). |
+| Every request answers 403 "didn't come through Cloudflare Access" | No Access application covers the hostname you're using (2.6): Access isn't set up yet, or it's set up on the custom domain only and you're on `workers.dev` or a preview URL | Set Access up as **Worker Access → All traffic**, or use the hostname it covers. For a local run without Access, set `ACCESS = off` (2.5); it only works for a local address. |
 | The admin page says "There's no wiki yet" (404) | The bucket has no `index.html`, and the worker was deployed without the empty wiki (pasted into the dashboard alone, or `seed/` wasn't built) | Deploy with Wrangler or Workers Builds after `npm run build`, or upload `index.html` and `status` yourself (2.2). |
 | Every request answers 500 naming `PUBLIC_WIKI_URL` | The variable is missing, or isn't the public site's address (2.5) | Set it to `https://` + the bucket's custom domain (2.2), nothing after the hostname. |
 | Alert "Edit conflict: … was changed in another tab or browser" | Another tab, device or script saved that tiddler after you started editing | Compare the tiddler with its `(conflict …)` copy, keep what you want and delete the copy. |
@@ -302,6 +308,7 @@ If the page is rebuilt before step 4 (by a deploy, or by saving another plugin, 
 - **Big imports take a while to back up.** GitHub allows about 500 commits an hour, so 1,000 tiddlers take a little over two hours. Nothing is lost while they wait.
 - **Free-plan quotas** (October 2026, see 7): 100,000 worker requests a day; 10,000 queue operations a day, about 3 per backup or retry, so roughly 3,300 saves a day; 10 ms of CPU per request, with some flexibility for occasional overruns. Each save reads and rewrites the whole tiddler list, about 1 ms of CPU per 400–500 tiddlers, which is now the largest cost of a save. At several thousand tiddlers, saves could start hitting that limit. Saving a plugin also rebuilds the page, from the list the save has just written.
 - **A tab closed right after a failed list update.** The worker stores a tiddler, then updates the tiddler list. If that update fails, the browser's retry completes it (design 1.4), but if the tab is closed first, the tiddler stays out of the list until the list is rebuilt (4).
+- **The backup can't be checked out on Windows.** Its files are named after the titles (`tiddlers/$:/config/….json`), and Windows allows no `:` in a file name. Clone it on Linux, macOS or WSL to restore (2.4); on GitHub itself it reads fine.
 - **Waiting backups cost queue operations.** If the GitHub token stays broken, every backup waiting is put back in the queue at the end of each pause (every 6 hours, once the pauses have grown): 1 queue operation for two pauses in three, 3 for the third, until it's fixed (the admin wiki shows an alert after an hour, design 1.7). A rate limit does the same while it lasts: a big import that GitHub slows down costs more than 3 operations a tiddler.
 
 ---
@@ -342,6 +349,7 @@ GitHub runs the same two groups, as two jobs side by side, for every pull reques
 ├── worker.js                 GENERATED: the file you deploy (npm run build)
 ├── seed/empty.html           GENERATED, not committed: an empty TiddlyWiki with TiddlyWeb, what a new wiki starts from (2.8), uploaded with the worker
 ├── tools/build-wiki.mjs      builds it from the tiddlywiki package (npm run build)
+├── tools/restore.mjs         turns a clone of the backup into a file TiddlyWiki imports (2.4)
 ├── docs/
 │   ├── design.md             how the worker works, and why it's built this way
 │   └── external-plugins.md   design notes for plugin files (design 1.8)
@@ -371,17 +379,17 @@ GitHub runs the same two groups, as two jobs side by side, for every pull reques
 ├── package.json              build, lint and test scripts
 └── test/
     ├── first-visit.test.mjs  a new wiki from an empty bucket, in Chromium (13 checks)
-    ├── two-tabs.test.mjs     real TiddlyWiki in Chromium, several tabs (93 checks)
+    ├── two-tabs.test.mjs     real TiddlyWiki in Chromium, several tabs, a restore (95 checks)
     ├── plugins.test.mjs      real plugins on the admin and public sites (66 checks)
     ├── page-publish.test.mjs the page published from a real TiddlyWiki (57 checks)
     ├── lazy-load.test.mjs    loading a big wiki on both sites: what's shown first, the device's copy, the fill (31 checks)
-    ├── queue-backup.test.mjs queue backup against an imitation of GitHub (42 checks)
-    ├── integrity.test.mjs    the tiddler list's integrity, a failed page build, draft-like titles, .gitignore, what a deploy uploads (80 checks)
+    ├── queue-backup.test.mjs queue backup against an imitation of GitHub (43 checks)
+    ├── integrity.test.mjs    the tiddler list's integrity, a failed page build, draft-like titles, awkward titles, .gitignore, what a deploy uploads, the restore tool (88 checks)
     ├── r2-ops.test.mjs       R2 calls per kind of request, against a budget (34 checks)
     ├── cpu.test.mjs          CPU of a big plugin's save and backup, against a budget (2 checks)
     ├── r2-counter.mjs        test-only wrapper that counts the worker's R2 calls
     ├── browser-harness.mjs   the browser suites' shared setup (worker, public site stand-in, Chromium, helpers)
-    └── bake.test.mjs         page serving and rebuilding, tiddler and file reads, the published page, the Access check, the public address, the first visit (87 checks)
+    └── bake.test.mjs         page serving and rebuilding, tiddler and file reads, the published page, the Access check, the public address, the first visit (94 checks)
 ```
 
 The worker is written as ES modules, each importing only from the ones below it: the entry point, the handlers, the page, the list, the layout, then the shared pieces (`src/worker/index.js` lists the order). The build inlines them into `worker.js` in that order, so one file is deployed, which you can paste into the dashboard, with every comment kept; it refuses two modules that import each other, an import of something not exported, and a name declared twice. The tests run the built `worker.js` in Miniflare, and import a module's functions directly where they test one (`test/cpu.test.mjs`, the checks in `test/bake.test.mjs`).
@@ -398,7 +406,7 @@ The tests run the real worker in Cloudflare's local runtime (workerd, through Mi
 - Page serving: rebuild on an outdated bake or a new `index.html`, the `304` for an unchanged page (also with a weakened ETag, and by date alone, including two pages built within the same second), a byte order mark; CORS, a bad `PUT` path, and `/status`, kept by the browser for a week and no longer baked into the page; a tiddler read (its revision as ETag) and a file read (R2's), each answered `304` to a browser that has it (also with a weakened ETag, and to a `HEAD`), and sent when it has another version.
 - The published page: the core file stored and each kind refused (also one sent for an older `index.html`, or without saying which) (also one still switching the save template, while the core plugin's escaped mentions of it are accepted), each kind of shell refused, a shell kept and the page built from it (the page and the answer carrying the stored shell's version), the same again, a shell from a page older than the one stored refused with the current version (also one built from a shell since replaced, or saying none), then kept once sent with it, plugin tags before the core (only in a shell: in a full `index.html` they stay in `<head>`, even with TiddlyWiki's marker in raw markup), a new `index.html` built from until a shell is published for it.
 - `CONFLICT_GUARD = off`: the page built without the browser modules.
-- Cloudflare Access: without `ACCESS = off`, every request (page, status, list, tiddler, save, delete, preflight) answers `403` and nothing is built or stored; the decision itself lets a request through that Access marked (`ctx.access`), refuses one without, and takes only `off` as the switch.
+- Cloudflare Access: without `ACCESS = off`, every request (page, status, list, tiddler, save, delete, preflight) answers `403` and nothing is built or stored; the decision itself lets a request through that Access marked (`ctx.access`), refuses one without, and takes only `off` as the switch, and only for a local address: on a deployed hostname (`admin.example.com`, `workers.dev`) the switch changes nothing.
 - `PUBLIC_WIKI_URL`: missing, without `https://` or with a path, every request answers `500` naming it and nothing is built or stored; a trailing slash is fine; the check itself also refuses the worker's own address.
 - The first visit: an empty bucket with the empty wiki as the worker's asset gets `index.html` (the asset, byte for byte) and the public `status` file on the first page request, and the page; the next visit changes nothing; the asset isn't served at its own path; an `index.html` already there is used, not replaced, nor its `status`; one deleted by hand is put back and the page rebuilt from it; without the asset the page answers `404` saying what to upload.
 
@@ -414,7 +422,8 @@ The tests run the real worker in Cloudflare's local runtime (workerd, through Mi
 - list writes landing out of order (one delayed through `test/r2-counter.mjs`): a delete after the title was created again keeps the new tiddler listed, a save landing between a delete's check and its removal (removed with it) isn't left listed, and an older save doesn't replace a newer entry;
 - a page build that fails after a plugin save or delete (the page or the plugin file can't be written, through `test/r2-counter.mjs`): the change is still confirmed, the page is marked outdated, and the next page load builds it with the change (a load whose build fails too serves the last page built, not the bare `index.html`); a plugin file that can't be deleted (its plugin deleted, or saved as an ordinary tiddler): confirmed, and the page built without it; a page build and its outdated mark both failing after a plugin delete: the mark tried again a second later, and the next page load builds the page without the plugin; the mark failing again: the delete, or a plugin's save as an ordinary tiddler, answers `500` while the page still loads the plugin, and its retry builds the page without it and deletes the file;
 - overlapping page builds: a save's build that read the shell before a new one was published (its page write delayed) doesn't put the old shell back;
-- titles: a save whose title isn't text, or isn't the one in its URL, or is too long for an R2 key, is refused (`400`; the longest that fits is stored and deleted, and one too long is "deleted" with a `204`), a path that isn't valid percent-encoding refused (`400`) by reads, saves and deletes, and such tiddlers stored by hand are listed under their key instead of stopping the rebuild or being listed under the wrong title;
+- titles: a save whose title isn't text, or isn't the one in its URL, or is too long for an R2 key, is refused (`400`; the longest that fits is stored and deleted, and one too long is "deleted" with a `204`), a path that isn't valid percent-encoding refused (`400`) by reads, saves and deletes, and such tiddlers stored by hand are listed under their key instead of stopping the rebuild or being listed under the wrong title; awkward titles (a comma, `%`, `#`, `&`, `+`, accents, emoji, spaces, quotes, slashes, a backslash) going through create, read, `If-Match` with the ETag they got, `412`, the list, the purge URL and delete;
+- the restore tool (`tools/restore.mjs`): a backup clone collected with its subdirectories and sorted, tags as TiddlyWiki writes them, the old revision, bag and recipe left out, a custom field called `fields` flat again, what isn't a tiddler left out and said, run as a command on a clone and on one file;
 - a field called `fields` stored nested, as TiddlyWeb's layout has it; a value that's an object refused (`400`), and a tag that isn't text (in either layout), while one already listed doesn't stop the page from being built; a body sent as the flat layout with a field after the text (listed), and with a text that isn't text or garbage after it (refused); custom fields named like built-in properties (`constructor`) kept, and a `text` among the custom fields doesn't move the text;
 - a save of a tiddler whose text never loaded (`_is_skinny`), in both layouts, keeping the stored text without storing the mark, and one the worker doesn't have stored without text;
 - tiddlers titled `Draft of '…'` saved and deleted like any other, while real drafts still aren't stored; titles starting like `$:/StoryList` (`$:/StoryList/2`) stored, `$:/StoryList` itself not;
@@ -457,7 +466,7 @@ Reading the save in full, or building the backup's request through strings, fail
 - a tiddler over 1 MB saved twice, with a later backup behind it;
 - three big versions waiting in one batch: one per run, all committed exactly;
 - non-ASCII text;
-- a title with quotes and a backslash, in its commit message;
+- a title with quotes and a backslash, in its commit message; one with a comma, `%`, `#`, `?` and `+` under its own name;
 - a duplicate delivery;
 - a rate limit pausing every backup: 40 saves during 6 seconds of it make 3 GitHub calls, then all go through;
 - a file GitHub keeps refusing: the backups after it go through, it keeps being retried, and goes through once accepted;
@@ -487,6 +496,7 @@ Reading the save in full, or building the backup's request through strings, fail
 - **What's sent is what's stored:** a tiddler with an empty `draft.of` field (a draft, for TiddlyWiki) isn't sent and stays in the tab after a poll; a second story river's `$:/StoryList/2` is stored; tiddlers titled `.` or `..` aren't sent, and the tab asks to rename them.
 - **Titles at the edges:** alert links that work for a title ending in `]` or holding `]]` and `|`; a conflict copy of a tiddler whose title is near the length limit, saved under a shortened name.
 - **A public site that doesn't answer:** the text comes from the worker after 5 seconds, instead of loading waiting for good.
+- **Restoring from the backup:** a stored tiddler's bytes (the backup file), imported as they are, would lose their tags; through `tools/restore.mjs` and TiddlyWiki's own import path, the tiddler is created again on the server with every field the same but the revision, and no conflict.
 
 `test:plugins` uses the markdown and KaTeX plugins shipped with TiddlyWiki and covers:
 - **Install** through the import messages a drop sends: the flat save, the stored tiddler, the file (byte for byte the template format), the script tag, no purge of plugin files.
@@ -511,7 +521,7 @@ Reading the save in full, or building the backup's request through strings, fail
 - **A new `index.html`** used at once, then published for (the core file not sent again).
 - **Safe mode** neither publishing nor syncing.
 
-`test:lazy` stores 120 tiddlers and covers, on the admin site and on the public site:
+`test:lazy` stores 120 tiddlers (two of them with a comma, `%`, `#`, `?`, `+`, a slash, quotes, accents and an emoji in the title) and covers, on the admin site and on the public site:
 - **What's shown first:** a tiddler opened directly is the first one fetched, before the background fill.
 - **The fill:** everything loads from the public site, several requests at a time, nothing through the worker; a hidden tab loads what it shows and fills once shown (leaving out a tiddler deleted meanwhile, without an error), and one hidden in the middle of the fill stops fetching until shown; a save while the fill runs publishes the page without waiting for it.
 - **The device's copy:** a refresh fetches no tiddler (the worker serves the page and the list only) and stores them in a few load steps rather than one by one; after a change elsewhere, that tiddler only; one saved in the tab isn't fetched; one deleted elsewhere, or in the tab, is gone from the tab and the device; without IndexedDB, loads go over the network each time.

@@ -298,6 +298,9 @@ check("special title uses the same API path as before", ghCalls.some(c => c === 
 await put('Say "hi" \\ there', "q");
 check("a title with quotes and a backslash: committed, with its commit message", await until(async () =>
   commits.some(c => c.path === 'tiddlers/Say "hi" \\ there.json' && c.message === '✏️ Save: Say "hi" \\ there'), 10000));
+// (and the characters a URL cares about: a comma, %, #, ? and +, which the API path carries encoded, and GitHub decodes)
+await put("Hello, World 100% #1? a+b", "h");
+check("a title with a comma, %, #, ? and +: committed under its own name", await until(async () => files.has("tiddlers/Hello, World 100% #1? a+b.json"), 10000));
 
 
 // 11. Non-ASCII text survives, including the "newer version restored" path

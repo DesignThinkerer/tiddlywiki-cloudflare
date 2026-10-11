@@ -753,6 +753,37 @@ check("tiddlers titled . or .. aren't sent (a URL can't carry them), and the tab
   dotsSettled && dotSends.length === 0 && dotAlerts.length >= 1, JSON.stringify({ settled: dotsSettled, sent: dotSends.map(x => x.status), alerts: dotAlerts }));
 await L.close();
 
+// --- 21. Restoring from the backup ---------------------------------------------------------------
+// The backup holds each tiddler's stored bytes: TiddlyWeb's layout, tags as a list, with the old
+// revision, bag and recipe. Restoring is importing into a fresh admin wiki (README 2.4). TiddlyWiki's
+// JSON import keeps only text fields, so the files can't go in as they are: tools/restore.mjs turns
+// them into what the import takes, and the save must then create each tiddler, not see a conflict.
+const { importable: restorable } = await import("../tools/restore.mjs");
+await clearAlerts(A);
+await create(A, "Restored note", "the text to restore", { tags: "kept [[two words]]", color: "red" }); await settle(A);
+const backupFile = await (await bucket.get("recipes/default/tiddlers/Restored note")).text();   // = tiddlers/Restored note.json on GitHub
+const backupFields = JSON.parse(backupFile);
+await mf.dispatchFetch(`${base}/bags/default/tiddlers/Restored%20note`, { method: "DELETE" });   // lost
+await sync(A);
+const lost = (await localText(A, "Restored note")) === null && (await server("Restored note")) === null;
+// What the import dialog would make of the file as it is: the deserializer for a dropped .json
+const asIs = await A.evaluate(file => $tw.wiki.deserializeTiddlers("application/json", file)[0], backupFile);
+check("the backup file imported as it is would lose its tags (TiddlyWiki's JSON import keeps text fields only): hence tools/restore.mjs",
+  Array.isArray(backupFields.tags) && backupFields.tags.length === 2 && asIs && !("tags" in asIs) && asIs.text === "the text to restore", JSON.stringify(asIs));
+mark = net.length;
+await A.evaluate(file => {
+  // The import dialog's path, once Import is clicked: the deserializer, then the navigator widget's tm-perform-import
+  $tw.wiki.deserializeTiddlers("application/json", file).forEach(fields => $tw.wiki.addTiddler($tw.hooks.invokeHook("th-importing-tiddler", new $tw.Tiddler(fields))));
+}, JSON.stringify([restorable(backupFields)]));
+const restoredSettled = await quietOrNot(A);
+const restored = await server("Restored note");
+const restoreSends = netSince(mark).filter(x => x.tag === "A" && x.path.endsWith("/Restored note"));
+const sameField = key => key === "revision" || JSON.stringify(backupFields[key]) === JSON.stringify(restored?.[key]);
+check("restored through the tool and TiddlyWiki's import, it's created again on the server with every field the same, tags included, but the revision, and no conflict",
+  lost && restoredSettled && !!restored && Object.keys(backupFields).every(sameField) && Object.keys(restored).every(sameField) && restored.revision !== backupFields.revision &&
+  restoreSends.length === 1 && restoreSends[0].status === 204 && restoreSends[0].ifNoneMatch === "*" && (await alerts(A)).length === 0,
+  JSON.stringify({ lost, settled: restoredSettled, sends: restoreSends.map(x => `${x.status} ${x.ifMatch || x.ifNoneMatch}`), alerts: await alerts(A), backupFields, restored }));
+
 // --- Summary --------------------------------------------------------------------------------
 // (Leaving out the answer section 19 makes the tab see on purpose)
 const bad = net.filter(x => (x.status === 428 || x.status >= 500) && !(x.status === 502 && x.path.endsWith("/Lost answer")));

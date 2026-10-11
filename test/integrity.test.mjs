@@ -623,6 +623,40 @@ await bucket.put(LIST, JSON.stringify(withIdeas));
 res = await del("Draft 2 of 'Ideas'");
 check("deleting a tiddler titled \"Draft 2 of '…'\" deletes it", !(await storedRevision("Draft 2 of 'Ideas'")) && !(await entry("Draft 2 of 'Ideas'")), `status ${res.status}`);
 
+// --- 5b. Awkward titles go through every step as TiddlyWiki sends them ------------------------------
+// TiddlyWiki percent-encodes a title in the URL and in the ETag (TiddlyWeb's convention: the conflict
+// guard builds If-Match the same way), so a comma or a slash in a title never splits anything, and the
+// purge must name exactly the URL the browser asks the public site for
+const AWKWARD = ["Hello, World", "100% sure?", "C# & F#", "a+b=c", "Café crème", "Emoji 🎉 title", "  spaced  ", 'He said "hi"', "It's",
+  "a/b/c", "ünïcödé/sub", "Tilde~ (parens) *stars* !bang", "semi;colon:and=equals", "back\\slash"];
+const awkward = [];
+for (const title of AWKWARD) {
+  const purgesBefore = purges.length;
+  const first = await save(title, { text: "v1 of " + title }, { "If-None-Match": "*" });
+  const etag = first.headers.get("ETag");
+  const read = await mf.dispatchFetch(url(title));
+  const readBody = read.status === 200 ? await read.json() : null;
+  const second = await save(title, { text: "v2 of " + title }, { "If-Match": etag });   // the ETag as the browser sends it back
+  const stale = await save(title, { text: "v3" }, { "If-Match": etag });                 // the old one: refused
+  const listed = await entry(title);
+  await new Promise(r => setTimeout(r, 150));   // (purges run after the answer)
+  const purgeUrl = `https://my-tiddlywiki.theophile.dev/recipes/default/tiddlers/${encodeURIComponent(title)}`;
+  const purged = purges.slice(purgesBefore).some(p => p.files.includes(purgeUrl));
+  const gone = await del(title, { "If-Match": second.headers.get("ETag") });
+  const problems = [];
+  if (first.status !== 204) problems.push(`create ${first.status}`);
+  if (etag !== `"default/${encodeURIComponent(title)}/${etagRevision(first)}:auto"`) problems.push(`etag ${etag}`);
+  if (read.status !== 200 || readBody?.title !== title || readBody?.text !== "v1 of " + title) problems.push(`read ${read.status}`);
+  if (second.status !== 204) problems.push(`update with If-Match ${second.status}`);
+  if (stale.status !== 412) problems.push(`stale save ${stale.status}`);
+  if (!listed || String(listed.revision) !== etagRevision(second)) problems.push("not listed with the new revision");
+  if (!purged) problems.push("purge URL");
+  if (gone.status !== 204 || await storedRevision(title) || await entry(title)) problems.push(`delete ${gone.status}`);
+  if (problems.length) awkward.push(`${JSON.stringify(title)}: ${problems.join(", ")}`);
+}
+check("awkward titles (comma, %, #, &, +, accents, emoji, spaces, quotes, slashes, a backslash) go through create, read, If-Match, 412, list, purge and delete",
+  awkward.length === 0, awkward.join(" | "));
+
 // --- 6. Local secrets and Wrangler's files stay out of git ---------------------------------------
 // wrangler.toml is part of the repository (the worker's names and settings, no secret in it: those are
 // set as secrets); Wrangler's local files aren't
@@ -659,6 +693,53 @@ check("wrangler.toml needs no edit: settings kept in the dashboard, the admin si
   tomlActive.includes("keep_vars = true") && tomlActive.includes("workers_dev = true") &&
   !/PUBLIC_WIKI_URL\s*=|CF_ZONE_ID\s*=|GITHUB_REPO\s*=|GITHUB_BRANCH\s*=|example\.com|YOUR-|OWNER\/REPO|^\s*routes?\s*=/m.test(tomlActive),
   (tomlActive.match(/.*(PUBLIC_WIKI_URL\s*=|CF_ZONE_ID\s*=|GITHUB_REPO\s*=|example\.com|YOUR-|OWNER\/REPO|^\s*routes?\s*=).*/mg) || []).join(" | "));
+
+// --- 7. Restoring from the backup: tools/restore.mjs ------------------------------------------------
+// The backup's files are tiddlers as stored, with their tags as a list (TiddlyWeb's layout); TiddlyWiki's
+// JSON import keeps only text fields, so they can't be imported as they are without losing every tag.
+// The tool turns a clone of the backup into one file TiddlyWiki imports, every field as text.
+const { collect, importable, stringifyList } = await import("../tools/restore.mjs");
+const clone = mkdtempSync(path.join(tmpdir(), "backup-clone-"));
+fs.mkdirSync(path.join(clone, "tiddlers", "$:", "config"), { recursive: true });
+const storedBackup = {
+  "tiddlers/Hello, World.json": { title: "Hello, World", text: "hello", tags: ["kept", "two words"], created: "20261011000000000", type: "text/vnd.tiddlywiki", revision: "1760000000000", bag: "default", recipe: "default" },
+  "tiddlers/$:/config/Thing.json": { title: "$:/config/Thing", text: "cfg", revision: "1760000000001", bag: "default", recipe: "default" },
+  "tiddlers/With fields.json": { title: "With fields", fields: { fields: "a custom field called fields" }, count: 3, text: "", tags: [], revision: "1", bag: "default", recipe: "default" },
+  "tiddlers/README.json": { note: "not a tiddler" },
+  "tiddlers/broken.json": "{not json"
+};
+for (const [file, content] of Object.entries(storedBackup)) fs.writeFileSync(path.join(clone, file), typeof content === "string" ? content : JSON.stringify(content));
+const restoreProblems = [];
+const restorable = collect(clone, restoreProblems);
+const hello = restorable.find(t => t.title === "Hello, World"), withFields = restorable.find(t => t.title === "With fields");
+check("the tool collects every tiddler of a backup clone (subdirectories for titles with slashes), sorted by title, leaving out what isn't one",
+  restorable.map(t => t.title).join("|") === "$:/config/Thing|Hello, World|With fields" && restoreProblems.length === 2 && restoreProblems.some(p => p.includes("README.json")) && restoreProblems.some(p => p.includes("broken.json")),
+  `${restorable.map(t => t.title).join("|")}; problems: ${restoreProblems.join(" / ")}`);
+check("...with the tags as TiddlyWiki writes them, the old revision, bag and recipe left out, every other field kept as text",
+  hello?.tags === "kept [[two words]]" && !("revision" in hello) && !("bag" in hello) && !("recipe" in hello) && hello.created === "20261011000000000" && hello.type === "text/vnd.tiddlywiki" && hello.text === "hello" &&
+  Object.values(hello).every(v => typeof v === "string"), JSON.stringify(hello));
+check("...a custom field called fields flat again, a number as text, an empty tag list as an empty string",
+  withFields?.fields === "a custom field called fields" && withFields.count === "3" && withFields.tags === "" && Object.values(withFields).every(v => typeof v === "string"), JSON.stringify(withFields));
+check("stringifyList matches TiddlyWiki's: only items with a space get double brackets", stringifyList(["a", "b c", "d[e]"]) === "a [[b c]] d[e]" && stringifyList([]) === "");
+check("importable refuses what has no title", importable({ text: "x" }, []) === null && importable("text", []) === null && importable(null, []) === null);
+let restoreRun;
+try {
+  restoreRun = execFileSync(process.execPath, [path.join(ROOT, "tools/restore.mjs"), clone, path.join(clone, "restore.json")], { encoding: "utf8", timeout: 30000, stdio: ["ignore", "pipe", "pipe"] });
+} catch (e) {
+  restoreRun = "FAILED " + String(e.stderr || e.message);
+}
+const restoreFile = fs.existsSync(path.join(clone, "restore.json")) ? JSON.parse(fs.readFileSync(path.join(clone, "restore.json"), "utf8")) : null;
+check("run as a command, the tool writes restore.json, the array TiddlyWiki imports, and says how many tiddlers",
+  Array.isArray(restoreFile) && restoreFile.length === 3 && restoreFile[1].tags === "kept [[two words]]" && /3 tiddlers/.test(restoreRun), restoreRun.slice(0, 200));
+restoreRun = "";
+try {
+  restoreRun = execFileSync(process.execPath, [path.join(ROOT, "tools/restore.mjs"), path.join(clone, "tiddlers/Hello, World.json"), path.join(clone, "one.json")], { encoding: "utf8", timeout: 30000, stdio: ["ignore", "pipe", "pipe"] });
+} catch (e) {
+  restoreRun = "FAILED " + String(e.stderr || e.message);
+}
+const oneFile = fs.existsSync(path.join(clone, "one.json")) ? JSON.parse(fs.readFileSync(path.join(clone, "one.json"), "utf8")) : null;
+check("...and does the same for a single file (one tiddler restored from its history on GitHub)", Array.isArray(oneFile) && oneFile.length === 1 && oneFile[0].title === "Hello, World" && oneFile[0].tags === "kept [[two words]]", restoreRun.slice(0, 200));
+fs.rmSync(clone, { recursive: true, force: true });
 
 console.log(`\n${results.filter(Boolean).length}/${results.length} passed`);
 await mf.dispose();

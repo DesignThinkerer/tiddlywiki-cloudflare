@@ -33,10 +33,13 @@ async function remove(title) {
   expected.delete(title);
 }
 for (let i = 1; i <= N; i++) await put(`Tiddler ${i}`, { text: text(i) });
+// (and two with the characters a URL cares about, loaded from the public site like the others)
+const AWKWARD = ["Tiddler Café, 100% #1? a+b", 'Tiddler with/slash & "quotes" 🎉'];
+for (const title of AWKWARD) await put(title, { text: text(title) });
 
 // Tiddler GETs of a tag since a mark: their titles in order, and how many were in flight at once
 const tiddlerGets = (from, tag, origin) => requests.slice(from).filter(r => r.tag === tag && r.origin === origin && r.method === "GET" && r.path.startsWith(TIDDLER_PATH))
-  .map(r => decodeURIComponent(r.path.slice(TIDDLER_PATH.length)));
+  .map(r => r.path.slice(TIDDLER_PATH.length));   // (the harness already decoded the path: a % in a title must not be decoded twice)
 const overlap = {};   // tag -> the most tiddler requests in flight at once
 // hidden: true or false installs a visibility the test controls (window.__hidden, then a visibilitychange
 // event); noStore: no IndexedDB in this page. Every page counts TiddlyWiki's load steps (window.__loadSteps).
