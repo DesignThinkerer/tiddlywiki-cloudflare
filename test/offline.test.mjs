@@ -65,16 +65,8 @@ await A.evaluate(() => $tw.wiki.deleteTiddler("Note B"));
 await waitFor(async () => (await status(A))?.waiting === "3", 10000);
 const s1 = await status(A), l1 = await line(A), a1 = await alerts(A);
 check("offline, the cloud icon's dropdown says 3 changes are waiting since when, kept on this device, offline", s1?.waiting === "3" && s1?.online === "no" && /3 changes waiting since \d\d:\d\d/.test(l1 || "") && /offline/.test(l1 || "") && /this device/.test(l1 || ""), `${JSON.stringify(s1)} ${JSON.stringify(l1)}`);
-check("...TiddlyWiki retried a save, with its own network alert and no other", sent("A", "PUT", "Offline 1", mark).length + sent("A", "PUT", "Note A", mark).length >= 1 && a1.length === 1 && a1[0].component === "syncer-browser-tiddlyweb-connection", JSON.stringify(a1));
-// The alert closed by hand (its close button deletes it): TiddlyWiki would raise it again at its next retry
-mark = requests.length;
-await A.evaluate(() => { $tw.wiki.deleteTiddler($tw.wiki.getTiddlersWithTag("$:/tags/Alert")[0]); $tw.syncer.errorRetryInterval = 1000; $tw.syncer.processTaskQueue(); });
-await sleep(3500);
-const retried = sent("A", "PUT", "Offline 1", mark).length + sent("A", "PUT", "Note A", mark).length;
-check("the network alert closed by hand stays closed while offline, TiddlyWiki's retries going on, the dropdown still saying offline", retried >= 2 && (await alerts(A)).length === 0 && /offline/.test((await line(A)) || ""),
-  `${retried} retries, alerts ${JSON.stringify(await alerts(A))}, item ${JSON.stringify(await line(A))}`);
-await A.evaluate(() => { $tw.syncer.errorRetryInterval = 20000; });
-await sleep(1200);   // (the last 1 s retry, then the 20 s one is pending)
+// (TiddlyWiki's own "Network Error" alert isn't shown on the admin wiki: the red cloud icon and its dropdown say it, design 2.17)
+check("...TiddlyWiki retried a save, and no alert is shown: the icon and the dropdown say offline (TiddlyWiki's network alert would come back at every retry)", sent("A", "PUT", "Offline 1", mark).length + sent("A", "PUT", "Note A", mark).length >= 1 && a1.length === 0, JSON.stringify(a1));
 const o1 = await outbox(A);
 const entry = title => (o1 || []).find(e => e.title === title);
 check("...each change is on the device the moment it's made, with the revision it's based on",
@@ -83,7 +75,7 @@ check("...each change is on the device the moment it's made, with the revision i
   entry("Note B")?.kind === "delete" && entry("Note B")?.base === noteBRevision && (o1 || []).length === 3,
   JSON.stringify(o1));
 
-// --- 2. The network back: sent at once, the line and the alert gone ---------------------------------
+// --- 2. The network back: sent at once, the line gone -----------------------------------------------
 mark = requests.length;
 const back = Date.now();
 await contextA.setOffline(false);
@@ -92,7 +84,7 @@ const took = (Date.now() - back) / 1000;
 check("the network back: the three changes reach the worker at once (the online event, not the retry 20 s away)", arrived && took < 4, `${took.toFixed(1)} s`);
 await settle(A);
 await waitFor(async () => (await status(A))?.waiting === "0", 5000);
-check("...the dropdown says nothing more, the alert is cleared, the device's outbox empty", (await line(A)) === "" && (await alerts(A)).length === 0 && JSON.stringify(await outbox(A)) === "[]" && (await status(A))?.online === "yes",
+check("...the dropdown says nothing more, no alert, the device's outbox empty", (await line(A)) === "" && (await alerts(A)).length === 0 && JSON.stringify(await outbox(A)) === "[]" && (await status(A))?.online === "yes",
   `item ${JSON.stringify(await line(A))}, alerts ${(await alerts(A)).length}, outbox ${JSON.stringify(await outbox(A))}`);
 
 // --- 3. A reload once the network is back: the changes come back from the device and are sent ------
@@ -100,8 +92,8 @@ await contextA.setOffline(true);
 await addTiddler(A, { title: "Offline reload", text: "survives a reload" });
 await A.evaluate(() => $tw.wiki.addTiddler(new $tw.Tiddler($tw.wiki.getTiddler("Note A"), { text: "changed twice" })));
 await waitFor(async () => (await status(A))?.waiting === "2", 10000);
-await waitFor(async () => (await alerts(A)).length > 0, 10000);
-check("...and the alert is shown again once the network has come back and gone again", (await alerts(A)).some(a => a.component === "syncer-browser-tiddlyweb-connection"), JSON.stringify(await alerts(A)));
+await sleep(1500);   // (a retry or two)
+check("offline again: still no alert, the dropdown saying offline", (await alerts(A)).length === 0 && /offline/.test((await line(A)) || ""), `alerts ${JSON.stringify(await alerts(A))}, item ${JSON.stringify(await line(A))}`);
 const noteARevision2 = await revisionOf("Note A");
 await contextA.setOffline(false);
 mark = requests.length;
