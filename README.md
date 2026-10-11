@@ -57,7 +57,7 @@ flowchart LR
 | Piece | Role |
 |---|---|
 | **The worker** (`worker.js`, built from `src/worker/`) | Serves the admin wiki: the page, the TiddlyWeb endpoints, saves and deletes with their conflict checks, cache purges. Writes a file for each plugin, and consumes the backup queue. |
-| **Browser modules** (`src/browser/`) | TiddlyWiki modules the worker builds into the page. The conflict guard makes the browser say which version each edit is based on, handles conflicts, and sends saves in the layout the worker stores; the list sync keeps the tiddler list, loads what's shown first and keeps loaded tiddlers on the device, reads from the public site and cuts unneeded requests; the backup alert shows backups that keep failing; the page publisher, in the admin wiki, renders the page with TiddlyWiki's own template and sends it to the worker whenever it changes; the restore import turns the backup's files, dropped onto the wiki, back into tiddlers; the control panel's Cloudflare tab shows how backups go and starts a full backup. |
+| **Browser modules** (`src/browser/`) | TiddlyWiki modules the worker builds into the page. The conflict guard makes the browser say which version each edit is based on, handles conflicts, and sends saves in the layout the worker stores; the list sync keeps the tiddler list, loads what's shown first and keeps loaded tiddlers on the device, reads from the public site and cuts unneeded requests; the backup alert shows backups that keep failing; the page publisher, in the admin wiki, renders the page with TiddlyWiki's own template and sends it to the worker whenever it changes; the restore import turns the backup's files, dropped onto the wiki, back into tiddlers; the control panel's Cloudflare tab shows how backups go and starts a full backup; the outbox keeps every change on the device until the worker has it, so editing offline loses nothing. |
 | **R2 bucket** | Holds everything: the wiki engine (`index.html`), the page both sites serve, the tiddler list, one JSON file per tiddler, one script per plugin, and TiddlyWiki's core file. |
 | **Public site** | The bucket's custom domain. Cloudflare caches it, and nothing on it runs the worker. A private wiki has none: the worker serves the tiddler contents, the plugin files and the core file itself, and the device copy keeps a reload from asking for them again. |
 | **Queue** `wiki-backup` | Holds one message per save or delete until it has been committed to GitHub. |
@@ -268,6 +268,8 @@ If the page is rebuilt before step 4 (by a deploy, or by saving another plugin, 
 
 **Loading a big wiki:** a tab gets the tiddler list (every field but the text) and loads the tiddler it shows first; the rest fills in in the background, several at a time, only while the tab is visible, so that search and backlinks work on everything. Loaded tiddlers are kept in the browser (IndexedDB, like its cache: clearing the site's data removes them), so the next page load fetches only what changed since, on any device. To skip the fill, create a tiddler `$:/config/cfworker/LoadAll` with the text `no` (it takes effect at the next page load): each tiddler then loads the moment it's shown, and nothing else is fetched, but the sidebar's text search, backlinks and the Missing and Orphans lists only see tiddlers the tab has loaded (titles, tags and fields are always searched). Design 1.5.
 
+**Editing offline:** with the admin wiki open, keep editing without a network. TiddlyWiki retries every few seconds and shows its *Network Error* alert meanwhile; the moment the connection is back, everything reaches the worker, each save checked for conflicts as usual. What this setup adds is that nothing is lost in between: every change is written to this device at once (the same store that keeps your tiddlers for reading), so a reload, a crash or a closed tab while offline keeps it, and the next time the wiki opens on this device it sends it — a tiddler changed elsewhere meanwhile gets a conflict copy, as online. A draft is kept there too, never sent to the worker: after a reload, TiddlyWiki lists it at the top of the page, with the text as you left it. A line under the alerts says how many changes are waiting and since when (at once when offline; online, once a change has waited a few seconds, which means the worker is refusing it: the alert says why), and goes away once they're sent. What waits on a device is sent from that device: another device doesn't see it until then. Opening the wiki *with no network at all* still needs the page from a server. Design 1.10.
+
 **Turning the browser modules off:** set `CONFLICT_GUARD` to `off`. The next page load rebuilds `baked.html` without them. Saves then go back to TiddlyWiki's default behaviour, without protection or request savings, and the page is no longer published.
 
 ---
@@ -311,6 +313,7 @@ If the page is rebuilt before step 4 (by a deploy, or by saving another plugin, 
 - **A rebuild step's CPU** stays around a normal save's, but a single stored tiddler with several megabytes in fields other than its text (rare: plugins keep their content in the text) is read in one step, and could take that step over the limit each time.
 - **An installed plugin's raw markup reaches the page after a reload if the plugin has JavaScript** (design 1.9): TiddlyWiki only starts such a plugin then. And plugins with raw markup are in the page as well as in their file, so a big one makes the page bigger (the worker refuses a page over 2 MB).
 - **Both sites depend on the core file on the public site,** as they already do on plugin files (a private wiki's, on the worker). If it can't be loaded, the wiki doesn't start (TiddlyWiki shows an alert).
+- **A change made offline waits on the device it was made on,** and is sent from there (3, "Editing offline"): another device doesn't see it until that one is back online and open. Clearing the site's data in the browser discards what waits.
 - **A private wiki's first load on a device reads every tiddler from the worker,** one request each, then only what changed (the device keeps a copy): a thousand tiddlers is a thousand of the day's 100,000 requests, once per browser. There is no public cache to read from instead.
 - **The page follows the admin wiki.** A change made elsewhere (a tiddler edited in R2) reaches the page at the next admin page load. Raw markup that depends on being logged in is rendered as the admin sees it.
 - **Conflict copies are merged by hand.** That's by design: you get both versions and decide.
@@ -331,7 +334,7 @@ Requirements: Node.js 20 or newer and a Chromium for the browser tests. (`npm ru
 ```bash
 npm install
 npx playwright install chromium      # or: export CHROMIUM_PATH=/path/to/chrome
-npm test                             # build (worker.js and seed/empty.html), run all twelve suites
+npm test                             # build (worker.js and seed/empty.html), run all thirteen suites
 ```
 
 | Command | What it runs |
@@ -340,7 +343,7 @@ npm test                             # build (worker.js and seed/empty.html), ru
 | `npm run check:build` | Fails, writing nothing, if `worker.js` isn't what the sources build (run it before committing, so `worker.js` is never out of date). |
 | `npm run lint` | ESLint, with its recommended rules only: a name that doesn't exist (a function moved without its import, say), an unused one, an import assigned to. CI runs it first. |
 | `npm run test:fast` | The five suites that need no browser (a few minutes). |
-| `npm run test:browser` | The seven suites that run a real TiddlyWiki in Chromium. |
+| `npm run test:browser` | The eight suites that run a real TiddlyWiki in Chromium. |
 | `npm run test:first` | A new wiki from an empty bucket, in Chromium (see below). |
 | `npm run test:bake` | Page serving and rebuilding, the published page, the Access check, the public address, the first visit (see below). |
 | `npm run test:integrity` | The tiddler list's integrity, the page after a failed build, draft-like titles and `.gitignore` (see below). |
@@ -352,6 +355,7 @@ npm test                             # build (worker.js and seed/empty.html), ru
 | `npm run test:publish` | The page published from a real TiddlyWiki in Chromium (see below). |
 | `npm run test:sync` | The full backup started from a real TiddlyWiki in Chromium, GitHub imitated (see below). |
 | `npm run test:private` | A private wiki, no public site, in Chromium; then a public site added (see below). |
+| `npm run test:offline` | Editing offline in Chromium, the network cut and restored (see below). |
 
 GitHub runs the same two groups, as two jobs side by side, for every pull request and every push to `main` (`.github/workflows/ci.yml`), after the lint and after checking that `worker.js` is what `src/` builds.
 
@@ -387,19 +391,21 @@ GitHub runs the same two groups, as two jobs side by side, for every pull reques
 │       ├── backup-alert.js   the alert while backups to GitHub keep failing (4.7)
 │       ├── page-publisher.js the page published from the admin wiki (design 1.9)
 │       ├── restore-import.js the backup's files dropped onto the wiki, imported with their tags (2.4)
-│       └── control-panel.js  the control panel's Cloudflare tab: how backups go, the full backup (2.4)
+│       ├── control-panel.js  the control panel's Cloudflare tab: how backups go, the full backup (2.4)
+│       └── outbox.js         every change kept on the device until the worker has it: editing offline (3)
 ├── build.mjs                 inlines the modules into worker.js, in dependency order, with the browser modules embedded
 ├── eslint.config.js          the lint rules (npm run lint): names that don't exist, unused ones, an import assigned to
 ├── wrangler.toml             the worker's name, bindings and defaults: what Wrangler deploys, as it is; the settings are in the dashboard (2.5)
 ├── package.json              build, lint and test scripts
 └── test/
     ├── first-visit.test.mjs  a new wiki from an empty bucket, in Chromium (13 checks)
-    ├── two-tabs.test.mjs     real TiddlyWiki in Chromium, several tabs, a restore (98 checks)
+    ├── two-tabs.test.mjs     real TiddlyWiki in Chromium, several tabs, a restore (99 checks)
     ├── plugins.test.mjs      real plugins on the admin and public sites (66 checks)
     ├── page-publish.test.mjs the page published from a real TiddlyWiki (57 checks)
     ├── lazy-load.test.mjs    loading a big wiki on both sites: what's shown first, the device's copy, the fill (31 checks)
     ├── backup-sync.test.mjs  the full backup from the admin wiki: the Cloudflare tab, the hint, the button, GitHub mirroring the wiki (12 checks)
     ├── private.test.mjs      a private wiki: everything from the worker, nothing purged, then a public site added (23 checks)
+    ├── offline.test.mjs      editing offline: changes kept on the device, sent at the network's return or the next load (21 checks)
     ├── queue-backup.test.mjs queue backup against an imitation of GitHub, the full backup's steps (55 checks)
     ├── integrity.test.mjs    the tiddler list's integrity, a failed page build, draft-like titles, awkward titles, .gitignore, what a deploy uploads, the restore tool (88 checks)
     ├── r2-ops.test.mjs       R2 calls per kind of request, against a budget (34 checks)
@@ -417,7 +423,7 @@ The browser modules live in their own files so they can be read and edited as no
 
 ### 6.2 The tests
 
-The tests run the real worker in Cloudflare's local runtime (workerd, through Miniflare) with a local R2 bucket and queue. Outgoing calls to GitHub and Cloudflare's API are answered by imitations, so nothing touches your accounts. Every suite takes free local ports, so they can run at the same time. The seven browser suites share their setup, `test/browser-harness.mjs`: the worker, the stand-in for the public site, Chromium, and the helpers that wait for TiddlyWiki or record each tab's requests (marking the ones the browser answered from its cache, which never reached a server). (On a machine too busy to keep up, such as with the browser suites running alongside, the backup suite's "never overlapped" check can fail: Miniflare then starts a second batch before the first ends, which `max_concurrency = 1` prevents on Cloudflare. A browser suite can also time out waiting for TiddlyWiki there. Each passes run on its own.)
+The tests run the real worker in Cloudflare's local runtime (workerd, through Miniflare) with a local R2 bucket and queue. Outgoing calls to GitHub and Cloudflare's API are answered by imitations, so nothing touches your accounts. Every suite takes free local ports, so they can run at the same time. The eight browser suites share their setup, `test/browser-harness.mjs`: the worker, the stand-in for the public site, Chromium, and the helpers that wait for TiddlyWiki or record each tab's requests (marking the ones the browser answered from its cache, which never reached a server). (On a machine too busy to keep up, such as with the browser suites running alongside, the backup suite's "never overlapped" check can fail: Miniflare then starts a second batch before the first ends, which `max_concurrency = 1` prevents on Cloudflare. A browser suite can also time out waiting for TiddlyWiki there. Each passes run on its own.)
 
 `test:bake` covers:
 - Page serving: rebuild on an outdated bake or a new `index.html`, the `304` for an unchanged page (also with a weakened ETag, and by date alone, including two pages built within the same second), a byte order mark; CORS, a bad `PUT` path, and `/status`, kept by the browser for a week and no longer baked into the page; a tiddler read (its revision as ETag) and a file read (R2's), each answered `304` to a browser that has it (also with a weakened ETag, and to a `HEAD`), and sent when it has another version.
@@ -511,7 +517,7 @@ Reading the save in full, or building the backup's request through strings, fail
 - **A damaged tiddler list** rebuilt over several requests while a tab is open: the tab keeps its tiddlers and shows no error; a save answered "rebuilding" is sent again quietly, and any other `503` is reported as before.
 - **A tiddler changed before its text loaded** (its text held back): the stored text kept with the change, and the tab then loads it.
 - **Failing backups:** a page load asks how backups go with its first tiddler list request, shows an alert (since when, how many, the oldest, GitHub's answer, what to do), asks at each request while it shows, removes it once backups get through, then asks no more than hourly.
-- **Leaving with an editor open:** the browser asks before closing a tab whose editor holds changes, not one left unchanged.
+- **Leaving with an editor open:** the browser asks before closing a tab whose editor holds changes, not one left unchanged; the half-typed draft is back in the next tab, from the device.
 - **What's sent is what's stored:** a tiddler with an empty `draft.of` field (a draft, for TiddlyWiki) isn't sent and stays in the tab after a poll; a second story river's `$:/StoryList/2` is stored; tiddlers titled `.` or `..` aren't sent, and the tab asks to rename them.
 - **Titles at the edges:** alert links that work for a title ending in `]` or holding `]]` and `|`; a conflict copy of a tiddler whose title is near the length limit, saved under a shortened name.
 - **A public site that doesn't answer:** the text comes from the worker after 5 seconds, instead of loading waiting for good.
@@ -548,6 +554,8 @@ Reading the save in full, or building the backup's request through strings, fail
 - **A stale copy from a cache** refused and fetched again past the cache, on both sites, without the worker.
 
 `test:private` runs the worker with no public address at all (the stand-in for the public site runs, to show nothing reaches it), from an empty bucket, and covers: the first visit (the engine and the status file stored, the page built with no public address, the tab logged in and writable, the core file and the page published by itself with the core at a root-relative URL); a save stored and listed; a reload getting the light page with the core file from the worker, then the next one asking the worker for the page and the list only (the core from the browser's cache, the tiddlers from the device copy); a plugin installed, its file loaded from the worker at a root-relative URL and run, from the browser's cache at the next reload; the Cloudflare tab, saying backups aren't set up; every request of the tab gone to the worker and none anywhere else, and no purge sent though `CF_ZONE_ID` and `CF_API_TOKEN` are set; a second browser reading the tiddlers from the worker, and a tiddler saved afterwards at its next poll; then `PUBLIC_WIKI_URL` set on the running worker, as in the dashboard: the next load rebuilt with the public address and every tiddler still there, the page published again with the core from the public site, the page loading its core and plugin files from there, a new browser reading the tiddlers from the public site and not the worker, and a save purging it.
+
+`test:offline` runs a private wiki in Chromium with the network cut and restored (Playwright's offline mode), and covers: nothing waiting online (no line, an empty outbox on the device); offline, a new tiddler, a change and a delete retried by TiddlyWiki with its own network alert and no other, the line saying 3 changes are waiting since when, kept on this device, offline, and each on the device the moment it's made with the revision it's based on; the network back, with TiddlyWiki's retry set 20 s away: the three reach the worker within a second (the online event), the line, the alert and the outbox cleared; a change made offline, the tab reloaded once the network is back: it comes back from the device and is sent with the revision it was made from (`If-Match`; `If-None-Match: *` for a new tiddler), stored and listed, nothing waiting after; the tab closed while offline, a new tab sending what it had kept; a delete made offline, then a reload: deleted on the worker with its revision checked, gone from the wiki, not brought back by the list; a tiddler another browser changed while this one was offline: a conflict copy and an alert at the network's return, the other version kept, nothing waiting; a draft open while offline, kept on the device without counting as a change, back with its text after a reload, never sent to the worker, and gone from the device when cancelled; two tabs in one browser, a change made offline in one and the other reloaded: stored once, no copy, nothing waiting in either; a save the worker refuses (`500`): shown as waiting, still online, TiddlyWiki's own error alert rather than the network one, kept on the device, and through once the worker takes it.
 
 `test:sync` runs the worker with its queue and an imitation of GitHub, and covers: the Cloudflare tab under the control panel's Saving tab (backups on, no full backup yet, the button); the hint when backups are on and none has ever run, which stays closed in that browser once closed; the button starting a full backup, the tab following it (running, then the last full backup with its counts), 12 tiddlers stored before backups existed on GitHub byte for byte and a file of a title not in the wiki removed; a second run committing nothing; a save after that committed by its own message; no tab on the public site; a worker without backups: the tab says so, no button, no hint.
 

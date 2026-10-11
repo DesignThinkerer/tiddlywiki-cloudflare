@@ -94,7 +94,7 @@ TiddlyWiki only runs JavaScript modules, plugins and startup actions that are pr
 - the sync settings `$:/config/SyncPollingInterval`, `$:/config/SyncThrottleInterval`, `$:/config/SyncFilter`, `$:/config/SyncDisableLazyLoading`: TiddlyWiki's syncer reads them once, when it starts
 - plugin disable flags, `$:/config/Plugins/Disabled/…`: read at boot too
 - every tiddler tagged `$:/tags/StartupAction` or one of its variants (`$:/tags/StartupAction/Browser`, `…/PostRender`)
-- the browser modules (`src/browser/`): the library `$:/cfworker/lib.js` the others require, the conflict guard `$:/cfworker/conflict-guard.js` (saves and deletes, section 2), the list sync `$:/cfworker/list-sync.js` (the tiddler list, reads from the public site, what isn't sent: 1.5), the backup alert `$:/cfworker/backup-alert.js` (1.7), the page publisher `$:/cfworker/page-publisher.js` (1.9), and the restore import `$:/cfworker/restore-import.js` (the backup's files dropped onto the wiki, 1.7), and the control panel's Cloudflare tab `$:/cfworker/control-panel.js` (how backups go, the full backup, 1.7)
+- the browser modules (`src/browser/`): the library `$:/cfworker/lib.js` the others require, the conflict guard `$:/cfworker/conflict-guard.js` (saves and deletes, section 2), the list sync `$:/cfworker/list-sync.js` (the tiddler list, reads from the public site, what isn't sent: 1.5), the backup alert `$:/cfworker/backup-alert.js` (1.7), the page publisher `$:/cfworker/page-publisher.js` (1.9), and the restore import `$:/cfworker/restore-import.js` (the backup's files dropped onto the wiki, 1.7), the control panel's Cloudflare tab `$:/cfworker/control-panel.js` (how backups go, the full backup, 1.7), and the outbox `$:/cfworker/outbox.js` (every change kept on the device until the worker has it, 1.10)
 - `$:/cfworker/public-url`: the public address, read by the modules; empty for a private wiki (2.15). A page on that site, whatever the protocol (visited over `http` while the address says `https`, say), is the public site: read-only, nothing published. Any other site, or any site when there's no public address, is the admin site (`lib.onAdminSite`)
 - `$:/cfworker/page-source`: what the page was built from (the `index.html` ETag, the shell's fingerprint, the stored core file's version), read by the page publisher (1.9)
 
@@ -314,6 +314,18 @@ The page is rendered afresh at each check, then compared with the published one 
 
 ---
 
+### 1.10 Editing offline: the outbox
+
+TiddlyWiki does most of this by itself, which the probe behind this design confirmed (a real TiddlyWiki 5.4.1 in Chromium, the network cut): its syncer has no queue of its own, it compares the store with what it last saw on the server, so a save that fails is tried again every 5 seconds (`errorRetryInterval`), one tiddler at a time in title order, with one *Network Error* alert whose counter climbs, the page marked dirty and the browser's "unsaved changes" warning on closing; once the network is back, every change goes through at the next retry, each through the conflict guard, and the alert clears itself. What it doesn't do is survive the tab: a change made offline is nowhere but in memory, so a reload (which can't load the page offline anyway), a crash or a closed tab loses it, and the device copy (1.5) holds only what came from the server.
+
+The outbox module (`$:/cfworker/outbox.js`) adds the missing part, on the admin site:
+- **Every change is written to the device the moment it's made**, into a second table (`outbox`) of the device database the list sync keeps (`cfworker-tiddlers`, now version 2): a save as the tiddler's fields with the server revision this run of changes started from (`base`, kept through later changes, `null` for a tiddler the worker never had) and the change count; a delete with the revision it deletes; a draft as its fields, a moment after the typing. It's removed once the worker confirms the save or delete (the adaptor's callback, unless the tiddler changed again since the save was sent), or once the conflict guard has settled it (the worker's version adopted here, this tab's kept as a copy that waits in its own right), and a draft when it's saved or cancelled. A change made online is written too, and removed a moment later: there's no knowing the network is gone until a save fails.
+- **At the next page load on this device**, once the first tiddler list is in and before TiddlyWiki processes it, what's still in the outbox is put back into the wiki: a save as the tiddler (TiddlyWiki then saves it, as a change it doesn't know on the server, before any load; the list sync never lets a load overwrite an unsaved change), a delete once the syncer knows the tiddler from the list (`wiki.deleteTiddler`, its queued load dropped), a draft as a draft, which TiddlyWiki lists at the top of the page. The conflict guard is told the revision the change was made from (`cfworkerBaseFor`), so the save or delete carries that as its `If-Match`, not what the list says now: a version saved elsewhere meanwhile is a conflict, with a copy, as it would have been in the tab that made the change.
+- **The network's return wakes the syncer** (the browser's `online` event calls `processTaskQueue`), so the changes go out at once rather than at the next retry, up to 5 seconds later.
+- **`$:/temp/cfworker/outbox`** holds the status: `waiting` (saves and deletes, not drafts), `since` (the oldest), `online` (the browser's events, and a save answered with a network error or a success), `show`; **`$:/temp/cfworker/outbox-line`** (`$:/tags/PageTemplate`, after the alerts) shows "N changes waiting since …, kept on this device — offline" or "— sending" while `show` is `yes`: at once when offline, and online only once a change has waited 3 seconds, so a save's ordinary moment in flight doesn't flash it. TiddlyWiki's own network alert stays as it is.
+
+What it costs: one IndexedDB write per change and one delete per confirmed save, nothing on the worker, no request. What waits on a device is sent from that device: another device doesn't see it until then (README 5).
+
 ## 2. Why it is built this way
 
 ### 2.1 The original failure was a missing header, not compression
@@ -354,7 +366,7 @@ Checking the revision and then writing leaves a small window where two saves bot
 
 The worker never stored them; it answered "OK" and threw them away. That caused a real bug. After the next minute's poll, TiddlyWiki saw the draft "missing from the server" and deleted it locally, closing any editor left open longer than a poll interval. Not sending them at all fixes this and saves requests.
 
-The flip side: what you're typing exists only in that tab, and TiddlyWiki's syncer, which no longer counts drafts, wouldn't warn before you close or reload it. So the conflict guard does: the browser asks first while an editor holds changes (not for one opened and left unchanged).
+The flip side: what you're typing exists only in that tab, and TiddlyWiki's syncer, which no longer counts drafts, wouldn't warn before you close or reload it. So the conflict guard does: the browser asks first while an editor holds changes (not for one opened and left unchanged). Since 1.10 the draft is also kept on the device, and back after a reload.
 
 The story list wasn't stored either. The Control Panel's "retain story ordering" button sets Default tiddlers to `[list[$:/StoryList]]`, which only works when the story list is saved, so it never worked with this worker. To use your current story as the default, this button stores a snapshot of the titles:
 
@@ -433,3 +445,19 @@ Not done: a separate "private mode" switch (the absence of the address says it),
 ### 2.16 The backup's files stay the stored tiddler
 
 Considered when the restore procedure was written (1.7): writing the tags as text in the backup's files, so that TiddlyWiki's own JSON import would take them back. Not done: the backup is the stored object, byte for byte, and that's what makes it cheap. A backup and a full backup decide whether GitHub already has a tiddler by comparing the git hash of the stored bytes with the file's `sha` on GitHub, without reading either (decoding a big plugin's text took more CPU than a run is allowed, 1.7); a converted file would have to be rebuilt from the stored one for every comparison. A plain import would still have lost the nested fields and carried the old revision, bag and recipe. So the conversion happens where the files come back: in the admin wiki, whose import hook sees every file dropped on it, and in `tools/restore.mjs` for a whole clone.
+
+### 2.17 Offline editing keeps what TiddlyWiki does, and adds the device
+
+Three ways were weighed for editing offline:
+
+| Option | Why not |
+|---|---|
+| **A local-first store, as TiddlyPWA has** (every tiddler and every change in IndexedDB, a sync protocol of its own with tombstones and timestamps, the server a replica) | A second sync engine beside TiddlyWeb's, and a second conflict model beside the guard's, for a wiki whose server already holds the truth and whose reads already come from the device copy. Most of its value, reading and editing with the page open, needed only the outbox. |
+| **A sending queue of our own**, replacing the syncer's retries | The probe showed the syncer's retries and its network alert do the job: one alert, everything sent at the network's return, conflicts through the guard. Replacing them would reimplement what works and lose TiddlyWiki's own "unsaved changes" warning. |
+| **The outbox: write-ahead on the device, replayed through the syncer** (chosen) | Nothing is lost between a change and its confirmation, whatever happens to the tab; what's sent still goes through TiddlyWiki's syncer and the conflict guard, with the base revision carried along, so the conflict behaviour is exactly the online one. |
+
+Also decided:
+- **Drafts are kept too.** "Nothing is lost" has to include what's being typed, and the mechanism is the same table. They're never sent (2.7); after a reload, TiddlyWiki's own drafts list at the top of the page shows them.
+- **The line shows only once a change has waited a while, online.** Every save is in the outbox for a moment; a line that flashed at each save would teach the user to ignore it. Offline, it shows at once: the user wants to know.
+- **TiddlyWiki's network alert stays.** It's accurate, it clears itself, and replacing core behaviour for a cosmetic gain isn't this project's business.
+- **Not done: opening the wiki with no network at all.** That needs the page, the core file and the plugin files from a cache the browser keeps: the service worker, the next step (roadmap).

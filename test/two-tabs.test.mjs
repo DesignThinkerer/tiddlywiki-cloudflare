@@ -511,6 +511,9 @@ const whileTyping = await leaving(typing);
 check("closing a tab while typing in an editor asks first (the draft isn't saved anywhere)", whileTyping.asked && !whileTyping.closed, JSON.stringify(whileTyping));
 if (!typing.isClosed()) await typing.close();
 const looking = await openTab("F");
+// (The half-typed draft is back in this tab, from the device: the outbox keeps drafts. Discarded here.)
+const draftBack = await looking.evaluate(() => { const d = $tw.wiki.findDraft("Alpha"); const text = d ? $tw.wiki.getTiddlerText(d) : null; if (d) $tw.wiki.deleteTiddler(d); return text; });
+check("...the half-typed draft is back in the next tab, from the device", draftBack === "half-typed sentence", JSON.stringify(draftBack));
 await startEdit(looking, "Alpha");
 const unchanged = await leaving(looking);
 check("...but not for an editor opened and left unchanged", !unchanged.asked && unchanged.closed, JSON.stringify(unchanged));

@@ -16,8 +16,9 @@ import { isStartupTiddler, needsPluginFile, tiddlerKey } from "./tiddlers.js";
 
 // The browser modules (src/browser/, README 3), baked into the page as TiddlyWiki modules: the
 // library the others require, the conflict guard, the list sync, the backup alert, the page
-// publisher (see "The page" below), the restore import (the backup's files dropped onto the wiki)
-// and the control panel's Cloudflare tab. Each source is a placeholder here, which build.mjs
+// publisher (see "The page" below), the restore import (the backup's files dropped onto the wiki),
+// the control panel's Cloudflare tab and the outbox (changes kept on the device until the worker
+// has them). Each source is a placeholder here, which build.mjs
 // replaces with the file's text (the first with src/browser/lib.js, and so on).
 const BROWSER_MODULES = [
   { title: "$:/cfworker/lib.js", type: "library", source: "__LIB_SOURCE__" },
@@ -26,7 +27,8 @@ const BROWSER_MODULES = [
   { title: "$:/cfworker/backup-alert.js", type: "startup", source: "__BACKUP_ALERT_SOURCE__" },
   { title: "$:/cfworker/page-publisher.js", type: "startup", source: "__PAGE_PUBLISHER_SOURCE__" },
   { title: "$:/cfworker/restore-import.js", type: "startup", source: "__RESTORE_IMPORT_SOURCE__" },
-  { title: "$:/cfworker/control-panel.js", type: "startup", source: "__CONTROL_PANEL_SOURCE__" }
+  { title: "$:/cfworker/control-panel.js", type: "startup", source: "__CONTROL_PANEL_SOURCE__" },
+  { title: "$:/cfworker/outbox.js", type: "startup", source: "__OUTBOX_SOURCE__" }
 ];
 
 // Their settings. The public site's address: the admin wiki loads tiddler contents from there (no
