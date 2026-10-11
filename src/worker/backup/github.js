@@ -57,8 +57,9 @@ class GitHubError extends Error {
   }
 }
 
-// GitHub Contents API, with the same file paths as the original per-save backup
-export function githubContents(env) {
+// GitHub Contents API, with the same file paths as the original per-save backup. counter: an object
+// whose .calls is increased by one per call made, for a run's budget (queue.js)
+export function githubContents(env, counter) {
   const { repo, token, branch } = github(env);
   const headers = {
     Authorization: `Bearer ${token}`,
@@ -73,11 +74,11 @@ export function githubContents(env) {
     // Reads ask for the "object" format: the default one isn't available for files between 1 and
     // 100 MB, so their backups would fail forever and hold up every later one. The object format
     // works for all sizes, with empty content above 1 MB.
-    const res = await fetch(method === "GET" ? `${apiBase}?ref=${branch}` : apiBase, {
-      method,
-      headers: method === "GET" ? { ...headers, Accept: "application/vnd.github.object+json" } : headers,
-      body
-    });
+    return request(method, method === "GET" ? `${apiBase}?ref=${branch}` : apiBase, method === "GET" ? { ...headers, Accept: "application/vnd.github.object+json" } : headers, body);
+  }
+  async function request(method, url, requestHeaders, body) {
+    if (counter) counter.calls = (counter.calls || 0) + 1;
+    const res = await fetch(url, { method, headers: requestHeaders, body });
     if (method === "GET" && res.status === 404) return null;
     if (!res.ok) {
       // How long GitHub asks us to wait, if it says (rate limits)
@@ -115,6 +116,22 @@ export function githubContents(env) {
     },
     async remove(title, sha, message) {
       await call("DELETE", title, JSON.stringify({ message, sha, branch }));
+    },
+    // Every tiddler file of the branch, in one call (the Git Trees API, the whole tree at once): the
+    // titles and blob shas of tiddlers/<title>.json, subdirectories included (titles with slashes);
+    // none for a branch with no commits yet; null if the tree is too big for one answer (GitHub
+    // truncates past 100,000 entries or 7 MB)
+    async tiddlerFiles() {
+      const tree = await request("GET", `https://api.github.com/repos/${repo}/git/trees/${encodeURIComponent(branch)}?recursive=1`, headers);
+      if (!tree) return [];
+      if (tree.truncated) return null;
+      const files = [];
+      for (const entry of tree.tree || []) {
+        if (entry.type === "blob" && typeof entry.path === "string" && entry.path.startsWith("tiddlers/") && entry.path.endsWith(".json")) {
+          files.push({ title: entry.path.slice("tiddlers/".length, -".json".length), sha: entry.sha });
+        }
+      }
+      return files;
     }
   };
 }

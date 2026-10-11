@@ -13,6 +13,7 @@
 
 import { ACCESS_REFUSED, withoutAccess } from "./access.js";
 import { processBackupBatch } from "./backup/queue.js";
+import { backupSyncStatus, startBackupSync } from "./backup/sync.js";
 import { decodePath, invalidPath } from "./http.js";
 import { publishCoreFile, publishShell, serveWiki } from "./page.js";
 import { serveList, serveObject, serveStatus } from "./reads.js";
@@ -28,7 +29,7 @@ import { LIST_KEY } from "./storage.js";
 // reads the ETag of each save, which a browser only shows a page that's told it may (Expose-Headers).
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, PUT, DELETE, OPTIONS, HEAD",
+  "Access-Control-Allow-Methods": "GET, PUT, POST, DELETE, OPTIONS, HEAD",
   "Access-Control-Allow-Headers": "Content-Type, X-Requested-With, X-Tiddler-Layout, If-Match, If-None-Match, Accept",
   "Access-Control-Expose-Headers": "ETag, X-Tiddler-List, Retry-After",
 };
@@ -41,6 +42,9 @@ const ROUTES = [
   { methods: ["OPTIONS"], matches: () => true, handle: (request, env, ctx, url, match, headers) => new Response(null, { headers }) },
   { methods: ["GET"], matches: path => path === "/status", handle: (request, env, ctx, url, match, headers) => serveStatus(headers) },
   { methods: ["GET"], matches: path => PAGE_PATHS.includes(path), handle: (request, env, ctx, url, match, headers) => serveWiki(request, env, ctx, headers) },
+  // A full backup (design 1.7): started by the admin wiki, and how the last one went
+  { methods: ["POST"], matches: path => path === "/backup/sync", handle: (request, env, ctx, url, match, headers) => startBackupSync(request, env, ctx, headers) },
+  { methods: ["GET"], matches: path => path === "/backup/sync", handle: (request, env, ctx, url, match, headers) => backupSyncStatus(env, headers) },
   // Any other read is an object of the bucket, by its key: the tiddler list, a tiddler, a file
   { methods: ["GET", "HEAD"], matches: path => decodePath(path.substring(1)), handle: (request, env, ctx, url, key, headers) =>
     key === LIST_KEY ? serveList(request, env, ctx, headers) : serveObject(request, env, key, headers) },

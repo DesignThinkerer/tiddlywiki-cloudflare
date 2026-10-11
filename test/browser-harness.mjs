@@ -44,11 +44,12 @@ export const PUBLIC_STATUS = { username: "GUEST", read_only: true, anonymous: tr
 //   bindings: the worker's other variables
 //   outbound(request): answers the worker's own requests (Cloudflare's API, GitHub); {"success":true} by default
 //   r2Persist: a folder to keep R2 in
+//   queue: bind the backup queue, with its consumer, as deployed (backups then run in it)
 //   publicSite: hooks for the stand-in: cors() returns false to leave the CORS header out,
 //     override(key, url) returns text to serve instead of the object, rewrite(url, bytes) returns the
 //     bytes to send, delay(url) returns milliseconds to wait before answering (a slow connection)
 // Returns { mf, base, pub, bucket, publicRequests (each path and query, decoded), close() }
-export async function startSite({ index, publicStatus = false, bindings = {}, outbound, r2Persist, publicSite = {} } = {}) {
+export async function startSite({ index, publicStatus = false, bindings = {}, outbound, r2Persist, queue = false, publicSite = {} } = {}) {
   let bucket = null;
   const publicRequests = [];
   const publicServer = http.createServer(async (req, res) => {
@@ -85,6 +86,7 @@ export async function startSite({ index, publicStatus = false, bindings = {}, ou
   const mf = new Miniflare({
     modules: true, scriptPath: WORKER, modulesRules: MODULE_RULES, compatibilityDate: "2024-09-23", port: 0,
     r2Buckets: ["WIKI_BUCKET"], ...(r2Persist ? { r2Persist } : {}),
+    ...(queue ? { queueProducers: { BACKUP_QUEUE: "wiki-backup" }, queueConsumers: { "wiki-backup": { maxBatchSize: 10, maxBatchTimeout: 0.2, maxRetries: 3 } } } : {}),
     bindings: { ACCESS: "off", PUBLIC_WIKI_URL: pub, ...bindings },
     outboundService: outbound || (async () => new Response('{"success":true}')),
   });

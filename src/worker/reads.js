@@ -63,7 +63,7 @@ export async function serveList(request, env, ctx, corsHeaders) {
   let object = listObject;
   const listHeaders = obj => {
     const headers = listResponseHeaders(obj, corsHeaders);
-    if (backups) headers.set("X-Backup-Status", backupReport(env, backups.failing));
+    if (backups) headers.set("X-Backup-Status", backupReport(env, backups));
     return headers;
   };
   // A conditional get that fails its precondition returns the object without a body

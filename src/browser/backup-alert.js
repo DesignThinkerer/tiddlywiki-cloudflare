@@ -5,8 +5,12 @@ module-type: startup
 
 On the admin site, asks how backups to GitHub go, with the tiddler list request (the worker reads
 the backup status only then, and answers in a header of the same response: no extra request), when
-the page loads, then hourly, and at each request while the alert shows; and shows an alert while
-they keep failing. The request and its answer go through the list sync ($:/cfworker/list-sync.js).
+the page loads, then hourly, and at each request while the alert shows or a full backup runs; keeps
+the answer in $:/temp/cfworker/backup-status (whether backups are on, the last full backup: the
+control panel's Cloudflare tab reads it, $:/cfworker/control-panel.js); shows an alert while backups
+keep failing; and, once per browser, a hint that a full backup is needed when backups are on and
+none has ever run (tiddlers saved before they were set up aren't on GitHub otherwise). The request
+and its answer go through the list sync ($:/cfworker/list-sync.js).
 \*/
 (function(){
 
@@ -21,6 +25,9 @@ exports.synchronous = true;
 var lib = require("$:/cfworker/lib.js");
 
 var BACKUP_ALERT = "$:/temp/cfworker/backup-alert",
+	BACKUP_HINT = "$:/temp/cfworker/backup-hint",
+	BACKUP_STATUS = "$:/temp/cfworker/backup-status",
+	HINT_DISMISSED_KEY = "cfworker-backup-hint-dismissed",
 	BACKUP_CHECK_INTERVAL = 60 * 60 * 1000;
 
 exports.startup = function() {
@@ -32,28 +39,79 @@ exports.startup = function() {
 		wiki = $tw.wiki,
 		publicBase = lib.publicBase(),
 		backupAsked = 0,          // when the worker last answered
-		backupProblem = null;     // the problem the alert was about, so a dismissed one stays dismissed
+		backupProblem = null,     // the problem the alert was about, so a dismissed one stays dismissed
+		syncRunning = false;      // a full backup is going: asked at each list request meanwhile
 	proto.cfworkerBackupAlert = true;
 
 	// Only the admin site asks (a public tab reads the list from the public site, which has no answer)
-	function askBackupStatus(adaptor) {
-		return !!publicBase && lib.siteOf(adaptor.host) !== lib.siteOf(publicBase) &&
-			(!backupAsked || wiki.tiddlerExists(BACKUP_ALERT) || Date.now() - backupAsked >= BACKUP_CHECK_INTERVAL);
+	function onAdminSite(adaptor) {
+		return !!publicBase && lib.siteOf(adaptor.host) !== lib.siteOf(publicBase);
 	}
 
-	// answer: "ok", or the oldest failing backup as encoded JSON {count, title, since, error, status}
-	function showBackupStatus(answer) {
-		if(answer === "ok") {
+	function askBackupStatus(adaptor) {
+		return onAdminSite(adaptor) &&
+			(!backupAsked || syncRunning || wiki.tiddlerExists(BACKUP_ALERT) || Date.now() - backupAsked >= BACKUP_CHECK_INTERVAL);
+	}
+
+	// The worker's answer, parsed: "off" (no backups), "ok", or encoded JSON with what there is to
+	// say: the oldest failing backup {count, title, since, error, status}, sync (the last full
+	// backup), backups: "off". Returns { backups, problem, sync } or null for an answer it can't read.
+	function parseAnswer(answer) {
+		if(answer === "ok" || answer === "off") {
+			return {backups: answer === "ok" ? "on" : "off", problem: null, sync: null};
+		}
+		var report;
+		try {
+			report = JSON.parse(decodeURIComponent(answer));
+		} catch(e) {
+			return null;
+		}
+		if(!report || typeof report !== "object") {
+			return null;
+		}
+		return {
+			backups: report.backups === "off" ? "off" : "on",
+			problem: report.count ? report : null,
+			sync: report.sync && typeof report.sync === "object" ? report.sync : null
+		};
+	}
+
+	function dateField(ms) {
+		return ms ? $tw.utils.stringifyDate(new Date(ms)) : undefined;
+	}
+
+	// $:/temp/cfworker/backup-status: backups ("on"/"off"), asked (when), and the last full backup
+	// as sync-* fields (id, phase, total, done, committed, removed, failed, started, updated,
+	// finished, error), for the control panel
+	function noteStatus(status) {
+		var sync = status.sync, fields = {
+			title: BACKUP_STATUS,
+			backups: status.backups,
+			asked: dateField(Date.now()),
+			"sync-id": sync ? String(sync.id || "") : undefined,
+			"sync-phase": sync ? String(sync.phase || "") : undefined,
+			"sync-total": sync && sync.total !== undefined && sync.total !== null ? String(sync.total) : undefined,
+			"sync-done": sync ? String(sync.done || 0) : undefined,
+			"sync-committed": sync ? String(sync.committed || 0) : undefined,
+			"sync-removed": sync ? String(sync.removed || 0) : undefined,
+			"sync-failed": sync ? String(sync.failed || 0) : undefined,
+			"sync-started": sync ? dateField(sync.startedAt) : undefined,
+			"sync-updated": sync ? dateField(sync.updatedAt) : undefined,
+			"sync-finished": sync ? dateField(sync.finished) : undefined,
+			"sync-running": sync ? (sync.running ? "yes" : "no") : undefined,
+			"sync-error": sync && sync.error ? String(sync.error) : undefined
+		};
+		wiki.addTiddler(new $tw.Tiddler(fields));
+		syncRunning = !!sync && !!sync.running;
+	}
+
+	// The alert while backups keep failing. problem: {count, title, since, error, status} of the oldest
+	function showProblem(problem) {
+		if(!problem) {
 			backupProblem = null;
 			if(wiki.tiddlerExists(BACKUP_ALERT)) {
 				wiki.deleteTiddler(BACKUP_ALERT);
 			}
-			return;
-		}
-		var problem;
-		try {
-			problem = JSON.parse(decodeURIComponent(answer));
-		} catch(e) {
 			return;
 		}
 		var key = problem.since + " " + problem.error;
@@ -77,6 +135,60 @@ exports.startup = function() {
 		}));
 	}
 
+	// Once per browser: backups are on and no full backup has ever run. Closing the alert is
+	// remembered on this device (localStorage); a full backup makes it moot everywhere.
+	function hintDismissed() {
+		try {
+			return !!window.localStorage && window.localStorage.getItem(HINT_DISMISSED_KEY) === "yes";
+		} catch(e) {
+			return false;
+		}
+	}
+
+	function showHint(status) {
+		if(status.backups !== "on" || status.sync) {
+			if(wiki.tiddlerExists(BACKUP_HINT)) {
+				wiki.deleteTiddler(BACKUP_HINT);
+			}
+			return;
+		}
+		if(hintDismissed() || wiki.tiddlerExists(BACKUP_HINT)) {
+			return;
+		}
+		wiki.addTiddler(new $tw.Tiddler({
+			title: BACKUP_HINT,
+			tags: ["$:/tags/Alert"],
+			component: "GitHub backup",
+			modified: new Date(),
+			text: "Backups to GitHub are on: every save from now on is committed. Tiddlers saved before they were set up (an imported wiki, say) aren't on GitHub until a full backup runs, once: " +
+				"<$link to=\"$:/ControlPanel\">Control Panel</$link> → Saving → Cloudflare → Back up everything to GitHub."
+		}));
+	}
+
+	// The hint's close button deletes it: remembered
+	wiki.addEventListener("change",function(changes) {
+		if(changes[BACKUP_HINT] && changes[BACKUP_HINT].deleted) {
+			try {
+				window.localStorage.setItem(HINT_DISMISSED_KEY,"yes");
+			} catch(e) {}
+		}
+	});
+
+	// What the worker said, from the list request's header (the whole picture) or from a full
+	// backup's answers (control-panel.js: {backups: "on", sync}, the failing backups not known, left
+	// as they are): the status noted, the alert and the hint shown or removed
+	proto.cfworkerNoteBackupStatus = function(answer) {
+		var status = typeof answer === "string" ? parseAnswer(answer) : answer;
+		if(!status) {
+			return;
+		}
+		noteStatus(status);
+		if(status.problem !== undefined) {
+			showProblem(status.problem);
+		}
+		showHint(status);
+	};
+
 	proto.cfworkerOnListRequest({
 		headers: function(adaptor) {
 			return askBackupStatus(adaptor) ? {"X-Backup-Status": "ask"} : null;
@@ -85,7 +197,7 @@ exports.startup = function() {
 			var answer = xhr && xhr.getResponseHeader ? xhr.getResponseHeader("X-Backup-Status") : null;
 			if(answer) {
 				backupAsked = Date.now();
-				showBackupStatus(answer);
+				proto.cfworkerNoteBackupStatus(answer);
 			}
 		}
 	});

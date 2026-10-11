@@ -293,651 +293,6 @@ function isNewerRevision(a, b) {
   return /^\d+$/.test(a) && /^\d+$/.test(String(b)) && Number(a) > Number(b);
 }
 
-// ===== src/worker/backup/github.js ============================================================================
-
-// GitHub's Contents API (one file per tiddler, tiddlers/<title>.json, one commit per version), what
-// its answers mean, and how long to wait after a failure.
-
-
-// Writes bytes as base64 into out (ASCII bytes) from position at; returns where it ends. GitHub takes
-// a file's content in base64, in a request body sent as bytes: written there directly, it's never a
-// string. (Through a string, with String.fromCharCode, btoa, then the body encoded to be sent, a 1.5
-// MB plugin took about 7 ms of CPU, this about 2: a run gets about 10 on the free plan.)
-const BASE64_DIGITS = encoder.encode("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/");
-
-function writeBase64(bytes, out, at) {
-  const end = bytes.length - bytes.length % 3;
-  let i = 0;
-  for (; i < end; i += 3) {
-    const v = bytes[i] << 16 | bytes[i + 1] << 8 | bytes[i + 2];
-    out[at] = BASE64_DIGITS[v >>> 18];
-    out[at + 1] = BASE64_DIGITS[v >>> 12 & 63];
-    out[at + 2] = BASE64_DIGITS[v >>> 6 & 63];
-    out[at + 3] = BASE64_DIGITS[v & 63];
-    at += 4;
-  }
-  if (i < bytes.length) {
-    // One or two bytes left: padded with "="
-    const two = i + 1 < bytes.length;
-    const v = bytes[i] << 16 | (two ? bytes[i + 1] << 8 : 0);
-    out[at] = BASE64_DIGITS[v >>> 18];
-    out[at + 1] = BASE64_DIGITS[v >>> 12 & 63];
-    out[at + 2] = two ? BASE64_DIGITS[v >>> 6 & 63] : 61;
-    out[at + 3] = 61;
-    at += 4;
-  }
-  return at;
-}
-
-// Git's blob id for a file (its bytes), to recognise content GitHub already has
-async function gitBlobSha(content) {
-  const header = encoder.encode(`blob ${content.length}\0`);
-  const data = new Uint8Array(header.length + content.length);
-  data.set(header);
-  data.set(content, header.length);
-  const digest = new Uint8Array(await crypto.subtle.digest("SHA-1", data));
-  return Array.from(digest, b => b.toString(16).padStart(2, "0")).join("");
-}
-
-// A failed GitHub call; retryAfter (seconds) is set when GitHub says how long to wait, status is
-// GitHub's HTTP status
-class GitHubError extends Error {
-  // detail: GitHub's own message ("Bad credentials"), when its answer has one
-  constructor(message, retryAfter, status, detail = "") {
-    super(message);
-    this.name = "GitHubError";
-    this.retryAfter = retryAfter;
-    this.status = status;
-    this.detail = detail;
-  }
-}
-
-// GitHub Contents API, with the same file paths as the original per-save backup
-function githubContents(env) {
-  const { repo, token, branch } = github(env);
-  const headers = {
-    Authorization: `Bearer ${token}`,
-    Accept: "application/vnd.github.v3+json",
-    "Content-Type": "application/json",
-    "X-GitHub-Api-Version": "2022-11-28",
-    "User-Agent": "TiddlyWiki-Cloudflare-Worker"
-  };
-  // body: the request body, as text or bytes
-  async function call(method, title, body) {
-    const apiBase = `https://api.github.com/repos/${repo}/contents/tiddlers/${encodeURIComponent(title)}.json`;
-    // Reads ask for the "object" format: the default one isn't available for files between 1 and
-    // 100 MB, so their backups would fail forever and hold up every later one. The object format
-    // works for all sizes, with empty content above 1 MB.
-    const res = await fetch(method === "GET" ? `${apiBase}?ref=${branch}` : apiBase, {
-      method,
-      headers: method === "GET" ? { ...headers, Accept: "application/vnd.github.object+json" } : headers,
-      body
-    });
-    if (method === "GET" && res.status === 404) return null;
-    if (!res.ok) {
-      // How long GitHub asks us to wait, if it says (rate limits)
-      let waitSeconds;
-      const retryAfter = parseInt(res.headers.get("retry-after"), 10);
-      const reset = parseInt(res.headers.get("x-ratelimit-reset"), 10);
-      if (retryAfter > 0) waitSeconds = retryAfter;
-      else if (res.headers.get("x-ratelimit-remaining") === "0" && reset) waitSeconds = Math.max(reset - Date.now() / 1000, 1);
-      const answer = await res.text();
-      let detail = "";
-      try {
-        detail = String(JSON.parse(answer).message || "");
-      } catch {}
-      throw new GitHubError(`GitHub ${method} ${res.status}: ${answer.slice(0, 200)}`, waitSeconds, res.status, detail);
-    }
-    return res.json();
-  }
-  return {
-    // { sha } of the file on GitHub, or null. (GitHub sends the content too, up to 1 MB; it isn't used.)
-    async get(title) {
-      const file = await call("GET", title);
-      return file ? { sha: file.sha } : null;
-    },
-    // content: bytes. Returns the new blob sha. (The body is made as bytes, the content written into
-    // it as base64: see writeBase64.)
-    async put(title, content, message, sha) {
-      const head = encoder.encode(`{"message":${JSON.stringify(message)},"branch":${JSON.stringify(branch)}${sha ? `,"sha":${JSON.stringify(sha)}` : ""},"content":"`);
-      const body = new Uint8Array(head.length + Math.ceil(content.length / 3) * 4 + 2);
-      body.set(head);
-      const end = writeBase64(content, body, head.length);
-      body[end] = 34;        // "
-      body[end + 1] = 125;   // }
-      const result = await call("PUT", title, body);
-      return result.content.sha;
-    },
-    async remove(title, sha, message) {
-      await call("DELETE", title, JSON.stringify({ message, sha, branch }));
-    }
-  };
-}
-
-const BACKUP_MAX_DELAY = 6 * 3600;
-
-// GitHub refusing every backup, not one file: the token (401: expired or revoked; 403 other than a
-// rate limit: no access to the repository, or the repository archived), or the repository not
-// found (404: only on a write, as the 404 of a read, a file not there yet, isn't an error). A 403 or
-// 404 could still concern one file only (a path GitHub can't take): it pauses every backup only once
-// a second tiddler gets one in the same run, or one file would hold up all the others (the oldest
-// backup tries first after a pause). Until then it's that file's own failure.
-function isAccountWide(e) {
-  return e.status === 401 || (e.status === 403 && !isRateLimit(e)) || e.status === 404;
-}
-
-// GitHub refusing this file for good: its path, or its content (a secret in it, which its push
-// protection refuses with a 409; a 409 that's only a race over the file's sha passes on its retry)
-function isRefusal(e) {
-  return e.status === 409 || e.status === 422;
-}
-
-// GitHub asking to slow down: Retry-After or an exhausted rate limit, 429, or its "rate limit"
-// messages (a secondary rate limit can come as a 403 without a header)
-function isRateLimit(e) {
-  return e.retryAfter > 0 || e.status === 429 || /rate limit/i.test(e.message || "");
-}
-
-function backupRetryDelay(env, tries, retryAfter) {
-  const base = backupRetrySeconds(env);
-  const delay = Math.min(base * 2 ** (tries || 0), BACKUP_MAX_DELAY);
-  return Math.ceil(Math.min(Math.max(delay, retryAfter || 0), 24 * 3600));
-}
-
-// ===== src/worker/backup/status.js ============================================================================
-
-// How backups go, for the admin wiki (design 1.7): backups GitHub keeps refusing (not a rate limit:
-// that only delays them) are recorded in _backup/status.json, one entry per tiddler: since (when its
-// oldest waiting version was saved), last (its latest attempt), error (GitHub's answer) and status
-// (its HTTP status, 0 without one). The entry goes when that tiddler's backup gets through. The file
-// also keeps a pause of every backup, { until, count }, while there's one (queue.js). Written only
-// when something changes, read only by a batch with a failure or a version that failed or waited
-// before. The admin wiki (src/browser/backup-alert.js) asks with its tiddler list request (X-Backup-Status: ask) when it loads,
-// then hourly, and shows an alert.
-
-
-// An entry not retried for a day belongs to a backup no longer waiting (one still waiting is retried
-// at least every 6 hours: BACKUP_MAX_DELAY), and is dropped
-const BACKUP_STATUS_STALE = 24 * 3600 * 1000;
-
-function backupFailure(job, e) {
-  return { title: job.title, since: job.time || Date.now(), error: String(e.detail || e.message || e).slice(0, 200), status: e.status || 0 };
-}
-
-// { failing: title -> entry, pause }. strict: an R2 error throws, rather than reading as no file (a
-// file that isn't JSON still reads as none)
-async function readBackupStatus(env, strict) {
-  let data = null;
-  try {
-    const obj = await env.WIKI_BUCKET.get(BACKUP_STATUS_KEY);
-    try {
-      data = obj ? await obj.json() : null;
-    } catch {}
-  } catch (e) {
-    if (strict) throw e;
-  }
-  const failing = data && typeof data.failing === "object" && data.failing ? Object.entries(data.failing) : [];
-  const pause = data && data.pause && data.pause.until > 0 ? { until: data.pause.until, count: data.pause.count || 0 } : null;
-  return { failing: new Map(failing), pause };
-}
-
-// failures: from backupFailure; cleared: titles whose backup got through; pause: { until, count } of
-// a pause that starts, null when one is over, undefined when that's not known; stored: the status
-// file, if this run has read it already. Never throws: an R2 error here mustn't count as a failed
-// backup
-async function recordBackupResults(env, failures, cleared, pause, stored) {
-  try {
-    await updateBackupStatus(env, failures, cleared, pause, stored);
-  } catch (e) {
-    console.error("[Backup] Could not record how backups go:", e.message);
-  }
-}
-
-async function updateBackupStatus(env, failures, cleared, pause, stored) {
-  const { failing, pause: storedPause } = stored || await readBackupStatus(env, true), now = Date.now();
-  let changed = false;
-  let keptPause = pause === undefined ? storedPause : pause;
-  // (A pause over for a while no longer counts: gone)
-  if (keptPause && now - keptPause.until >= PAUSE_CONTINUES) keptPause = null;
-  if (JSON.stringify(keptPause) !== JSON.stringify(storedPause)) changed = true;
-  for (const title of cleared) changed = failing.delete(title) || changed;
-  for (const { title, since, error, status } of failures) {
-    const entry = failing.get(title);
-    failing.set(title, { since: entry ? Math.min(entry.since, since) : since, last: now, error, status });
-    changed = true;
-  }
-  for (const [title, entry] of failing) {
-    // (Also an entry that isn't one: no time to go by)
-    if (!(now - entry.last <= BACKUP_STATUS_STALE)) changed = failing.delete(title) || changed;
-  }
-  if (!changed) return;
-  if (failing.size || keptPause) {
-    const status = { failing: Object.fromEntries(failing), ...(keptPause ? { pause: keptPause } : {}) };
-    await env.WIKI_BUCKET.put(BACKUP_STATUS_KEY, JSON.stringify(status), { httpMetadata: { contentType: "application/json" } });
-  } else {
-    await env.WIKI_BUCKET.delete(BACKUP_STATUS_KEY);
-  }
-}
-
-// What the admin wiki is told: "ok", or the backups failing for at least BACKUP_ALERT_MINUTES (60
-// by default), as encoded JSON: { count, title, since, error, status } of the oldest
-function backupReport(env, failing) {
-  const after = backupAlertMinutes(env) * 60000;
-  const now = Date.now();
-  const due = [...failing].filter(([, e]) => now - e.last <= BACKUP_STATUS_STALE && now - e.since >= after).sort((a, b) => a[1].since - b[1].since);
-  if (!due.length) return "ok";
-  const [title, e] = due[0];
-  return encodeURIComponent(JSON.stringify({ count: due.length, title: title.slice(0, 200), since: e.since, error: e.error, status: e.status }));
-}
-
-// A pause of every backup: GitHub asked to slow down, or refuses every backup (a token it no longer
-// accepts, say), so trying them one by one would only make more calls (each answered the same way)
-// and more queue operations. While it lasts, the backups delivered are sent again to wait for its
-// end, without calling GitHub; then the first one tries. If GitHub still refuses, the next pause is
-// twice as long (up to BACKUP_MAX_DELAY, or as long as GitHub asks).
-// A failure within this time after a pause ended: the next pause is twice as long
-const PAUSE_CONTINUES = 3600 * 1000;
-
-// The next pause of every backup, after a failure e: { until (ms), count (pauses in a row, from 0),
-// error (GitHub's, from the call that started it), all (GitHub refuses every backup, not just asking
-// to wait: the ones waiting are recorded as failing, for the alert) }. last: the pause before, if any.
-// The consumer keeps the pause for the later runs in its isolate (queue.js); until and count are
-// also kept in the status file, for a run in a new one.
-function nextPause(env, last, e) {
-  const now = Date.now();
-  // Still paused (a run that only knew from the status file): the same pause, for at least as long
-  // as GitHub asks; just after one: twice as long; otherwise a first one
-  const still = last && now < last.until;
-  const count = !last ? 0 : still ? last.count : now - last.until < PAUSE_CONTINUES ? last.count + 1 : 0;
-  const until = Math.max(now + backupRetryDelay(env, count, e.retryAfter) * 1000, still ? last.until : 0);
-  return { until, count, error: e, all: !isRateLimit(e) };
-}
-
-// ===== src/worker/backup/queue.js =============================================================================
-
-// The GitHub backup through a Cloudflare Queue (design 1.7): every save or delete becomes one
-// message. The queue consumer (processBackupBatch, configured with max_concurrency 1) commits them
-// one at a time, in order, one commit per save, so commits never collide, and GitHub rate limits or
-// outages only delay backups: failed messages are put back with a growing delay until they go
-// through. A rate limit or a token GitHub refuses pauses every backup; any other failure holds up
-// only that tiddler's versions, so a file GitHub refuses can't hold up the others. Nothing runs
-// while the queue is empty. Without a BACKUP_QUEUE binding (or if the queue is unavailable) the
-// same backup runs directly.
-
-
-// A queue message, as sent: a version that would make it bigger waits in R2. (The queue takes up to
-// 128 KB, but counts an operation per 64 KB of message: over 64 KB, a backup would cost 6 instead of 3.)
-const QUEUE_MESSAGE_LIMIT = 64000;
-
-const BACKUP_PER_RUN = 10;
-
-// After this many bytes of versions, the rest of a run goes on to the next one: a megabyte takes a
-// few milliseconds of CPU (its base64 above all), and a run gets about 10 on the free plan. A run
-// always backs up one version, whatever its size.
-const BACKUP_BYTES_PER_RUN = 512 * 1024;
-
-// About the size of a message as the queue measures it: V8-serialized, where a string takes one
-// byte a character if they're all Latin-1, two otherwise (so a text of 40 KB can be over 64 KB), with
-// room for the other fields
-function queueMessageSize(message) {
-  let size = 200;
-  for (const value of [message.title, message.content]) {
-    if (typeof value === "string") size += value.length * (/[^\x00-\xff]/.test(value) ? 2 : 1);
-  }
-  return size;
-}
-
-// Called after a save or delete has been stored; job.content is the stored bytes
-async function queueBackup(env, job) {
-  if (!github(env)) return;
-  const message = { action: job.action, title: job.title, revision: job.revision ?? null, time: Date.now(), tries: 0 };
-  if (env.BACKUP_QUEUE) {
-    try {
-      if (job.action === "save") {
-        // (Decoded only if it may fit: a character is at least one byte of UTF-8)
-        const content = job.content.length < QUEUE_MESSAGE_LIMIT ? decoder.decode(job.content) : null;
-        if (content !== null && queueMessageSize({ ...message, content }) <= QUEUE_MESSAGE_LIMIT) {
-          message.content = content;
-        } else {
-          // Keep this exact version until it is committed (R2 itself only holds the latest one).
-          // Not named after the title, which can be too long for a key (or guessed: the copy is public)
-          message.contentKey = `_backup/versions/${message.time}-${crypto.randomUUID()}.json`;
-          await env.WIKI_BUCKET.put(message.contentKey, job.content, { httpMetadata: { contentType: "application/json" } });
-        }
-      }
-      await env.BACKUP_QUEUE.send(message);
-      return;
-    } catch (e) {
-      console.error(`[Backup] Could not queue '${job.title}', backing up directly:`, e.message);
-      if (message.contentKey) await env.WIKI_BUCKET.delete(message.contentKey).catch(() => {});
-    }
-  }
-  // No queue: run the same backup right away, with a couple of quick retries
-  const direct = { ...message, content: job.content, contentKey: undefined };
-  for (let attempt = 1; attempt <= 3; attempt++) {
-    try {
-      await backupJob(env, direct);
-      return await recordBackupResults(env, [], [job.title]);
-    } catch (e) {
-      if (attempt < 3) {
-        await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
-        continue;
-      }
-      console.error(`[Backup] '${job.title}' could not be backed up:`, e.message);
-      await recordBackupResults(env, [backupFailure(direct, e)], []);
-    }
-  }
-}
-
-// The pause of every backup, if one is on (nextPause in status.js), kept for the later runs in this isolate
-let backupPause = null;
-
-// Queue consumer
-async function processBackupBatch(batch, env) {
-  const messages = [...batch.messages].sort((a, b) =>
-    (a.body.time - b.body.time) || String(a.body.revision).localeCompare(String(b.body.revision)));
-  const held = new Map();   // title -> delay: a version of it failed, its later versions wait with it
-  const failures = [], cleared = [];   // for the backup status (backupFailure)
-  let pause;                // for the status file: a pause that starts in this run, or null if one is over
-  let stored;               // the status file, if read in this run
-  let denied;               // a tiddler GitHub answered 403 or 404 in this run (see isAccountWide)
-  let attempts = 0;
-  const work = { bytes: 0 };   // the size of the versions handled so far (BACKUP_BYTES_PER_RUN)
-  for (let i = 0; i < messages.length; i++) {
-    const msg = messages[i];
-    if (backupPause && Date.now() < backupPause.until) {
-      // Waits for the pause to end. (Marked, so that its backup going through ends the pause in the
-      // status file too)
-      await requeueBackup(env, msg, Math.ceil((backupPause.until - Date.now()) / 1000), false, { paused: true });
-      if (backupPause.all) failures.push(backupFailure(msg.body, backupPause.error));
-      continue;
-    }
-    if (held.has(msg.body.title)) {
-      await requeueBackup(env, msg, held.get(msg.body.title), false);
-      continue;
-    }
-    if (attempts >= BACKUP_PER_RUN || work.bytes >= BACKUP_BYTES_PER_RUN) {
-      await requeueBackup(env, msg, 0, false);
-      continue;
-    }
-    attempts++;
-    try {
-      await backupJob(env, msg.body, work);
-      msg.ack();
-      backupPause = null;   // GitHub takes backups (again)
-      // (The backup is done: a copy that can't be removed is only left behind)
-      if (msg.body.contentKey) await env.WIKI_BUCKET.delete(msg.body.contentKey).catch(() => {});
-      // Only a version that failed or waited before can clear a recorded failure, or a recorded pause
-      if (msg.body.tries > 0 || msg.body.paused || msg.attempts > 1) {
-        cleared.push(msg.body.title);
-        pause = null;
-      }
-    } catch (e) {
-      if (isRateLimit(e) || e.status === 401 || (isAccountWide(e) && denied !== undefined && denied !== msg.body.title)) {
-        // Every backup waits: this one, the rest of this run (above), and the next runs. (A rate
-        // limit isn't a failure to report: a big import waits like this for hours.)
-        let last = backupPause;
-        if (!last) {
-          try {
-            stored = await readBackupStatus(env, true);
-            last = stored.pause;
-          } catch {}
-        }
-        backupPause = nextPause(env, last, e);
-        pause = { until: backupPause.until, count: backupPause.count };
-        const delay = Math.ceil((backupPause.until - Date.now()) / 1000);
-        console.error(`[Backup] Backups paused for ${delay}s: ${e.message}`);
-        await requeueBackup(env, msg, delay, true);
-        if (backupPause.all) failures.push(backupFailure(msg.body, e));
-        continue;
-      }
-      if (isAccountWide(e)) denied = msg.body.title;
-      const delay = backupRetryDelay(env, msg.body.tries, e.retryAfter);
-      console.error(`[Backup] '${msg.body.title}' not backed up yet (${e.message}); retrying in ${delay}s`);
-      await requeueBackup(env, msg, delay, true, isRefusal(e) ? { refused: true } : undefined);
-      // Anything else may concern this file only, and other tiddlers' backups go ahead. Its later
-      // versions wait with it, so they stay in order, unless GitHub refuses this version for good
-      // (its path, or a secret in its text): the next one may be fine, and goes ahead (the late
-      // versions logic keeps GitHub on the newest)
-      if (!isRefusal(e)) held.set(msg.body.title, delay);
-      failures.push(backupFailure(msg.body, e));
-    }
-  }
-  if (failures.length || cleared.length || pause !== undefined) await recordBackupResults(env, failures, cleared, pause, stored);
-}
-
-// The queue's retry limit, which the worker can't read: Cloudflare's default (README 2.3: leave it)
-const QUEUE_RETRIES = 3;
-
-// How long the queue keeps a message from when it was sent: 24 hours on the free plan (the least)
-const QUEUE_RETENTION = 24 * 3600 * 1000;
-
-// Puts a message back, to be delivered again after delaySeconds. While it only waits (nothing in it
-// changes but being marked paused, which its next delivery shows anyway: msg.attempts) and has a
-// retry left, with a delivery to spare, before the queue would drop it, by its retry limit or its
-// retention, the queue's own retry: 1 operation, the next delivery. Otherwise it's sent again as a
-// fresh message, which neither limit applies to: 3 operations (sent, delivered, acknowledged).
-// countTry: one more failed try; extra: fields to add to it
-async function requeueBackup(env, msg, delaySeconds, countTry, extra) {
-  const onlyWaits = !countTry && (!extra || (Object.keys(extra).length === 1 && extra.paused === true));
-  const sent = msg.timestamp instanceof Date ? msg.timestamp.getTime() : NaN;
-  if (onlyWaits && msg.attempts >= 1 && msg.attempts < QUEUE_RETRIES &&
-      Date.now() + delaySeconds * 1000 < sent + QUEUE_RETENTION - 3600 * 1000) {
-    msg.retry(delaySeconds > 0 ? { delaySeconds } : undefined);
-    return;
-  }
-  const body = { ...msg.body, ...(countTry ? { tries: (msg.body.tries || 0) + 1 } : {}), ...extra };
-  try {
-    await env.BACKUP_QUEUE.send(body, delaySeconds > 0 ? { delaySeconds } : undefined);
-    msg.ack();
-  } catch (e) {
-    msg.retry(delaySeconds > 0 ? { delaySeconds } : undefined);
-  }
-}
-
-// Commits one save or delete. job.content: the version as text (in a queue message) or bytes (a
-// direct backup). work.bytes: adds the size of the versions it handles
-async function backupJob(env, job, work = { bytes: 0 }) {
-  const github = githubContents(env);
-  const current = await env.WIKI_BUCKET.head(tiddlerKey(job.title));   // the version in the wiki now
-
-  if (job.action === "delete") {
-    if (current) return; // Recreated since then: its own save message updates GitHub
-    const existing = await github.get(job.title);
-    if (existing) await github.remove(job.title, existing.sha, `🗑️ Delete: ${job.title}`);
-    return;
-  }
-
-  // (As bytes: what GitHub gets, and what its sha is computed from)
-  let content = typeof job.content === "string" ? encoder.encode(job.content) : job.content;
-  if (content === undefined && job.contentKey) {
-    const stored = await env.WIKI_BUCKET.get(job.contentKey);
-    content = stored ? new Uint8Array(await stored.arrayBuffer()) : undefined;
-  }
-  if (content === undefined) return; // Already handled by an earlier delivery of this message
-  work.bytes += content.length;
-
-  // GitHub needs the sha of the file it holds to replace it. Its content isn't needed (decoding a
-  // plugin's took more CPU than a run is allowed): whether GitHub already holds a newer version is
-  // told by the sha too, compared with the wiki's current version's
-  const existing = await github.get(job.title);
-  let sha = existing ? existing.sha : null;
-  const newer = await newerInWiki(env, job, current, sha, work);
-  // A version GitHub refused for good, now replaced there by a newer one, or whose tiddler has been
-  // deleted since: dropped, rather than tried forever (it would only have been history)
-  if (job.refused && (newer || !current)) return;
-  // (A retry after the restore below failed: this version is already in the history, even if a
-  // newer one has been committed on top since)
-  if (!job.restore && sha !== await gitBlobSha(content)) {
-    sha = await github.put(job.title, content, `✏️ Save: ${job.title}`, sha);
-  }
-  if (newer) {
-    // This version arrived after a newer one was committed: it is now in the history, and the
-    // newer version goes back on top. (Marked first: if putting it back fails, the retry of this
-    // message, which finds this version already committed, still does it.)
-    job.restore = true;
-    if (sha !== newer.sha) await github.put(job.title, newer.bytes, `✏️ Save: ${job.title} (newer version restored)`, sha);
-  } else if (!current) {
-    // Deleted since this save: keep this version in the history, then delete it again
-    await github.remove(job.title, sha, `🗑️ Delete: ${job.title}`);
-  }
-}
-
-// The wiki's current version of a tiddler, { bytes, sha }, if it's newer than this job's and GitHub
-// already holds it (githubSha), so this job's version arrived late; or if an earlier try of this
-// job found that (job.restore). Otherwise null: a newer version still waiting for its own backup
-// (quick successive edits) is committed by its own message, in order.
-async function newerInWiki(env, job, current, githubSha, work) {
-  if (!current || !isNewerRevision(revisionOf(current), job.revision) || (!githubSha && !job.restore)) return null;
-  const obj = await env.WIKI_BUCKET.get(tiddlerKey(job.title));
-  if (!obj) return null;
-  const bytes = new Uint8Array(await obj.arrayBuffer());
-  work.bytes += bytes.length;
-  const sha = await gitBlobSha(bytes);
-  return job.restore || sha === githubSha ? { bytes, sha } : null;
-}
-
-// ===== src/worker/http.js =====================================================================================
-
-// The small shared pieces of answering a request: paths, ETags and preconditions (design 1.2),
-// standard answers, and work that outlives the answer.
-//
-// Edit-conflict protection, in short:
-//  * Every tiddler has a revision: customMetadata.revision, a millisecond timestamp set on each
-//    save. GET returns it in the body and in the ETag "default/<title>/<revision>:auto".
-//  * The conflict guard (src/browser/conflict-guard.js, built into the page) sends the revision its edit
-//    is based on as If-Match, or If-None-Match: * for a brand new tiddler.
-//  * PUT/DELETE answer 412 when that revision is no longer current (checkPreconditions), and the R2
-//    write itself is conditional (saves.js), so two saves arriving at the same moment can't both win.
-//  * Requests without If-Match/If-None-Match (old tabs, scripts) are accepted.
-
-// A path, or the title in one, decoded; null if it isn't valid percent-encoding
-function decodePath(text) {
-  try {
-    return decodeURIComponent(text);
-  } catch {
-    return null;
-  }
-}
-
-function invalidPath(corsHeaders) {
-  return new Response("Invalid path: it isn't valid percent-encoding", { status: 400, headers: corsHeaders });
-}
-
-function tiddlerEtag(title, revision) {
-  return `"default/${encodeURIComponent(title)}/${revision}:auto"`;
-}
-
-// Turns an If-Match / If-None-Match header into revisions ("*" stays "*"). Accepts full TiddlyWeb
-// ETags ("bag/title/revision:hash"), bare revisions, and weak (W/) or unquoted forms.
-function parseEtagList(header) {
-  if (!header) return [];
-  return header.split(",")
-    .map(token => token.trim().replace(/^W\//i, "").replace(/^"(.*)"$/, "$1").trim())
-    .map(token => {
-      if (token === "*") return token;
-      const slash = token.lastIndexOf("/");
-      const colon = token.lastIndexOf(":");
-      return colon > slash ? token.substring(slash + 1, colon) : token.substring(slash + 1);
-    })
-    .filter(revision => revision && revision !== "undefined" && revision !== "null");
-}
-
-// Evaluates If-Match / If-None-Match against the current revision (null if the tiddler doesn't exist)
-function checkPreconditions(request, currentRevision) {
-  const ifMatch = parseEtagList(request.headers.get("If-Match"));
-  const ifNoneMatch = parseEtagList(request.headers.get("If-None-Match"));
-  let reason = null;
-  if (ifMatch.length > 0) {
-    if (currentRevision === null) reason = "it was deleted in another tab or browser";
-    else if (!ifMatch.includes("*") && !ifMatch.includes(currentRevision)) reason = "it was changed in another tab or browser";
-  }
-  if (!reason && ifNoneMatch.length > 0 && currentRevision !== null &&
-      (ifNoneMatch.includes("*") || ifNoneMatch.includes(currentRevision))) {
-    reason = "a tiddler with this title was created in another tab or browser";
-  }
-  return { conditional: ifMatch.length > 0 || ifNoneMatch.length > 0, reason };
-}
-
-// Response headers for an R2 object: its stored HTTP metadata plus CORS
-function objectHeaders(object, corsHeaders) {
-  const headers = new Headers(corsHeaders);
-  object.writeHttpMetadata(headers);
-  return headers;
-}
-
-function conflictResponse(title, reason, currentRevision, corsHeaders) {
-  const headers = { ...corsHeaders, "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" };
-  if (currentRevision !== null) headers.ETag = tiddlerEtag(title, currentRevision);
-  return new Response(`Edit conflict: '${title}' was not saved because ${reason}.`, { status: 412, headers });
-}
-
-// The answer to a save: TiddlyWiki reads the new revision from the ETag
-function savedResponse(title, revision, corsHeaders) {
-  return new Response(null, { status: 204, headers: { ...corsHeaders, ETag: tiddlerEtag(title, revision) } });
-}
-
-function refusal(message, corsHeaders, status = 400) {
-  return new Response(message, { status, headers: { ...corsHeaders, "Content-Type": "text/plain; charset=utf-8" } });
-}
-
-// Waits for work the response depends on, and keeps it running even if the browser disconnects
-// first (a reload while the page is being rebuilt, say): without waitUntil it could be cancelled
-function untilDone(ctx, promise) {
-  ctx.waitUntil(promise.catch(() => {}));
-  return promise;
-}
-
-// ===== src/worker/cache.js ====================================================================================
-
-// The public site's cache: the public wiki is served straight from the R2 bucket through
-// Cloudflare's cache, so after a change the worker purges exactly the public URLs that serve it
-// (single-file purge, not purge_everything; design 1.6).
-
-
-// The query string is part of the cache key, so the tiddler list is purged under each URL
-// TiddlyWiki requests it with: the TiddlyWiki 5.4 filter, the filter of earlier versions, and bare.
-const SKINNY_LIST_FILTERS = [
-  "[all[tiddlers]] -[[$:/isEncrypted]] -[prefix[$:/temp/]] -[prefix[$:/status/]] -[[$:/boot/boot.js]] -[[$:/boot/bootprefix.js]] -[has[plugin-type]field:platform[server]] -[[$:/library/sjcl.js]] -[[$:/core]]",
-  "[all[tiddlers]] -[[$:/isEncrypted]] -[prefix[$:/temp/]] -[prefix[$:/status/]] -[[$:/boot/boot.js]] -[[$:/boot/bootprefix.js]] -[[$:/library/sjcl.js]] -[[$:/core]]"
-];
-
-// URLs that serve the wiki page itself
-const PUBLIC_PAGE_PATHS = ["/", "/baked.html"];
-
-// Encoded the same way TiddlyWiki encodes them when it requests them. The admin page reads tiddlers
-// from the public site too, cross-origin: its requests carry an Origin header, which Cloudflare
-// keeps in the cache key, so its copy is a separate cache entry, purged with that header.
-function tiddlerPurgeUrls(env, title, adminOrigin) {
-  const url = publicUrl(env, `/recipes/default/tiddlers/${encodeURIComponent(title)}`);
-  return [url, { url, headers: { Origin: adminOrigin } }, ...listPurgeUrls(env)];
-}
-
-function listPurgeUrls(env) {
-  return [
-    publicUrl(env, "/recipes/default/tiddlers.json"),
-    ...SKINNY_LIST_FILTERS.map(filter => publicUrl(env, `/recipes/default/tiddlers.json?filter=${encodeURIComponent(filter)}`))
-  ];
-}
-
-async function purgePublicCache(env, urls) {
-  const zone = purges(env);
-  if (!zone || urls.length === 0) return;
-  try {
-    const res = await fetch(`https://api.cloudflare.com/client/v4/zones/${zone.zoneId}/purge_cache`, {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${zone.token}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({ files: urls })
-    });
-    if (!res.ok) console.error(`Cache purge failed (${res.status}):`, await res.text());
-  } catch (e) {
-    console.error("Cache purge exception:", e.message);
-  }
-}
-
 // ===== src/worker/layout.js ===================================================================================
 
 // How a tiddler is stored, and how a save is read (design 1.2).
@@ -1154,6 +509,882 @@ async function readStoredFields(env, item) {
   try { fields = JSON.parse(cut === -1 ? decoder.decode(bytes) : decoder.decode(bytes.subarray(0, cut)) + "}"); } catch (e) {}
   if (fields && typeof fields === "object") delete fields.text;
   return { fields, obj };
+}
+
+// ===== src/worker/backup/github.js ============================================================================
+
+// GitHub's Contents API (one file per tiddler, tiddlers/<title>.json, one commit per version), what
+// its answers mean, and how long to wait after a failure.
+
+
+// Writes bytes as base64 into out (ASCII bytes) from position at; returns where it ends. GitHub takes
+// a file's content in base64, in a request body sent as bytes: written there directly, it's never a
+// string. (Through a string, with String.fromCharCode, btoa, then the body encoded to be sent, a 1.5
+// MB plugin took about 7 ms of CPU, this about 2: a run gets about 10 on the free plan.)
+const BASE64_DIGITS = encoder.encode("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/");
+
+function writeBase64(bytes, out, at) {
+  const end = bytes.length - bytes.length % 3;
+  let i = 0;
+  for (; i < end; i += 3) {
+    const v = bytes[i] << 16 | bytes[i + 1] << 8 | bytes[i + 2];
+    out[at] = BASE64_DIGITS[v >>> 18];
+    out[at + 1] = BASE64_DIGITS[v >>> 12 & 63];
+    out[at + 2] = BASE64_DIGITS[v >>> 6 & 63];
+    out[at + 3] = BASE64_DIGITS[v & 63];
+    at += 4;
+  }
+  if (i < bytes.length) {
+    // One or two bytes left: padded with "="
+    const two = i + 1 < bytes.length;
+    const v = bytes[i] << 16 | (two ? bytes[i + 1] << 8 : 0);
+    out[at] = BASE64_DIGITS[v >>> 18];
+    out[at + 1] = BASE64_DIGITS[v >>> 12 & 63];
+    out[at + 2] = two ? BASE64_DIGITS[v >>> 6 & 63] : 61;
+    out[at + 3] = 61;
+    at += 4;
+  }
+  return at;
+}
+
+// Git's blob id for a file (its bytes), to recognise content GitHub already has
+async function gitBlobSha(content) {
+  const header = encoder.encode(`blob ${content.length}\0`);
+  const data = new Uint8Array(header.length + content.length);
+  data.set(header);
+  data.set(content, header.length);
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-1", data));
+  return Array.from(digest, b => b.toString(16).padStart(2, "0")).join("");
+}
+
+// A failed GitHub call; retryAfter (seconds) is set when GitHub says how long to wait, status is
+// GitHub's HTTP status
+class GitHubError extends Error {
+  // detail: GitHub's own message ("Bad credentials"), when its answer has one
+  constructor(message, retryAfter, status, detail = "") {
+    super(message);
+    this.name = "GitHubError";
+    this.retryAfter = retryAfter;
+    this.status = status;
+    this.detail = detail;
+  }
+}
+
+// GitHub Contents API, with the same file paths as the original per-save backup. counter: an object
+// whose .calls is increased by one per call made, for a run's budget (queue.js)
+function githubContents(env, counter) {
+  const { repo, token, branch } = github(env);
+  const headers = {
+    Authorization: `Bearer ${token}`,
+    Accept: "application/vnd.github.v3+json",
+    "Content-Type": "application/json",
+    "X-GitHub-Api-Version": "2022-11-28",
+    "User-Agent": "TiddlyWiki-Cloudflare-Worker"
+  };
+  // body: the request body, as text or bytes
+  async function call(method, title, body) {
+    const apiBase = `https://api.github.com/repos/${repo}/contents/tiddlers/${encodeURIComponent(title)}.json`;
+    // Reads ask for the "object" format: the default one isn't available for files between 1 and
+    // 100 MB, so their backups would fail forever and hold up every later one. The object format
+    // works for all sizes, with empty content above 1 MB.
+    return request(method, method === "GET" ? `${apiBase}?ref=${branch}` : apiBase, method === "GET" ? { ...headers, Accept: "application/vnd.github.object+json" } : headers, body);
+  }
+  async function request(method, url, requestHeaders, body) {
+    if (counter) counter.calls = (counter.calls || 0) + 1;
+    const res = await fetch(url, { method, headers: requestHeaders, body });
+    if (method === "GET" && res.status === 404) return null;
+    if (!res.ok) {
+      // How long GitHub asks us to wait, if it says (rate limits)
+      let waitSeconds;
+      const retryAfter = parseInt(res.headers.get("retry-after"), 10);
+      const reset = parseInt(res.headers.get("x-ratelimit-reset"), 10);
+      if (retryAfter > 0) waitSeconds = retryAfter;
+      else if (res.headers.get("x-ratelimit-remaining") === "0" && reset) waitSeconds = Math.max(reset - Date.now() / 1000, 1);
+      const answer = await res.text();
+      let detail = "";
+      try {
+        detail = String(JSON.parse(answer).message || "");
+      } catch {}
+      throw new GitHubError(`GitHub ${method} ${res.status}: ${answer.slice(0, 200)}`, waitSeconds, res.status, detail);
+    }
+    return res.json();
+  }
+  return {
+    // { sha } of the file on GitHub, or null. (GitHub sends the content too, up to 1 MB; it isn't used.)
+    async get(title) {
+      const file = await call("GET", title);
+      return file ? { sha: file.sha } : null;
+    },
+    // content: bytes. Returns the new blob sha. (The body is made as bytes, the content written into
+    // it as base64: see writeBase64.)
+    async put(title, content, message, sha) {
+      const head = encoder.encode(`{"message":${JSON.stringify(message)},"branch":${JSON.stringify(branch)}${sha ? `,"sha":${JSON.stringify(sha)}` : ""},"content":"`);
+      const body = new Uint8Array(head.length + Math.ceil(content.length / 3) * 4 + 2);
+      body.set(head);
+      const end = writeBase64(content, body, head.length);
+      body[end] = 34;        // "
+      body[end + 1] = 125;   // }
+      const result = await call("PUT", title, body);
+      return result.content.sha;
+    },
+    async remove(title, sha, message) {
+      await call("DELETE", title, JSON.stringify({ message, sha, branch }));
+    },
+    // Every tiddler file of the branch, in one call (the Git Trees API, the whole tree at once): the
+    // titles and blob shas of tiddlers/<title>.json, subdirectories included (titles with slashes);
+    // none for a branch with no commits yet; null if the tree is too big for one answer (GitHub
+    // truncates past 100,000 entries or 7 MB)
+    async tiddlerFiles() {
+      const tree = await request("GET", `https://api.github.com/repos/${repo}/git/trees/${encodeURIComponent(branch)}?recursive=1`, headers);
+      if (!tree) return [];
+      if (tree.truncated) return null;
+      const files = [];
+      for (const entry of tree.tree || []) {
+        if (entry.type === "blob" && typeof entry.path === "string" && entry.path.startsWith("tiddlers/") && entry.path.endsWith(".json")) {
+          files.push({ title: entry.path.slice("tiddlers/".length, -".json".length), sha: entry.sha });
+        }
+      }
+      return files;
+    }
+  };
+}
+
+const BACKUP_MAX_DELAY = 6 * 3600;
+
+// GitHub refusing every backup, not one file: the token (401: expired or revoked; 403 other than a
+// rate limit: no access to the repository, or the repository archived), or the repository not
+// found (404: only on a write, as the 404 of a read, a file not there yet, isn't an error). A 403 or
+// 404 could still concern one file only (a path GitHub can't take): it pauses every backup only once
+// a second tiddler gets one in the same run, or one file would hold up all the others (the oldest
+// backup tries first after a pause). Until then it's that file's own failure.
+function isAccountWide(e) {
+  return e.status === 401 || (e.status === 403 && !isRateLimit(e)) || e.status === 404;
+}
+
+// GitHub refusing this file for good: its path, or its content (a secret in it, which its push
+// protection refuses with a 409; a 409 that's only a race over the file's sha passes on its retry)
+function isRefusal(e) {
+  return e.status === 409 || e.status === 422;
+}
+
+// GitHub asking to slow down: Retry-After or an exhausted rate limit, 429, or its "rate limit"
+// messages (a secondary rate limit can come as a 403 without a header)
+function isRateLimit(e) {
+  return e.retryAfter > 0 || e.status === 429 || /rate limit/i.test(e.message || "");
+}
+
+function backupRetryDelay(env, tries, retryAfter) {
+  const base = backupRetrySeconds(env);
+  const delay = Math.min(base * 2 ** (tries || 0), BACKUP_MAX_DELAY);
+  return Math.ceil(Math.min(Math.max(delay, retryAfter || 0), 24 * 3600));
+}
+
+// ===== src/worker/backup/status.js ============================================================================
+
+// How backups go, for the admin wiki (design 1.7): backups GitHub keeps refusing (not a rate limit:
+// that only delays them) are recorded in _backup/status.json, one entry per tiddler: since (when its
+// oldest waiting version was saved), last (its latest attempt), error (GitHub's answer) and status
+// (its HTTP status, 0 without one). The entry goes when that tiddler's backup gets through. The file
+// also keeps a pause of every backup, { until, count }, while there's one (queue.js), and the last
+// full backup (sync.js, queue.js): { id, startedAt, updatedAt, total, phase, steps, done, committed,
+// removed, failed, finished }. Written only when something changes, read only by a batch with a
+// failure or a version that failed or waited before, and by each step of a full backup. The admin
+// wiki (src/browser/backup-alert.js) asks with its tiddler list request (X-Backup-Status: ask) when
+// it loads, then hourly, at each request while the alert shows or a full backup runs, and shows an
+// alert, and the full backup's progress in its control panel.
+
+
+// An entry not retried for a day belongs to a backup no longer waiting (one still waiting is retried
+// at least every 6 hours: BACKUP_MAX_DELAY), and is dropped
+const BACKUP_STATUS_STALE = 24 * 3600 * 1000;
+
+function backupFailure(job, e) {
+  return { title: job.title, since: job.time || Date.now(), error: String(e.detail || e.message || e).slice(0, 200), status: e.status || 0 };
+}
+
+// { failing: title -> entry, pause, sync }. strict: an R2 error throws, rather than reading as no file
+// (a file that isn't JSON still reads as none)
+async function readBackupStatus(env, strict) {
+  let data = null;
+  try {
+    const obj = await env.WIKI_BUCKET.get(BACKUP_STATUS_KEY);
+    try {
+      data = obj ? await obj.json() : null;
+    } catch {}
+  } catch (e) {
+    if (strict) throw e;
+  }
+  const failing = data && typeof data.failing === "object" && data.failing ? Object.entries(data.failing) : [];
+  const pause = data && data.pause && data.pause.until > 0 ? { until: data.pause.until, count: data.pause.count || 0 } : null;
+  const sync = data && data.sync && typeof data.sync === "object" && typeof data.sync.id === "string" ? data.sync : null;
+  return { failing: new Map(failing), pause, sync };
+}
+
+// A full backup still going: started, not finished, and its last step not so long ago that it must
+// have been lost (a message the queue dropped, say: a step takes seconds, pauses at most 6 hours)
+const SYNC_STALE_MS = 8 * 3600 * 1000;
+
+function syncRunning(sync) {
+  return !!sync && !sync.finished && Date.now() - (sync.updatedAt || sync.startedAt || 0) < SYNC_STALE_MS;
+}
+
+// Records the full backup's state: patch merged into the stored one (or replacing it, if its id is
+// another), with updatedAt now. stored: the status, if read already. Throws on an R2 error: a step
+// that can't record its progress is retried (queue.js), the trigger answers 500.
+async function recordSync(env, patch, stored) {
+  const status = stored || await readBackupStatus(env, true);
+  const sync = status.sync && status.sync.id === patch.id ? { ...status.sync, ...patch } : { ...patch };
+  sync.updatedAt = Date.now();
+  await writeBackupStatus(env, { ...status, sync });
+  return sync;
+}
+
+// failures: from backupFailure; cleared: titles whose backup got through; pause: { until, count } of
+// a pause that starts, null when one is over, undefined when that's not known; stored: the status
+// file, if this run has read it already. Never throws: an R2 error here mustn't count as a failed
+// backup
+async function recordBackupResults(env, failures, cleared, pause, stored) {
+  try {
+    await updateBackupStatus(env, failures, cleared, pause, stored);
+  } catch (e) {
+    console.error("[Backup] Could not record how backups go:", e.message);
+  }
+}
+
+async function updateBackupStatus(env, failures, cleared, pause, stored) {
+  const status = stored || await readBackupStatus(env, true), now = Date.now();
+  const { failing, pause: storedPause } = status;
+  let changed = false;
+  let keptPause = pause === undefined ? storedPause : pause;
+  // (A pause over for a while no longer counts: gone)
+  if (keptPause && now - keptPause.until >= PAUSE_CONTINUES) keptPause = null;
+  if (JSON.stringify(keptPause) !== JSON.stringify(storedPause)) changed = true;
+  for (const title of cleared) changed = failing.delete(title) || changed;
+  for (const { title, since, error, status } of failures) {
+    const entry = failing.get(title);
+    failing.set(title, { since: entry ? Math.min(entry.since, since) : since, last: now, error, status });
+    changed = true;
+  }
+  for (const [title, entry] of failing) {
+    // (Also an entry that isn't one: no time to go by)
+    if (!(now - entry.last <= BACKUP_STATUS_STALE)) changed = failing.delete(title) || changed;
+  }
+  if (!changed) return;
+  await writeBackupStatus(env, { failing, pause: keptPause, sync: status.sync });
+}
+
+// The file as stored, or deleted when there's nothing to keep
+async function writeBackupStatus(env, { failing, pause, sync }) {
+  if (failing.size || pause || sync) {
+    const status = { failing: Object.fromEntries(failing), ...(pause ? { pause } : {}), ...(sync ? { sync } : {}) };
+    await env.WIKI_BUCKET.put(BACKUP_STATUS_KEY, JSON.stringify(status), { httpMetadata: { contentType: "application/json" } });
+  } else {
+    await env.WIKI_BUCKET.delete(BACKUP_STATUS_KEY);
+  }
+}
+
+// What the admin wiki is told: "off" (no backups: GITHUB_REPO or GITHUB_TOKEN missing), "ok", or
+// encoded JSON with what there is to say: the backups failing for at least BACKUP_ALERT_MINUTES (60
+// by default), as { count, title, since, error, status } of the oldest; the last full backup, as
+// sync (running or finished); and backups: "off" when both apply to a worker without them
+function backupReport(env, { failing, sync }) {
+  const after = backupAlertMinutes(env) * 60000;
+  const now = Date.now();
+  const due = [...failing].filter(([, e]) => now - e.last <= BACKUP_STATUS_STALE && now - e.since >= after).sort((a, b) => a[1].since - b[1].since);
+  const on = !!github(env);
+  if (!due.length && !sync) return on ? "ok" : "off";
+  const report = {};
+  if (due.length) {
+    const [title, e] = due[0];
+    Object.assign(report, { count: due.length, title: title.slice(0, 200), since: e.since, error: e.error, status: e.status });
+  }
+  if (sync) report.sync = { ...sync, running: syncRunning(sync) };
+  if (!on) report.backups = "off";
+  return encodeURIComponent(JSON.stringify(report));
+}
+
+// A pause of every backup: GitHub asked to slow down, or refuses every backup (a token it no longer
+// accepts, say), so trying them one by one would only make more calls (each answered the same way)
+// and more queue operations. While it lasts, the backups delivered are sent again to wait for its
+// end, without calling GitHub; then the first one tries. If GitHub still refuses, the next pause is
+// twice as long (up to BACKUP_MAX_DELAY, or as long as GitHub asks).
+// A failure within this time after a pause ended: the next pause is twice as long
+const PAUSE_CONTINUES = 3600 * 1000;
+
+// The next pause of every backup, after a failure e: { until (ms), count (pauses in a row, from 0),
+// error (GitHub's, from the call that started it), all (GitHub refuses every backup, not just asking
+// to wait: the ones waiting are recorded as failing, for the alert) }. last: the pause before, if any.
+// The consumer keeps the pause for the later runs in its isolate (queue.js); until and count are
+// also kept in the status file, for a run in a new one.
+function nextPause(env, last, e) {
+  const now = Date.now();
+  // Still paused (a run that only knew from the status file): the same pause, for at least as long
+  // as GitHub asks; just after one: twice as long; otherwise a first one
+  const still = last && now < last.until;
+  const count = !last ? 0 : still ? last.count : now - last.until < PAUSE_CONTINUES ? last.count + 1 : 0;
+  const until = Math.max(now + backupRetryDelay(env, count, e.retryAfter) * 1000, still ? last.until : 0);
+  return { until, count, error: e, all: !isRateLimit(e) };
+}
+
+// ===== src/worker/backup/queue.js =============================================================================
+
+// The GitHub backup through a Cloudflare Queue (design 1.7): every save or delete becomes one
+// message. The queue consumer (processBackupBatch, configured with max_concurrency 1) commits them
+// one at a time, in order, one commit per save, so commits never collide, and GitHub rate limits or
+// outages only delay backups: failed messages are put back with a growing delay until they go
+// through. A rate limit or a token GitHub refuses pauses every backup; any other failure holds up
+// only that tiddler's versions, so a file GitHub refuses can't hold up the others. Nothing runs
+// while the queue is empty. Without a BACKUP_QUEUE binding (or if the queue is unavailable) the
+// same backup runs directly.
+// A full backup (started from the admin wiki, sync.js) runs here too, as a job that walks the stored
+// tiddlers a step at a time and queues its next step (syncStep): GitHub ends up mirroring the bucket.
+
+
+// A queue message, as sent: a version that would make it bigger waits in R2. (The queue takes up to
+// 128 KB, but counts an operation per 64 KB of message: over 64 KB, a backup would cost 6 instead of 3.)
+const QUEUE_MESSAGE_LIMIT = 64000;
+
+const BACKUP_PER_RUN = 10;
+
+// After this many bytes of versions, the rest of a run goes on to the next one: a megabyte takes a
+// few milliseconds of CPU (its base64 above all), and a run gets about 10 on the free plan. A run
+// always backs up one version, whatever its size.
+const BACKUP_BYTES_PER_RUN = 512 * 1024;
+
+// About the size of a message as the queue measures it: V8-serialized, where a string takes one
+// byte a character if they're all Latin-1, two otherwise (so a text of 40 KB can be over 64 KB), with
+// room for the other fields
+function queueMessageSize(message) {
+  let size = 200;
+  for (const value of [message.title, message.content]) {
+    if (typeof value === "string") size += value.length * (/[^\x00-\xff]/.test(value) ? 2 : 1);
+  }
+  return size;
+}
+
+// Called after a save or delete has been stored; job.content is the stored bytes
+async function queueBackup(env, job) {
+  if (!github(env)) return;
+  const message = { action: job.action, title: job.title, revision: job.revision ?? null, time: Date.now(), tries: 0 };
+  if (env.BACKUP_QUEUE) {
+    try {
+      if (job.action === "save") {
+        // (Decoded only if it may fit: a character is at least one byte of UTF-8)
+        const content = job.content.length < QUEUE_MESSAGE_LIMIT ? decoder.decode(job.content) : null;
+        if (content !== null && queueMessageSize({ ...message, content }) <= QUEUE_MESSAGE_LIMIT) {
+          message.content = content;
+        } else {
+          // Keep this exact version until it is committed (R2 itself only holds the latest one).
+          // Not named after the title, which can be too long for a key (or guessed: the copy is public)
+          message.contentKey = `_backup/versions/${message.time}-${crypto.randomUUID()}.json`;
+          await env.WIKI_BUCKET.put(message.contentKey, job.content, { httpMetadata: { contentType: "application/json" } });
+        }
+      }
+      await env.BACKUP_QUEUE.send(message);
+      return;
+    } catch (e) {
+      console.error(`[Backup] Could not queue '${job.title}', backing up directly:`, e.message);
+      if (message.contentKey) await env.WIKI_BUCKET.delete(message.contentKey).catch(() => {});
+    }
+  }
+  // No queue: run the same backup right away, with a couple of quick retries
+  const direct = { ...message, content: job.content, contentKey: undefined };
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      await backupJob(env, direct);
+      return await recordBackupResults(env, [], [job.title]);
+    } catch (e) {
+      if (attempt < 3) {
+        await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
+        continue;
+      }
+      console.error(`[Backup] '${job.title}' could not be backed up:`, e.message);
+      await recordBackupResults(env, [backupFailure(direct, e)], []);
+    }
+  }
+}
+
+// The pause of every backup, if one is on (nextPause in status.js), kept for the later runs in this isolate
+let backupPause = null;
+
+// Queue consumer
+async function processBackupBatch(batch, env) {
+  const messages = [...batch.messages].sort((a, b) =>
+    (a.body.time - b.body.time) || String(a.body.revision).localeCompare(String(b.body.revision)));
+  const held = new Map();   // title -> delay: a version of it failed, its later versions wait with it
+  const failures = [], cleared = [];   // for the backup status (backupFailure)
+  let pause;                // for the status file: a pause that starts in this run, or null if one is over
+  let stored;               // the status file, if read in this run
+  let denied;               // a tiddler GitHub answered 403 or 404 in this run (see isAccountWide)
+  let attempts = 0;
+  const work = { bytes: 0, calls: 0 };   // the size of the versions handled so far (BACKUP_BYTES_PER_RUN), the GitHub calls made
+  const syncSteps = [];        // a full backup's step, run after the saves with what's left of the run's calls
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i];
+    if (backupPause && Date.now() < backupPause.until) {
+      // Waits for the pause to end. (Marked, so that its backup going through ends the pause in the
+      // status file too)
+      await requeueBackup(env, msg, Math.ceil((backupPause.until - Date.now()) / 1000), false, { paused: true });
+      if (backupPause.all && msg.body.action !== "sync") failures.push(backupFailure(msg.body, backupPause.error));
+      continue;
+    }
+    if (msg.body.action === "sync") {
+      syncSteps.push(msg);
+      continue;
+    }
+    if (held.has(msg.body.title)) {
+      await requeueBackup(env, msg, held.get(msg.body.title), false);
+      continue;
+    }
+    if (attempts >= BACKUP_PER_RUN || work.bytes >= BACKUP_BYTES_PER_RUN) {
+      await requeueBackup(env, msg, 0, false);
+      continue;
+    }
+    attempts++;
+    try {
+      await backupJob(env, msg.body, work);
+      msg.ack();
+      backupPause = null;   // GitHub takes backups (again)
+      // (The backup is done: a copy that can't be removed is only left behind)
+      if (msg.body.contentKey) await env.WIKI_BUCKET.delete(msg.body.contentKey).catch(() => {});
+      // Only a version that failed or waited before can clear a recorded failure, or a recorded pause
+      if (msg.body.tries > 0 || msg.body.paused || msg.attempts > 1) {
+        cleared.push(msg.body.title);
+        pause = null;
+      }
+    } catch (e) {
+      if (isRateLimit(e) || e.status === 401 || (isAccountWide(e) && denied !== undefined && denied !== msg.body.title)) {
+        // Every backup waits: this one, the rest of this run (above), and the next runs. (A rate
+        // limit isn't a failure to report: a big import waits like this for hours.)
+        let last = backupPause;
+        if (!last) {
+          try {
+            stored = await readBackupStatus(env, true);
+            last = stored.pause;
+          } catch {}
+        }
+        backupPause = nextPause(env, last, e);
+        pause = { until: backupPause.until, count: backupPause.count };
+        const delay = Math.ceil((backupPause.until - Date.now()) / 1000);
+        console.error(`[Backup] Backups paused for ${delay}s: ${e.message}`);
+        await requeueBackup(env, msg, delay, true);
+        if (backupPause.all) failures.push(backupFailure(msg.body, e));
+        continue;
+      }
+      if (isAccountWide(e)) denied = msg.body.title;
+      const delay = backupRetryDelay(env, msg.body.tries, e.retryAfter);
+      console.error(`[Backup] '${msg.body.title}' not backed up yet (${e.message}); retrying in ${delay}s`);
+      await requeueBackup(env, msg, delay, true, isRefusal(e) ? { refused: true } : undefined);
+      // Anything else may concern this file only, and other tiddlers' backups go ahead. Its later
+      // versions wait with it, so they stay in order, unless GitHub refuses this version for good
+      // (its path, or a secret in its text): the next one may be fine, and goes ahead (the late
+      // versions logic keeps GitHub on the newest)
+      if (!isRefusal(e)) held.set(msg.body.title, delay);
+      failures.push(backupFailure(msg.body, e));
+    }
+  }
+  // A full backup's step: one a run, with the calls the saves left (a step itself records what it did)
+  let stepRun = false;
+  for (const msg of syncSteps) {
+    const budget = GITHUB_CALLS_PER_RUN - work.calls;
+    if (stepRun || budget < SYNC_MIN_CALLS || (backupPause && Date.now() < backupPause.until)) {
+      await requeueBackup(env, msg, backupPause && Date.now() < backupPause.until ? Math.ceil((backupPause.until - Date.now()) / 1000) : 0, false);
+      continue;
+    }
+    stepRun = true;
+    try {
+      const next = await syncStep(env, msg.body, work, budget);
+      msg.ack();
+      backupPause = null;
+      if (next) await env.BACKUP_QUEUE.send(next);
+    } catch (e) {
+      if (isRateLimit(e) || isAccountWide(e)) {
+        // Every backup waits (as above)
+        let last = backupPause;
+        if (!last) {
+          try {
+            stored = await readBackupStatus(env, true);
+            last = stored.pause;
+          } catch {}
+        }
+        backupPause = nextPause(env, last, e);
+        pause = { until: backupPause.until, count: backupPause.count };
+        const delay = Math.ceil((backupPause.until - Date.now()) / 1000);
+        console.error(`[Backup] Backups paused for ${delay}s (full backup, step ${msg.body.steps || 0}): ${e.message}`);
+        await requeueBackup(env, msg, delay, true);
+        continue;
+      }
+      const delay = backupRetryDelay(env, msg.body.tries, e.retryAfter);
+      console.error(`[Backup] Full backup step not done (${e.message}); trying again in ${delay}s`);
+      await requeueBackup(env, msg, delay, true);
+    }
+  }
+  if (failures.length || cleared.length || pause !== undefined) await recordBackupResults(env, failures, cleared, pause, stored);
+}
+
+// --- A full backup (design 1.7): GitHub made to mirror the bucket -----------------------------------
+// Started from the admin wiki (POST /backup/sync, sync.js), for tiddlers that predate the backup, a
+// restore, a tiddler put in R2 by hand, or any doubt. A message carries where it stands: { action:
+// "sync", id, phase, after, pending, total, done, committed, removed, failed, steps, time, tries }.
+// The push phase walks the stored tiddlers in key order (after: the last key walked), each through the
+// same backup as a save (backupJob): nothing is committed for one GitHub has the same bytes of, and a
+// file GitHub refuses is reported like a save's would be, the walk going on. Then the prune phase lists
+// GitHub's tiddler files in one call (the tree) and removes those whose titles are no longer stored
+// (pending: the ones left to remove). Each step stays within a run's budgets: the GitHub calls the
+// saves of the same run left (GITHUB_CALLS_PER_RUN), the bytes (BACKUP_BYTES_PER_RUN); a step records
+// what it did in the status file (recordSync) and queues the next, so a wiki of any size goes through
+// in as many steps as it takes, at 3 queue operations a step. Idempotent: run again, it commits nothing.
+
+// Of the 50 calls a run may make outside Cloudflare; a save's backup takes up to 3
+const GITHUB_CALLS_PER_RUN = 40;
+
+// A step starts only with this many calls left in the run (one tiddler takes up to 3)
+const SYNC_MIN_CALLS = 8;
+
+const SYNC_LIST_LIMIT = 100;
+
+// Titles kept in a prune message: more than that, and the tree is listed again once they're removed
+const SYNC_PENDING_LIMIT = 300;
+
+// One step. Returns the next step's message, or null once done. Throws on an error that stops the
+// step (GitHub down, a rate limit, a refused token, R2): the step is retried, its progress recorded
+// as an error meanwhile. A step of a full backup another one has replaced since (started again
+// after this one's step was lost for hours) does nothing.
+async function syncStep(env, body, work, budget) {
+  const stored = await readBackupStatus(env, true);
+  if (stored.sync && stored.sync.id !== body.id && stored.sync.startedAt > body.time) {
+    console.log("[Backup] Sync step of a full backup replaced by a newer one: dropped");
+    return null;
+  }
+  const github = githubContents(env, work);
+  const callsAtStart = work.calls;
+  const used = () => work.calls - callsAtStart;
+  let { done = 0, committed = 0, removed = 0, failed = 0, steps = 0, total = null } = body;
+  steps++;
+  const failures = [];
+  let next;
+  try {
+    next = await syncWork(env, github, body, work, budget, used, counts => ({ done, committed, removed, failed } = counts), failures);
+  } catch (e) {
+    await recordSync(env, { id: body.id, error: String(e.detail || e.message || e).slice(0, 200) }, stored).catch(() => {});
+    throw e;
+  }
+  console.log(`[Backup] Sync step ${steps}: ${done}/${total ?? "?"} walked, ${committed} committed, ${removed} removed, ${failed} failed, ${used()} GitHub calls`);
+  if (failures.length) await recordBackupResults(env, failures, [], undefined);
+  await recordSync(env, { id: body.id, startedAt: body.time, total, phase: next ? next.phase : "prune", steps, done, committed, removed, failed, error: undefined, ...(next ? {} : { finished: Date.now() }) });
+  return next ? { action: "sync", id: body.id, total, done, committed, removed, failed, steps, time: Date.now(), tries: 0, ...next } : null;
+}
+
+// The step's work: the next slice of the push, or of the prune. report(counts) hands back the counts
+// as they stand (also when an error stops the step partway). Returns what the next step is, or null.
+async function syncWork(env, github, body, work, budget, used, report, failures) {
+  let { done = 0, committed = 0, removed = 0, failed = 0 } = body;
+  const counts = () => report({ done, committed, removed, failed });
+  if (body.phase === "push") {
+    let after = body.after || null, stopped = false;
+    for (;;) {
+      const listing = await env.WIKI_BUCKET.list({ prefix: TIDDLER_PREFIX, limit: SYNC_LIST_LIMIT, include: ["customMetadata"], ...(after ? { startAfter: after } : {}) });
+      for (const item of listing.objects) {
+        if (used() + 3 > budget || work.bytes >= BACKUP_BYTES_PER_RUN) {
+          stopped = true;
+          break;
+        }
+        const title = item.key.slice(TIDDLER_PREFIX.length);
+        // (What the list leaves out is left out here too: an object not in the stored layout)
+        if (item.customMetadata?.layout === FLAT_LAYOUT && !isEphemeralTitle(title)) {
+          const obj = await env.WIKI_BUCKET.get(item.key);
+          if (obj) {
+            const job = { action: "save", title, revision: revisionOf(obj), content: new Uint8Array(await obj.arrayBuffer()), time: Date.now() };
+            try {
+              if (await backupJob(env, job, work) === "committed") committed++;
+            } catch (e) {
+              if (!isRefusal(e)) throw e;
+              failed++;
+              failures.push(backupFailure(job, e));
+            }
+          }
+        }
+        done++;
+        after = item.key;
+        counts();
+      }
+      if (stopped || !listing.truncated) break;
+    }
+    return stopped ? { phase: "push", after } : { phase: "prune" };
+  }
+  // The prune: GitHub's tiddler files (one call), the stored keys (one R2 call per 1,000), the difference
+  let pending = body.pending;
+  if (!pending) {
+    const files = await github.tiddlerFiles();
+    if (files === null) {
+      console.error("[Backup] Full backup: GitHub's tree is too big to list in one call, so files of titles no longer in the wiki aren't removed");
+      pending = [];
+    } else {
+      const titles = await storedTitles(env);
+      pending = files.filter(file => !titles.has(file.title));
+    }
+  }
+  while (pending.length && used() + 1 <= budget) {
+    const file = pending.shift();
+    try {
+      await github.remove(file.title, file.sha, `🗑️ Full backup: ${file.title} is no longer in the wiki`);
+      removed++;
+      counts();
+    } catch (e) {
+      // Gone meanwhile (404), or changed meanwhile, a save that landed (409): left alone
+      if (e.status !== 404 && e.status !== 409) throw e;
+    }
+  }
+  if (pending.length) return { phase: "prune", pending: pending.slice(0, SYNC_PENDING_LIMIT), ...(pending.length > SYNC_PENDING_LIMIT ? { more: true } : {}) };
+  return body.more ? { phase: "prune" } : null;
+}
+
+// The titles of every stored tiddler (its key without the prefix), 1,000 a call
+async function storedTitles(env) {
+  const titles = new Set();
+  let cursor;
+  do {
+    const listing = await env.WIKI_BUCKET.list({ prefix: TIDDLER_PREFIX, limit: 1000, ...(cursor ? { cursor } : {}) });
+    for (const item of listing.objects) titles.add(item.key.slice(TIDDLER_PREFIX.length));
+    cursor = listing.truncated ? listing.cursor : undefined;
+  } while (cursor);
+  return titles;
+}
+
+// The queue's retry limit, which the worker can't read: Cloudflare's default (README 2.3: leave it)
+const QUEUE_RETRIES = 3;
+
+// How long the queue keeps a message from when it was sent: 24 hours on the free plan (the least)
+const QUEUE_RETENTION = 24 * 3600 * 1000;
+
+// Puts a message back, to be delivered again after delaySeconds. While it only waits (nothing in it
+// changes but being marked paused, which its next delivery shows anyway: msg.attempts) and has a
+// retry left, with a delivery to spare, before the queue would drop it, by its retry limit or its
+// retention, the queue's own retry: 1 operation, the next delivery. Otherwise it's sent again as a
+// fresh message, which neither limit applies to: 3 operations (sent, delivered, acknowledged).
+// countTry: one more failed try; extra: fields to add to it
+async function requeueBackup(env, msg, delaySeconds, countTry, extra) {
+  const onlyWaits = !countTry && (!extra || (Object.keys(extra).length === 1 && extra.paused === true));
+  const sent = msg.timestamp instanceof Date ? msg.timestamp.getTime() : NaN;
+  if (onlyWaits && msg.attempts >= 1 && msg.attempts < QUEUE_RETRIES &&
+      Date.now() + delaySeconds * 1000 < sent + QUEUE_RETENTION - 3600 * 1000) {
+    msg.retry(delaySeconds > 0 ? { delaySeconds } : undefined);
+    return;
+  }
+  const body = { ...msg.body, ...(countTry ? { tries: (msg.body.tries || 0) + 1 } : {}), ...extra };
+  try {
+    await env.BACKUP_QUEUE.send(body, delaySeconds > 0 ? { delaySeconds } : undefined);
+    msg.ack();
+  } catch (e) {
+    msg.retry(delaySeconds > 0 ? { delaySeconds } : undefined);
+  }
+}
+
+// Commits one save or delete. job.content: the version as text (in a queue message) or bytes (a
+// direct backup). work.bytes: adds the size of the versions it handles; work.calls: the GitHub calls.
+// Returns "committed" when it wrote GitHub's file, "same" when GitHub already had these bytes
+async function backupJob(env, job, work = { bytes: 0, calls: 0 }) {
+  const github = githubContents(env, work);
+  const current = await env.WIKI_BUCKET.head(tiddlerKey(job.title));   // the version in the wiki now
+
+  if (job.action === "delete") {
+    if (current) return; // Recreated since then: its own save message updates GitHub
+    const existing = await github.get(job.title);
+    if (existing) await github.remove(job.title, existing.sha, `🗑️ Delete: ${job.title}`);
+    return;
+  }
+
+  // (As bytes: what GitHub gets, and what its sha is computed from)
+  let content = typeof job.content === "string" ? encoder.encode(job.content) : job.content;
+  if (content === undefined && job.contentKey) {
+    const stored = await env.WIKI_BUCKET.get(job.contentKey);
+    content = stored ? new Uint8Array(await stored.arrayBuffer()) : undefined;
+  }
+  if (content === undefined) return; // Already handled by an earlier delivery of this message
+  work.bytes += content.length;
+
+  // GitHub needs the sha of the file it holds to replace it. Its content isn't needed (decoding a
+  // plugin's took more CPU than a run is allowed): whether GitHub already holds a newer version is
+  // told by the sha too, compared with the wiki's current version's
+  const existing = await github.get(job.title);
+  let sha = existing ? existing.sha : null;
+  const newer = await newerInWiki(env, job, current, sha, work);
+  // A version GitHub refused for good, now replaced there by a newer one, or whose tiddler has been
+  // deleted since: dropped, rather than tried forever (it would only have been history)
+  if (job.refused && (newer || !current)) return;
+  // (A retry after the restore below failed: this version is already in the history, even if a
+  // newer one has been committed on top since)
+  let outcome = "same";
+  if (!job.restore && sha !== await gitBlobSha(content)) {
+    sha = await github.put(job.title, content, `✏️ Save: ${job.title}`, sha);
+    outcome = "committed";
+  }
+  if (newer) {
+    // This version arrived after a newer one was committed: it is now in the history, and the
+    // newer version goes back on top. (Marked first: if putting it back fails, the retry of this
+    // message, which finds this version already committed, still does it.)
+    job.restore = true;
+    if (sha !== newer.sha) await github.put(job.title, newer.bytes, `✏️ Save: ${job.title} (newer version restored)`, sha);
+  } else if (!current) {
+    // Deleted since this save: keep this version in the history, then delete it again
+    await github.remove(job.title, sha, `🗑️ Delete: ${job.title}`);
+  }
+  return outcome;
+}
+
+// The wiki's current version of a tiddler, { bytes, sha }, if it's newer than this job's and GitHub
+// already holds it (githubSha), so this job's version arrived late; or if an earlier try of this
+// job found that (job.restore). Otherwise null: a newer version still waiting for its own backup
+// (quick successive edits) is committed by its own message, in order.
+async function newerInWiki(env, job, current, githubSha, work) {
+  if (!current || !isNewerRevision(revisionOf(current), job.revision) || (!githubSha && !job.restore)) return null;
+  const obj = await env.WIKI_BUCKET.get(tiddlerKey(job.title));
+  if (!obj) return null;
+  const bytes = new Uint8Array(await obj.arrayBuffer());
+  work.bytes += bytes.length;
+  const sha = await gitBlobSha(bytes);
+  return job.restore || sha === githubSha ? { bytes, sha } : null;
+}
+
+// ===== src/worker/http.js =====================================================================================
+
+// The small shared pieces of answering a request: paths, ETags and preconditions (design 1.2),
+// standard answers, and work that outlives the answer.
+//
+// Edit-conflict protection, in short:
+//  * Every tiddler has a revision: customMetadata.revision, a millisecond timestamp set on each
+//    save. GET returns it in the body and in the ETag "default/<title>/<revision>:auto".
+//  * The conflict guard (src/browser/conflict-guard.js, built into the page) sends the revision its edit
+//    is based on as If-Match, or If-None-Match: * for a brand new tiddler.
+//  * PUT/DELETE answer 412 when that revision is no longer current (checkPreconditions), and the R2
+//    write itself is conditional (saves.js), so two saves arriving at the same moment can't both win.
+//  * Requests without If-Match/If-None-Match (old tabs, scripts) are accepted.
+
+// A path, or the title in one, decoded; null if it isn't valid percent-encoding
+function decodePath(text) {
+  try {
+    return decodeURIComponent(text);
+  } catch {
+    return null;
+  }
+}
+
+function invalidPath(corsHeaders) {
+  return new Response("Invalid path: it isn't valid percent-encoding", { status: 400, headers: corsHeaders });
+}
+
+function tiddlerEtag(title, revision) {
+  return `"default/${encodeURIComponent(title)}/${revision}:auto"`;
+}
+
+// Turns an If-Match / If-None-Match header into revisions ("*" stays "*"). Accepts full TiddlyWeb
+// ETags ("bag/title/revision:hash"), bare revisions, and weak (W/) or unquoted forms.
+function parseEtagList(header) {
+  if (!header) return [];
+  return header.split(",")
+    .map(token => token.trim().replace(/^W\//i, "").replace(/^"(.*)"$/, "$1").trim())
+    .map(token => {
+      if (token === "*") return token;
+      const slash = token.lastIndexOf("/");
+      const colon = token.lastIndexOf(":");
+      return colon > slash ? token.substring(slash + 1, colon) : token.substring(slash + 1);
+    })
+    .filter(revision => revision && revision !== "undefined" && revision !== "null");
+}
+
+// Evaluates If-Match / If-None-Match against the current revision (null if the tiddler doesn't exist)
+function checkPreconditions(request, currentRevision) {
+  const ifMatch = parseEtagList(request.headers.get("If-Match"));
+  const ifNoneMatch = parseEtagList(request.headers.get("If-None-Match"));
+  let reason = null;
+  if (ifMatch.length > 0) {
+    if (currentRevision === null) reason = "it was deleted in another tab or browser";
+    else if (!ifMatch.includes("*") && !ifMatch.includes(currentRevision)) reason = "it was changed in another tab or browser";
+  }
+  if (!reason && ifNoneMatch.length > 0 && currentRevision !== null &&
+      (ifNoneMatch.includes("*") || ifNoneMatch.includes(currentRevision))) {
+    reason = "a tiddler with this title was created in another tab or browser";
+  }
+  return { conditional: ifMatch.length > 0 || ifNoneMatch.length > 0, reason };
+}
+
+// Response headers for an R2 object: its stored HTTP metadata plus CORS
+function objectHeaders(object, corsHeaders) {
+  const headers = new Headers(corsHeaders);
+  object.writeHttpMetadata(headers);
+  return headers;
+}
+
+function conflictResponse(title, reason, currentRevision, corsHeaders) {
+  const headers = { ...corsHeaders, "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" };
+  if (currentRevision !== null) headers.ETag = tiddlerEtag(title, currentRevision);
+  return new Response(`Edit conflict: '${title}' was not saved because ${reason}.`, { status: 412, headers });
+}
+
+// The answer to a save: TiddlyWiki reads the new revision from the ETag
+function savedResponse(title, revision, corsHeaders) {
+  return new Response(null, { status: 204, headers: { ...corsHeaders, ETag: tiddlerEtag(title, revision) } });
+}
+
+function refusal(message, corsHeaders, status = 400) {
+  return new Response(message, { status, headers: { ...corsHeaders, "Content-Type": "text/plain; charset=utf-8" } });
+}
+
+// Waits for work the response depends on, and keeps it running even if the browser disconnects
+// first (a reload while the page is being rebuilt, say): without waitUntil it could be cancelled
+function untilDone(ctx, promise) {
+  ctx.waitUntil(promise.catch(() => {}));
+  return promise;
+}
+
+// ===== src/worker/cache.js ====================================================================================
+
+// The public site's cache: the public wiki is served straight from the R2 bucket through
+// Cloudflare's cache, so after a change the worker purges exactly the public URLs that serve it
+// (single-file purge, not purge_everything; design 1.6).
+
+
+// The query string is part of the cache key, so the tiddler list is purged under each URL
+// TiddlyWiki requests it with: the TiddlyWiki 5.4 filter, the filter of earlier versions, and bare.
+const SKINNY_LIST_FILTERS = [
+  "[all[tiddlers]] -[[$:/isEncrypted]] -[prefix[$:/temp/]] -[prefix[$:/status/]] -[[$:/boot/boot.js]] -[[$:/boot/bootprefix.js]] -[has[plugin-type]field:platform[server]] -[[$:/library/sjcl.js]] -[[$:/core]]",
+  "[all[tiddlers]] -[[$:/isEncrypted]] -[prefix[$:/temp/]] -[prefix[$:/status/]] -[[$:/boot/boot.js]] -[[$:/boot/bootprefix.js]] -[[$:/library/sjcl.js]] -[[$:/core]]"
+];
+
+// URLs that serve the wiki page itself
+const PUBLIC_PAGE_PATHS = ["/", "/baked.html"];
+
+// Encoded the same way TiddlyWiki encodes them when it requests them. The admin page reads tiddlers
+// from the public site too, cross-origin: its requests carry an Origin header, which Cloudflare
+// keeps in the cache key, so its copy is a separate cache entry, purged with that header.
+function tiddlerPurgeUrls(env, title, adminOrigin) {
+  const url = publicUrl(env, `/recipes/default/tiddlers/${encodeURIComponent(title)}`);
+  return [url, { url, headers: { Origin: adminOrigin } }, ...listPurgeUrls(env)];
+}
+
+function listPurgeUrls(env) {
+  return [
+    publicUrl(env, "/recipes/default/tiddlers.json"),
+    ...SKINNY_LIST_FILTERS.map(filter => publicUrl(env, `/recipes/default/tiddlers.json?filter=${encodeURIComponent(filter)}`))
+  ];
+}
+
+async function purgePublicCache(env, urls) {
+  const zone = purges(env);
+  if (!zone || urls.length === 0) return;
+  try {
+    const res = await fetch(`https://api.cloudflare.com/client/v4/zones/${zone.zoneId}/purge_cache`, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${zone.token}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ files: urls })
+    });
+    if (!res.ok) console.error(`Cache purge failed (${res.status}):`, await res.text());
+  } catch (e) {
+    console.error("Cache purge exception:", e.message);
+  }
 }
 
 // ===== src/worker/list.js =====================================================================================
@@ -1444,6 +1675,52 @@ function failureResponse(what, error, corsHeaders) {
   return new Response(`${what}: ${error.message}`, { status: error instanceof BadSave ? 400 : 500, headers: corsHeaders });
 }
 
+// ===== src/worker/backup/sync.js ==============================================================================
+
+// A full backup, started from the admin wiki (design 1.7): POST /backup/sync queues the job that
+// makes GitHub mirror the bucket (queue.js, syncStep), GET /backup/sync says how the last one went.
+// For tiddlers that predate the backup (imported before the repository and the token were set), a
+// restore, a tiddler put in R2 by hand, or any doubt. Idempotent: run again, it commits nothing.
+
+
+// A full backup's status as answered, with whether it's running
+function jsonResponse(sync, status, corsHeaders) {
+  const value = sync && sync.id ? { ...sync, running: syncRunning(sync) } : sync;
+  return new Response(JSON.stringify(value), { status, headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "no-store" } });
+}
+
+// POST /backup/sync: 202 with the new full backup's status; 409 with the running one's if there is
+// one; 400 without backups, or without the queue the job runs in
+async function startBackupSync(request, env, ctx, corsHeaders) {
+  if (!github(env)) return refusal("Backups aren't set up: the worker has no GITHUB_REPO and GITHUB_TOKEN (README 2.4).", corsHeaders);
+  if (!env.BACKUP_QUEUE) return refusal("A full backup runs in the backup queue, which this worker doesn't have (README 2.3).", corsHeaders);
+  try {
+    const status = await readBackupStatus(env, true);
+    if (syncRunning(status.sync)) return jsonResponse(status.sync, 409, corsHeaders);
+    // The tiddler list says how many there are (a missing or damaged one is rebuilt first, 503 meanwhile)
+    const { entries } = await readableList(env, ctx);
+    const now = Date.now(), id = `${now}-${crypto.randomUUID().slice(0, 8)}`;
+    const start = { id, total: entries.length, done: 0, committed: 0, removed: 0, failed: 0, steps: 0 };
+    // Recorded first: a step checks it's the current full backup before working (queue.js)
+    let sync = await recordSync(env, { ...start, startedAt: now, phase: "push" }, status);
+    try {
+      await env.BACKUP_QUEUE.send({ action: "sync", phase: "push", after: null, time: now, tries: 0, ...start });
+    } catch (e) {
+      sync = await recordSync(env, { id, finished: now, error: `The queue didn't take the job: ${e.message}` });
+      return jsonResponse(sync, 503, corsHeaders);
+    }
+    return jsonResponse(sync, 202, corsHeaders);
+  } catch (error) {
+    return failureResponse("Full backup", error, corsHeaders);
+  }
+}
+
+// GET /backup/sync: the last full backup's status, {} if there never was one
+async function backupSyncStatus(env, corsHeaders) {
+  const status = await readBackupStatus(env);
+  return jsonResponse(status.sync || {}, 200, corsHeaders);
+}
+
 // ===== src/worker/plugins.js ==================================================================================
 
 // Plugin files (design 1.8): _plugins/<title>.js holds the stored tiddler, untouched, inside the
@@ -1542,16 +1819,17 @@ async function deletePluginFile(env, title) {
 
 // The browser modules (src/browser/, README 3), baked into the page as TiddlyWiki modules: the
 // library the others require, the conflict guard, the list sync, the backup alert, the page
-// publisher (see "The page" below) and the restore import (the backup's files dropped onto the
-// wiki). Each source is a placeholder here, which build.mjs replaces with the file's text (the
-// first with src/browser/lib.js, and so on).
+// publisher (see "The page" below), the restore import (the backup's files dropped onto the wiki)
+// and the control panel's Cloudflare tab. Each source is a placeholder here, which build.mjs
+// replaces with the file's text (the first with src/browser/lib.js, and so on).
 const BROWSER_MODULES = [
   { title: "$:/cfworker/lib.js", type: "library", source: "/*\\\ntitle: $:/cfworker/lib.js\ntype: application/javascript\nmodule-type: library\n\nWhat the worker's browser modules share: the sync adaptor they patch, the public site's address,\ntitles in alerts, the titles the worker can't store, and the \"rebuilding\" answer. Each module\nrequires this one.\n\\*/\n(function(){\n\n\"use strict\";\n\n// The TiddlyWeb sync adaptor's class (the modules patch its prototype), or null without it\nexports.findAdaptor = function() {\n\tvar Adaptor = null;\n\t$tw.modules.forEachModuleOfType(\"syncadaptor\",function(title,module) {\n\t\tif(module.adaptorClass && module.adaptorClass.prototype.name === \"tiddlyweb\") {\n\t\t\tAdaptor = module.adaptorClass;\n\t\t}\n\t});\n\treturn Adaptor;\n};\n\n// The public site's address, with a trailing slash, as the worker baked it into the page (\"\" if none)\nexports.publicBase = function() {\n\tvar base = ($tw.wiki.getTiddlerText(\"$:/cfworker/public-url\",\"\") || \"\").trim();\n\tif(base && base.charAt(base.length - 1) !== \"/\") {\n\t\tbase += \"/\";\n\t}\n\treturn base;\n};\n\n// The site a URL is on, whatever the protocol: the public site visited over http while its URL says\n// https (or the other way round) is still the public site\nexports.siteOf = function(url) {\n\treturn String(url || \"\").replace(/^[a-z][a-z0-9+.-]*:/i,\"\").toLowerCase();\n};\n\n// A wikitext attribute value holding the text as it is (in quotes it doesn't contain), or null\nfunction attributeValue(text) {\n\tif(text.indexOf('\"') === -1) {\n\t\treturn '\"' + text + '\"';\n\t}\n\tif(text.indexOf(\"'\") === -1) {\n\t\treturn \"'\" + text + \"'\";\n\t}\n\tif(text.indexOf('\"\"\"') === -1 && text.charAt(text.length - 1) !== '\"') {\n\t\treturn '\"\"\"' + text + '\"\"\"';\n\t}\n\treturn null;\n}\n\n// A link to a tiddler in an alert, whatever its title: a [[...]] link would break on one ending in\n// \"]\" or holding \"]]\" or \"|\", and the title is shown as text, never rendered as wikitext\nexports.link = function(title) {\n\tvar value = attributeValue(title);\n\treturn value ? \"<$link to=\" + value + \"><$text text=\" + value + \"/></$link>\" : \"'\" + title + \"'\";\n};\n\n// The longest title the worker stores: an R2 key holds 1024 bytes, 25 of them before the title\nexports.MAX_TITLE_BYTES = 999;\n\nexports.utf8Length = function(text) {\n\treturn typeof TextEncoder === \"function\" ? new TextEncoder().encode(text).length : unescape(encodeURIComponent(text)).length;\n};\n\n// Titles the worker can't store, so never sent: \".\" and \"..\" (the browser takes them, in a URL, for\n// the folder or its parent, so they'd never get there) and those too long for an R2 key\nexports.storableTitle = function(title) {\n\treturn title !== \".\" && title !== \"..\" && (title.length * 3 <= exports.MAX_TITLE_BYTES || exports.utf8Length(title) <= exports.MAX_TITLE_BYTES);\n};\n\n// While the worker rebuilds a damaged tiddler list (a step per request), it answers the list,\n// saves and deletes with 503 and \"X-Tiddler-List: rebuilding\", without changing anything: the\n// request is simply sent again, quietly (TiddlyWiki would show an error and wait 5 seconds).\n// Any other error is reported as usual.\nexports.REBUILD_RETRIES = 200;\n\nexports.isRebuilding = function(request) {\n\treturn !!request && request.status === 503 && request.getResponseHeader(\"X-Tiddler-List\") === \"rebuilding\";\n};\n\n})();\n" },
   { title: "$:/cfworker/conflict-guard.js", type: "startup", source: "/*\\\ntitle: $:/cfworker/conflict-guard.js\ntype: application/javascript\nmodule-type: startup\n\nEdit-conflict protection for the TiddlyWeb sync adaptor (served by the Cloudflare worker).\n\n- Every save says which server revision it is based on (If-Match), or If-None-Match: * for a new tiddler.\n- A draft remembers the revision it was opened from, so an edit started before another tab saved\n  is still caught even if this tab has re-synced in the meantime.\n- When the server answers 412, your version is kept as \"<title> (conflict <date>)\", the server\n  version is loaded, and an alert explains what happened. Deletes are protected the same way.\n\nAnd it sends saves in the layout the worker stores (X-Tiddler-Layout: flat): every field at the\ntop level, compact JSON, \"text\" last, no revision/bag/recipe. The worker then only parses the\nfields before \"text\" and never has to decode or re-encode the text itself, however big it is.\n\nThe rest of the tab's syncing with the worker (the tiddler list, reads, what isn't sent) is\n$:/cfworker/list-sync.js.\n\\*/\n(function(){\n\n\"use strict\";\n\nexports.name = \"cfworker-conflict-guard\";\nexports.platforms = [\"browser\"];\nexports.after = [\"load-modules\"];\nexports.before = [\"startup\"];\nexports.synchronous = true;\n\nvar lib = require(\"$:/cfworker/lib.js\");\n\n// Fields that don't count as \"content\" when deciding whether two versions really differ\nvar BOOKKEEPING_FIELDS = [\"revision\",\"bag\",\"recipe\",\"permissions\",\"modified\",\"modifier\"];\n\n// The body of a save in the worker's \"flat\" layout, the only one it stores; the worker appends its\n// own revision, bag and recipe. A field called \"fields\" stays nested as {fields: value}, the way\n// TiddlyWeb's layout has it: a flat \"fields\" is where TiddlyWeb's loader looks for nested fields.\nfunction flatBody(tiddler) {\n\tvar result = {},\n\t\tfields = tiddler.fields;\n\t$tw.utils.each(fields,function(value,name) {\n\t\tif(name === \"fields\") {\n\t\t\tresult.fields = {fields: tiddler.getFieldString(name)};\n\t\t} else if(name !== \"text\" && name !== \"revision\" && name !== \"bag\" && name !== \"recipe\") {\n\t\t\tresult[name] = name === \"tags\" ? value : tiddler.getFieldString(name);\n\t\t}\n\t});\n\tresult.type = result.type || \"text/vnd.tiddlywiki\";\n\tif(fields.text !== undefined) {\n\t\tresult.text = tiddler.getFieldString(\"text\");\n\t}\n\treturn JSON.stringify(result);\n}\n\nexports.startup = function() {\n\tvar Adaptor = lib.findAdaptor();\n\tif(!Adaptor || Adaptor.prototype.conflictGuardInstalled) {\n\t\treturn;\n\t}\n\tvar proto = Adaptor.prototype,\n\t\twiki = $tw.wiki,\n\t\t// Base revisions. A string is the server revision the content was derived from, null means\n\t\t// \"must not exist on the server yet\", undefined means unknown (the save is sent unconditionally).\n\t\tdraftBases = Object.create(null),   // draft title -> {of: title, base: revision}\n\t\tpendingBases = Object.create(null), // title -> {base: revision} for a confirmed draft not yet uploaded\n\t\tdeleteBases = Object.create(null),  // title -> revision its editor started from, for the delete a rename or a delete from the editor makes\n\t\tunconfirmedSaves = Object.create(null); // title -> the tiddler of a save that got an error: the worker may have stored it all the same\n\tproto.conflictGuardInstalled = true;\n\n\t// The revision a save is based on, from a tiddler's revision: undefined if it has none (the save\n\t// is sent without a condition), null if it's one the worker never gives, which means the worker\n\t// doesn't have that version. The worker's revisions are times in milliseconds (or an R2 etag for\n\t// a tiddler stored by hand); the tiddlers that came with the page carry \"0\" in a published page,\n\t// or a change count in index.html (as the page publisher's hasStoredRevision tells them apart).\n\t// Saving one, a plugin updated from the library say, then creates it on the worker, and is a\n\t// conflict only if another tab stored it meanwhile, instead of being taken for a tiddler that\n\t// was deleted.\n\tfunction revisionBase(revision) {\n\t\tif(revision === undefined || revision === null || revision === \"\") {\n\t\t\treturn undefined;\n\t\t}\n\t\trevision = String(revision);\n\t\treturn /^\\d{1,9}$/.test(revision) ? null : revision;\n\t}\n\n\tfunction baseFromInfo(info) {\n\t\tif(!info) {\n\t\t\treturn null;\n\t\t}\n\t\treturn revisionBase(info.revision);\n\t}\n\n\tfunction currentBase(title) {\n\t\tif(pendingBases[title]) {\n\t\t\treturn pendingBases[title].base;\n\t\t}\n\t\tvar s = $tw.syncer;\n\t\treturn baseFromInfo(s && s.tiddlerInfo[title]);\n\t}\n\n\tfunction addPreconditions(headers,title,base,info) {\n\t\tif(typeof base === \"string\") {\n\t\t\tvar bag = (info && info.adaptorInfo && info.adaptorInfo.bag) || \"default\";\n\t\t\theaders[\"If-Match\"] = \"\\\"\" + bag + \"/\" + encodeURIComponent(title) + \"/\" + base + \":auto\\\"\";\n\t\t} else if(base === null) {\n\t\t\theaders[\"If-None-Match\"] = \"*\";\n\t\t}\n\t\treturn headers;\n\t}\n\n\t// After our own successful write, anything based on the old revision is now based on the new one\n\tfunction rebase(title,oldBase,newBase) {\n\t\t$tw.utils.each(draftBases,function(record) {\n\t\t\tif(record.of === title && record.base === oldBase) {\n\t\t\t\trecord.base = newBase;\n\t\t\t}\n\t\t});\n\t\tif(pendingBases[title] && pendingBases[title].base === oldBase) {\n\t\t\tpendingBases[title].base = newBase;\n\t\t}\n\t\tif(deleteBases[title] === oldBase) {\n\t\t\tdeleteBases[title] = newBase;\n\t\t}\n\t}\n\n\t// (A tiddler without a type, as one created in this tab, has the default one the browser module\n\t// sends: the server's copy of it has that type)\n\tfunction sameContent(localTiddler,serverFields) {\n\t\tif(!serverFields) {\n\t\t\treturn false;\n\t\t}\n\t\tvar local = localTiddler.fields.type ? localTiddler : new $tw.Tiddler(localTiddler,{type: \"text/vnd.tiddlywiki\"}),\n\t\t\tserver = new $tw.Tiddler(serverFields);\n\t\tif(!server.fields.type) {\n\t\t\tserver = new $tw.Tiddler(server,{type: \"text/vnd.tiddlywiki\"});\n\t\t}\n\t\treturn local.isEqual(server,BOOKKEEPING_FIELDS);\n\t}\n\n\t// The title, shortened (ending with \"…\") if need be so that with suffix, and a number\n\t// generateNewTitle may add, it's still a title the worker stores\n\tfunction shortenedFor(title,suffix) {\n\t\tvar room = lib.MAX_TITLE_BYTES - lib.utf8Length(suffix) - 8;\n\t\tif(lib.utf8Length(title) <= room) {\n\t\t\treturn title;\n\t\t}\n\t\tvar chars = Array.from(title);   // (whole characters: a pair of surrogates isn't split)\n\t\twhile(chars.length && lib.utf8Length(chars.join(\"\")) > room - 3) {\n\t\t\tchars.length -= Math.max(1,Math.floor((lib.utf8Length(chars.join(\"\")) - room) / 4));\n\t\t}\n\t\treturn chars.join(\"\") + \"…\";\n\t}\n\n\tfunction makeConflictCopy(localTiddler) {\n\t\tvar title = localTiddler.fields.title,\n\t\t\tstamp = $tw.utils.formatDateString(new Date(),\"YYYY-0MM-0DD 0hh.0mm.0ss\"),\n\t\t\tcopyTitle = wiki.generateNewTitle(shortenedFor(title,\" (conflict \" + stamp + \")\") + \" (conflict \" + stamp + \")\"),\n\t\t\tkeptTags = [],\n\t\t\tremovedTags = [];\n\t\t// Keep the copy inert: system tags such as $:/tags/Stylesheet or $:/tags/Macro would make it take\n\t\t// effect (every $:/ tag: TiddlyWiki's older $:/core/wiki/rawmarkup still puts raw markup in the\n\t\t// page), and so would module-type (a JavaScript module, defined and run at startup) or plugin-type\n\t\t// (a plugin, whose contents would even override the original's). They're moved aside, kept for\n\t\t// putting back by hand.\n\t\t$tw.utils.each(localTiddler.fields.tags || [],function(tag) {\n\t\t\t(tag.indexOf(\"$:/\") === 0 ? removedTags : keptTags).push(tag);\n\t\t});\n\t\tvar fields = {\n\t\t\ttitle: copyTitle,\n\t\t\ttags: keptTags,\n\t\t\trevision: undefined,\n\t\t\tbag: undefined,\n\t\t\trecipe: undefined,\n\t\t\tpermissions: undefined,\n\t\t\t\"conflict-of\": title,\n\t\t\t\"conflict-removed-tags\": removedTags.length ? $tw.utils.stringifyList(removedTags) : undefined\n\t\t};\n\t\t$tw.utils.each([\"module-type\",\"plugin-type\"],function(field) {\n\t\t\tif(localTiddler.fields[field] !== undefined) {\n\t\t\t\tfields[field] = undefined;\n\t\t\t\tfields[\"conflict-removed-\" + field] = localTiddler.fields[field];\n\t\t\t}\n\t\t});\n\t\twiki.addTiddler(new $tw.Tiddler(localTiddler,fields));\n\t\tif($tw.Story) {\n\t\t\tnew $tw.Story({wiki: wiki}).addToStory(copyTitle,title);\n\t\t}\n\t\treturn copyTitle;\n\t}\n\n\t// For a copy of code (see makeConflictCopy): it doesn't run, and how to use that version\n\t// deleted: the original was deleted elsewhere, so there's nothing to copy the text into\n\tfunction inactiveNote(localTiddler,title,deleted) {\n\t\tvar moved = [\"module-type\",\"plugin-type\"].filter(function(field) {\n\t\t\treturn localTiddler.fields[field] !== undefined;\n\t\t});\n\t\tif(!moved.length) {\n\t\t\treturn \"\";\n\t\t}\n\t\tvar note = \" The copy is inactive (its \" + moved.join(\" and \") + \" moved to \" + moved.map(function(field) {\n\t\t\treturn \"conflict-removed-\" + field;\n\t\t}).join(\" and \") + \"): to use your version, \";\n\t\treturn note + (deleted ? \"rename it \" + lib.link(title) + \" and give it back its \" + moved.join(\" and \") + \".\" : \"copy its text into \" + lib.link(title) + \".\");\n\t}\n\n\t// The server rejected our write because its copy changed. Keep our version, adopt the server's.\n\t// ownEarlier(revision): for a save, called instead if the server's copy is this tab's own earlier\n\t// save, one that got an error (an answer lost, say) though the worker stored it\n\tfunction resolveConflict(adaptor,title,operation,callback,ownEarlier) {\n\t\t$tw.utils.httpRequest({\n\t\t\turl: adaptor.host + \"recipes/\" + encodeURIComponent(adaptor.recipe) + \"/tiddlers/\" + encodeURIComponent(title),\n\t\t\tcallback: function(err,data,request) {\n\t\t\t\tvar serverFields = null,\n\t\t\t\t\ts = $tw.syncer;\n\t\t\t\tif(err) {\n\t\t\t\t\tif(!request || request.status !== 404) {\n\t\t\t\t\t\treturn callback(err); // The syncer will retry, and we'll get here again\n\t\t\t\t\t}\n\t\t\t\t} else {\n\t\t\t\t\ttry {\n\t\t\t\t\t\tserverFields = adaptor.convertTiddlerFromTiddlyWebFormat(JSON.parse(data));\n\t\t\t\t\t} catch(e) {\n\t\t\t\t\t\treturn callback(\"Could not read the server copy of '\" + title + \"': \" + e);\n\t\t\t\t\t}\n\t\t\t\t}\n\t\t\t\tvar localTiddler = wiki.tiddlerExists(title) && wiki.getTiddler(title),\n\t\t\t\t\tearlier = unconfirmedSaves[title];\n\t\t\t\tif(operation === \"save\" && ownEarlier && earlier && serverFields && sameContent(earlier,serverFields)) {\n\t\t\t\t\tdelete unconfirmedSaves[title];\n\t\t\t\t\treturn ownEarlier(serverFields.revision);\n\t\t\t\t}\n\t\t\t\t// (Only now that the server's answer is in: if asking failed, the syncer tries the save\n\t\t\t\t// or delete again, which must still be based on the same revision)\n\t\t\t\tdelete pendingBases[title];\n\t\t\t\tif(operation === \"delete\") {\n\t\t\t\t\tdelete deleteBases[title];\n\t\t\t\t\tif(!serverFields) {\n\t\t\t\t\t\treturn callback(null,null); // It has been deleted in the meantime anyway\n\t\t\t\t\t}\n\t\t\t\t\ts.storeTiddler(serverFields);\n\t\t\t\t\treturn callback(\"Delete conflict: \" + lib.link(title) + \" was changed in another tab or browser, so it was not deleted. The latest version has been restored.\");\n\t\t\t\t}\n\t\t\t\tif(localTiddler && sameContent(localTiddler,serverFields)) {\n\t\t\t\t\t// Someone else saved exactly what we were saving: nothing to keep\n\t\t\t\t\ts.storeTiddler(serverFields);\n\t\t\t\t\tcallback(null,{bag: serverFields.bag || \"default\"},serverFields.revision);\n\t\t\t\t\tif(s.tiddlerInfo[title]) {\n\t\t\t\t\t\ts.tiddlerInfo[title].changeCount = wiki.getChangeCount(title);\n\t\t\t\t\t}\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tvar copyTitle = localTiddler ? makeConflictCopy(localTiddler) : null,\n\t\t\t\t\tkept = copyTitle ? \" Your version has been kept as \" + lib.link(copyTitle) + \".\" + inactiveNote(localTiddler,title,!serverFields) : \"\";\n\t\t\t\tif(serverFields) {\n\t\t\t\t\ts.storeTiddler(serverFields);\n\t\t\t\t\tcallback(\"Edit conflict: \" + lib.link(title) + \" was changed in another tab or browser before your save reached the server.\" + kept + \" \" + lib.link(title) + \" now shows the server version.\");\n\t\t\t\t} else {\n\t\t\t\t\tdelete s.tiddlerInfo[title];\n\t\t\t\t\tif(localTiddler) {\n\t\t\t\t\t\twiki.deleteTiddler(title);\n\t\t\t\t\t}\n\t\t\t\t\tcallback(\"Edit conflict: \" + lib.link(title) + \" was deleted in another tab or browser.\" + kept);\n\t\t\t\t}\n\t\t\t}\n\t\t});\n\t}\n\n\t// Drafts are never saved to the server (the list sync keeps them out of syncing), so TiddlyWiki's\n\t// syncer doesn't count an open editor as unsaved: closing or reloading the tab would lose what's\n\t// being typed without its usual warning. The browser asks here instead, if an editor holds changes.\n\twindow.addEventListener(\"beforeunload\",function(event) {\n\t\tvar typing = wiki.filterTiddlers(\"[is[draft]]\").some(function(title) {\n\t\t\treturn wiki.isDraftModified(title);\n\t\t});\n\t\tif(typing) {\n\t\t\tvar message = $tw.language.getString(\"UnsavedChangesWarning\");\n\t\t\tevent.preventDefault();\n\t\t\tevent.returnValue = message;\n\t\t\treturn message;\n\t\t}\n\t});\n\n\t// Remember which revision each draft was opened from\n\twiki.addEventListener(\"change\",function(changes) {\n\t\t$tw.utils.each(changes,function(change,title) {\n\t\t\tif(change.deleted) {\n\t\t\t\tdelete draftBases[title];\n\t\t\t\tif(!wiki.tiddlerExists(title)) {\n\t\t\t\t\tdelete pendingBases[title];\n\t\t\t\t}\n\t\t\t\treturn;\n\t\t\t}\n\t\t\t// There again (restored, or made again before the delete went out): nothing to delete\n\t\t\tdelete deleteBases[title];\n\t\t\tif(draftBases[title]) {\n\t\t\t\treturn;\n\t\t\t}\n\t\t\tvar draft = wiki.getTiddler(title),\n\t\t\t\tof = draft && draft.fields[\"draft.of\"];\n\t\t\tif(!of) {\n\t\t\t\treturn;\n\t\t\t}\n\t\t\tvar original = wiki.getTiddler(of),\n\t\t\t\tbase = currentBase(of);\n\t\t\t// If the original was reloaded from the server between the draft being made and now,\n\t\t\t// the draft still carries the older revision it was copied from\n\t\t\tif(original && draft.fields.revision !== undefined && original.fields.revision !== draft.fields.revision) {\n\t\t\t\tbase = revisionBase(draft.fields.revision);\n\t\t\t}\n\t\t\tdraftBases[title] = {of: of, base: base};\n\t\t});\n\t});\n\n\t// When a draft is confirmed, the saved tiddler inherits the draft's base revision. A rename then\n\t// deletes the old title: that delete is from the version the editor started from too, so it's\n\t// refused (a delete conflict) if another tab saved a newer one meanwhile, which this tab may even\n\t// have loaded behind the editor\n\t$tw.hooks.addHook(\"th-saving-tiddler\",function(newTiddler,draftTiddler) {\n\t\tif(newTiddler && draftTiddler) {\n\t\t\tvar record = draftBases[draftTiddler.fields.title];\n\t\t\tif(record && record.of === newTiddler.fields.title) {\n\t\t\t\tpendingBases[record.of] = {base: record.base};\n\t\t\t} else if(record && typeof record.base === \"string\") {\n\t\t\t\tdeleteBases[record.of] = record.base;\n\t\t\t}\n\t\t}\n\t\treturn newTiddler;\n\t});\n\n\t// Deleting from an open editor deletes the tiddler too: the same applies\n\t$tw.hooks.addHook(\"th-deleting-tiddler\",function(tiddler) {\n\t\tvar title = tiddler && tiddler.fields.title;\n\t\t$tw.utils.each(draftBases,function(record) {\n\t\t\tif(title && record.of === title && typeof record.base === \"string\") {\n\t\t\t\tdeleteBases[title] = record.base;\n\t\t\t}\n\t\t});\n\t\treturn tiddler;\n\t});\n\n\tproto.saveTiddler = function(tiddler,callback,options) {\n\t\tvar self = this,\n\t\t\ttitle = tiddler.fields.title,\n\t\t\ts = $tw.syncer,\n\t\t\tinfo = (options && options.tiddlerInfo) || (s && s.tiddlerInfo[title]),\n\t\t\tpending = pendingBases[title],\n\t\t\tbase = pending ? pending.base : baseFromInfo(info);\n\t\tif(this.isReadOnly) {\n\t\t\treturn callback(null);\n\t\t}\n\t\tvar body = flatBody(tiddler),\n\t\t\theaders = {\"Content-type\": \"application/json\", \"X-Tiddler-Layout\": \"flat\"},\n\t\t\ttries = 0;\n\t\tfunction send() {\n\t\t\t$tw.utils.httpRequest({\n\t\t\t\turl: self.host + \"recipes/\" + encodeURIComponent(self.recipe) + \"/tiddlers/\" + encodeURIComponent(title),\n\t\t\t\ttype: \"PUT\",\n\t\t\t\theaders: addPreconditions(headers,title,base,info),\n\t\t\t\tdata: body,\n\t\t\t\tcallback: function(err,data,request) {\n\t\t\t\t\tif(err) {\n\t\t\t\t\t\tif(lib.isRebuilding(request) && ++tries <= lib.REBUILD_RETRIES) {\n\t\t\t\t\t\t\treturn setTimeout(send,1000);\n\t\t\t\t\t\t}\n\t\t\t\t\t\tif(request && request.status === 412) {\n\t\t\t\t\t\t\treturn resolveConflict(self,title,\"save\",callback,function(revision) {\n\t\t\t\t\t\t\t\t// The worker has this tab's earlier save: this one is based on it. (Its\n\t\t\t\t\t\t\t\t// editors move on to it too.)\n\t\t\t\t\t\t\t\trebase(title,base,revision);\n\t\t\t\t\t\t\t\tbase = revision;\n\t\t\t\t\t\t\t\tsend();\n\t\t\t\t\t\t\t});\n\t\t\t\t\t\t}\n\t\t\t\t\t\t// Maybe stored all the same: the next try's refusal will tell (resolveConflict)\n\t\t\t\t\t\tunconfirmedSaves[title] = tiddler;\n\t\t\t\t\t\treturn callback(err);\n\t\t\t\t\t}\n\t\t\t\t\tdelete unconfirmedSaves[title];\n\t\t\t\t\tif($tw.browserStorage && $tw.browserStorage.isEnabled()) {\n\t\t\t\t\t\t$tw.browserStorage.removeTiddlerFromLocalStorage(title);\n\t\t\t\t\t}\n\t\t\t\t\tvar etag = request.getResponseHeader(\"Etag\"),\n\t\t\t\t\t\tetagInfo = etag && self.parseEtag(etag);\n\t\t\t\t\tif(!etagInfo) {\n\t\t\t\t\t\treturn callback(\"Response from server is missing required ETag header\");\n\t\t\t\t\t}\n\t\t\t\t\tif(pending && pendingBases[title] === pending) {\n\t\t\t\t\t\tdelete pendingBases[title];\n\t\t\t\t\t}\n\t\t\t\t\trebase(title,base,etagInfo.revision);\n\t\t\t\t\tcallback(null,{bag: etagInfo.bag},etagInfo.revision);\n\t\t\t\t\t// The list sync keeps the saved version (a public copy from before the save\n\t\t\t\t\t// doesn't count): the next read expects this revision, and has it on the device\n\t\t\t\t\tif(self.cfworkerNoteListed) {\n\t\t\t\t\t\tself.cfworkerNoteListed(title,etagInfo.revision,tiddler);\n\t\t\t\t\t}\n\t\t\t\t\t// Saved before its text had loaded (the worker kept the stored text): load it now,\n\t\t\t\t\t// the version just saved\n\t\t\t\t\tif(tiddler.hasField(\"_is_skinny\") && s) {\n\t\t\t\t\t\tsetTimeout(function() {\n\t\t\t\t\t\t\ts.enqueueLoadTiddler(title);\n\t\t\t\t\t\t},0);\n\t\t\t\t\t}\n\t\t\t\t}\n\t\t\t});\n\t\t}\n\t\tsend();\n\t};\n\n\tproto.deleteTiddler = function(title,callback,options) {\n\t\tvar self = this,\n\t\t\tinfo = options && options.tiddlerInfo,\n\t\t\tbag = info && info.adaptorInfo && info.adaptorInfo.bag;\n\t\tif(this.isReadOnly) {\n\t\t\treturn callback(null);\n\t\t}\n\t\t// No bag means the server has never seen this tiddler, so there is nothing to delete\n\t\tif(!bag) {\n\t\t\tdelete deleteBases[title];\n\t\t\treturn callback(null,info && info.adaptorInfo);\n\t\t}\n\t\tvar tries = 0,\n\t\t\tbase = title in deleteBases ? deleteBases[title] : (baseFromInfo(info) || undefined);\n\t\tfunction send() {\n\t\t\t$tw.utils.httpRequest({\n\t\t\t\turl: self.host + \"bags/\" + encodeURIComponent(bag) + \"/tiddlers/\" + encodeURIComponent(title),\n\t\t\t\ttype: \"DELETE\",\n\t\t\t\theaders: addPreconditions({},title,base,info),\n\t\t\t\tcallback: function(err,data,request) {\n\t\t\t\t\tif(err) {\n\t\t\t\t\t\tif(lib.isRebuilding(request) && ++tries <= lib.REBUILD_RETRIES) {\n\t\t\t\t\t\t\treturn setTimeout(send,1000);\n\t\t\t\t\t\t}\n\t\t\t\t\t\tif(request && request.status === 412) {\n\t\t\t\t\t\t\treturn resolveConflict(self,title,\"delete\",callback);\n\t\t\t\t\t\t}\n\t\t\t\t\t\treturn callback(err);\n\t\t\t\t\t}\n\t\t\t\t\tdelete pendingBases[title];\n\t\t\t\t\tdelete deleteBases[title];\n\t\t\t\t\tif(self.cfworkerNoteDeleted) {\n\t\t\t\t\t\tself.cfworkerNoteDeleted(title);\n\t\t\t\t\t}\n\t\t\t\t\tcallback(null,null);\n\t\t\t\t}\n\t\t\t});\n\t\t}\n\t\tsend();\n\t};\n};\n\n})();\n" },
   { title: "$:/cfworker/list-sync.js", type: "startup", source: "/*\\\ntitle: $:/cfworker/list-sync.js\ntype: application/javascript\nmodule-type: startup\n\nHow a tab syncs with the worker, apart from saves and deletes (those are the conflict guard,\n$:/cfworker/conflict-guard.js):\n\n- The tiddler list: which revision the worker lists for each tiddler, kept for the other modules\n  (cfworkerListed, cfworkerOnList); while the worker rebuilds a damaged or missing list, requests it\n  answers \"rebuilding\" are sent again quietly, and a list that can't be read is a sync error:\n  TiddlyWiki would otherwise remove every tiddler it doesn't find in it, or stop with an \"Internal\n  JavaScript Error\". Other modules can add a header to the list request and read its answer\n  (cfworkerOnListRequest: the backup alert does).\n- Loading (design 1.5). The list has everything but the text, and TiddlyWiki then loads every\n  tiddler in full, one at a time, in the list's order. Here, the tiddler shown loads first; loaded\n  tiddlers are kept on the device (IndexedDB), by revision, so a later page load fetches only what\n  changed; the rest fills in several at a time, only while the tab is shown, and not at all with\n  $:/config/cfworker/LoadAll set to \"no\" (then a tiddler loads the moment its text is needed; text\n  search and backlinks only see the loaded ones). A fetch is accepted only at the revision the\n  worker lists, so no cache can serve an older copy: refused, it's asked for again past any cache.\n- Fewer worker requests: tiddler contents are fetched from the public copy of the wiki\n  ($:/cfworker/public-url, served by R2/Cloudflare without the worker), and from the worker only\n  when that copy doesn't have the listed revision; drafts and $:/StoryList, which the worker never\n  stores, are not sent to it, and the \"put\" saver no longer probes the page URL on every load;\n  background tabs stop polling for changes and catch up as soon as they are shown again.\n- Titles the worker can't store aren't sent either (each save would fail, and be tried again\n  forever): the tab asks to rename them instead.\n\\*/\n(function(){\n\n\"use strict\";\n\nexports.name = \"cfworker-list-sync\";\nexports.platforms = [\"browser\"];\nexports.after = [\"load-modules\"];\nexports.before = [\"startup\"];\nexports.synchronous = true;\n\nvar lib = require(\"$:/cfworker/lib.js\");\n\nvar LOAD_ALL_TITLE = \"$:/config/cfworker/LoadAll\",\n\tFILL_PAUSE = 200,     // ms after a list before the fill starts: what the page shows asks for its text first\n\tREAD_AHEAD = 24,      // tiddlers looked up ahead of the one TiddlyWiki is loading (on the device, or fetched)\n\tFETCH_AHEAD = 6,      // ...of which fetched over the network at once\n\tPUBLIC_READ_TIMEOUT = 5000,\n\tSTORE_DB = \"cfworker-tiddlers\",\n\tSTORE_NAME = \"tiddlers\";\n\nexports.startup = function() {\n\tvar Adaptor = lib.findAdaptor();\n\tif(!Adaptor || Adaptor.prototype.cfworkerListed) {\n\t\treturn;\n\t}\n\tvar proto = Adaptor.prototype,\n\t\twiki = $tw.wiki,\n\t\toriginalLoadTiddler = proto.loadTiddler,\n\t\toriginalGetSkinnyTiddlers = proto.getSkinnyTiddlers,\n\t\tpublicBase = lib.publicBase(),\n\t\tlistedRevisions = Object.create(null), // title -> revision in the worker's latest tiddler list\n\t\tlastListFetch = 0,\n\t\tlistRequested = 0,                     // when the request for that list was sent\n\t\tlistListeners = [],                    // called with each new list (cfworkerOnList)\n\t\trequestHooks = [],                     // {headers(), answer(xhr)} for each list request (cfworkerOnListRequest)\n\t\tlistBypassCache = false,               // the last list was the stand-in or unreadable (isListStandIn)\n\t\tlazyLoading = wiki.getTiddlerText(\"$:/config/SyncDisableLazyLoading\") !== \"yes\",\n\t\twanted = Object.create(null),          // titles whose text was asked for (shown) and not loaded yet\n\t\texplicit = Object.create(null),        // titles a module asked to load (enqueueLoadTiddler)\n\t\tloading = Object.create(null),         // titles being loaded now (cfworkerLoading)\n\t\theld = Object.create(null),            // the fill's titles, kept aside while it's held\n\t\tahead = Object.create(null),           // title -> {promise, fields} looked up ahead of TiddlyWiki\n\t\tfetching = 0,                          // network fetches under way, and who waits for a slot\n\t\tfetchQueue = [],\n\t\tfillHoldUntil = 0,\n\t\tfillTimer = null,\n\t\tdeliveryTimer = null;\n\n\t// The \"put\" saver probes the page URL (OPTIONS + HEAD) on every load, but it can't save to the\n\t// worker (saving goes through the sync adaptor), so switch it off\n\t$tw.modules.forEachModuleOfType(\"saver\",function(title,module) {\n\t\tif(title === \"$:/core/modules/savers/put.js\") {\n\t\t\tmodule.canSave = function() {\n\t\t\t\treturn false;\n\t\t\t};\n\t\t}\n\t});\n\n\t// Once per title in this tab\n\tvar askedToRename = Object.create(null),\n\t\trenameLogger = $tw.utils.Logger ? new $tw.utils.Logger(\"cfworker\") : null;\n\tfunction askToRename(title) {\n\t\tif(askedToRename[title] || !renameLogger) {\n\t\t\treturn;\n\t\t}\n\t\taskedToRename[title] = true;\n\t\trenameLogger.alert(lib.link(title) + \" can't be saved: the server doesn't take a tiddler titled \\\".\\\" or \\\"..\\\", or a title over \" +\n\t\t\tlib.MAX_TITLE_BYTES + \" bytes. Rename it to keep it; until then it's only in this tab.\");\n\t}\n\n\t// --- The fill: TiddlyWiki's loads, arranged -------------------------------------------------------\n\n\t// Whether every tiddler is loaded in full in the background, as TiddlyWiki does (the setting's\n\t// \"no\" turns that off, unless TiddlyWiki's own lazy loading is off: then every load must go through)\n\tfunction fillOn() {\n\t\tvar setting = wiki.getTiddler(LOAD_ALL_TITLE);\n\t\treturn !lazyLoading || !(setting && String(setting.fields.text || \"\").trim().toLowerCase() === \"no\");\n\t}\n\tfunction isSkinny(title) {\n\t\tvar tiddler = wiki.getTiddler(title);\n\t\treturn !tiddler || tiddler.hasField(\"_is_skinny\");\n\t}\n\t// A load TiddlyWiki queued only because the list showed a revision of a tiddler this tab has\n\t// skinny: the fill. Anything else is for a tiddler that's shown (wanted), that a module asked for\n\t// (explicit), or that the tab holds in full and the worker has a newer version of.\n\tfunction isFill(title) {\n\t\treturn !wanted[title] && !explicit[title] && isSkinny(title);\n\t}\n\tfunction sameOrder(a,b) {\n\t\tif(a.length !== b.length) {\n\t\t\treturn false;\n\t\t}\n\t\tfor(var i = 0; i < a.length; i++) {\n\t\t\tif(a[i] !== b[i]) {\n\t\t\t\treturn false;\n\t\t\t}\n\t\t}\n\t\treturn true;\n\t}\n\t// The loads TiddlyWiki queued (titlesToBeLoaded, loaded one at a time from the first key), arranged\n\t// before it picks the next: what's shown first, then what was asked for, the fill after them. The\n\t// fill is kept aside (held) while the tab is hidden and for a moment after each list, so what the\n\t// page shows asks for its text first; with the fill off, those loads are dropped: the skinny\n\t// tiddler stays, and loads the moment its text is needed.\n\tfunction arrangeLoads(syncer) {\n\t\tvar queue = syncer.titlesToBeLoaded,\n\t\t\ttitles = Object.keys(queue),\n\t\t\ton = fillOn(),\n\t\t\thold = !on || document.hidden || Date.now() < fillHoldUntil,\n\t\t\tfirst = [],\n\t\t\tthen = [],\n\t\t\tfill = [];\n\t\t$tw.utils.each(titles,function(title) {\n\t\t\tif(wanted[title]) {\n\t\t\t\tfirst.push(title);\n\t\t\t} else if(!isFill(title)) {\n\t\t\t\tthen.push(title);\n\t\t\t} else if(listedRevisions[title]) {\n\t\t\t\tfill.push(title);\n\t\t\t}\n\t\t\t// (A fill load of a tiddler the worker no longer lists is dropped: TiddlyWiki has removed it)\n\t\t});\n\t\t// (Titles whose text was asked for and has come since: no longer first)\n\t\t$tw.utils.each(Object.keys(wanted),function(title) {\n\t\t\tif(!isSkinny(title) && !queue[title]) {\n\t\t\t\tdelete wanted[title];\n\t\t\t}\n\t\t});\n\t\tif(!on) {\n\t\t\theld = Object.create(null);\n\t\t\tfill = [];\n\t\t} else if(hold) {\n\t\t\t$tw.utils.each(fill,function(title) {\n\t\t\t\theld[title] = true;\n\t\t\t});\n\t\t\tif(!document.hidden && !fillTimer && (fill.length || $tw.utils.count(held))) {\n\t\t\t\tfillTimer = setTimeout(function() {\n\t\t\t\t\tfillTimer = null;\n\t\t\t\t\tsyncer.processTaskQueue();\n\t\t\t\t},Math.max(0,fillHoldUntil - Date.now()) + 10);\n\t\t\t}\n\t\t\tfill = [];\n\t\t} else {\n\t\t\t$tw.utils.each(Object.keys(held),function(title) {\n\t\t\t\tif(listedRevisions[title] && wiki.tiddlerExists(title) && fill.indexOf(title) === -1 && first.indexOf(title) === -1 && then.indexOf(title) === -1) {\n\t\t\t\t\tfill.push(title);\n\t\t\t\t}\n\t\t\t});\n\t\t\theld = Object.create(null);\n\t\t}\n\t\tvar ordered = first.concat(then,fill);\n\t\tif(!sameOrder(titles,ordered)) {\n\t\t\tvar arranged = Object.create(null);\n\t\t\t$tw.utils.each(ordered,function(title) {\n\t\t\t\tarranged[title] = true;\n\t\t\t});\n\t\t\tsyncer.titlesToBeLoaded = arranged;\n\t\t}\n\t}\n\n\tif($tw.Syncer && !$tw.Syncer.prototype.cfworkerPatched) {\n\t\tvar originalGetSyncedTiddlers = $tw.Syncer.prototype.getSyncedTiddlers,\n\t\t\toriginalChooseNextTask = $tw.Syncer.prototype.chooseNextTask,\n\t\t\toriginalEnqueueLoadTiddler = $tw.Syncer.prototype.enqueueLoadTiddler;\n\t\t$tw.Syncer.prototype.cfworkerPatched = true;\n\t\t// Keep drafts and the story list out of syncing: the worker never stores them (the same rule:\n\t\t// $:/StoryList itself, and a draft.of field, even empty, as TiddlyWiki tells drafts). For drafts\n\t\t// it also matters because after the next poll the syncer would see them as \"missing from the\n\t\t// server\" and delete the open draft, closing the editor.\n\t\t// Nor a title the worker can't store (storableTitle): each save would fail, and be tried again\n\t\t// forever. The tab says to rename it instead.\n\t\t$tw.Syncer.prototype.getSyncedTiddlers = function(source) {\n\t\t\tvar syncerWiki = this.wiki;\n\t\t\treturn originalGetSyncedTiddlers.call(this,source).filter(function(title) {\n\t\t\t\tvar tiddler = syncerWiki.getTiddler(title);\n\t\t\t\tif(!lib.storableTitle(title)) {\n\t\t\t\t\tif(tiddler) {\n\t\t\t\t\t\taskToRename(title);\n\t\t\t\t\t}\n\t\t\t\t\treturn false;\n\t\t\t\t}\n\t\t\t\treturn title !== \"$:/StoryList\" && !(tiddler && tiddler.hasField(\"draft.of\"));\n\t\t\t});\n\t\t};\n\t\t// Don't poll for changes while the tab is in the background (saves still go out), and arrange\n\t\t// the loads before TiddlyWiki picks the next\n\t\t$tw.Syncer.prototype.chooseNextTask = function() {\n\t\t\tif(document.hidden && !this.forceSyncFromServer && this.timestampLastSyncFromServer) {\n\t\t\t\tthis.timestampLastSyncFromServer = new Date();\n\t\t\t}\n\t\t\tarrangeLoads(this);\n\t\t\treturn originalChooseNextTask.call(this);\n\t\t};\n\t\t// A load a module asks for is never the fill\n\t\t$tw.Syncer.prototype.enqueueLoadTiddler = function(title) {\n\t\t\texplicit[title] = true;\n\t\t\treturn originalEnqueueLoadTiddler.apply(this,arguments);\n\t\t};\n\t\t// ...and catch up as soon as it is shown again (the fill too)\n\t\tdocument.addEventListener(\"visibilitychange\",function() {\n\t\t\tvar s = $tw.syncer;\n\t\t\tif(!document.hidden && s && s.syncadaptor && typeof s.syncadaptor.cfworkerListed === \"function\") {\n\t\t\t\tif(Date.now() - lastListFetch > 10000) {\n\t\t\t\t\ts.syncFromServer();\n\t\t\t\t}\n\t\t\t\ts.processTaskQueue();\n\t\t\t}\n\t\t});\n\t}\n\t// What the page shows asks for its text: loaded before anything else\n\tif(lazyLoading) {\n\t\twiki.addEventListener(\"lazyLoad\",function(title) {\n\t\t\tif(!loading[title]) {\n\t\t\t\twanted[title] = true;\n\t\t\t}\n\t\t});\n\t}\n\n\t// --- The device's copy of loaded tiddlers (IndexedDB) ----------------------------------------------\n\n\tvar storeOff = typeof indexedDB !== \"object\" || !indexedDB,\n\t\tstoreOpening = null;\n\tfunction storeDb() {\n\t\tif(storeOff) {\n\t\t\treturn Promise.resolve(null);\n\t\t}\n\t\tif(!storeOpening) {\n\t\t\tstoreOpening = new Promise(function(resolve) {\n\t\t\t\tvar request;\n\t\t\t\ttry {\n\t\t\t\t\trequest = indexedDB.open(STORE_DB,1);\n\t\t\t\t} catch(e) {\n\t\t\t\t\tstoreOff = true;\n\t\t\t\t\treturn resolve(null);\n\t\t\t\t}\n\t\t\t\trequest.onupgradeneeded = function() {\n\t\t\t\t\trequest.result.createObjectStore(STORE_NAME,{keyPath: \"title\"});\n\t\t\t\t};\n\t\t\t\trequest.onsuccess = function() {\n\t\t\t\t\tvar db = request.result;\n\t\t\t\t\t// Closed when another tab or the browser replaces the database: opened again at the next use\n\t\t\t\t\tdb.onversionchange = function() {\n\t\t\t\t\t\tdb.close();\n\t\t\t\t\t\tstoreOpening = null;\n\t\t\t\t\t};\n\t\t\t\t\tresolve(db);\n\t\t\t\t};\n\t\t\t\trequest.onerror = function() {\n\t\t\t\t\tstoreOff = true;\n\t\t\t\t\tresolve(null);\n\t\t\t\t};\n\t\t\t\trequest.onblocked = function() {\n\t\t\t\t\tstoreOpening = null;   // (being replaced: tried again at the next use)\n\t\t\t\t\tresolve(null);\n\t\t\t\t};\n\t\t\t});\n\t\t}\n\t\treturn storeOpening;\n\t}\n\t// work(objectStore) makes the request; resolves with its result, null for anything that fails\n\tfunction storeRequest(mode,work) {\n\t\treturn storeDb().then(function(db) {\n\t\t\tif(!db) {\n\t\t\t\treturn null;\n\t\t\t}\n\t\t\treturn new Promise(function(resolve) {\n\t\t\t\ttry {\n\t\t\t\t\tvar transaction = db.transaction(STORE_NAME,mode),\n\t\t\t\t\t\trequest = work(transaction.objectStore(STORE_NAME));\n\t\t\t\t\trequest.onsuccess = function() {\n\t\t\t\t\t\tresolve(request.result === undefined ? null : request.result);\n\t\t\t\t\t};\n\t\t\t\t\trequest.onerror = transaction.onerror = transaction.onabort = function() {\n\t\t\t\t\t\tresolve(null);\n\t\t\t\t\t};\n\t\t\t\t} catch(e) {\n\t\t\t\t\tresolve(null);\n\t\t\t\t}\n\t\t\t});\n\t\t});\n\t}\n\tfunction storeGet(title) {\n\t\treturn storeRequest(\"readonly\",function(store) {\n\t\t\treturn store.get(title);\n\t\t});\n\t}\n\tfunction storeKeys() {\n\t\treturn storeRequest(\"readonly\",function(store) {\n\t\t\treturn store.getAllKeys();\n\t\t});\n\t}\n\tfunction keep(title,fields) {\n\t\tif(!fields || fields.revision === undefined || fields.revision === null) {\n\t\t\treturn;\n\t\t}\n\t\tstoreRequest(\"readwrite\",function(store) {\n\t\t\treturn store.put({title: title, revision: String(fields.revision), fields: fields});\n\t\t});\n\t}\n\tfunction forget(titles) {\n\t\tif(!titles.length) {\n\t\t\treturn;\n\t\t}\n\t\tstoreRequest(\"readwrite\",function(store) {\n\t\t\tvar request = null;\n\t\t\t$tw.utils.each(titles,function(title) {\n\t\t\t\trequest = store[\"delete\"](title);\n\t\t\t});\n\t\t\treturn request;\n\t\t});\n\t}\n\t// Entries for tiddlers the worker no longer lists, after the first list of this page load\n\tfunction prune() {\n\t\tstoreKeys().then(function(keys) {\n\t\t\tif(keys) {\n\t\t\t\tforget(keys.filter(function(title) {\n\t\t\t\t\treturn !$tw.utils.hop(listedRevisions,title);\n\t\t\t\t}));\n\t\t\t}\n\t\t});\n\t}\n\n\t// --- Reading tiddlers -------------------------------------------------------------------------------\n\n\t// Where a tiddler is read from without the worker: {url, sameSite}, the public copy of the wiki\n\t// (the admin site reads it from there: another site) or this site itself on the public site;\n\t// null when there's none\n\tfunction tiddlerUrl(adaptor,title) {\n\t\tvar path = \"recipes/\" + encodeURIComponent(adaptor.recipe || \"default\") + \"/tiddlers/\" + encodeURIComponent(title);\n\t\tif(publicBase && lib.siteOf(publicBase) !== lib.siteOf(adaptor.host)) {\n\t\t\treturn {url: publicBase + path, sameSite: false};\n\t\t}\n\t\treturn adaptor.host ? {url: adaptor.host + path, sameSite: true} : null;\n\t}\n\t// A slot for a network fetch (FETCH_AHEAD at a time); urgent: ahead of those waiting for one\n\tfunction withFetchSlot(work,urgent) {\n\t\treturn new Promise(function(resolve) {\n\t\t\tfunction start() {\n\t\t\t\tfetching++;\n\t\t\t\tPromise.resolve().then(work).then(function(value) {\n\t\t\t\t\trelease();\n\t\t\t\t\tresolve(value);\n\t\t\t\t},function() {\n\t\t\t\t\trelease();\n\t\t\t\t\tresolve(null);\n\t\t\t\t});\n\t\t\t}\n\t\t\tif(fetching < FETCH_AHEAD) {\n\t\t\t\tstart();\n\t\t\t} else if(urgent) {\n\t\t\t\tfetchQueue.unshift(start);\n\t\t\t} else {\n\t\t\t\tfetchQueue.push(start);\n\t\t\t}\n\t\t});\n\t}\n\tfunction release() {\n\t\tfetching--;\n\t\tvar next = fetchQueue.shift();\n\t\tif(next) {\n\t\t\tnext();\n\t\t}\n\t}\n\t// Fetches the tiddler at url: its fields if it's exactly the expected revision, null if it's\n\t// another revision, false if it couldn't be fetched at all. A site that doesn't answer (rather\n\t// than fails) mustn't hold up loading: given up after a few seconds. Always revalidated with the\n\t// server (no-cache); from another site, without credentials (the public site is another origin\n\t// for the admin site, with a plain CORS header).\n\tfunction fetchRevision(adaptor,url,sameSite,title,expected) {\n\t\tvar controller = typeof AbortController === \"function\" ? new AbortController() : null,\n\t\t\ttimer = controller && setTimeout(function() {\n\t\t\t\tcontroller.abort();\n\t\t\t},PUBLIC_READ_TIMEOUT);\n\t\treturn fetch(url,{cache: \"no-cache\", credentials: sameSite ? \"same-origin\" : \"omit\", signal: controller ? controller.signal : undefined})\n\t\t\t.then(function(response) {\n\t\t\t\treturn response.ok ? response.json() : false;\n\t\t\t})\n\t\t\t.then(function(data) {\n\t\t\t\tclearTimeout(timer);\n\t\t\t\tif(data === false) {\n\t\t\t\t\treturn false;\n\t\t\t\t}\n\t\t\t\ttry {\n\t\t\t\t\tif(data && data.title === title && data.revision !== undefined && data.revision !== null && String(data.revision) === expected) {\n\t\t\t\t\t\treturn adaptor.convertTiddlerFromTiddlyWebFormat(data);\n\t\t\t\t\t}\n\t\t\t\t} catch(e) {}\n\t\t\t\treturn null;\n\t\t\t},function() {\n\t\t\t\tclearTimeout(timer);\n\t\t\t\treturn false;\n\t\t\t});\n\t}\n\t// The listed revision, fetched without the worker; a copy a cache kept from before a change is\n\t// refused, and the tiddler asked for again at a URL no cache holds\n\tfunction fetchListed(adaptor,title,expected,urgent) {\n\t\tvar at = tiddlerUrl(adaptor,title);\n\t\tif(!at || typeof fetch !== \"function\") {\n\t\t\treturn Promise.resolve(null);\n\t\t}\n\t\treturn withFetchSlot(function() {\n\t\t\treturn fetchRevision(adaptor,at.url,at.sameSite,title,expected).then(function(fields) {\n\t\t\t\treturn fields === null ? fetchRevision(adaptor,at.url + \"?cfworker-retry=\" + Date.now(),at.sameSite,title,expected) : fields;\n\t\t\t}).then(function(fields) {\n\t\t\t\treturn fields || null;\n\t\t\t});\n\t\t},urgent);\n\t}\n\t// The tiddler's fields at the revision the worker lists: from the device, or fetched (and kept);\n\t// null if neither has it\n\tfunction lookUp(adaptor,title,urgent) {\n\t\tvar expected = listedRevisions[title];\n\t\tif(!expected) {\n\t\t\treturn Promise.resolve(null);\n\t\t}\n\t\treturn storeGet(title).then(function(kept) {\n\t\t\tif(kept && kept.revision === expected && kept.fields) {\n\t\t\t\treturn kept.fields;\n\t\t\t}\n\t\t\treturn fetchListed(adaptor,title,expected,urgent).then(function(fields) {\n\t\t\t\tif(fields) {\n\t\t\t\t\tkeep(title,fields);\n\t\t\t\t}\n\t\t\t\treturn fields;\n\t\t\t});\n\t\t});\n\t}\n\t// The next tiddlers TiddlyWiki will load, looked up ahead of it (the fill: not while held)\n\tfunction readAhead(adaptor) {\n\t\tvar s = $tw.syncer;\n\t\tif(!s || document.hidden || !fillOn()) {\n\t\t\treturn;\n\t\t}\n\t\tvar queued = Object.keys(s.titlesToBeLoaded),\n\t\t\tcount = $tw.utils.count(ahead);\n\t\tfor(var i = 0; i < queued.length && count < READ_AHEAD; i++) {\n\t\t\tvar title = queued[i];\n\t\t\tif(!ahead[title] && !loading[title] && listedRevisions[title]) {\n\t\t\t\tahead[title] = lookAhead(adaptor,title);\n\t\t\t\tcount++;\n\t\t\t}\n\t\t}\n\t}\n\tfunction lookAhead(adaptor,title) {\n\t\tvar entry = {promise: null, fields: undefined};\n\t\tentry.promise = lookUp(adaptor,title).then(function(fields) {\n\t\t\tentry.fields = fields;\n\t\t\tscheduleDelivery(adaptor);\n\t\t\treturn fields;\n\t\t});\n\t\treturn entry;\n\t}\n\t// Once the tiddlers looked up ahead stop arriving for a moment, they're delivered together, and\n\t// the next ones looked up: the fill goes on in batches, without waiting for TiddlyWiki's loads\n\tvar DELIVERY_PAUSE = 40;\n\tfunction scheduleDelivery(adaptor) {\n\t\tclearTimeout(deliveryTimer);\n\t\tdeliveryTimer = setTimeout(function() {\n\t\t\tdeliveryTimer = null;\n\t\t\tdeliverAhead();\n\t\t\treadAhead(adaptor);\n\t\t},DELIVERY_PAUSE);\n\t}\n\t// The tiddlers looked up ahead still on their way, waited for: all of them, or DELIVERY_PAUSE at\n\t// most (the device answers within it; the network needn't)\n\tfunction settleAhead() {\n\t\tvar pending = [];\n\t\t$tw.utils.each(ahead,function(entry) {\n\t\t\tif(entry.fields === undefined) {\n\t\t\t\tpending.push(entry.promise);\n\t\t\t}\n\t\t});\n\t\tif(!pending.length) {\n\t\t\treturn Promise.resolve();\n\t\t}\n\t\treturn Promise.race([Promise.all(pending),new Promise(function(resolve) {\n\t\t\tsetTimeout(resolve,DELIVERY_PAUSE);\n\t\t})]);\n\t}\n\t// Tiddlers looked up ahead that have arrived, stored now, together (one refresh for all of them),\n\t// so TiddlyWiki needn't load them one by one. (One the list has moved on from meanwhile is\n\t// dropped: its load fetches the listed revision.)\n\tfunction deliverAhead() {\n\t\tvar s = $tw.syncer;\n\t\t$tw.utils.each(Object.keys(ahead),function(title) {\n\t\t\tvar entry = ahead[title];\n\t\t\tif(entry.fields === undefined || entry.fields === null) {\n\t\t\t\treturn;\n\t\t\t}\n\t\t\tdelete ahead[title];\n\t\t\tif(String(entry.fields.revision) !== listedRevisions[title]) {\n\t\t\t\treturn;\n\t\t\t}\n\t\t\tif(s && s.titlesToBeLoaded[title] && !loading[title] && !hasUnsavedChanges(title)) {\n\t\t\t\tdelete s.titlesToBeLoaded[title];\n\t\t\t\tdelete wanted[title];\n\t\t\t\tdelete explicit[title];\n\t\t\t\ts.storeTiddler(entry.fields);\n\t\t\t}\n\t\t});\n\t}\n\n\t// Public tabs read the list straight from R2, so while the worker rebuilds a missing list they\n\t// get the text standing in for it (the worker's listStandIn: keep the two in step). It isn't\n\t// JSON, so TiddlyWiki can't take it for a list. It's fetched again a little later (only the\n\t// worker's own requests move the rebuild on). After the stand-in or a list that can't be read,\n\t// the list is fetched at a URL no cache holds until a good one comes back: a cached copy (the\n\t// browser keeps one for a few minutes) could otherwise outlive the rebuild.\n\tvar LIST_STAND_IN_MARK = \"Tiddler list being rebuilt\";\n\tfunction isListStandIn(request) {\n\t\treturn !!request && request.status === 200 && typeof request.responseText === \"string\" &&\n\t\t\trequest.responseText.indexOf(LIST_STAND_IN_MARK) === 0;\n\t}\n\t// TiddlyWiki removes every tiddler that isn't in the list it gets, so anything that isn't a list\n\t// of tiddlers (a damaged upload, say) must be an error, not an empty list\n\tfunction isTiddlerList(tiddlers) {\n\t\tif(!$tw.utils.isArray(tiddlers)) {\n\t\t\treturn false;\n\t\t}\n\t\tfor(var i = 0; i < tiddlers.length; i++) {\n\t\t\tif(!tiddlers[i] || typeof tiddlers[i].title !== \"string\") {\n\t\t\t\treturn false;\n\t\t\t}\n\t\t}\n\t\treturn true;\n\t}\n\n\tfunction hasUnsavedChanges(title) {\n\t\tvar s = $tw.syncer;\n\t\tif(!s || !wiki.tiddlerExists(title)) {\n\t\t\treturn false;\n\t\t}\n\t\tvar info = s.tiddlerInfo[title];\n\t\tif(info) {\n\t\t\treturn wiki.getChangeCount(title) > info.changeCount;\n\t\t}\n\t\treturn s.getSyncedTiddlers([title]).length > 0;\n\t}\n\n\t// Remember which revision the worker currently lists for each tiddler, fetch the list again while\n\t// it's being rebuilt (isRebuilding, isListStandIn), and never pass on a list that isn't one\n\tproto.getSkinnyTiddlers = function(callback) {\n\t\tvar self = this,\n\t\t\ttries = 0;\n\t\tfunction fetchList() {\n\t\t\t// The adaptor passes on only the error text: catch the request it makes, to read its header.\n\t\t\t// It makes it straight away, so the wrapper is in place only during this call.\n\t\t\tvar requested = Date.now(),\n\t\t\t\trequest = null,\n\t\t\t\tdelivered = false,\n\t\t\t\tunreadable = false,\n\t\t\t\tbypassed = listBypassCache,\n\t\t\t\tasking = [],     // the hooks adding headers to this request, with their headers\n\t\t\t\thttpRequest = $tw.utils.httpRequest;\n\t\t\t$tw.utils.each(requestHooks,function(hook) {\n\t\t\t\tvar headers = hook.headers(self);\n\t\t\t\tif(headers) {\n\t\t\t\t\tasking.push({hook: hook, headers: headers});\n\t\t\t\t}\n\t\t\t});\n\t\t\t$tw.utils.httpRequest = function(options) {\n\t\t\t\tvar done = options.callback;\n\t\t\t\tif(listBypassCache) {\n\t\t\t\t\toptions.data = $tw.utils.extend({},options.data,{\"cfworker-retry\": String(Date.now())});\n\t\t\t\t}\n\t\t\t\t$tw.utils.each(asking,function(entry) {\n\t\t\t\t\toptions.headers = $tw.utils.extend({},options.headers,entry.headers);\n\t\t\t\t});\n\t\t\t\toptions.callback = function(err,data,xhr) {\n\t\t\t\t\trequest = xhr;\n\t\t\t\t\t$tw.utils.each(asking,function(entry) {\n\t\t\t\t\t\ttry {\n\t\t\t\t\t\t\tentry.hook.answer(xhr);\n\t\t\t\t\t\t} catch(e) {\n\t\t\t\t\t\t\tconsole.error(\"cfworker: a tiddler list request hook failed:\",e);\n\t\t\t\t\t\t}\n\t\t\t\t\t});\n\t\t\t\t\ttry {\n\t\t\t\t\t\treturn done.apply(this,arguments);\n\t\t\t\t\t} catch(e) {\n\t\t\t\t\t\t// The adaptor parses the list itself and throws if it isn't JSON, which would stop\n\t\t\t\t\t\t// syncing with an \"Internal JavaScript Error\": reported as a sync error instead\n\t\t\t\t\t\tif(err || delivered) {\n\t\t\t\t\t\t\tthrow e;\n\t\t\t\t\t\t}\n\t\t\t\t\t\tunreadable = true;\n\t\t\t\t\t\treturn done.call(this,\"the tiddler list can't be read (\" + e.message + \")\",null,xhr);\n\t\t\t\t\t}\n\t\t\t\t};\n\t\t\t\treturn httpRequest.apply(this,arguments);\n\t\t\t};\n\t\t\ttry {\n\t\t\t\toriginalGetSkinnyTiddlers.call(self,listFetched);\n\t\t\t} finally {\n\t\t\t\t$tw.utils.httpRequest = httpRequest;\n\t\t\t}\n\t\t\tfunction listFetched(err,tiddlers) {\n\t\t\t\tdelivered = true;\n\t\t\t\tif(!err && !isTiddlerList(tiddlers)) {\n\t\t\t\t\terr = \"the tiddler list can't be read (it isn't a list of tiddlers)\";\n\t\t\t\t\ttiddlers = null;\n\t\t\t\t\tunreadable = true;\n\t\t\t\t}\n\t\t\t\tif(unreadable || isListStandIn(request)) {\n\t\t\t\t\tlistBypassCache = true;\n\t\t\t\t\t// Maybe only a copy the browser kept: asked again at once, past it, before reporting\n\t\t\t\t\tif(unreadable && !bypassed && !isListStandIn(request)) {\n\t\t\t\t\t\treturn setTimeout(fetchList,0);\n\t\t\t\t\t}\n\t\t\t\t} else if(!err) {\n\t\t\t\t\tlistBypassCache = false;\n\t\t\t\t}\n\t\t\t\tif(err && ++tries <= lib.REBUILD_RETRIES) {\n\t\t\t\t\tif(lib.isRebuilding(request)) {\n\t\t\t\t\t\treturn setTimeout(fetchList,500);\n\t\t\t\t\t}\n\t\t\t\t\tif(isListStandIn(request)) {\n\t\t\t\t\t\treturn setTimeout(fetchList,tries === 1 ? 1000 : 5000);\n\t\t\t\t\t}\n\t\t\t\t}\n\t\t\t\tif(!err) {\n\t\t\t\t\tvar previous = lastListFetch ? listedRevisions : null;\n\t\t\t\t\tlistedRevisions = Object.create(null);\n\t\t\t\t\t$tw.utils.each(tiddlers,function(fields) {\n\t\t\t\t\t\tif(fields.revision !== undefined && fields.revision !== null) {\n\t\t\t\t\t\t\tlistedRevisions[fields.title] = String(fields.revision);\n\t\t\t\t\t\t}\n\t\t\t\t\t});\n\t\t\t\t\tlastListFetch = Date.now();\n\t\t\t\t\tlistRequested = requested;\n\t\t\t\t\tfillHoldUntil = Date.now() + FILL_PAUSE;\n\t\t\t\t\tif(previous) {\n\t\t\t\t\t\tforget(Object.keys(previous).filter(function(title) {\n\t\t\t\t\t\t\treturn !$tw.utils.hop(listedRevisions,title);\n\t\t\t\t\t\t}));\n\t\t\t\t\t} else {\n\t\t\t\t\t\tprune();\n\t\t\t\t\t}\n\t\t\t\t\t$tw.utils.each(listListeners,function(listener) {\n\t\t\t\t\t\ttry {\n\t\t\t\t\t\t\tlistener(listedRevisions,previous,tiddlers);\n\t\t\t\t\t\t} catch(e) {\n\t\t\t\t\t\t\tconsole.error(\"cfworker: a tiddler list listener failed:\",e);\n\t\t\t\t\t\t}\n\t\t\t\t\t});\n\t\t\t\t}\n\t\t\t\treturn callback(err,tiddlers);\n\t\t\t}\n\t\t}\n\t\tfetchList();\n\t};\n\n\t// The worker's latest tiddler list, title -> revision (null before the first): the page publisher\n\t// ($:/cfworker/page-publisher.js) uses it to tell the tiddlers that came with the page from the\n\t// stored ones\n\tproto.cfworkerListed = function() {\n\t\treturn lastListFetch ? listedRevisions : null;\n\t};\n\n\t// When the request for that list was sent: a save or delete this tab finished after that may not\n\t// be in it yet\n\tproto.cfworkerListedSince = function() {\n\t\treturn listRequested;\n\t};\n\n\t// listener(listed, previous, entries) at each new tiddler list: listed and previous are title ->\n\t// revision (previous: the list before, null for the first), entries the list's tiddlers (fields)\n\tproto.cfworkerOnList = function(listener) {\n\t\tlistListeners.push(listener);\n\t};\n\n\t// hook: {headers(adaptor): headers to add to the next list request, or null for none this time;\n\t// answer(xhr): called with the request once answered, when headers were added}\n\tproto.cfworkerOnListRequest = function(hook) {\n\t\trequestHooks.push(hook);\n\t};\n\n\t// A revision this tab now knows the worker has (a save of its own): what the next read expects,\n\t// until the next list; tiddler: the tiddler saved, kept on the device at that revision (not a\n\t// skinny one: the worker kept the stored text, which this tab doesn't have)\n\tproto.cfworkerNoteListed = function(title,revision,tiddler) {\n\t\tlistedRevisions[title] = revision;\n\t\tif(tiddler && !tiddler.hasField(\"_is_skinny\")) {\n\t\t\tvar fields = tiddler.getFieldStrings();\n\t\t\tfields.type = fields.type || \"text/vnd.tiddlywiki\";\n\t\t\tfields.revision = String(revision);\n\t\t\tfields.bag = \"default\";\n\t\t\tfields.recipe = \"default\";\n\t\t\tkeep(title,fields);\n\t\t}\n\t};\n\n\t// A tiddler this tab deleted: no longer on the device either\n\tproto.cfworkerNoteDeleted = function(title) {\n\t\tdelete listedRevisions[title];\n\t\tforget([title]);\n\t};\n\n\t// The titles being loaded right now (title -> true): the page publisher waits for the ones its\n\t// page needs, not for the fill\n\tproto.cfworkerLoading = function() {\n\t\treturn loading;\n\t};\n\n\t// Never let a background reload overwrite local changes that haven't been uploaded yet; the\n\t// pending save will detect any conflict instead. Otherwise the device's copy, the public site,\n\t// then the worker (loadTiddler as TiddlyWiki has it).\n\tproto.loadTiddler = function(title,callback) {\n\t\tvar self = this;\n\t\tloading[title] = true;\n\t\tdelete wanted[title];\n\t\tdelete explicit[title];\n\t\tfunction done(err,fields) {\n\t\t\tdelete loading[title];\n\t\t\tcallback(err,fields);\n\t\t}\n\t\tif(hasUnsavedChanges(title)) {\n\t\t\treturn done(null,null);\n\t\t}\n\t\tvar entry = ahead[title],\n\t\t\tfound = entry ? entry.promise.then(function(fields) {\n\t\t\t\t// (Looked up ahead, unless the list has moved on since)\n\t\t\t\treturn fields && String(fields.revision) !== listedRevisions[title] ? lookUp(self,title,true) : fields;\n\t\t\t}) : lookUp(self,title,true);\n\t\tdelete ahead[title];\n\t\tfound.then(function(fields) {\n\t\t\tif(fields && hasUnsavedChanges(title)) {\n\t\t\t\treturn done(null,null);\n\t\t\t}\n\t\t\tif(fields) {\n\t\t\t\t// Delivered with the tiddlers looked up ahead that arrive meanwhile: one refresh for\n\t\t\t\t// all of them, and TiddlyWiki's next load finds the queue that much shorter\n\t\t\t\treturn settleAhead().then(function() {\n\t\t\t\t\tdeliverAhead();\n\t\t\t\t\treadAhead(self);\n\t\t\t\t\tdone(null,fields);\n\t\t\t\t});\n\t\t\t}\n\t\t\toriginalLoadTiddler.call(self,title,function(err,fields) {\n\t\t\t\tif(!err && fields && hasUnsavedChanges(title)) {\n\t\t\t\t\treturn done(null,null);\n\t\t\t\t}\n\t\t\t\tif(!err && fields) {\n\t\t\t\t\tkeep(title,fields);\n\t\t\t\t}\n\t\t\t\treadAhead(self);\n\t\t\t\tdone(err,fields);\n\t\t\t});\n\t\t});\n\t};\n};\n\n})();\n" },
-  { title: "$:/cfworker/backup-alert.js", type: "startup", source: "/*\\\ntitle: $:/cfworker/backup-alert.js\ntype: application/javascript\nmodule-type: startup\n\nOn the admin site, asks how backups to GitHub go, with the tiddler list request (the worker reads\nthe backup status only then, and answers in a header of the same response: no extra request), when\nthe page loads, then hourly, and at each request while the alert shows; and shows an alert while\nthey keep failing. The request and its answer go through the list sync ($:/cfworker/list-sync.js).\n\\*/\n(function(){\n\n\"use strict\";\n\nexports.name = \"cfworker-backup-alert\";\nexports.platforms = [\"browser\"];\nexports.after = [\"cfworker-list-sync\"];\nexports.before = [\"startup\"];\nexports.synchronous = true;\n\nvar lib = require(\"$:/cfworker/lib.js\");\n\nvar BACKUP_ALERT = \"$:/temp/cfworker/backup-alert\",\n\tBACKUP_CHECK_INTERVAL = 60 * 60 * 1000;\n\nexports.startup = function() {\n\tvar Adaptor = lib.findAdaptor();\n\tif(!Adaptor || !Adaptor.prototype.cfworkerOnListRequest || Adaptor.prototype.cfworkerBackupAlert) {\n\t\treturn;\n\t}\n\tvar proto = Adaptor.prototype,\n\t\twiki = $tw.wiki,\n\t\tpublicBase = lib.publicBase(),\n\t\tbackupAsked = 0,          // when the worker last answered\n\t\tbackupProblem = null;     // the problem the alert was about, so a dismissed one stays dismissed\n\tproto.cfworkerBackupAlert = true;\n\n\t// Only the admin site asks (a public tab reads the list from the public site, which has no answer)\n\tfunction askBackupStatus(adaptor) {\n\t\treturn !!publicBase && lib.siteOf(adaptor.host) !== lib.siteOf(publicBase) &&\n\t\t\t(!backupAsked || wiki.tiddlerExists(BACKUP_ALERT) || Date.now() - backupAsked >= BACKUP_CHECK_INTERVAL);\n\t}\n\n\t// answer: \"ok\", or the oldest failing backup as encoded JSON {count, title, since, error, status}\n\tfunction showBackupStatus(answer) {\n\t\tif(answer === \"ok\") {\n\t\t\tbackupProblem = null;\n\t\t\tif(wiki.tiddlerExists(BACKUP_ALERT)) {\n\t\t\t\twiki.deleteTiddler(BACKUP_ALERT);\n\t\t\t}\n\t\t\treturn;\n\t\t}\n\t\tvar problem;\n\t\ttry {\n\t\t\tproblem = JSON.parse(decodeURIComponent(answer));\n\t\t} catch(e) {\n\t\t\treturn;\n\t\t}\n\t\tvar key = problem.since + \" \" + problem.error;\n\t\tif(key === backupProblem && !wiki.tiddlerExists(BACKUP_ALERT)) {\n\t\t\treturn;\n\t\t}\n\t\tbackupProblem = key;\n\t\tvar hint = problem.status === 401 ? \"The token in the worker's GITHUB_TOKEN secret is wrong or has expired: make a new one and put it in the secret.\" :\n\t\t\tproblem.status === 403 || problem.status === 404 ? \"The token may not be allowed to write to the repository in GITHUB_REPO, or the repository or its branch doesn't exist.\" :\n\t\t\tproblem.status === 409 || problem.status === 422 ? \"GitHub refuses that file.\" :\n\t\t\t\"GitHub, or the way to it, may be down.\";\n\t\twiki.addTiddler(new $tw.Tiddler({\n\t\t\ttitle: BACKUP_ALERT,\n\t\t\ttags: [\"$:/tags/Alert\"],\n\t\t\tcomponent: \"GitHub backup\",\n\t\t\tmodified: new Date(),\n\t\t\ttext: \"Backups to GitHub have been failing since \" + $tw.utils.formatDateString(new Date(problem.since),\"DDth MMM YYYY 0hh:0mm\") + \": \" +\n\t\t\t\t(problem.count > 1 ? problem.count + \" tiddlers, \" + lib.link(problem.title) + \" the oldest, aren't\" : lib.link(problem.title) + \" isn't\") +\n\t\t\t\t\" backed up yet. GitHub answered: ``\" + String(problem.error).replace(/`/g,\"'\") + \"``. \" + hint +\n\t\t\t\t\" They're retried by themselves, and the wiki keeps everything meanwhile.\"\n\t\t}));\n\t}\n\n\tproto.cfworkerOnListRequest({\n\t\theaders: function(adaptor) {\n\t\t\treturn askBackupStatus(adaptor) ? {\"X-Backup-Status\": \"ask\"} : null;\n\t\t},\n\t\tanswer: function(xhr) {\n\t\t\tvar answer = xhr && xhr.getResponseHeader ? xhr.getResponseHeader(\"X-Backup-Status\") : null;\n\t\t\tif(answer) {\n\t\t\t\tbackupAsked = Date.now();\n\t\t\t\tshowBackupStatus(answer);\n\t\t\t}\n\t\t}\n\t});\n};\n\n})();\n" },
+  { title: "$:/cfworker/backup-alert.js", type: "startup", source: "/*\\\ntitle: $:/cfworker/backup-alert.js\ntype: application/javascript\nmodule-type: startup\n\nOn the admin site, asks how backups to GitHub go, with the tiddler list request (the worker reads\nthe backup status only then, and answers in a header of the same response: no extra request), when\nthe page loads, then hourly, and at each request while the alert shows or a full backup runs; keeps\nthe answer in $:/temp/cfworker/backup-status (whether backups are on, the last full backup: the\ncontrol panel's Cloudflare tab reads it, $:/cfworker/control-panel.js); shows an alert while backups\nkeep failing; and, once per browser, a hint that a full backup is needed when backups are on and\nnone has ever run (tiddlers saved before they were set up aren't on GitHub otherwise). The request\nand its answer go through the list sync ($:/cfworker/list-sync.js).\n\\*/\n(function(){\n\n\"use strict\";\n\nexports.name = \"cfworker-backup-alert\";\nexports.platforms = [\"browser\"];\nexports.after = [\"cfworker-list-sync\"];\nexports.before = [\"startup\"];\nexports.synchronous = true;\n\nvar lib = require(\"$:/cfworker/lib.js\");\n\nvar BACKUP_ALERT = \"$:/temp/cfworker/backup-alert\",\n\tBACKUP_HINT = \"$:/temp/cfworker/backup-hint\",\n\tBACKUP_STATUS = \"$:/temp/cfworker/backup-status\",\n\tHINT_DISMISSED_KEY = \"cfworker-backup-hint-dismissed\",\n\tBACKUP_CHECK_INTERVAL = 60 * 60 * 1000;\n\nexports.startup = function() {\n\tvar Adaptor = lib.findAdaptor();\n\tif(!Adaptor || !Adaptor.prototype.cfworkerOnListRequest || Adaptor.prototype.cfworkerBackupAlert) {\n\t\treturn;\n\t}\n\tvar proto = Adaptor.prototype,\n\t\twiki = $tw.wiki,\n\t\tpublicBase = lib.publicBase(),\n\t\tbackupAsked = 0,          // when the worker last answered\n\t\tbackupProblem = null,     // the problem the alert was about, so a dismissed one stays dismissed\n\t\tsyncRunning = false;      // a full backup is going: asked at each list request meanwhile\n\tproto.cfworkerBackupAlert = true;\n\n\t// Only the admin site asks (a public tab reads the list from the public site, which has no answer)\n\tfunction onAdminSite(adaptor) {\n\t\treturn !!publicBase && lib.siteOf(adaptor.host) !== lib.siteOf(publicBase);\n\t}\n\n\tfunction askBackupStatus(adaptor) {\n\t\treturn onAdminSite(adaptor) &&\n\t\t\t(!backupAsked || syncRunning || wiki.tiddlerExists(BACKUP_ALERT) || Date.now() - backupAsked >= BACKUP_CHECK_INTERVAL);\n\t}\n\n\t// The worker's answer, parsed: \"off\" (no backups), \"ok\", or encoded JSON with what there is to\n\t// say: the oldest failing backup {count, title, since, error, status}, sync (the last full\n\t// backup), backups: \"off\". Returns { backups, problem, sync } or null for an answer it can't read.\n\tfunction parseAnswer(answer) {\n\t\tif(answer === \"ok\" || answer === \"off\") {\n\t\t\treturn {backups: answer === \"ok\" ? \"on\" : \"off\", problem: null, sync: null};\n\t\t}\n\t\tvar report;\n\t\ttry {\n\t\t\treport = JSON.parse(decodeURIComponent(answer));\n\t\t} catch(e) {\n\t\t\treturn null;\n\t\t}\n\t\tif(!report || typeof report !== \"object\") {\n\t\t\treturn null;\n\t\t}\n\t\treturn {\n\t\t\tbackups: report.backups === \"off\" ? \"off\" : \"on\",\n\t\t\tproblem: report.count ? report : null,\n\t\t\tsync: report.sync && typeof report.sync === \"object\" ? report.sync : null\n\t\t};\n\t}\n\n\tfunction dateField(ms) {\n\t\treturn ms ? $tw.utils.stringifyDate(new Date(ms)) : undefined;\n\t}\n\n\t// $:/temp/cfworker/backup-status: backups (\"on\"/\"off\"), asked (when), and the last full backup\n\t// as sync-* fields (id, phase, total, done, committed, removed, failed, started, updated,\n\t// finished, error), for the control panel\n\tfunction noteStatus(status) {\n\t\tvar sync = status.sync, fields = {\n\t\t\ttitle: BACKUP_STATUS,\n\t\t\tbackups: status.backups,\n\t\t\tasked: dateField(Date.now()),\n\t\t\t\"sync-id\": sync ? String(sync.id || \"\") : undefined,\n\t\t\t\"sync-phase\": sync ? String(sync.phase || \"\") : undefined,\n\t\t\t\"sync-total\": sync && sync.total !== undefined && sync.total !== null ? String(sync.total) : undefined,\n\t\t\t\"sync-done\": sync ? String(sync.done || 0) : undefined,\n\t\t\t\"sync-committed\": sync ? String(sync.committed || 0) : undefined,\n\t\t\t\"sync-removed\": sync ? String(sync.removed || 0) : undefined,\n\t\t\t\"sync-failed\": sync ? String(sync.failed || 0) : undefined,\n\t\t\t\"sync-started\": sync ? dateField(sync.startedAt) : undefined,\n\t\t\t\"sync-updated\": sync ? dateField(sync.updatedAt) : undefined,\n\t\t\t\"sync-finished\": sync ? dateField(sync.finished) : undefined,\n\t\t\t\"sync-running\": sync ? (sync.running ? \"yes\" : \"no\") : undefined,\n\t\t\t\"sync-error\": sync && sync.error ? String(sync.error) : undefined\n\t\t};\n\t\twiki.addTiddler(new $tw.Tiddler(fields));\n\t\tsyncRunning = !!sync && !!sync.running;\n\t}\n\n\t// The alert while backups keep failing. problem: {count, title, since, error, status} of the oldest\n\tfunction showProblem(problem) {\n\t\tif(!problem) {\n\t\t\tbackupProblem = null;\n\t\t\tif(wiki.tiddlerExists(BACKUP_ALERT)) {\n\t\t\t\twiki.deleteTiddler(BACKUP_ALERT);\n\t\t\t}\n\t\t\treturn;\n\t\t}\n\t\tvar key = problem.since + \" \" + problem.error;\n\t\tif(key === backupProblem && !wiki.tiddlerExists(BACKUP_ALERT)) {\n\t\t\treturn;\n\t\t}\n\t\tbackupProblem = key;\n\t\tvar hint = problem.status === 401 ? \"The token in the worker's GITHUB_TOKEN secret is wrong or has expired: make a new one and put it in the secret.\" :\n\t\t\tproblem.status === 403 || problem.status === 404 ? \"The token may not be allowed to write to the repository in GITHUB_REPO, or the repository or its branch doesn't exist.\" :\n\t\t\tproblem.status === 409 || problem.status === 422 ? \"GitHub refuses that file.\" :\n\t\t\t\"GitHub, or the way to it, may be down.\";\n\t\twiki.addTiddler(new $tw.Tiddler({\n\t\t\ttitle: BACKUP_ALERT,\n\t\t\ttags: [\"$:/tags/Alert\"],\n\t\t\tcomponent: \"GitHub backup\",\n\t\t\tmodified: new Date(),\n\t\t\ttext: \"Backups to GitHub have been failing since \" + $tw.utils.formatDateString(new Date(problem.since),\"DDth MMM YYYY 0hh:0mm\") + \": \" +\n\t\t\t\t(problem.count > 1 ? problem.count + \" tiddlers, \" + lib.link(problem.title) + \" the oldest, aren't\" : lib.link(problem.title) + \" isn't\") +\n\t\t\t\t\" backed up yet. GitHub answered: ``\" + String(problem.error).replace(/`/g,\"'\") + \"``. \" + hint +\n\t\t\t\t\" They're retried by themselves, and the wiki keeps everything meanwhile.\"\n\t\t}));\n\t}\n\n\t// Once per browser: backups are on and no full backup has ever run. Closing the alert is\n\t// remembered on this device (localStorage); a full backup makes it moot everywhere.\n\tfunction hintDismissed() {\n\t\ttry {\n\t\t\treturn !!window.localStorage && window.localStorage.getItem(HINT_DISMISSED_KEY) === \"yes\";\n\t\t} catch(e) {\n\t\t\treturn false;\n\t\t}\n\t}\n\n\tfunction showHint(status) {\n\t\tif(status.backups !== \"on\" || status.sync) {\n\t\t\tif(wiki.tiddlerExists(BACKUP_HINT)) {\n\t\t\t\twiki.deleteTiddler(BACKUP_HINT);\n\t\t\t}\n\t\t\treturn;\n\t\t}\n\t\tif(hintDismissed() || wiki.tiddlerExists(BACKUP_HINT)) {\n\t\t\treturn;\n\t\t}\n\t\twiki.addTiddler(new $tw.Tiddler({\n\t\t\ttitle: BACKUP_HINT,\n\t\t\ttags: [\"$:/tags/Alert\"],\n\t\t\tcomponent: \"GitHub backup\",\n\t\t\tmodified: new Date(),\n\t\t\ttext: \"Backups to GitHub are on: every save from now on is committed. Tiddlers saved before they were set up (an imported wiki, say) aren't on GitHub until a full backup runs, once: \" +\n\t\t\t\t\"<$link to=\\\"$:/ControlPanel\\\">Control Panel</$link> → Saving → Cloudflare → Back up everything to GitHub.\"\n\t\t}));\n\t}\n\n\t// The hint's close button deletes it: remembered\n\twiki.addEventListener(\"change\",function(changes) {\n\t\tif(changes[BACKUP_HINT] && changes[BACKUP_HINT].deleted) {\n\t\t\ttry {\n\t\t\t\twindow.localStorage.setItem(HINT_DISMISSED_KEY,\"yes\");\n\t\t\t} catch(e) {}\n\t\t}\n\t});\n\n\t// What the worker said, from the list request's header (the whole picture) or from a full\n\t// backup's answers (control-panel.js: {backups: \"on\", sync}, the failing backups not known, left\n\t// as they are): the status noted, the alert and the hint shown or removed\n\tproto.cfworkerNoteBackupStatus = function(answer) {\n\t\tvar status = typeof answer === \"string\" ? parseAnswer(answer) : answer;\n\t\tif(!status) {\n\t\t\treturn;\n\t\t}\n\t\tnoteStatus(status);\n\t\tif(status.problem !== undefined) {\n\t\t\tshowProblem(status.problem);\n\t\t}\n\t\tshowHint(status);\n\t};\n\n\tproto.cfworkerOnListRequest({\n\t\theaders: function(adaptor) {\n\t\t\treturn askBackupStatus(adaptor) ? {\"X-Backup-Status\": \"ask\"} : null;\n\t\t},\n\t\tanswer: function(xhr) {\n\t\t\tvar answer = xhr && xhr.getResponseHeader ? xhr.getResponseHeader(\"X-Backup-Status\") : null;\n\t\t\tif(answer) {\n\t\t\t\tbackupAsked = Date.now();\n\t\t\t\tproto.cfworkerNoteBackupStatus(answer);\n\t\t\t}\n\t\t}\n\t});\n};\n\n})();\n" },
   { title: "$:/cfworker/page-publisher.js", type: "startup", source: "/*\\\ntitle: $:/cfworker/page-publisher.js\ntype: application/javascript\nmodule-type: startup\n\nPublishes the page from the admin wiki (served by the Cloudflare worker), the way TiddlyWiki writes\nits own file, but with the core in a separate file:\n\n- The shell: TiddlyWiki's own $:/core/templates/tiddlywiki5-external-js.html, with the tiddlers that\n  came with the page (the themes, TiddlyWeb: plugins the worker doesn't store), installed plugins that\n  have raw markup, and your raw markup tiddlers; never one that was deleted, here or in another tab. TiddlyWiki writes everything else: the title, the\n  language, the raw markup, the content for browsers without JavaScript. The core is loaded at the\n  end, from the public site.\n- The core file: TiddlyWiki's own $:/core/templates/tiddlywiki5.js (boot code, library modules,\n  $:/core), sent once per TiddlyWiki version.\n\nThe worker keeps them and builds the page from them, for both sites. The shell is rendered afresh\nfor each check and compared with the published one by a fingerprint. (Not kept rendered and\nrefreshed: raw markup is wikified apart from the widget tree, so TiddlyWiki's refresh wouldn't see a\nchange to a tiddler it transcludes, like $:/SiteTitle in the Open Graph tags.) It's published:\n- a moment after this tab saves or deletes something, if the page it renders is no longer the one\n  published: first in sync with the worker, so a change another tab saved before is included;\n- when the admin wiki loads, once synced, if it renders something else than the page it loaded\n  (the first load after a new index.html, a failed publish, a change made outside the admin wiki).\nChanges that arrive from other tabs aren't published by this one: their tab does it. But this tab\nthen no longer knows which page is published, so its next check sends its page even if it's the one\nit published (or loaded) before: a change undone here, say. The same after a failure. Nothing is sent\nwhile a tiddler the page needs is still loading, or in safe mode (#:safe). A failure (also an error\nwhile preparing the page) is shown in a notification and tried again at the next save or load; a\npage the worker refused (400, 409) only once it changes, or at the next load, and after a refused\ncore file, only at the next load. One refusal is different: the shell says which stored shell the\npage it replaces was built from (X-Page-Shell, from the page source, then from each answer), and a\npage built before another tab published is refused with the current version: this tab then syncs,\nso it has that tab's change, and sends its page again.\n\\*/\n\"use strict\";\n\nexports.name = \"cfworker-page-publisher\";\nexports.platforms = [\"browser\"];\nexports.after = [\"rootwidget\"];\nexports.synchronous = true;\n\nvar lib = require(\"$:/cfworker/lib.js\");\n\nvar TEMPLATE = \"$:/core/templates/tiddlywiki5-external-js.html\",\n\tCORE_TEMPLATE = \"$:/core/templates/tiddlywiki5.js\",\n\tCORE_FORMAT = \"1\",   // changes when the core file is rendered differently: a new URL for it\n\tSOURCE = \"$:/cfworker/page-source\",\n\tSTATUS = \"$:/temp/cfworker/page-publisher\",\n\tRAW_MARKUP_TAGS = [\n\t\t\"$:/core/wiki/rawmarkup\", \"$:/tags/RawMarkup\", \"$:/tags/RawMarkupWikified\",\n\t\t\"$:/tags/RawMarkupWikified/TopHead\", \"$:/tags/RawMarkupWikified/TopBody\", \"$:/tags/RawMarkupWikified/BottomBody\"\n\t],\n\tPAUSE = 1000,          // after a save, so a burst of saves is published once\n\tQUIET_TIMEOUT = 60000; // waiting for saves and loads to finish\n\n// TiddlyWiki's page template, as its save templates use it (with the global macros). One change: the\n// TiddlyWeb plugin writes each stored tiddler's \"revision\" as its changecount, a count of this tab's\n// changes, which differs from tab to tab; here it's the tiddler's revision, the worker's, so the same\n// wiki gives the same page in every tab, and a page load doesn't take its tiddlers for changed ones.\nvar SHELL_TEXT = \"\\\\import [subfilter{$:/core/config/GlobalImportFilter}]\\n\" +\n\t\"\\\\function changecount() [<currentTiddler>get[revision]else[0]]\\n\" +\n\t\"{{\" + TEMPLATE + \"}}\\n\";\n\n// TiddlyWiki's line in its core file that switches the save template to the external-core one: it\n// would turn TiddlyWeb's \"Save snapshot for offline use\" into snapshots that need the core file\nvar SNAPSHOT_SETTING = /\\$tw\\.preloadTiddlerArray\\(\\[\\{\\s*title: \"\\$:\\/config\\/SaveWikiButton\\/Template\",[^\\]]*\\}\\]\\);\\n?/;\n\nfunction fingerprint(text) {\n\tvar hash = 5381;\n\tfor(var i = 0; i < text.length; i++) {\n\t\thash = ((hash * 33) ^ text.charCodeAt(i)) >>> 0;\n\t}\n\treturn text.length.toString(36) + \"-\" + hash.toString(36);\n}\n\nexports.startup = function() {\n\tvar wiki = $tw.wiki,\n\t\tadaptor = $tw.syncadaptor,\n\t\tsyncer = $tw.syncer,\n\t\tpublicBase = lib.publicBase(),\n\t\tsource = null;\n\ttry {\n\t\tsource = JSON.parse(wiki.getTiddlerText(SOURCE,\"\") || \"null\");\n\t} catch(e) {}\n\t// Only on the admin site, with the list sync ($:/cfworker/list-sync.js)\n\tif($tw.safeMode || !adaptor || !syncer || !source || !publicBase || lib.siteOf(adaptor.host) === lib.siteOf(publicBase) || typeof adaptor.cfworkerListed !== \"function\") {\n\t\treturn;\n\t}\n\tvar coreVersion = $tw.version + \"-\" + CORE_FORMAT,\n\t\tcoreUrl = publicBase + \"_plugins/tiddlywikicore.js?v=\" + encodeURIComponent(coreVersion),\n\t\tpublished = source.fingerprint || \"\",   // what the page this tab loaded was built from\n\t\tstoredShell = source.shell || \"\",      // the stored shell it was built from, or this tab last published over (its version)\n\t\tstoredCore = source.core || \"\",\n\t\tlistGeneration = 0,                    // counts the lists that showed another tab's change (see cfworkerOnList)\n\t\trebased = 0,                           // pages sent again in a row after another tab's publish\n\t\trefused = \"\",                          // the page (fingerprint and core version) the worker refused\n\t\trefusedCore = \"\",                      // the core file version the worker refused\n\t\townChanges = Object.create(null),      // title -> {stored: saved (true) or deleted (false), time, revision}\n\t\tcameWithPage = null,                   // title -> true, set once the first tiddler list has arrived\n\t\tstarted = false,\n\t\ttimer = null,\n\t\tbusy = false,\n\t\tagain = false;\n\n\t// Whether the worker stores the tiddler: the latest tiddler list says, unless this tab saved or\n\t// deleted it after that list was requested\n\tfunction onServer(title,listed,since) {\n\t\tvar own = ownChanges[title];\n\t\tif(own && own.time >= since) {\n\t\t\treturn own.stored;\n\t\t}\n\t\treturn $tw.utils.hop(listed,title);\n\t}\n\n\t// A revision the worker gave (tiddlers that came with the page have none, or \"0\" in a published\n\t// page, or a count of changes in a TiddlyWeb offline snapshot)\n\tfunction hasStoredRevision(title) {\n\t\tvar tiddler = wiki.getTiddler(title),\n\t\t\trevision = tiddler && tiddler.fields.revision;\n\t\treturn revision !== undefined && revision !== null && revision !== \"\" && !/^\\d{1,9}$/.test(String(revision));\n\t}\n\n\t// The plugins and raw markup tiddlers in the page this tab loaded, before anything else happened:\n\t// those the worker doesn't store came with the page (from index.html: the themes, TiddlyWeb...).\n\t// Anything else not stored was deleted, here or in another tab: TiddlyWiki keeps $:/ tiddlers that\n\t// disappear from the server in tabs already open, and the page mustn't bring them back. (A copy of\n\t// a stored tiddler, left in the page by a publish that failed, isn't taken for one either.)\n\tfunction recordWhatCameWithPage(listed) {\n\t\tcameWithPage = Object.create(null);\n\t\t$tw.utils.each(candidates(),function(title) {\n\t\t\tif(!$tw.utils.hop(listed,title) && !(title in ownChanges) && !hasStoredRevision(title)) {\n\t\t\t\tcameWithPage[title] = true;\n\t\t\t}\n\t\t});\n\t}\n\n\t// Whether a plugin has raw markup the template would render: a tiddler of the plugin, as TiddlyWiki\n\t// has registered it, with a raw markup tag. (A plugin with JavaScript is only registered after a\n\t// reload; until then the template couldn't render its markup either.)\n\tfunction hasRawMarkup(title) {\n\t\tvar info = wiki.getPluginInfo(title);\n\t\treturn !!info && Object.keys(info.tiddlers || {}).some(function(shadow) {\n\t\t\tvar tiddler = wiki.getTiddler(shadow);\n\t\t\treturn !!tiddler && RAW_MARKUP_TAGS.some(function(tag) {\n\t\t\t\treturn tiddler.hasTag(tag);\n\t\t\t});\n\t\t});\n\t}\n\n\t// The plugins (like TiddlyWiki's own save filters, without $:/temp/: its $:/temp/info-plugin, made at\n\t// each startup; and without pending imports) and the raw markup tiddlers, without drafts\n\tfunction plugins() {\n\t\treturn wiki.filterTiddlers(\"[all[tiddlers]has[plugin-type]!is[draft]] -[[$:/core]] -[prefix[$:/temp/]] -[prefix[$:/state/]] -[plugin-type[import]] -[has[plugin-type]field:platform[server]]\");\n\t}\n\tfunction rawMarkupTiddlers() {\n\t\tvar titles = [];\n\t\t$tw.utils.each(RAW_MARKUP_TAGS,function(tag) {\n\t\t\t$tw.utils.pushTop(titles,wiki.filterTiddlers(\"[all[tiddlers]tag[\" + tag + \"]!is[draft]]\"));\n\t\t});\n\t\treturn titles;\n\t}\n\tfunction candidates() {\n\t\treturn plugins().concat(rawMarkupTiddlers());\n\t}\n\n\t// The shell's tiddlers:\n\t// - the plugins that came with the page, and stored plugins that have raw markup: the template only\n\t//   renders the markup of plugins in the page (they're still loaded as files too, which hold the\n\t//   same plugin). Other stored plugins are only files;\n\t// - the raw markup tiddlers, stored or that came with the page.\n\t// Nothing deleted, here or in another tab (see recordWhatCameWithPage).\n\tfunction pageTitles() {\n\t\tvar listed = adaptor.cfworkerListed() || {},\n\t\t\tsince = adaptor.cfworkerListedSince ? adaptor.cfworkerListedSince() : 0,\n\t\t\tcame = cameWithPage || {},\n\t\t\ttitles = plugins().filter(function(title) {\n\t\t\t\treturn onServer(title,listed,since) ? hasRawMarkup(title) : !!came[title];\n\t\t\t});\n\t\t$tw.utils.pushTop(titles,rawMarkupTiddlers().filter(function(title) {\n\t\t\treturn onServer(title,listed,since) || !!came[title];\n\t\t}));\n\t\treturn titles.sort();\n\t}\n\n\t// The shell as this tab renders it now, the way TiddlyWiki renders its save templates\n\tfunction shell(titles) {\n\t\tvar widget = wiki.makeWidget(wiki.parseText(\"text/vnd.tiddlywiki\",SHELL_TEXT),{\n\t\t\t\tdocument: $tw.fakeDocument,\n\t\t\t\tvariables: {\n\t\t\t\t\tsaveTiddlerFilter: $tw.utils.stringifyList(titles || pageTitles()),\n\t\t\t\t\tcoreURL: coreUrl\n\t\t\t\t}\n\t\t\t}),\n\t\t\tcontainer = $tw.fakeDocument.createElement(\"div\");\n\t\twidget.render(container,null);\n\t\treturn container.textContent;\n\t}\n\n\tfunction report(state,text) {\n\t\twiki.addTiddler({title: STATUS, type: \"text/plain\", state: state, text: text});\n\t\tif(state === \"failed\") {\n\t\t\t$tw.notifier.display(STATUS);\n\t\t}\n\t}\n\n\t// (The worker may have kept the page all the same, an answer lost on the way, say: which page is\n\t// published is no longer known)\n\tfunction failed(done,message) {\n\t\tpublished = \"\";\n\t\treport(\"failed\",\"Page not published: \" + message + \" It will be tried again at the next save or reload.\");\n\t\tdone();\n\t}\n\n\t// Whether the page with this fingerprint needs nothing sent: it's the one published, or the worker\n\t// refused it (sent again only once it changes: the same page would be refused again), or this\n\t// TiddlyWiki's core file (no page can be published without it, until a reload)\n\tfunction settled(print) {\n\t\treturn (print === published && storedCore === coreVersion) || print + \" \" + coreVersion === refused ||\n\t\t\t(refusedCore === coreVersion && storedCore !== coreVersion);\n\t}\n\n\t// A failed request: a refusal from the worker (400, or 409 when index.html changed) is final for\n\t// this page, or for this core file; anything else (5xx, no connection, signed out) may pass at the\n\t// next try\n\tfunction rejected(done,print,err,status,core) {\n\t\tif(status === 400 || status === 409) {\n\t\t\tif(core) {\n\t\t\t\trefusedCore = coreVersion;\n\t\t\t} else {\n\t\t\t\trefused = print + \" \" + coreVersion;\n\t\t\t}\n\t\t\treport(\"failed\",\"Page not published: \" + err + (core ? \" It will be sent again at the next reload.\" : \" It will be sent again once it changes, or at the next reload.\"));\n\t\t\treturn done();\n\t\t}\n\t\tfailed(done,err);\n\t}\n\n\t// Every step of a check runs through this: an error (in rendering the page, say: a raw markup\n\t// tiddler with a widget that can't render as text) is reported, and the tab can publish again\n\t// at its next save, instead of the check never finishing\n\tfunction guarded(done,step) {\n\t\treturn function() {\n\t\t\ttry {\n\t\t\t\treturn step.apply(this,arguments);\n\t\t\t} catch(e) {\n\t\t\t\tconsole.error(\"cfworker page publisher:\",e);\n\t\t\t\tfailed(done,\"an error while preparing it (\" + (e && e.message || e) + \").\");\n\t\t\t}\n\t\t};\n\t}\n\n\t// Whether nothing is being saved, and nothing the page needs is being loaded. The fill of the\n\t// other tiddlers (the list sync's, which says what's loading: cfworkerLoading) doesn't count: the\n\t// page doesn't render them.\n\tfunction quietNow() {\n\t\tif(syncer.isDirty() || syncer.forceSyncFromServer) {\n\t\t\treturn false;\n\t\t}\n\t\tvar loading = adaptor.cfworkerLoading ? adaptor.cfworkerLoading() : null;\n\t\tif(!loading) {\n\t\t\treturn syncer.numTasksInProgress === 0 && $tw.utils.count(syncer.titlesToBeLoaded) === 0;\n\t\t}\n\t\t// A task under way that isn't a load: a save, a delete, the list\n\t\tif(syncer.numTasksInProgress > $tw.utils.count(loading)) {\n\t\t\treturn false;\n\t\t}\n\t\treturn !pageTitles().some(function(title) {\n\t\t\treturn !!syncer.titlesToBeLoaded[title] || !!loading[title];\n\t\t});\n\t}\n\n\t// When nothing is being saved, and nothing the page needs is being loaded\n\tfunction whenQuiet(done,callback) {\n\t\tvar waited = 0;\n\t\t(function poll() {\n\t\t\tif(quietNow()) {\n\t\t\t\treturn callback(true);\n\t\t\t}\n\t\t\tif((waited += 200) >= QUIET_TIMEOUT) {\n\t\t\t\treturn callback(false);\n\t\t\t}\n\t\t\tsetTimeout(guarded(done,poll),200);\n\t\t})();\n\t}\n\n\t// A tiddler this tab saved keeps the revision it had before (TiddlyWiki only records the new one in\n\t// the syncer): loaded again, so the shell holds the revision the worker lists, the one every other\n\t// tab has, and a page load doesn't take it for a change\n\tfunction refreshRevisions(done,callback) {\n\t\tvar listed = adaptor.cfworkerListed() || {},\n\t\t\tstale = 0;\n\t\t$tw.utils.each(pageTitles(),function(title) {\n\t\t\tvar tiddler = wiki.getTiddler(title);\n\t\t\tif(tiddler && $tw.utils.hop(listed,title) && String(tiddler.fields.revision) !== listed[title] && !tiddler.hasField(\"_is_skinny\")) {\n\t\t\t\tsyncer.enqueueLoadTiddler(title);\n\t\t\t\tstale++;\n\t\t\t}\n\t\t});\n\t\tif(stale) {\n\t\t\twhenQuiet(done,callback);\n\t\t} else {\n\t\t\tcallback(true);\n\t\t}\n\t}\n\n\tfunction send(url,body,headers,callback) {\n\t\t$tw.utils.httpRequest({\n\t\t\turl: adaptor.host + url,\n\t\t\ttype: \"PUT\",\n\t\t\theaders: headers,\n\t\t\tdata: body,\n\t\t\tcallback: function(err,data,xhr) {\n\t\t\t\tcallback(err ? (data || err) : null,xhr && xhr.status,xhr);\n\t\t\t}\n\t\t});\n\t}\n\n\tfunction coreFile() {\n\t\treturn wiki.renderTiddler(\"text/plain\",CORE_TEMPLATE).replace(SNAPSHOT_SETTING,\"\");\n\t}\n\n\tfunction publish(text,print,done) {\n\t\tfunction sendShell() {\n\t\t\tvar atSend = listGeneration;\n\t\t\tsend(\"page/shell\",text,{\n\t\t\t\t\"Content-Type\": \"text/html; charset=utf-8\",\n\t\t\t\t\"X-Page-Fingerprint\": print,\n\t\t\t\t\"X-Page-Index\": source.index,\n\t\t\t\t\"X-Page-Shell\": storedShell\n\t\t\t},guarded(done,function(err,status,xhr) {\n\t\t\t\t// Every answer that kept or keeps a shell says which version is stored now\n\t\t\t\tvar version = xhr && xhr.getResponseHeader ? xhr.getResponseHeader(\"X-Page-Shell\") : null;\n\t\t\t\tif(version !== null && version !== undefined) {\n\t\t\t\t\tstoredShell = version;\n\t\t\t\t}\n\t\t\t\tif(err && status === 409 && version !== null && version !== undefined) {\n\t\t\t\t\t// Another tab published since the page this one sends was built: sync, so that\n\t\t\t\t\t// tab's change is here, and send the page again (a few times at most: each needs\n\t\t\t\t\t// another tab's publish in between)\n\t\t\t\t\tpublished = \"\";\n\t\t\t\t\tif(++rebased <= 3) {\n\t\t\t\t\t\treport(\"waiting\",\"Page not published yet: another tab published it moments ago. It's sent again with that tab's change.\");\n\t\t\t\t\t\tagain = true;\n\t\t\t\t\t\treturn done();\n\t\t\t\t\t}\n\t\t\t\t\trebased = 0;\n\t\t\t\t\treturn failed(done,err);\n\t\t\t\t}\n\t\t\t\tif(err) {\n\t\t\t\t\treturn rejected(done,print,err,status);\n\t\t\t\t}\n\t\t\t\trebased = 0;\n\t\t\t\t// A list showing another tab's change arrived while this was on its way: that tab may\n\t\t\t\t// publish a page with it, so which page is published isn't known after all\n\t\t\t\tif(listGeneration === atSend) {\n\t\t\t\t\tpublished = print;\n\t\t\t\t} else {\n\t\t\t\t\tpublished = \"\";\n\t\t\t\t\tagain = true;\n\t\t\t\t}\n\t\t\t\treport(\"published\",\"Page published.\");\n\t\t\t\tdone();\n\t\t\t}));\n\t\t}\n\t\tif(storedCore === coreVersion) {\n\t\t\treturn sendShell();\n\t\t}\n\t\tsend(\"page/core?v=\" + encodeURIComponent(coreVersion),coreFile(),{\"Content-Type\": \"application/javascript; charset=utf-8\", \"X-Page-Index\": source.index},guarded(done,function(err,status) {\n\t\t\tif(err) {\n\t\t\t\treturn rejected(done,print,err,status,true);\n\t\t\t}\n\t\t\tstoredCore = coreVersion;\n\t\t\tsendShell();\n\t\t}));\n\t}\n\n\t// The shell, noting the tiddlers rendering it needed that hadn't loaded yet (TiddlyWiki starts\n\t// loading them): with any, the text is incomplete\n\tfunction shellNoting(loading) {\n\t\tvar listener = function(title) {\n\t\t\tloading.push(title);\n\t\t};\n\t\twiki.addEventListener(\"lazyLoad\",listener);\n\t\ttry {\n\t\t\treturn shell();\n\t\t} finally {\n\t\t\twiki.removeEventListener(\"lazyLoad\",listener);\n\t\t}\n\t}\n\n\t// The complete shell, once what it needs has loaded: callback(text), or callback(null) if it\n\t// still isn't there after a few rounds\n\tfunction completeShell(done,callback,round) {\n\t\tvar loading = [],\n\t\t\ttext = shellNoting(loading);\n\t\tif(!loading.length) {\n\t\t\treturn callback(text);\n\t\t}\n\t\tif((round || 0) >= 5) {\n\t\t\treturn callback(null,loading);\n\t\t}\n\t\twhenQuiet(done,guarded(done,function() {\n\t\t\tcompleteShell(done,callback,(round || 0) + 1);\n\t\t}));\n\t}\n\n\tfunction stillLoading(done,titles) {\n\t\treport(\"waiting\",\"Page not published yet: still loading\" + (titles && titles.length ? \" \" + titles.join(\", \") : \"\") + \". It will be tried again at the next save or reload.\");\n\t\tdone();\n\t}\n\n\t// afterSave: this tab has just saved something; otherwise the check after loading (already synced)\n\tfunction run(afterSave,done) {\n\t\tif(wiki.getTiddlerText(\"$:/status/IsReadOnly\") === \"yes\") {\n\t\t\treturn done();\n\t\t}\n\t\tif(afterSave) {\n\t\t\t// Nothing to do if the page this tab renders is the one published (or refused)\n\t\t\tvar loading = [],\n\t\t\t\ttext = shellNoting(loading);\n\t\t\tif(!loading.length && settled(fingerprint(text))) {\n\t\t\t\treturn done();\n\t\t\t}\n\t\t\tsyncer.syncFromServer();\n\t\t}\n\t\twhenQuiet(done,guarded(done,function(quiet) {\n\t\t\tif(!quiet) {\n\t\t\t\treturn stillLoading(done);\n\t\t\t}\n\t\t\trefreshRevisions(done,guarded(done,function() {\n\t\t\t\tcompleteShell(done,guarded(done,function(text,loading) {\n\t\t\t\t\tif(text === null) {\n\t\t\t\t\t\treturn stillLoading(done,loading);\n\t\t\t\t\t}\n\t\t\t\t\tvar print = fingerprint(text);\n\t\t\t\t\tif(settled(print)) {\n\t\t\t\t\t\treturn done();\n\t\t\t\t\t}\n\t\t\t\t\tpublish(text,print,done);\n\t\t\t\t}));\n\t\t\t}));\n\t\t}));\n\t}\n\n\tfunction check(afterSave) {\n\t\tif(busy) {\n\t\t\tagain = true;\n\t\t\treturn;\n\t\t}\n\t\tbusy = true;\n\t\tvar finished = false;\n\t\t// Called once, whatever happens (an error after the step that already finished, say)\n\t\tfunction done() {\n\t\t\tif(finished) {\n\t\t\t\treturn;\n\t\t\t}\n\t\t\tfinished = true;\n\t\t\tbusy = false;\n\t\t\tif(again) {\n\t\t\t\tagain = false;\n\t\t\t\tcheck(true);\n\t\t\t}\n\t\t}\n\t\tguarded(done,run)(afterSave,done);\n\t}\n\n\tfunction schedule() {\n\t\tif(started) {\n\t\t\tclearTimeout(timer);\n\t\t\ttimer = setTimeout(function() {\n\t\t\t\tcheck(true);\n\t\t\t},PAUSE);\n\t\t}\n\t}\n\n\t// This tab's own saves and deletes\n\tvar saveTiddler = adaptor.saveTiddler,\n\t\tdeleteTiddler = adaptor.deleteTiddler;\n\tadaptor.saveTiddler = function(tiddler,callback,options) {\n\t\tvar title = tiddler.fields.title;\n\t\treturn saveTiddler.call(this,tiddler,function(err,adaptorInfo,revision) {\n\t\t\tif(!err) {\n\t\t\t\townChanges[title] = {stored: true, time: Date.now(), revision: revision};\n\t\t\t\tschedule();\n\t\t\t}\n\t\t\treturn callback.apply(this,arguments);\n\t\t},options);\n\t};\n\tadaptor.deleteTiddler = function(title,callback,options) {\n\t\treturn deleteTiddler.call(this,title,function(err) {\n\t\t\tif(!err) {\n\t\t\t\townChanges[title] = {stored: false, time: Date.now()};\n\t\t\t\tschedule();\n\t\t\t}\n\t\t\treturn callback.apply(this,arguments);\n\t\t},options);\n\t};\n\n\t// Whether a tiddler can be in the page, or change it: a system tiddler (a plugin, the site title...)\n\t// or one with a raw markup tag (fields: its list entry)\n\tfunction mayChangePage(title,fields) {\n\t\tif(title.indexOf(\"$:/\") === 0) {\n\t\t\treturn true;\n\t\t}\n\t\tvar tags = fields && fields.tags,\n\t\t\ttiddler = wiki.getTiddler(title);\n\t\ttags = typeof tags === \"string\" ? $tw.utils.parseStringArray(tags) : ($tw.utils.isArray(tags) ? tags : []);\n\t\treturn RAW_MARKUP_TAGS.some(function(tag) {\n\t\t\treturn tags.indexOf(tag) !== -1 || (!!tiddler && tiddler.hasTag(tag));\n\t\t});\n\t}\n\n\t// A tiddler list showing a change to such a tiddler that this tab didn't make (its own saves are\n\t// recognised by their revision, its deletes by the title's absence): another tab may have published\n\t// a page with it, so the page published is no longer the one this tab knows\n\tif(adaptor.cfworkerOnList) {\n\t\tadaptor.cfworkerOnList(function(listed,previous,entries) {\n\t\t\tif(!previous || !published) {\n\t\t\t\treturn;\n\t\t\t}\n\t\t\tvar fields = Object.create(null);\n\t\t\t$tw.utils.each(entries,function(entry) {\n\t\t\t\tfields[entry.title] = entry;\n\t\t\t});\n\t\t\tvar changed = Object.keys(listed).concat(Object.keys(previous)).some(function(title) {\n\t\t\t\tif(listed[title] === previous[title] || !mayChangePage(title,fields[title])) {\n\t\t\t\t\treturn false;\n\t\t\t\t}\n\t\t\t\tvar own = ownChanges[title];\n\t\t\t\treturn !own || (own.stored ? listed[title] !== own.revision : $tw.utils.hop(listed,title));\n\t\t\t});\n\t\t\tif(changed) {\n\t\t\t\tpublished = \"\";\n\t\t\t\tlistGeneration++;\n\t\t\t}\n\t\t});\n\t}\n\n\t// Once the worker's tiddler list has arrived and everything has loaded\n\t(function start() {\n\t\tvar listed = adaptor.cfworkerListed();\n\t\tif(!listed) {\n\t\t\treturn setTimeout(start,300);\n\t\t}\n\t\trecordWhatCameWithPage(listed);\n\t\twhenQuiet(function() {},function() {\n\t\t\tstarted = true;\n\t\t\tcheck(false);\n\t\t});\n\t})();\n};\n" },
-  { title: "$:/cfworker/restore-import.js", type: "startup", source: "/*\\\ntitle: $:/cfworker/restore-import.js\ntype: application/javascript\nmodule-type: startup\n\nImports the backup's files (README 2.4). On GitHub, tiddlers/<title>.json is the tiddler as the\nworker stores it: TiddlyWeb's layout, with the tags as a list, a custom field called \"fields\"\nnested, and the revision, bag and recipe of the wiki it came from. TiddlyWiki's JSON import keeps\nonly the fields whose value is text, so such a file dropped onto the wiki would lose every tag.\nThis module takes those files over (TiddlyWiki's th-importing-file hook, which a drop, a paste and\nthe import button all go through) and hands the import dialog each tiddler with every field as\ntext, without the old revision, bag and recipe. Any other file is read as TiddlyWiki reads it.\n\\*/\n(function(){\n\n\"use strict\";\n\nexports.name = \"cfworker-restore-import\";\nexports.platforms = [\"browser\"];\nexports.before = [\"startup\"];\nexports.synchronous = true;\n\n// A stored tiddler, or a file of them: a title, and what TiddlyWiki's JSON import would mangle or\n// what only the worker writes (the revision, bag and recipe; tags as a list; nested fields)\nfunction isStored(data) {\n\tvar items = Array.isArray(data) ? data : [data];\n\treturn items.length > 0 && items.every(function(item) {\n\t\treturn !!item && typeof item === \"object\" && !Array.isArray(item) && typeof item.title === \"string\" &&\n\t\t\t(typeof item.revision === \"string\" || typeof item.bag === \"string\" || Array.isArray(item.tags) ||\n\t\t\t (!!item.fields && typeof item.fields === \"object\"));\n\t});\n}\n\n// The tiddler as the import takes it: every field as text (a list as TiddlyWiki writes one), the\n// nested fields flat, without the revision, bag and recipe\nfunction importable(stored) {\n\tvar fields = {};\n\t$tw.utils.each(stored,function(value,name) {\n\t\tif(name === \"revision\" || name === \"bag\" || name === \"recipe\") {\n\t\t\treturn;\n\t\t}\n\t\tif(name === \"fields\" && value && typeof value === \"object\" && !Array.isArray(value)) {\n\t\t\t$tw.utils.each(value,function(nested,nestedName) {\n\t\t\t\tif(typeof nested === \"string\") {\n\t\t\t\t\tfields[nestedName] = nested;\n\t\t\t\t}\n\t\t\t});\n\t\t} else if(typeof value === \"string\") {\n\t\t\tfields[name] = value;\n\t\t} else if(Array.isArray(value)) {\n\t\t\tfields[name] = $tw.utils.stringifyList(value.map(String));\n\t\t} else if(typeof value === \"number\" || typeof value === \"boolean\") {\n\t\t\tfields[name] = String(value);\n\t\t}\n\t});\n\treturn fields;\n}\n\nexports.startup = function() {\n\tif(!$tw.browser || !$tw.hooks || typeof FileReader === \"undefined\") {\n\t\treturn;\n\t}\n\t$tw.hooks.addHook(\"th-importing-file\",function(info) {\n\t\t// (Hooks are chained: a handler before this one may have taken the file, or left something else)\n\t\tif(!info || typeof info !== \"object\" || !info.file || typeof info.callback !== \"function\" ||\n\t\t   (info.type !== \"application/json\" && !/\\.json$/i.test(info.file.name || \"\"))) {\n\t\t\treturn info;\n\t\t}\n\t\tvar readAsUsual = function() {\n\t\t\t$tw.wiki.readFileContent(info.file,info.type,info.isBinary,undefined,info.callback);\n\t\t};\n\t\tvar reader = new FileReader();\n\t\treader.onload = function(event) {\n\t\t\tvar data;\n\t\t\ttry {\n\t\t\t\tdata = JSON.parse(event.target.result);\n\t\t\t} catch(e) {\n\t\t\t\tdata = undefined;\n\t\t\t}\n\t\t\tif(data === undefined || !isStored(data)) {\n\t\t\t\treadAsUsual();\n\t\t\t\treturn;\n\t\t\t}\n\t\t\tvar tiddlers = [];\n\t\t\t$tw.utils.each(Array.isArray(data) ? data : [data],function(item) {\n\t\t\t\ttiddlers.push(importable(item));\n\t\t\t});\n\t\t\tinfo.callback(tiddlers);\n\t\t};\n\t\treader.onerror = readAsUsual;\n\t\treader.readAsText(info.file);\n\t\treturn true;\n\t});\n};\n\n})();\n" }
+  { title: "$:/cfworker/restore-import.js", type: "startup", source: "/*\\\ntitle: $:/cfworker/restore-import.js\ntype: application/javascript\nmodule-type: startup\n\nImports the backup's files (README 2.4). On GitHub, tiddlers/<title>.json is the tiddler as the\nworker stores it: TiddlyWeb's layout, with the tags as a list, a custom field called \"fields\"\nnested, and the revision, bag and recipe of the wiki it came from. TiddlyWiki's JSON import keeps\nonly the fields whose value is text, so such a file dropped onto the wiki would lose every tag.\nThis module takes those files over (TiddlyWiki's th-importing-file hook, which a drop, a paste and\nthe import button all go through) and hands the import dialog each tiddler with every field as\ntext, without the old revision, bag and recipe. Any other file is read as TiddlyWiki reads it.\n\\*/\n(function(){\n\n\"use strict\";\n\nexports.name = \"cfworker-restore-import\";\nexports.platforms = [\"browser\"];\nexports.before = [\"startup\"];\nexports.synchronous = true;\n\n// A stored tiddler, or a file of them: a title, and what TiddlyWiki's JSON import would mangle or\n// what only the worker writes (the revision, bag and recipe; tags as a list; nested fields)\nfunction isStored(data) {\n\tvar items = Array.isArray(data) ? data : [data];\n\treturn items.length > 0 && items.every(function(item) {\n\t\treturn !!item && typeof item === \"object\" && !Array.isArray(item) && typeof item.title === \"string\" &&\n\t\t\t(typeof item.revision === \"string\" || typeof item.bag === \"string\" || Array.isArray(item.tags) ||\n\t\t\t (!!item.fields && typeof item.fields === \"object\"));\n\t});\n}\n\n// The tiddler as the import takes it: every field as text (a list as TiddlyWiki writes one), the\n// nested fields flat, without the revision, bag and recipe\nfunction importable(stored) {\n\tvar fields = {};\n\t$tw.utils.each(stored,function(value,name) {\n\t\tif(name === \"revision\" || name === \"bag\" || name === \"recipe\") {\n\t\t\treturn;\n\t\t}\n\t\tif(name === \"fields\" && value && typeof value === \"object\" && !Array.isArray(value)) {\n\t\t\t$tw.utils.each(value,function(nested,nestedName) {\n\t\t\t\tif(typeof nested === \"string\") {\n\t\t\t\t\tfields[nestedName] = nested;\n\t\t\t\t}\n\t\t\t});\n\t\t} else if(typeof value === \"string\") {\n\t\t\tfields[name] = value;\n\t\t} else if(Array.isArray(value)) {\n\t\t\tfields[name] = $tw.utils.stringifyList(value.map(String));\n\t\t} else if(typeof value === \"number\" || typeof value === \"boolean\") {\n\t\t\tfields[name] = String(value);\n\t\t}\n\t});\n\treturn fields;\n}\n\nexports.startup = function() {\n\tif(!$tw.browser || !$tw.hooks || typeof FileReader === \"undefined\") {\n\t\treturn;\n\t}\n\t$tw.hooks.addHook(\"th-importing-file\",function(info) {\n\t\t// (Hooks are chained: a handler before this one may have taken the file, or left something else)\n\t\tif(!info || typeof info !== \"object\" || !info.file || typeof info.callback !== \"function\" ||\n\t\t   (info.type !== \"application/json\" && !/\\.json$/i.test(info.file.name || \"\"))) {\n\t\t\treturn info;\n\t\t}\n\t\tvar readAsUsual = function() {\n\t\t\t$tw.wiki.readFileContent(info.file,info.type,info.isBinary,undefined,info.callback);\n\t\t};\n\t\tvar reader = new FileReader();\n\t\treader.onload = function(event) {\n\t\t\tvar data;\n\t\t\ttry {\n\t\t\t\tdata = JSON.parse(event.target.result);\n\t\t\t} catch(e) {\n\t\t\t\tdata = undefined;\n\t\t\t}\n\t\t\tif(data === undefined || !isStored(data)) {\n\t\t\t\treadAsUsual();\n\t\t\t\treturn;\n\t\t\t}\n\t\t\tvar tiddlers = [];\n\t\t\t$tw.utils.each(Array.isArray(data) ? data : [data],function(item) {\n\t\t\t\ttiddlers.push(importable(item));\n\t\t\t});\n\t\t\tinfo.callback(tiddlers);\n\t\t};\n\t\treader.onerror = readAsUsual;\n\t\treader.readAsText(info.file);\n\t\treturn true;\n\t});\n};\n\n})();\n" },
+  { title: "$:/cfworker/control-panel.js", type: "startup", source: "/*\\\ntitle: $:/cfworker/control-panel.js\ntype: application/javascript\nmodule-type: startup\n\nOn the admin site, a \"Cloudflare\" tab in the control panel's Saving tab ($:/temp/cfworker/ControlPanel):\nhow backups go (from $:/temp/cfworker/backup-status, kept by $:/cfworker/backup-alert.js), the last\nfull backup, and the button that starts one (POST /backup/sync, design 1.7) or refreshes its status\n(GET /backup/sync). The worker answers are handed to the backup alert module, which keeps the status\ntiddler the tab shows.\n\\*/\n(function(){\n\n\"use strict\";\n\nexports.name = \"cfworker-control-panel\";\nexports.platforms = [\"browser\"];\nexports.after = [\"cfworker-backup-alert\"];\nexports.before = [\"startup\"];\nexports.synchronous = true;\n\nvar lib = require(\"$:/cfworker/lib.js\");\n\nvar TAB = \"$:/temp/cfworker/ControlPanel\",\n\tSTATUS = \"$:/temp/cfworker/backup-status\",\n\tMESSAGE = \"$:/temp/cfworker/backup-sync-message\",\n\tSTART = \"tm-cfworker-backup-sync\",\n\tREFRESH = \"tm-cfworker-backup-status\";\n\nvar TAB_TEXT = [\n\t\"!! Backups to GitHub\",\n\t\"\",\n\t\"<$list filter='[[\" + STATUS + \"]get[backups]match[off]]' variable='off'>\",\n\t\"Backups are off: the worker has no `GITHUB_REPO` and `GITHUB_TOKEN` (README 2.4). Set them, and every save is committed to GitHub.\",\n\t\"</$list>\",\n\t\"<$list filter='[[\" + STATUS + \"]get[backups]match[on]]' variable='on'>\",\n\t\"Every save is committed to GitHub as it happens (README 2.4).\",\n\t\"\",\n\t\"!!! Full backup\",\n\t\"\",\n\t\"A full backup makes GitHub mirror the wiki: tiddlers saved before backups were set up (an imported wiki, say), restored, or put in the bucket by hand are committed, and files of tiddlers no longer in the wiki are removed. Run it once after setting backups up, after a restore, or in any doubt; run again, it changes nothing. It goes on without this tab, at GitHub's pace (about 500 commits an hour), and this tab follows it.\",\n\t\"\",\n\t\"<$list filter='[[\" + STATUS + \"]has[sync-id]]' variable='some' emptyMessage='No full backup yet.'>\",\n\t\"<$list filter='[[\" + STATUS + \"]get[sync-running]match[yes]]' variable='running'>\",\n\t\"Running: {{\" + STATUS + \"!!sync-done}} of {{\" + STATUS + \"!!sync-total}} tiddlers walked, {{\" + STATUS + \"!!sync-committed}} committed, {{\" + STATUS + \"!!sync-removed}} removed, {{\" + STATUS + \"!!sync-failed}} refused by GitHub (as of <$view tiddler='\" + STATUS + \"' field='sync-updated' format='date' template='0hh:0mm:0ss'/>).\",\n\t\"</$list>\",\n\t\"<$list filter='[[\" + STATUS + \"]get[sync-running]match[no]] :filter[[\" + STATUS + \"]has[sync-finished]]' variable='over'>\",\n\t\"Last full backup: <$view tiddler='\" + STATUS + \"' field='sync-finished' format='date' template='DDth MMM YYYY 0hh:0mm'/>, {{\" + STATUS + \"!!sync-done}} tiddlers walked, {{\" + STATUS + \"!!sync-committed}} committed, {{\" + STATUS + \"!!sync-removed}} removed, {{\" + STATUS + \"!!sync-failed}} refused by GitHub.\",\n\t\"</$list>\",\n\t\"<$list filter='[[\" + STATUS + \"]get[sync-running]match[no]] :filter[[\" + STATUS + \"]!has[sync-finished]]' variable='lost'>\",\n\t\"The last full backup stopped without finishing (its steps were lost): start it again.\",\n\t\"</$list>\",\n\t\"</$list>\",\n\t\"<$list filter='[[\" + STATUS + \"]has[sync-error]]' variable='problem'>\",\n\t\"\",\n\t\"Its last step didn't go through: ``{{\" + STATUS + \"!!sync-error}}``. It's tried again by itself.\",\n\t\"</$list>\",\n\t\"\",\n\t\"<$button message='\" + START + \"'>Back up everything to GitHub</$button> <$button message='\" + REFRESH + \"'>Refresh</$button>\",\n\t\"\",\n\t\"<$list filter='[[\" + MESSAGE + \"]has[text]]' variable='said'>\",\n\t\"{{\" + MESSAGE + \"}}\",\n\t\"</$list>\",\n\t\"</$list>\"\n].join(\"\\n\");\n\nexports.startup = function() {\n\tvar Adaptor = lib.findAdaptor();\n\tif(!Adaptor || !Adaptor.prototype.cfworkerNoteBackupStatus || Adaptor.prototype.cfworkerControlPanel || typeof window === \"undefined\") {\n\t\treturn;\n\t}\n\tvar proto = Adaptor.prototype,\n\t\twiki = $tw.wiki,\n\t\tpublicBase = lib.publicBase(),\n\t\there = window.location.origin + \"/\";\n\t// Only the admin site, the page served by the worker (the public one is read-only and has no\n\t// worker behind it). The sync adaptor itself exists only after TiddlyWiki's own startup.\n\tif(!publicBase || lib.siteOf(here) === lib.siteOf(publicBase)) {\n\t\treturn;\n\t}\n\tproto.cfworkerControlPanel = true;\n\n\twiki.addTiddler(new $tw.Tiddler({\n\t\ttitle: TAB,\n\t\tcaption: \"Cloudflare\",\n\t\ttags: [\"$:/tags/ControlPanel/Saving\"],\n\t\ttext: TAB_TEXT\n\t}));\n\n\tfunction say(text) {\n\t\tif(text) {\n\t\t\twiki.addTiddler(new $tw.Tiddler({title: MESSAGE, text: text}));\n\t\t} else if(wiki.tiddlerExists(MESSAGE)) {\n\t\t\twiki.deleteTiddler(MESSAGE);\n\t\t}\n\t}\n\n\t// POST or GET /backup/sync: a JSON status (202 started, 409 one is running, 200 the last one),\n\t// or a text saying what's missing (400) or what failed\n\tfunction request(method) {\n\t\tsay(method === \"POST\" ? \"Starting…\" : \"\");\n\t\tvar host = ($tw.syncadaptor && $tw.syncadaptor.host) || here;\n\t\t$tw.utils.httpRequest({\n\t\t\turl: host + \"backup/sync\",\n\t\t\ttype: method,\n\t\t\theaders: {\"X-Requested-With\": \"TiddlyWiki\"},\n\t\t\tcallback: function(err,data,xhr) {\n\t\t\t\tvar status = xhr ? xhr.status : 0, body = null;\n\t\t\t\ttry {\n\t\t\t\t\tbody = data ? JSON.parse(data) : null;\n\t\t\t\t} catch(e) {}\n\t\t\t\tif(body && typeof body === \"object\" && body.id) {\n\t\t\t\t\tproto.cfworkerNoteBackupStatus({backups: \"on\", problem: undefined, sync: body});\n\t\t\t\t\tsay(status === 409 ? \"A full backup is already running.\" : status === 202 ? \"Started.\" : status === 503 ? \"It couldn't be started: \" + (body.error || \"the queue didn't take it\") + \".\" : \"\");\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tif(status === 200) {\n\t\t\t\t\tsay(\"No full backup yet.\");\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tsay((status ? \"The worker answered \" + status + \": \" : \"The worker didn't answer: \") + String(data || err || \"\").slice(0,300));\n\t\t\t}\n\t\t});\n\t}\n\n\t$tw.rootWidget.addEventListener(START,function() {\n\t\trequest(\"POST\");\n\t\treturn false;\n\t});\n\t$tw.rootWidget.addEventListener(REFRESH,function() {\n\t\trequest(\"GET\");\n\t\treturn false;\n\t});\n};\n\n})();\n" }
 ];
 
 // Their settings. The public site's address: the admin wiki loads tiddler contents from there (no
@@ -2058,7 +2336,7 @@ async function serveList(request, env, ctx, corsHeaders) {
   let object = listObject;
   const listHeaders = obj => {
     const headers = listResponseHeaders(obj, corsHeaders);
-    if (backups) headers.set("X-Backup-Status", backupReport(env, backups.failing));
+    if (backups) headers.set("X-Backup-Status", backupReport(env, backups));
     return headers;
   };
   // A conditional get that fails its precondition returns the object without a body
@@ -2285,7 +2563,7 @@ async function finishSave(env, ctx, title, fields, revision, list, adminOrigin, 
 // reads the ETag of each save, which a browser only shows a page that's told it may (Expose-Headers).
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, PUT, DELETE, OPTIONS, HEAD",
+  "Access-Control-Allow-Methods": "GET, PUT, POST, DELETE, OPTIONS, HEAD",
   "Access-Control-Allow-Headers": "Content-Type, X-Requested-With, X-Tiddler-Layout, If-Match, If-None-Match, Accept",
   "Access-Control-Expose-Headers": "ETag, X-Tiddler-List, Retry-After",
 };
@@ -2298,6 +2576,9 @@ const ROUTES = [
   { methods: ["OPTIONS"], matches: () => true, handle: (request, env, ctx, url, match, headers) => new Response(null, { headers }) },
   { methods: ["GET"], matches: path => path === "/status", handle: (request, env, ctx, url, match, headers) => serveStatus(headers) },
   { methods: ["GET"], matches: path => PAGE_PATHS.includes(path), handle: (request, env, ctx, url, match, headers) => serveWiki(request, env, ctx, headers) },
+  // A full backup (design 1.7): started by the admin wiki, and how the last one went
+  { methods: ["POST"], matches: path => path === "/backup/sync", handle: (request, env, ctx, url, match, headers) => startBackupSync(request, env, ctx, headers) },
+  { methods: ["GET"], matches: path => path === "/backup/sync", handle: (request, env, ctx, url, match, headers) => backupSyncStatus(env, headers) },
   // Any other read is an object of the bucket, by its key: the tiddler list, a tiddler, a file
   { methods: ["GET", "HEAD"], matches: path => decodePath(path.substring(1)), handle: (request, env, ctx, url, key, headers) =>
     key === LIST_KEY ? serveList(request, env, ctx, headers) : serveObject(request, env, key, headers) },
