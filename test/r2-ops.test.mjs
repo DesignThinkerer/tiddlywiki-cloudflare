@@ -121,10 +121,11 @@ const first = await measure("tiddler list, first fetch", () => mf.dispatchFetch(
 const listEtag = first.headers.get("ETag");
 await measure("tiddler list, unchanged (304)", () => mf.dispatchFetch(`${base}/${LIST}`, { headers: { "If-None-Match": listEtag } }));
 const asked = await measure("tiddler list, asking how backups go (page load, then hourly)", () => mf.dispatchFetch(`${base}/${LIST}`, { headers: { "X-Backup-Status": "ask" } }));
+// (This worker has no GITHUB_REPO: the answer says backups are off)
 check("...the list and the backup status read at the same time, and the answer says how backups go",
-  asked.overlaps.includes("get backup status + get list") && asked.headers.get("X-Backup-Status") === "ok", `${JSON.stringify(asked.overlaps)} ${asked.headers.get("X-Backup-Status")}`);
+  asked.overlaps.includes("get backup status + get list") && asked.headers.get("X-Backup-Status") === "off", `${JSON.stringify(asked.overlaps)} ${asked.headers.get("X-Backup-Status")}`);
 const askedUnchanged = await measure("tiddler list, unchanged (304), asking how backups go", () => mf.dispatchFetch(`${base}/${LIST}`, { headers: { "If-None-Match": listEtag, "X-Backup-Status": "ask" } }));
-check("...answered 304, with the backup status", askedUnchanged.status === 304 && askedUnchanged.headers.get("X-Backup-Status") === "ok", `${askedUnchanged.status} ${askedUnchanged.headers.get("X-Backup-Status")}`);
+check("...answered 304, with the backup status", askedUnchanged.status === 304 && askedUnchanged.headers.get("X-Backup-Status") === "off", `${askedUnchanged.status} ${askedUnchanged.headers.get("X-Backup-Status")}`);
 
 let res = await measure("save a new tiddler", () => save("Note", { text: "v1" }, { "If-None-Match": "*" }));
 check("...the lookup and the list read run at the same time", res.overlaps.includes("get list + head tiddler"), JSON.stringify(res.overlaps));

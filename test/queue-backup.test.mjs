@@ -18,6 +18,16 @@ const json = (obj, status = 200, headers = {}) => new Response(JSON.stringify(ob
 
 async function fakeGitHub(req) {
   const url = new URL(req.url);
+  // The Git Trees API: every file of the branch in one answer (the sync's prune reads it)
+  if (req.method === "GET" && url.pathname === "/repos/o/r/git/trees/main") {
+    ghCalls.push("GET trees");
+    if (req.headers.get("authorization") !== "Bearer ghtoken" || faults.badCredentials) return json({ message: "Bad credentials" }, 401);
+    if (faults.outage) return json({ message: "Server Error" }, 502);
+    if (url.searchParams.get("recursive") !== "1") return json({ message: "the sync must ask for the whole tree" }, 400);
+    const tree = [...files].map(([path, file]) => ({ path, mode: "100644", type: "blob", sha: file.sha, size: Buffer.byteLength(file.text) }));
+    tree.push({ path: "README.md", mode: "100644", type: "blob", sha: "readme", size: 10 }, { path: "tiddlers", mode: "040000", type: "tree", sha: "dir" });
+    return json({ sha: "treesha", url: url.href, tree, truncated: !!faults.treeTruncated });
+  }
   const m = url.pathname.match(/^\/repos\/o\/r\/contents\/(.+)$/);
   if (!m) return json({ message: "unexpected " + url.pathname }, 400);
   const path = decodeURIComponent(m[1]);            // GitHub decodes the URL path
@@ -116,7 +126,7 @@ async function backupStatus(b = base, m = mf, ask = true) {
   const res = await m.dispatchFetch(`${b}/recipes/default/tiddlers.json`, ask ? { headers: { "X-Backup-Status": "ask" } } : undefined);
   await res.arrayBuffer();
   const value = res.headers.get("X-Backup-Status");
-  return value === null || value === "ok" ? value : JSON.parse(decodeURIComponent(value));
+  return value === null || value === "ok" || value === "off" ? value : JSON.parse(decodeURIComponent(value));
 }
 async function until(cond, ms = 60000) {
   const end = Date.now() + ms;
@@ -497,6 +507,96 @@ check("no queue bound: a backup that fails for good is recorded, and reported on
   recorded ? await (await bucket2.get("_backup/status.json")).text() : "not recorded");
 faults.badCredentials = false;
 await mf2.dispose();
+
+// 17. Back up everything: GitHub made to mirror the bucket (design 1.7). For tiddlers that predate the
+// backup (imported before the repository and the token were set), a restore, a tiddler put in R2 by
+// hand, or any doubt: POST /backup/sync (behind Access) queues a job that walks the stored tiddlers a
+// step at a time, commits what GitHub doesn't have or has differently, then removes from GitHub the
+// files whose titles are no longer stored. Idempotent: a second run commits nothing.
+const mf3 = makeWorker(0, true, { BACKUP_ALERT_MINUTES: "0" });
+const base3 = (await mf3.ready).toString().replace(/\/$/, "");
+const bucket3 = await mf3.getR2Bucket("WIKI_BUCKET");
+files.clear(); commits.length = 0;   // GitHub's repository, empty but for what's put there below
+const stored = (title, text, revision = String(1700000000000 + Math.floor(Math.random() * 1e9))) =>
+  ({ text: `{"title":${JSON.stringify(title)},"type":"text/vnd.tiddlywiki","text":${JSON.stringify(text)},"revision":"${revision}","bag":"default","recipe":"default"}`, revision });
+const predating = new Map();   // title -> stored text: content in the bucket before backups existed
+const listEntries = [];
+async function storeByHand(title, text) {
+  const { text: body, revision } = stored(title, text);
+  await bucket3.put(`recipes/default/tiddlers/${title}`, body, { httpMetadata: { contentType: "application/json" }, customMetadata: { revision, layout: "flat" } });
+  predating.set(title, body);
+  listEntries.push({ title, revision, bag: "default", recipe: "default", type: "text/vnd.tiddlywiki", tags: [] });
+}
+for (let i = 1; i <= 60; i++) await storeByHand(`Old ${String(i).padStart(2, "0")}`, `old text ${i} ` + "lorem ".repeat(200));
+await storeByHand("Old with/slash", "in a subdirectory on GitHub");
+await storeByHand("Old big", "b".repeat(600 * 1024));                  // a step on its own (the bytes budget)
+await storeByHand("Old refused", "contains a SECRET_MARK GitHub refuses");   // GitHub's push protection, say
+faults.refuseText.add("SECRET_MARK");
+await bucket3.put("recipes/default/tiddlers.json", JSON.stringify(listEntries));
+// GitHub's side before the sync: one file identical to the bucket's (nothing to commit), one older
+// version of a bucket tiddler (to update), two files whose titles aren't in the bucket (to remove)
+const sameBytes = Buffer.from(predating.get("Old 07"));
+files.set("tiddlers/Old 07.json", { sha: blobSha(sameBytes), text: sameBytes.toString("utf8") });
+files.set("tiddlers/Old 08.json", { sha: blobSha(Buffer.from("older")), text: "older" });
+files.set("tiddlers/Gone 1.json", { sha: blobSha(Buffer.from("gone")), text: "gone" });
+files.set("tiddlers/Gone/with slash.json", { sha: blobSha(Buffer.from("gone too")), text: "gone too" });
+const syncStatus = async () => (await (await mf3.dispatchFetch(`${base3}/backup/sync`)).json());
+const startSync = () => mf3.dispatchFetch(`${base3}/backup/sync`, { method: "POST" });
+const syncLogs = () => workerLog.join("").split("\n").filter(l => l.includes("[Backup] Sync"));
+let res17 = await startSync();
+const started = res17.status === 202 ? await res17.json() : null;
+check("POST /backup/sync starts a sync: 202 with its status (phase, total from the tiddler list)", res17.status === 202 && started?.phase === "push" && started.total === listEntries.length && started.done === 0, `status ${res17.status} ${JSON.stringify(started)}`);
+res17 = await startSync();
+check("...a second POST while it runs is refused (409) with the status", res17.status === 409 && (await res17.json()).phase, `status ${res17.status}`);
+// A save during the sync: committed by its own message, once
+await put("Saved meanwhile", "during the sync", base3, mf3);
+const running = await backupStatus(base3, mf3);
+check("while it runs, the tiddler list's answer to the admin wiki carries the progress", running && typeof running === "object" && running.sync && running.sync.phase && running.sync.total === listEntries.length, JSON.stringify(running));
+const finished = await until(async () => (await syncStatus()).finished, 120000);
+const final = await syncStatus();
+const everyFileThere = [...predating].filter(([title]) => title !== "Old refused").every(([title, body]) => files.get(`tiddlers/${title}.json`)?.text === body);
+check("the sync finishes: every stored tiddler is on GitHub, byte for byte, slashes in titles as subdirectories, the big one included",
+  finished && everyFileThere && files.has("tiddlers/Old with/slash.json") && files.get("tiddlers/Old big.json")?.text.length > 600 * 1024, `finished ${finished}: ${JSON.stringify(final)}`);
+const commitsOf = title => commits.filter(c => c.path === `tiddlers/${title}.json`);
+check("...the file GitHub already had the same isn't committed again, the older one is updated once, the one saved meanwhile committed once",
+  commitsOf("Old 07").length === 0 && commitsOf("Old 08").length === 1 && files.get("tiddlers/Old 08.json").text === predating.get("Old 08") && commitsOf("Saved meanwhile").length === 1,
+  `Old 07: ${commitsOf("Old 07").length}, Old 08: ${commitsOf("Old 08").length}, meanwhile: ${commitsOf("Saved meanwhile").length}`);
+check("...files on GitHub whose titles aren't in the bucket are removed (the prune), nothing else is",
+  !files.has("tiddlers/Gone 1.json") && !files.has("tiddlers/Gone/with slash.json") && files.has("tiddlers/Saved meanwhile.json") && commits.filter(c => c.text === null).length === 2,
+  [...files.keys()].filter(k => k.startsWith("tiddlers/Gone")).join(", ") || "removed");
+check("...the counts say what happened: walked (the one saved meanwhile too), committed (the 61 not there or older), removed 2, the refused one reported as failing",
+  final.done >= listEntries.length && final.done <= listEntries.length + 1 && final.committed === listEntries.length - 2 && final.removed === 2 && final.failed === 1 &&
+  (await backupStatus(base3, mf3))?.title === "Old refused", JSON.stringify(final));
+const stepCalls = syncLogs().map(l => Number((l.match(/(\d+) GitHub calls/) || [])[1])).filter(n => !isNaN(n));
+check("...in steps, each within a run's budget of GitHub calls (40), several steps for 63 tiddlers", stepCalls.length >= 3 && stepCalls.every(n => n <= 40), `steps: ${stepCalls.join(", ")}`);
+// A second run commits nothing
+const commitsBefore = commits.length;
+res17 = await startSync();
+await until(async () => { const s = await syncStatus(); return s.finished && s.id !== final.id; }, 60000);
+const second = await syncStatus();
+check("a second sync commits nothing and removes nothing (idempotent)", res17.status === 202 && commits.length === commitsBefore && second.committed === 0 && second.removed === 0 && second.done === listEntries.length + 1, JSON.stringify(second));
+faults.refuseText.clear();
+// A full backup whose steps were lost (hours without progress) doesn't block a new one
+const lostStart = Date.now() - 9 * 3600 * 1000;
+await bucket3.put("_backup/status.json", JSON.stringify({ failing: {}, sync: { id: "lost", startedAt: lostStart, updatedAt: lostStart, total: 5, phase: "push", steps: 1, done: 2, committed: 2, removed: 0, failed: 0 } }));
+res17 = await startSync();
+const afterLost = res17.status === 202 ? await res17.json() : null;
+check("a full backup without progress for hours counts as lost: a new one starts (202) and replaces it", res17.status === 202 && afterLost?.id !== "lost" && afterLost.total === listEntries.length + 1, `status ${res17.status} ${JSON.stringify(afterLost)}`);
+await until(async () => (await syncStatus()).finished, 60000);
+// Without GitHub, or without the queue, the sync says what's missing
+const mfNoGitHub = makeWorker(0, true, { GITHUB_REPO: "", GITHUB_TOKEN: "" });
+const baseNoGitHub = (await mfNoGitHub.ready).toString().replace(/\/$/, "");
+await (await mfNoGitHub.getR2Bucket("WIKI_BUCKET")).put("recipes/default/tiddlers.json", "[]");
+res17 = await mfNoGitHub.dispatchFetch(`${baseNoGitHub}/backup/sync`, { method: "POST" });
+check("without GITHUB_REPO and GITHUB_TOKEN: 400 naming them, and the status header says backups are off", res17.status === 400 && /GITHUB_REPO/.test(await res17.text()) && await backupStatus(baseNoGitHub, mfNoGitHub) === "off", `status ${res17.status}`);
+await mfNoGitHub.dispose();
+const mfNoQueue = makeWorker(0, false);
+const baseNoQueue = (await mfNoQueue.ready).toString().replace(/\/$/, "");
+await (await mfNoQueue.getR2Bucket("WIKI_BUCKET")).put("recipes/default/tiddlers.json", "[]");
+res17 = await mfNoQueue.dispatchFetch(`${baseNoQueue}/backup/sync`, { method: "POST" });
+check("without the queue: 400 naming it (the sync runs in the queue)", res17.status === 400 && /queue/i.test(await res17.text()), `status ${res17.status}`);
+await mfNoQueue.dispose();
+await mf3.dispose();
 
 console.log(`\n${results.filter(Boolean).length}/${results.length} passed; ${commits.length} commits, ${ghCalls.length} GitHub calls`);
 await mf.dispose();

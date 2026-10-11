@@ -6,12 +6,16 @@
 // only that tiddler's versions, so a file GitHub refuses can't hold up the others. Nothing runs
 // while the queue is empty. Without a BACKUP_QUEUE binding (or if the queue is unavailable) the
 // same backup runs directly.
+// A full backup (started from the admin wiki, sync.js) runs here too, as a job that walks the stored
+// tiddlers a step at a time and queues its next step (syncStep): GitHub ends up mirroring the bucket.
 
 import { decoder, encoder } from "../bytes.js";
+import { FLAT_LAYOUT } from "../layout.js";
 import { github } from "../settings.js";
-import { isNewerRevision, revisionOf, tiddlerKey } from "../tiddlers.js";
+import { TIDDLER_PREFIX } from "../storage.js";
+import { isEphemeralTitle, isNewerRevision, revisionOf, tiddlerKey } from "../tiddlers.js";
 import { backupRetryDelay, gitBlobSha, githubContents, isAccountWide, isRateLimit, isRefusal } from "./github.js";
-import { backupFailure, nextPause, readBackupStatus, recordBackupResults } from "./status.js";
+import { backupFailure, nextPause, readBackupStatus, recordBackupResults, recordSync } from "./status.js";
 
 // A queue message, as sent: a version that would make it bigger waits in R2. (The queue takes up to
 // 128 KB, but counts an operation per 64 KB of message: over 64 KB, a backup would cost 6 instead of 3.)
@@ -90,14 +94,19 @@ export async function processBackupBatch(batch, env) {
   let stored;               // the status file, if read in this run
   let denied;               // a tiddler GitHub answered 403 or 404 in this run (see isAccountWide)
   let attempts = 0;
-  const work = { bytes: 0 };   // the size of the versions handled so far (BACKUP_BYTES_PER_RUN)
+  const work = { bytes: 0, calls: 0 };   // the size of the versions handled so far (BACKUP_BYTES_PER_RUN), the GitHub calls made
+  const syncSteps = [];        // a full backup's step, run after the saves with what's left of the run's calls
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i];
     if (backupPause && Date.now() < backupPause.until) {
       // Waits for the pause to end. (Marked, so that its backup going through ends the pause in the
       // status file too)
       await requeueBackup(env, msg, Math.ceil((backupPause.until - Date.now()) / 1000), false, { paused: true });
-      if (backupPause.all) failures.push(backupFailure(msg.body, backupPause.error));
+      if (backupPause.all && msg.body.action !== "sync") failures.push(backupFailure(msg.body, backupPause.error));
+      continue;
+    }
+    if (msg.body.action === "sync") {
+      syncSteps.push(msg);
       continue;
     }
     if (held.has(msg.body.title)) {
@@ -151,7 +160,172 @@ export async function processBackupBatch(batch, env) {
       failures.push(backupFailure(msg.body, e));
     }
   }
+  // A full backup's step: one a run, with the calls the saves left (a step itself records what it did)
+  let stepRun = false;
+  for (const msg of syncSteps) {
+    const budget = GITHUB_CALLS_PER_RUN - work.calls;
+    if (stepRun || budget < SYNC_MIN_CALLS || (backupPause && Date.now() < backupPause.until)) {
+      await requeueBackup(env, msg, backupPause && Date.now() < backupPause.until ? Math.ceil((backupPause.until - Date.now()) / 1000) : 0, false);
+      continue;
+    }
+    stepRun = true;
+    try {
+      const next = await syncStep(env, msg.body, work, budget);
+      msg.ack();
+      backupPause = null;
+      if (next) await env.BACKUP_QUEUE.send(next);
+    } catch (e) {
+      if (isRateLimit(e) || isAccountWide(e)) {
+        // Every backup waits (as above)
+        let last = backupPause;
+        if (!last) {
+          try {
+            stored = await readBackupStatus(env, true);
+            last = stored.pause;
+          } catch {}
+        }
+        backupPause = nextPause(env, last, e);
+        pause = { until: backupPause.until, count: backupPause.count };
+        const delay = Math.ceil((backupPause.until - Date.now()) / 1000);
+        console.error(`[Backup] Backups paused for ${delay}s (full backup, step ${msg.body.steps || 0}): ${e.message}`);
+        await requeueBackup(env, msg, delay, true);
+        continue;
+      }
+      const delay = backupRetryDelay(env, msg.body.tries, e.retryAfter);
+      console.error(`[Backup] Full backup step not done (${e.message}); trying again in ${delay}s`);
+      await requeueBackup(env, msg, delay, true);
+    }
+  }
   if (failures.length || cleared.length || pause !== undefined) await recordBackupResults(env, failures, cleared, pause, stored);
+}
+
+// --- A full backup (design 1.7): GitHub made to mirror the bucket -----------------------------------
+// Started from the admin wiki (POST /backup/sync, sync.js), for tiddlers that predate the backup, a
+// restore, a tiddler put in R2 by hand, or any doubt. A message carries where it stands: { action:
+// "sync", id, phase, after, pending, total, done, committed, removed, failed, steps, time, tries }.
+// The push phase walks the stored tiddlers in key order (after: the last key walked), each through the
+// same backup as a save (backupJob): nothing is committed for one GitHub has the same bytes of, and a
+// file GitHub refuses is reported like a save's would be, the walk going on. Then the prune phase lists
+// GitHub's tiddler files in one call (the tree) and removes those whose titles are no longer stored
+// (pending: the ones left to remove). Each step stays within a run's budgets: the GitHub calls the
+// saves of the same run left (GITHUB_CALLS_PER_RUN), the bytes (BACKUP_BYTES_PER_RUN); a step records
+// what it did in the status file (recordSync) and queues the next, so a wiki of any size goes through
+// in as many steps as it takes, at 3 queue operations a step. Idempotent: run again, it commits nothing.
+
+// Of the 50 calls a run may make outside Cloudflare; a save's backup takes up to 3
+const GITHUB_CALLS_PER_RUN = 40;
+
+// A step starts only with this many calls left in the run (one tiddler takes up to 3)
+const SYNC_MIN_CALLS = 8;
+
+const SYNC_LIST_LIMIT = 100;
+
+// Titles kept in a prune message: more than that, and the tree is listed again once they're removed
+const SYNC_PENDING_LIMIT = 300;
+
+// One step. Returns the next step's message, or null once done. Throws on an error that stops the
+// step (GitHub down, a rate limit, a refused token, R2): the step is retried, its progress recorded
+// as an error meanwhile. A step of a full backup another one has replaced since (started again
+// after this one's step was lost for hours) does nothing.
+async function syncStep(env, body, work, budget) {
+  const stored = await readBackupStatus(env, true);
+  if (stored.sync && stored.sync.id !== body.id && stored.sync.startedAt > body.time) {
+    console.log("[Backup] Sync step of a full backup replaced by a newer one: dropped");
+    return null;
+  }
+  const github = githubContents(env, work);
+  const callsAtStart = work.calls;
+  const used = () => work.calls - callsAtStart;
+  let { done = 0, committed = 0, removed = 0, failed = 0, steps = 0, total = null } = body;
+  steps++;
+  const failures = [];
+  let next;
+  try {
+    next = await syncWork(env, github, body, work, budget, used, counts => ({ done, committed, removed, failed } = counts), failures);
+  } catch (e) {
+    await recordSync(env, { id: body.id, error: String(e.detail || e.message || e).slice(0, 200) }, stored).catch(() => {});
+    throw e;
+  }
+  console.log(`[Backup] Sync step ${steps}: ${done}/${total ?? "?"} walked, ${committed} committed, ${removed} removed, ${failed} failed, ${used()} GitHub calls`);
+  if (failures.length) await recordBackupResults(env, failures, [], undefined);
+  await recordSync(env, { id: body.id, startedAt: body.time, total, phase: next ? next.phase : "prune", steps, done, committed, removed, failed, error: undefined, ...(next ? {} : { finished: Date.now() }) });
+  return next ? { action: "sync", id: body.id, total, done, committed, removed, failed, steps, time: Date.now(), tries: 0, ...next } : null;
+}
+
+// The step's work: the next slice of the push, or of the prune. report(counts) hands back the counts
+// as they stand (also when an error stops the step partway). Returns what the next step is, or null.
+async function syncWork(env, github, body, work, budget, used, report, failures) {
+  let { done = 0, committed = 0, removed = 0, failed = 0 } = body;
+  const counts = () => report({ done, committed, removed, failed });
+  if (body.phase === "push") {
+    let after = body.after || null, stopped = false;
+    for (;;) {
+      const listing = await env.WIKI_BUCKET.list({ prefix: TIDDLER_PREFIX, limit: SYNC_LIST_LIMIT, include: ["customMetadata"], ...(after ? { startAfter: after } : {}) });
+      for (const item of listing.objects) {
+        if (used() + 3 > budget || work.bytes >= BACKUP_BYTES_PER_RUN) {
+          stopped = true;
+          break;
+        }
+        const title = item.key.slice(TIDDLER_PREFIX.length);
+        // (What the list leaves out is left out here too: an object not in the stored layout)
+        if (item.customMetadata?.layout === FLAT_LAYOUT && !isEphemeralTitle(title)) {
+          const obj = await env.WIKI_BUCKET.get(item.key);
+          if (obj) {
+            const job = { action: "save", title, revision: revisionOf(obj), content: new Uint8Array(await obj.arrayBuffer()), time: Date.now() };
+            try {
+              if (await backupJob(env, job, work) === "committed") committed++;
+            } catch (e) {
+              if (!isRefusal(e)) throw e;
+              failed++;
+              failures.push(backupFailure(job, e));
+            }
+          }
+        }
+        done++;
+        after = item.key;
+        counts();
+      }
+      if (stopped || !listing.truncated) break;
+    }
+    return stopped ? { phase: "push", after } : { phase: "prune" };
+  }
+  // The prune: GitHub's tiddler files (one call), the stored keys (one R2 call per 1,000), the difference
+  let pending = body.pending;
+  if (!pending) {
+    const files = await github.tiddlerFiles();
+    if (files === null) {
+      console.error("[Backup] Full backup: GitHub's tree is too big to list in one call, so files of titles no longer in the wiki aren't removed");
+      pending = [];
+    } else {
+      const titles = await storedTitles(env);
+      pending = files.filter(file => !titles.has(file.title));
+    }
+  }
+  while (pending.length && used() + 1 <= budget) {
+    const file = pending.shift();
+    try {
+      await github.remove(file.title, file.sha, `🗑️ Full backup: ${file.title} is no longer in the wiki`);
+      removed++;
+      counts();
+    } catch (e) {
+      // Gone meanwhile (404), or changed meanwhile, a save that landed (409): left alone
+      if (e.status !== 404 && e.status !== 409) throw e;
+    }
+  }
+  if (pending.length) return { phase: "prune", pending: pending.slice(0, SYNC_PENDING_LIMIT), ...(pending.length > SYNC_PENDING_LIMIT ? { more: true } : {}) };
+  return body.more ? { phase: "prune" } : null;
+}
+
+// The titles of every stored tiddler (its key without the prefix), 1,000 a call
+async function storedTitles(env) {
+  const titles = new Set();
+  let cursor;
+  do {
+    const listing = await env.WIKI_BUCKET.list({ prefix: TIDDLER_PREFIX, limit: 1000, ...(cursor ? { cursor } : {}) });
+    for (const item of listing.objects) titles.add(item.key.slice(TIDDLER_PREFIX.length));
+    cursor = listing.truncated ? listing.cursor : undefined;
+  } while (cursor);
+  return titles;
 }
 
 // The queue's retry limit, which the worker can't read: Cloudflare's default (README 2.3: leave it)
@@ -184,9 +358,10 @@ async function requeueBackup(env, msg, delaySeconds, countTry, extra) {
 }
 
 // Commits one save or delete. job.content: the version as text (in a queue message) or bytes (a
-// direct backup). work.bytes: adds the size of the versions it handles
-export async function backupJob(env, job, work = { bytes: 0 }) {
-  const github = githubContents(env);
+// direct backup). work.bytes: adds the size of the versions it handles; work.calls: the GitHub calls.
+// Returns "committed" when it wrote GitHub's file, "same" when GitHub already had these bytes
+export async function backupJob(env, job, work = { bytes: 0, calls: 0 }) {
+  const github = githubContents(env, work);
   const current = await env.WIKI_BUCKET.head(tiddlerKey(job.title));   // the version in the wiki now
 
   if (job.action === "delete") {
@@ -216,8 +391,10 @@ export async function backupJob(env, job, work = { bytes: 0 }) {
   if (job.refused && (newer || !current)) return;
   // (A retry after the restore below failed: this version is already in the history, even if a
   // newer one has been committed on top since)
+  let outcome = "same";
   if (!job.restore && sha !== await gitBlobSha(content)) {
     sha = await github.put(job.title, content, `✏️ Save: ${job.title}`, sha);
+    outcome = "committed";
   }
   if (newer) {
     // This version arrived after a newer one was committed: it is now in the history, and the
@@ -229,6 +406,7 @@ export async function backupJob(env, job, work = { bytes: 0 }) {
     // Deleted since this save: keep this version in the history, then delete it again
     await github.remove(job.title, sha, `🗑️ Delete: ${job.title}`);
   }
+  return outcome;
 }
 
 // The wiki's current version of a tiddler, { bytes, sha }, if it's newer than this job's and GitHub

@@ -250,12 +250,12 @@ res = await putShell(fakeShell(), { fingerprint: "f1" });
 await res.arrayBuffer();
 check("the same shell again: nothing written, the page not rebuilt", res.status === 204 && (await bucket.head("baked.html")).etag === pageEtag2, `status ${res.status}`);
 check("the page carries the module that publishes", page.includes("$:/cfworker/page-publisher.js"));
-// The browser code is six modules: a library the others require, three startup modules for the
-// admin tab's sync (the conflict guard, the tiddler list, the backup alert), the page publisher
-// and the restore import
-const BROWSER_MODULES = [["$:/cfworker/lib.js", "library"], ["$:/cfworker/conflict-guard.js", "startup"], ["$:/cfworker/list-sync.js", "startup"], ["$:/cfworker/backup-alert.js", "startup"], ["$:/cfworker/page-publisher.js", "startup"], ["$:/cfworker/restore-import.js", "startup"]];
+// The browser code is seven modules: a library the others require, three startup modules for the
+// admin tab's sync (the conflict guard, the tiddler list, the backup alert), the page publisher,
+// the restore import and the control panel's tab
+const BROWSER_MODULES = [["$:/cfworker/lib.js", "library"], ["$:/cfworker/conflict-guard.js", "startup"], ["$:/cfworker/list-sync.js", "startup"], ["$:/cfworker/backup-alert.js", "startup"], ["$:/cfworker/page-publisher.js", "startup"], ["$:/cfworker/restore-import.js", "startup"], ["$:/cfworker/control-panel.js", "startup"]];
 const preloaded = preloads(page);
-check("the page preloads the six browser modules, each the right kind of module, each a JavaScript tiddler",
+check("the page preloads the seven browser modules, each the right kind of module, each a JavaScript tiddler",
   BROWSER_MODULES.every(([title, kind]) => { const t = preloaded.find(t => t.title === title); return t && t["module-type"] === kind && t.type === "application/javascript" && t.text.length > 200; }),
   preloaded.filter(t => t.title.startsWith("$:/cfworker/")).map(t => `${t.title} (${t["module-type"]})`).join(", "));
 // Two admin tabs: the shell says which stored shell its page was built from, or last published over
@@ -317,7 +317,7 @@ await (await mfOff.getR2Bucket("WIKI_BUCKET")).put("index.html", html("engine wi
 const offResponse = await mfOff.dispatchFetch(baseOff + "/");
 const offPage = await offResponse.text();
 check("CONFLICT_GUARD off: the page is served without the browser modules", offResponse.status === 200 && offPage.includes("engine without the modules") &&
-  !offPage.includes("$:/cfworker/conflict-guard.js") && !offPage.includes("$:/cfworker/page-publisher.js") && !offPage.includes("$:/cfworker/lib.js") && !offPage.includes("$:/cfworker/list-sync.js") && !offPage.includes("$:/cfworker/backup-alert.js") && !offPage.includes("$:/cfworker/restore-import.js"), `status ${offResponse.status}`);
+  !offPage.includes("$:/cfworker/conflict-guard.js") && !offPage.includes("$:/cfworker/page-publisher.js") && !offPage.includes("$:/cfworker/lib.js") && !offPage.includes("$:/cfworker/list-sync.js") && !offPage.includes("$:/cfworker/backup-alert.js") && !offPage.includes("$:/cfworker/restore-import.js") && !offPage.includes("$:/cfworker/control-panel.js"), `status ${offResponse.status}`);
 await mfOff.dispose();
 
 // --- Cloudflare Access ----------------------------------------------------------------------------
