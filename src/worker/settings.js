@@ -41,8 +41,9 @@ export function publicUrl(env, path) {
   return env.PUBLIC_WIKI_URL.replace(/\/+$/, "") + path;
 }
 
-// ACCESS = "off" lets requests through without Cloudflare Access (access.js): for the tests and
-// local runs, where there is no Access. Never on a deployed worker.
+// ACCESS = "off" lets requests through without Cloudflare Access (access.js), for the tests and
+// local runs, where there is no Access: only requests to a local address, so it changes nothing on a
+// deployed worker.
 export function accessCheckOff(env) {
   return env.ACCESS === "off";
 }

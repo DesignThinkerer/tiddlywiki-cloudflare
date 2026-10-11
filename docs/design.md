@@ -222,6 +222,8 @@ Commit messages: `✏️ Save: <title>`, `🗑️ Delete: <title>`, and `✏️ 
 
 File paths are the ones the original worker used: the Contents API URL `…/contents/tiddlers/<encodeURIComponent(title)>.json`. History therefore continues in the same files.
 
+**Restoring is an import, through a conversion.** Each file is the tiddler as stored: TiddlyWeb's layout, where the tags are a list, with the revision, bag and recipe of the wiki it came from. TiddlyWiki's JSON import keeps only the fields whose value is text, so a file dragged onto a wiki as it is loses its tags. `tools/restore.mjs` (README 2.4) turns a clone of the backup, or one file, into one JSON array with every field as text (tags as TiddlyWiki writes them, `[[two words]]` included) and without the old revision, bag and recipe, which TiddlyWiki's import takes whole; each tiddler is then saved as new (the saves carry `If-None-Match: *`, since the tab never knew those tiddlers from the server), stored, listed and backed up like any other. The two-tabs suite runs this round trip through TiddlyWiki's own import path.
+
 ### 1.8 Plugins and JavaScript modules
 
 Plugins have to be in the page when TiddlyWiki boots, and the public site can't run the worker. So each plugin gets a file in R2, and the page loads it with a `<script>` tag from the public site, on both sites.

@@ -344,13 +344,25 @@ for (const [method, path, body] of [
 check("without Access, every request is refused with 403 and says why", refusals.every(r => r.endsWith("403")), refusals.join(", "));
 check("...and nothing was built or stored for them", !(await bucketClosed.head("baked.html")) && !(await bucketClosed.head("recipes/default/tiddlers/x")));
 await mfClosed.dispose();
+// ACCESS = off counts only for a local address (what the tests and wrangler dev use): a deployed
+// worker, reached by a real hostname, refuses all the same, so the switch can't open a wiki by mistake
+for (const deployed of ["https://admin.example.com/status", "https://wiki-admin.someone.workers.dev/", "https://admin.example.com/recipes/default/tiddlers.json"]) {
+  const res = await mf.dispatchFetch(deployed);
+  const text = await res.text();
+  check(`ACCESS = off on a deployed hostname still refuses: ${new URL(deployed).hostname}`, res.status === 403 && text.includes("Cloudflare Access") && /local/i.test(text), `status ${res.status}: ${text.slice(0, 100)}`);
+}
+for (const local of ["http://localhost:8787/status", "http://[::1]:8787/status", "http://wiki.localhost:8787/status"]) {
+  const res = await mf.dispatchFetch(local);
+  check(`...and lets a local address through: ${new URL(local).hostname}`, res.status === 200, `status ${res.status}`);
+}
 // The decision itself, for a request Access did authenticate, which Miniflare can't make: the
 // worker's own function, from its module
-const decide = (ctx, env) => { try { return withoutAccess(ctx, env); } catch { return "error"; } };
-check("a request Access authenticated (ctx.access) is let through", decide({ access: { aud: "app" } }, {}) === false);
-check("one without ctx.access is refused", decide({}, {}) === true);
-check("ACCESS = off lets it through, for tests and local runs", decide({}, { ACCESS: "off" }) === false);
-check("...and nothing else does (not ACCESS = no)", decide({}, { ACCESS: "no" }) === true && decide({}, { ACCESS: "" }) === true);
+const decide = (url, ctx, env) => { try { return withoutAccess(new Request(url), ctx, env); } catch { return "error"; } };
+check("a request Access authenticated (ctx.access) is let through", decide("https://admin.example.com/", { access: { aud: "app" } }, {}) === false);
+check("one without ctx.access is refused", decide("https://admin.example.com/", {}, {}) === true);
+check("ACCESS = off lets it through on a local address, for tests and local runs", decide("http://127.0.0.1:8787/", {}, { ACCESS: "off" }) === false && decide("http://localhost:8787/", {}, { ACCESS: "off" }) === false);
+check("...not on a deployed hostname", decide("https://admin.example.com/", {}, { ACCESS: "off" }) === true && decide("https://wiki-admin.someone.workers.dev/", {}, { ACCESS: "off" }) === true);
+check("...and nothing else does (not ACCESS = no), even locally", decide("http://127.0.0.1:8787/", {}, { ACCESS: "no" }) === true && decide("http://127.0.0.1:8787/", {}, { ACCESS: "" }) === true);
 
 // --- The public site's address --------------------------------------------------------------------
 // PUBLIC_WIKI_URL is required: the page loads its plugin files and TiddlyWiki's core from it, so a

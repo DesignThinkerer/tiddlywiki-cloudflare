@@ -55,7 +55,7 @@ const plainText = (text, status) => new Response(text, { status, headers: { "Con
 export default {
   async fetch(request, env, ctx) {
     // Before anything else: a request Access didn't authenticate costs nothing but this answer
-    if (withoutAccess(ctx, env)) return plainText(ACCESS_REFUSED, 403);
+    if (withoutAccess(request, ctx, env)) return plainText(ACCESS_REFUSED, 403);
     const url = new URL(request.url);
     // Nor anything without the public site's address (the page would load its code from nowhere)
     const notSetUp = publicSiteError(env, url.origin);
