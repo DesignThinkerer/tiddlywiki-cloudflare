@@ -1,9 +1,9 @@
 # TiddlyWiki on Cloudflare
 
-Host your own [TiddlyWiki](https://tiddlywiki.com) on Cloudflare's free plan: a worker for editing, R2 for storage, a public read-only site served from the cache, and every save backed up to GitHub as its own commit.
+Host your own [TiddlyWiki](https://tiddlywiki.com) on Cloudflare's free plan: a worker for editing, R2 for storage, a public read-only site served from the cache if you want one, and every save backed up to GitHub as its own commit.
 
 - **The admin wiki,** at the worker's own address (`https://wiki-admin.<your subdomain>.workers.dev`, or a custom domain such as `admin.wiki.example.com`), is yours to edit, behind Cloudflare Access. A Cloudflare Worker speaks TiddlyWiki's own sync protocol (TiddlyWeb) and stores every tiddler in an R2 bucket.
-- **The public wiki,** `https://wiki.example.com`, is the same bucket served directly through its custom domain and Cloudflare's cache: read-only, and no worker involved, so visitors cost no worker requests.
+- **The public wiki,** `https://wiki.example.com`, if you want one, is the same bucket served directly through its custom domain and Cloudflare's cache: read-only, and no worker involved, so visitors cost no worker requests. Without it, the wiki is private.
 
 What the worker adds to a plain TiddlyWeb server:
 - **Edit-conflict protection:** two tabs or devices editing the same tiddler can't silently overwrite each other; the later one gets a conflict copy and an alert.
@@ -15,9 +15,9 @@ What the worker adds to a plain TiddlyWeb server:
 
 A new wiki starts by itself: the first time you open the admin site, the worker puts an empty TiddlyWiki in the bucket. To move an existing wiki in, drag its file onto the admin wiki.
 
-**Public by design.** The public site *is* the bucket: every tiddler you save is readable there by anyone, the moment it's saved (drafts are never saved, so they aren't). This is for a wiki you publish — a blog, documentation, notes you share — not for a private notebook.
+**Private, or public.** Without a public site, the wiki is private: the admin site is the only one, behind Cloudflare Access, at the worker's own `workers.dev` address — no domain needed, and nothing in the bucket is reachable by anyone else. With a public site (the bucket's custom domain, one setting), every tiddler you save is readable there by anyone the moment it's saved (drafts are never saved, so they aren't): for a wiki you publish — a blog, documentation, notes you share. A private wiki can be made public later by adding that one setting; nothing moves.
 
-**What you need:** a Cloudflare account (the free plan is enough), a domain on that account (both sites are hostnames of it), and a GitHub account (the worker is deployed from your copy of this repository; the backup goes to a repository too).
+**What you need:** a Cloudflare account (the free plan is enough) and a GitHub account (the worker is deployed from your copy of this repository; the backup goes to a repository too). For a public site, also a domain on that account (both sites are then hostnames of it).
 
 This README covers the setup, operating the wiki, troubleshooting, the limits and the tests. How the worker works, and why it's built this way, are in [docs/design.md](docs/design.md).
 
@@ -59,7 +59,7 @@ flowchart LR
 | **The worker** (`worker.js`, built from `src/worker/`) | Serves the admin wiki: the page, the TiddlyWeb endpoints, saves and deletes with their conflict checks, cache purges. Writes a file for each plugin, and consumes the backup queue. |
 | **Browser modules** (`src/browser/`) | TiddlyWiki modules the worker builds into the page. The conflict guard makes the browser say which version each edit is based on, handles conflicts, and sends saves in the layout the worker stores; the list sync keeps the tiddler list, loads what's shown first and keeps loaded tiddlers on the device, reads from the public site and cuts unneeded requests; the backup alert shows backups that keep failing; the page publisher, in the admin wiki, renders the page with TiddlyWiki's own template and sends it to the worker whenever it changes; the restore import turns the backup's files, dropped onto the wiki, back into tiddlers; the control panel's Cloudflare tab shows how backups go and starts a full backup. |
 | **R2 bucket** | Holds everything: the wiki engine (`index.html`), the page both sites serve, the tiddler list, one JSON file per tiddler, one script per plugin, and TiddlyWiki's core file. |
-| **Public site** | The bucket's custom domain. Cloudflare caches it, and nothing on it runs the worker. |
+| **Public site** | The bucket's custom domain. Cloudflare caches it, and nothing on it runs the worker. A private wiki has none: the worker serves the tiddler contents, the plugin files and the core file itself, and the device copy keeps a reload from asking for them again. |
 | **Queue** `wiki-backup` | Holds one message per save or delete until it has been committed to GitHub. |
 | **GitHub repository** | Version history: one commit per save, in `tiddlers/<title>.json`. |
 
@@ -71,11 +71,13 @@ About ten minutes, in this order. Each step names what the next ones need.
 
 ### 2.1 Before you start
 
+**A private wiki, or a public one.** A private wiki skips the public site: in 2.2 only the bucket, no custom domain; no zone rules (2.7); in 2.5 no `PUBLIC_WIKI_URL`, `CF_ZONE_ID` or `CF_API_TOKEN`. About five minutes. The steps marked *(public site only)* don't apply. Its first load on a new device reads every tiddler from the worker (5); after that, only what changed. To make it public later, do those steps then: the next page load takes the setting, and nothing moves.
+
 The names, and where each goes. With the defaults, nothing in the repository needs editing: the worker is deployed as it is, and your settings are entered in the dashboard (2.5).
 
 | Name | Default or example | Where it goes |
 |---|---|---|
-| the public site | `wiki.example.com`, yours | the bucket's custom domain (2.2), the setting `PUBLIC_WIKI_URL` (2.5) and the zone rules (2.7) |
+| the public site *(public site only)* | `wiki.example.com`, yours | the bucket's custom domain (2.2), the setting `PUBLIC_WIKI_URL` (2.5) and the zone rules (2.7) |
 | the admin site | `wiki-admin.<your subdomain>.workers.dev` | the worker's own address, behind Access (2.6), allowed by the CORS rule (2.7); a custom domain instead, if you like (2.5) |
 | the bucket | `wiki` | 2.2; `wrangler.toml` if you name it otherwise |
 | the queue | `wiki-backup` | 2.3; `wrangler.toml` if you name it otherwise |
@@ -85,13 +87,13 @@ Make your own copy of this repository (a fork, or a copy from the template): Clo
 
 ### 2.2 The bucket and the public site
 
-1. In the Cloudflare dashboard, under **R2**, create the bucket (`wiki`). Nothing to upload: the worker fills it on the first visit (2.8).
-2. In the bucket's settings, turn on public access:
+1. In the Cloudflare dashboard, under **R2**, create the bucket (`wiki`). Nothing to upload: the worker fills it on the first visit (2.8). For a private wiki, that's all: leave public access off, and **Public Development URL (`r2.dev`)** disabled.
+2. *(public site only)* In the bucket's settings, turn on public access:
    - **Custom Domains:** connect `wiki.example.com`.
    - **Public Development URL (`r2.dev`):** keep it disabled. It's a second public address that skips the zone's cache and rules.
    - **CORS Policy:** leave it empty. A transform rule handles CORS instead (2.7).
 
-Everything in the bucket is public through the custom domain, including every tiddler, the tiddler list and the page. That's intended: nothing private belongs in this bucket. Secrets live in the worker's settings.
+With a custom domain, everything in the bucket is public through it, including every tiddler, the tiddler list and the page. That's intended: nothing private belongs in a public wiki's bucket. Secrets live in the worker's settings.
 
 ### 2.3 The backup queue
 
@@ -125,9 +127,9 @@ The worker is deployed from your repository by Cloudflare's **Workers Builds**: 
 
    | Name | What |
    |---|---|
-   | `PUBLIC_WIKI_URL` | **required:** the public site's address, `https://` and the bucket's custom domain (2.2), nothing after the hostname. The page loads its plugin files and TiddlyWiki's core from it, so there is no default: without it, or with an address that isn't a site's, or the worker's own, every request answers `500` saying so. |
-   | `CF_ZONE_ID` | the zone ID of the public site's domain (on the domain's overview page), for the public site's purges |
-   | `CF_API_TOKEN` | *secret:* an API token (**My Profile → API Tokens**) with *Zone → Cache Purge* on that zone. Without it and `CF_ZONE_ID`, no purges. |
+   | `PUBLIC_WIKI_URL` | *(public site only)* the public site's address, `https://` and the bucket's custom domain (2.2), nothing after the hostname. The page loads its plugin files and TiddlyWiki's core from it, and the admin wiki reads tiddlers from it. **Leave it out for a private wiki:** the worker then serves all of that itself. Set wrongly — an address that isn't a site's, or the worker's own — every request answers `500` saying so. |
+   | `CF_ZONE_ID` | *(public site only)* the zone ID of the public site's domain (on the domain's overview page), for the public site's purges |
+   | `CF_API_TOKEN` | *(public site only) secret:* an API token (**My Profile → API Tokens**) with *Zone → Cache Purge* on that zone. Without it and `CF_ZONE_ID`, no purges. |
    | `GITHUB_REPO`, `GITHUB_BRANCH` | `owner/repo` of the backup repository (2.4), and its branch (default `main`) |
    | `GITHUB_TOKEN` | *secret:* the token of 2.4. Without it and `GITHUB_REPO`, no backups. |
    | `CONFLICT_GUARD` | `off` builds the page without the browser modules (3). |
@@ -138,7 +140,7 @@ The worker is deployed from your repository by Cloudflare's **Workers Builds**: 
    Saving a variable deploys it at once; the first page load after that uses it.
 4. The first deploy runs when you push, or at once if the dashboard offers it. The worker then answers at `https://wiki-admin.<your subdomain>.workers.dev` (your account's `workers.dev` subdomain is shown under Workers & Pages); that's the admin site, once Access protects it (2.6).
 
-**A custom domain for the admin site** (`admin.wiki.example.com`, say) instead of the `workers.dev` address: add it under the worker's **Settings → Domains & Routes** (Cloudflare creates the DNS record), and use it in the CORS rule (2.7) and in Access (2.6). Or put it in `wrangler.toml` (the `routes` block in comments) if you'd rather have it in the repository; then set `workers_dev = false` there, so the worker has one address.
+**A custom domain for the admin site** (`admin.wiki.example.com`, say) instead of the `workers.dev` address, if you have a domain: add it under the worker's **Settings → Domains & Routes** (Cloudflare creates the DNS record), and use it in the CORS rule (2.7) and in Access (2.6). Or put it in `wrangler.toml` (the `routes` block in comments) if you'd rather have it in the repository; then set `workers_dev = false` there, so the worker has one address.
 
 **Without Workers Builds,** two other ways work: `npx wrangler deploy` from your computer, after `npm install` and `npm run build`, with the same `wrangler.toml` and the settings in the dashboard; or pasting `worker.js` into the dashboard's editor, in which case you add the bindings of `wrangler.toml` by hand in the worker's settings too, and the empty wiki (2.8), since a pasted worker carries no asset.
 
@@ -148,7 +150,7 @@ Protect the worker with **Worker Access → All traffic** (production and previe
 
 The worker has no login of its own, so it relies on this, and checks it: Cloudflare marks a request that came through Access (`ctx.access`), and the worker answers `403` to any request without that mark, before reading or building anything. (That mark never reaches a worker deployed with static assets, which run behind a router of Cloudflare's; this worker has none, which is why the empty wiki travels as a module of it, 2.5.) So if the Access application is missing, or covers another hostname than the one a request came to, the wiki is closed rather than open; the `403` says what to do. Only the tests and local runs, where there is no Access, switch the check off with `ACCESS = off`, and the switch counts only for a request to a local address (`localhost`, `127.0.0.1`): left on by mistake on a deployed worker, it opens nothing.
 
-### 2.7 The zone's rules
+### 2.7 The zone's rules *(public site only)*
 
 Under your domain, in the dashboard. Each rule names the public hostname, so `/` on other hostnames of the zone isn't rewritten, and nothing else is cached by these rules.
 
@@ -191,7 +193,7 @@ A "Bypass cache" rule for the admin hostname is optional: Cloudflare never cache
 
 ### 2.8 The first visit
 
-Open the admin site (`https://wiki-admin.<your subdomain>.workers.dev`, or your custom domain). Access asks you to log in, then the worker puts an empty TiddlyWiki in the bucket as `index.html` (the engine; your content lives in the tiddler files) with the public site's `status` file, builds the page, and the wiki opens. That first load also publishes TiddlyWiki's core file and the page for the public site. Open `https://wiki.example.com` to see it.
+Open the admin site (`https://wiki-admin.<your subdomain>.workers.dev`, or your custom domain). Access asks you to log in, then the worker puts an empty TiddlyWiki in the bucket as `index.html` (the engine; your content lives in the tiddler files) with the public site's `status` file (written for a private wiki too, for the day it gets a public site), builds the page, and the wiki opens. That first load also publishes TiddlyWiki's core file and the page, for both sites. With a public site, open `https://wiki.example.com` to see it.
 
 **An existing wiki:** drag its `.html` file onto the admin wiki. TiddlyWiki's import saves every tiddler, plugins included, and each goes to R2 and to the backup. Don't upload your wiki as `index.html` instead: TiddlyWiki deletes, at the first sync, every tiddler the page came with that the server doesn't list, so the content would vanish from view, and the file itself would be public.
 
@@ -211,7 +213,7 @@ Open the admin site (`https://wiki-admin.<your subdomain>.workers.dev`, or your 
 
 ### 2.9 A second wiki
 
-A second wiki is a second worker with its own bucket, queue, public site and settings: steps 2.2 to 2.8 again with other names. From one repository, Wrangler environments do it: an `[env.notes]` section in `wrangler.toml` with that wiki's `name`, bucket and queue (and route, with a custom domain), deployed with `npx wrangler deploy --env notes` (as the deploy command of a second Workers Builds project, or from your computer); its settings go in that worker's dashboard like the first one's. The zone rules are per hostname, so each wiki gets its own set, and `CF_ZONE_ID` and `CF_API_TOKEN` can be shared. The free plan's limits (5) are per account, whichever way the wikis are deployed.
+A second wiki is a second worker with its own bucket, queue, settings and, if public, its own public site: steps 2.2 to 2.8 again with other names. From one repository, Wrangler environments do it: an `[env.notes]` section in `wrangler.toml` with that wiki's `name`, bucket and queue (and route, with a custom domain), deployed with `npx wrangler deploy --env notes` (as the deploy command of a second Workers Builds project, or from your computer); its settings go in that worker's dashboard like the first one's. The zone rules are per hostname, so each wiki gets its own set, and `CF_ZONE_ID` and `CF_API_TOKEN` can be shared. The free plan's limits (5) are per account, whichever way the wikis are deployed.
 
 ---
 
@@ -276,7 +278,8 @@ If the page is rebuilt before step 4 (by a deploy, or by saving another plugin, 
 |---|---|---|
 | Every request answers 403 "didn't come through Cloudflare Access" | No Access application covers the hostname you're using (2.6): Access isn't set up yet, or it's set up on the custom domain only and you're on `workers.dev` or a preview URL | Set Access up as **Worker Access → All traffic**, or use the hostname it covers. For a local run without Access, set `ACCESS = off` (2.5); it only works for a local address. |
 | The admin page says "There's no wiki yet" (404) | The bucket has no `index.html`, and the worker was deployed without the empty wiki (pasted into the dashboard alone, or `seed/` wasn't built) | Deploy with Wrangler or Workers Builds after `npm run build`, or upload `index.html` and `status` yourself (2.2). |
-| Every request answers 500 naming `PUBLIC_WIKI_URL` | The variable is missing, or isn't the public site's address (2.5) | Set it to `https://` + the bucket's custom domain (2.2), nothing after the hostname. |
+| Every request answers 500 naming `PUBLIC_WIKI_URL` | The variable isn't the public site's address (2.5) | Set it to `https://` + the bucket's custom domain (2.2), nothing after the hostname; or remove it, for a private wiki. |
+| A private wiki's first load on a new device takes a while, with one worker request per tiddler | There's no public site to read from, so each tiddler comes from the worker, once per device (5) | Nothing: the device keeps a copy, and later loads fetch only what changed. |
 | Alert "Edit conflict: … was changed in another tab or browser" | Another tab, device or script saved that tiddler after you started editing | Compare the tiddler with its `(conflict …)` copy, keep what you want and delete the copy. |
 | Console shows "blocked by CORS policy" for the public site | The transform rule is missing or scoped wrong | Add or fix it (2.7). Until then, tiddlers simply load through the worker. |
 | The public site shows an old version | Browser TTL, or a failed purge | Check the cache rule's Browser TTL; look for `Cache purge failed` in the logs; purge manually. |
@@ -307,7 +310,8 @@ If the page is rebuilt before step 4 (by a deploy, or by saving another plugin, 
 - **A damaged or missing list is rebuilt only while the admin wiki is open** (design 1.2): the worker's requests do the work, and public visitors don't use the worker. Until then the public site keeps what its cache holds; a visitor who gets the damaged list or the stand-in sees no tiddlers until it's done.
 - **A rebuild step's CPU** stays around a normal save's, but a single stored tiddler with several megabytes in fields other than its text (rare: plugins keep their content in the text) is read in one step, and could take that step over the limit each time.
 - **An installed plugin's raw markup reaches the page after a reload if the plugin has JavaScript** (design 1.9): TiddlyWiki only starts such a plugin then. And plugins with raw markup are in the page as well as in their file, so a big one makes the page bigger (the worker refuses a page over 2 MB).
-- **Both sites depend on the core file on the public site,** as they already do on plugin files. If it can't be loaded, the wiki doesn't start (TiddlyWiki shows an alert).
+- **Both sites depend on the core file on the public site,** as they already do on plugin files (a private wiki's, on the worker). If it can't be loaded, the wiki doesn't start (TiddlyWiki shows an alert).
+- **A private wiki's first load on a device reads every tiddler from the worker,** one request each, then only what changed (the device keeps a copy): a thousand tiddlers is a thousand of the day's 100,000 requests, once per browser. There is no public cache to read from instead.
 - **The page follows the admin wiki.** A change made elsewhere (a tiddler edited in R2) reaches the page at the next admin page load. Raw markup that depends on being logged in is rendered as the admin sees it.
 - **Conflict copies are merged by hand.** That's by design: you get both versions and decide.
 - **A short window at page load.** A tiddler that's part of `index.html` itself, edited before the first sync finishes, is saved without a version check.
@@ -327,7 +331,7 @@ Requirements: Node.js 20 or newer and a Chromium for the browser tests. (`npm ru
 ```bash
 npm install
 npx playwright install chromium      # or: export CHROMIUM_PATH=/path/to/chrome
-npm test                             # build (worker.js and seed/empty.html), run all ten suites
+npm test                             # build (worker.js and seed/empty.html), run all twelve suites
 ```
 
 | Command | What it runs |
@@ -336,7 +340,7 @@ npm test                             # build (worker.js and seed/empty.html), ru
 | `npm run check:build` | Fails, writing nothing, if `worker.js` isn't what the sources build (run it before committing, so `worker.js` is never out of date). |
 | `npm run lint` | ESLint, with its recommended rules only: a name that doesn't exist (a function moved without its import, say), an unused one, an import assigned to. CI runs it first. |
 | `npm run test:fast` | The five suites that need no browser (a few minutes). |
-| `npm run test:browser` | The six suites that run a real TiddlyWiki in Chromium. |
+| `npm run test:browser` | The seven suites that run a real TiddlyWiki in Chromium. |
 | `npm run test:first` | A new wiki from an empty bucket, in Chromium (see below). |
 | `npm run test:bake` | Page serving and rebuilding, the published page, the Access check, the public address, the first visit (see below). |
 | `npm run test:integrity` | The tiddler list's integrity, the page after a failed build, draft-like titles and `.gitignore` (see below). |
@@ -347,6 +351,7 @@ npm test                             # build (worker.js and seed/empty.html), ru
 | `npm run test:plugins` | Real plugins in Chromium, on the admin site and a stand-in for the public site (see below). |
 | `npm run test:publish` | The page published from a real TiddlyWiki in Chromium (see below). |
 | `npm run test:sync` | The full backup started from a real TiddlyWiki in Chromium, GitHub imitated (see below). |
+| `npm run test:private` | A private wiki, no public site, in Chromium; then a public site added (see below). |
 
 GitHub runs the same two groups, as two jobs side by side, for every pull request and every push to `main` (`.github/workflows/ci.yml`), after the lint and after checking that `worker.js` is what `src/` builds.
 
@@ -376,7 +381,7 @@ GitHub runs the same two groups, as two jobs side by side, for every pull reques
 │   │   ├── reads.js, saves.js  the handlers: status, list and objects; saves and deletes (design 1.4)
 │   │   └── backup/           the GitHub backup: queue.js (the consumer, and the full backup's steps), github.js (the API), status.js (how backups go), sync.js (the full backup's requests)
 │   └── browser/              the browser modules, embedded into worker.js by the build (3)
-│       ├── lib.js            what they share: the sync adaptor, the public site's address, titles in alerts (a TiddlyWiki library module)
+│       ├── lib.js            what they share: the sync adaptor, the public site's address, whether this is the admin site, titles in alerts (a TiddlyWiki library module)
 │       ├── conflict-guard.js saves and deletes: the revision each is based on, conflicts, the flat layout
 │       ├── list-sync.js      the tiddler list, loading (what's shown first, the device's copy, the fill), what isn't sent
 │       ├── backup-alert.js   the alert while backups to GitHub keep failing (4.7)
@@ -394,6 +399,7 @@ GitHub runs the same two groups, as two jobs side by side, for every pull reques
     ├── page-publish.test.mjs the page published from a real TiddlyWiki (57 checks)
     ├── lazy-load.test.mjs    loading a big wiki on both sites: what's shown first, the device's copy, the fill (31 checks)
     ├── backup-sync.test.mjs  the full backup from the admin wiki: the Cloudflare tab, the hint, the button, GitHub mirroring the wiki (12 checks)
+    ├── private.test.mjs      a private wiki: everything from the worker, nothing purged, then a public site added (23 checks)
     ├── queue-backup.test.mjs queue backup against an imitation of GitHub, the full backup's steps (55 checks)
     ├── integrity.test.mjs    the tiddler list's integrity, a failed page build, draft-like titles, awkward titles, .gitignore, what a deploy uploads, the restore tool (88 checks)
     ├── r2-ops.test.mjs       R2 calls per kind of request, against a budget (34 checks)
@@ -411,14 +417,14 @@ The browser modules live in their own files so they can be read and edited as no
 
 ### 6.2 The tests
 
-The tests run the real worker in Cloudflare's local runtime (workerd, through Miniflare) with a local R2 bucket and queue. Outgoing calls to GitHub and Cloudflare's API are answered by imitations, so nothing touches your accounts. Every suite takes free local ports, so they can run at the same time. The six browser suites share their setup, `test/browser-harness.mjs`: the worker, the stand-in for the public site, Chromium, and the helpers that wait for TiddlyWiki or record each tab's requests (marking the ones the browser answered from its cache, which never reached a server). (On a machine too busy to keep up, such as with the browser suites running alongside, the backup suite's "never overlapped" check can fail: Miniflare then starts a second batch before the first ends, which `max_concurrency = 1` prevents on Cloudflare. A browser suite can also time out waiting for TiddlyWiki there. Each passes run on its own.)
+The tests run the real worker in Cloudflare's local runtime (workerd, through Miniflare) with a local R2 bucket and queue. Outgoing calls to GitHub and Cloudflare's API are answered by imitations, so nothing touches your accounts. Every suite takes free local ports, so they can run at the same time. The seven browser suites share their setup, `test/browser-harness.mjs`: the worker, the stand-in for the public site, Chromium, and the helpers that wait for TiddlyWiki or record each tab's requests (marking the ones the browser answered from its cache, which never reached a server). (On a machine too busy to keep up, such as with the browser suites running alongside, the backup suite's "never overlapped" check can fail: Miniflare then starts a second batch before the first ends, which `max_concurrency = 1` prevents on Cloudflare. A browser suite can also time out waiting for TiddlyWiki there. Each passes run on its own.)
 
 `test:bake` covers:
 - Page serving: rebuild on an outdated bake or a new `index.html`, the `304` for an unchanged page (also with a weakened ETag, and by date alone, including two pages built within the same second), a byte order mark; CORS, a bad `PUT` path, and `/status`, kept by the browser for a week and no longer baked into the page; a tiddler read (its revision as ETag) and a file read (R2's), each answered `304` to a browser that has it (also with a weakened ETag, and to a `HEAD`), and sent when it has another version.
 - The published page: the core file stored and each kind refused (also one sent for an older `index.html`, or without saying which) (also one still switching the save template, while the core plugin's escaped mentions of it are accepted), each kind of shell refused, a shell kept and the page built from it (the page and the answer carrying the stored shell's version), the same again, a shell from a page older than the one stored refused with the current version (also one built from a shell since replaced, or saying none), then kept once sent with it, plugin tags before the core (only in a shell: in a full `index.html` they stay in `<head>`, even with TiddlyWiki's marker in raw markup), a new `index.html` built from until a shell is published for it.
 - `CONFLICT_GUARD = off`: the page built without the browser modules.
 - Cloudflare Access: without `ACCESS = off`, every request (page, status, list, tiddler, save, delete, preflight) answers `403` and nothing is built or stored; the decision itself lets a request through that Access marked (`ctx.access`), refuses one without, and takes only `off` as the switch, and only for a local address: on a deployed hostname (`admin.example.com`, `workers.dev`) the switch changes nothing.
-- `PUBLIC_WIKI_URL`: missing, without `https://` or with a path, every request answers `500` naming it and nothing is built or stored; a trailing slash is fine; the check itself also refuses the worker's own address.
+- `PUBLIC_WIKI_URL`: missing, a private wiki: the page is built and served with an empty public address, a plugin saved gets its file and the page loads it from this site at a root-relative URL, and nothing is purged though the purge settings are there; without `https://` or with a path, every request answers `500` naming it and nothing is built or stored; a trailing slash is fine; the check itself accepts none or a blank, and refuses the worker's own address.
 - The first visit: an empty bucket with the empty wiki as the worker's asset gets `index.html` (the asset, byte for byte) and the public `status` file on the first page request, and the page; the next visit changes nothing; the asset isn't served at its own path; an `index.html` already there is used, not replaced, nor its `status`; one deleted by hand is put back and the page rebuilt from it; without the asset the page answers `404` saying what to upload.
 
 `test:integrity` covers:
@@ -540,6 +546,8 @@ Reading the save in full, or building the backup's request through strings, fail
 - **The device's copy:** a refresh fetches no tiddler (the worker serves the page and the list only) and stores them in a few load steps rather than one by one; after a change elsewhere, that tiddler only; one saved in the tab isn't fetched; one deleted elsewhere, or in the tab, is gone from the tab and the device; without IndexedDB, loads go over the network each time.
 - **The fill turned off** (`$:/config/cfworker/LoadAll`, built into the page): only the tiddler shown is fetched, the others stay skinny, another loads the moment it's needed, a loaded tiddler changed elsewhere is still reloaded, a skinny tiddler changed before its text loaded keeps its text and gets it; with TiddlyWiki's own lazy loading off, the fill runs whatever the setting.
 - **A stale copy from a cache** refused and fetched again past the cache, on both sites, without the worker.
+
+`test:private` runs the worker with no public address at all (the stand-in for the public site runs, to show nothing reaches it), from an empty bucket, and covers: the first visit (the engine and the status file stored, the page built with no public address, the tab logged in and writable, the core file and the page published by itself with the core at a root-relative URL); a save stored and listed; a reload getting the light page with the core file from the worker, then the next one asking the worker for the page and the list only (the core from the browser's cache, the tiddlers from the device copy); a plugin installed, its file loaded from the worker at a root-relative URL and run, from the browser's cache at the next reload; the Cloudflare tab, saying backups aren't set up; every request of the tab gone to the worker and none anywhere else, and no purge sent though `CF_ZONE_ID` and `CF_API_TOKEN` are set; a second browser reading the tiddlers from the worker, and a tiddler saved afterwards at its next poll; then `PUBLIC_WIKI_URL` set on the running worker, as in the dashboard: the next load rebuilt with the public address and every tiddler still there, the page published again with the core from the public site, the page loading its core and plugin files from there, a new browser reading the tiddlers from the public site and not the worker, and a save purging it.
 
 `test:sync` runs the worker with its queue and an imitation of GitHub, and covers: the Cloudflare tab under the control panel's Saving tab (backups on, no full backup yet, the button); the hint when backups are on and none has ever run, which stays closed in that browser once closed; the button starting a full backup, the tab following it (running, then the last full backup with its counts), 12 tiddlers stored before backups existed on GitHub byte for byte and a file of a title not in the wiki removed; a second run committing nothing; a save after that committed by its own message; no tab on the public site; a worker without backups: the tab says so, no button, no hint.
 

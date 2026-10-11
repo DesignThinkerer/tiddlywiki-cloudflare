@@ -1,8 +1,8 @@
 # The worker's bindings and defaults: what Wrangler deploys, from your repository through Workers
 # Builds, or with `npx wrangler deploy` (README 2.5). Deployed as it is: nothing in this file has
-# to be changed for a wiki that uses the default names (README 2.1). Your own settings
-# (PUBLIC_WIKI_URL, and the optional ones) live in the dashboard, under the worker's Variables
-# and Secrets, which a deploy keeps (keep_vars); so do the two secrets, GITHUB_TOKEN and
+# to be changed for a wiki that uses the default names (README 2.1). Your own settings (all
+# optional: without any, the worker is a private wiki) live in the dashboard, under the worker's
+# Variables and Secrets, which a deploy keeps (keep_vars); so do the two secrets, GITHUB_TOKEN and
 # CF_API_TOKEN. No secret goes in this file.
 
 name = "wiki-admin"                  # the worker's name: name the worker this when you create it (README 2.5)
@@ -57,7 +57,7 @@ max_retries = 3                      # Cloudflare's default, which the worker co
 
 # The settings, set in the dashboard (the worker's Settings → Variables and Secrets), as plain
 # variables or as secrets, whichever you prefer; a deploy keeps both (README 2.5):
-#   PUBLIC_WIKI_URL        required: the public site, https:// and the bucket's custom domain (README 2.2)
+#   PUBLIC_WIKI_URL        the public site, https:// and the bucket's custom domain (README 2.2); none for a private wiki (README 2.1)
 #   CF_ZONE_ID             the zone of the public site, for cache purges, with the secret CF_API_TOKEN
 #   GITHUB_REPO            owner/repo of the backup repository (README 2.4), with the secret GITHUB_TOKEN
 #   GITHUB_BRANCH          its branch (default main)

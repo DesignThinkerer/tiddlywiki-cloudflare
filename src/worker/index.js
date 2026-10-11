@@ -61,7 +61,8 @@ export default {
     // Before anything else: a request Access didn't authenticate costs nothing but this answer
     if (withoutAccess(request, ctx, env)) return plainText(ACCESS_REFUSED, 403);
     const url = new URL(request.url);
-    // Nor anything without the public site's address (the page would load its code from nowhere)
+    // Nor anything with a public address that isn't a site's (the page would load its code from
+    // nowhere); none at all is a private wiki
     const notSetUp = publicSiteError(env, url.origin);
     if (notSetUp) return plainText(notSetUp, 500);
 

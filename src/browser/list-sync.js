@@ -21,7 +21,8 @@ $:/cfworker/conflict-guard.js):
   worker lists, so no cache can serve an older copy: refused, it's asked for again past any cache.
 - Fewer worker requests: tiddler contents are fetched from the public copy of the wiki
   ($:/cfworker/public-url, served by R2/Cloudflare without the worker), and from the worker only
-  when that copy doesn't have the listed revision; drafts and $:/StoryList, which the worker never
+  when that copy doesn't have the listed revision (a private wiki has no public copy: from the
+  worker, once per device); drafts and $:/StoryList, which the worker never
   stores, are not sent to it, and the "put" saver no longer probes the page URL on every load;
   background tabs stop polling for changes and catch up as soon as they are shown again.
 - Titles the worker can't store aren't sent either (each save would fail, and be tried again

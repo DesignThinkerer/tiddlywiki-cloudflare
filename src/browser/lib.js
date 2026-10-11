@@ -37,6 +37,15 @@ exports.siteOf = function(url) {
 	return String(url || "").replace(/^[a-z][a-z0-9+.-]*:/i,"").toLowerCase();
 };
 
+// Whether a page at host (the sync adaptor's, or this page's origin with a slash) is on the admin
+// site, the worker's: any site but the public one. A private wiki has no public address, so its one
+// site is the admin site; a public wiki's page at the public address is the public site's
+// (read-only, publishing nothing, asking the worker nothing).
+exports.onAdminSite = function(host) {
+	var base = exports.publicBase();
+	return !base || exports.siteOf(host) !== exports.siteOf(base);
+};
+
 // A wikitext attribute value holding the text as it is (in quotes it doesn't contain), or null
 function attributeValue(text) {
 	if(text.indexOf('"') === -1) {

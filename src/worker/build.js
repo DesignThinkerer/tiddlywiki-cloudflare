@@ -10,7 +10,7 @@ import { PUBLIC_PAGE_PATHS, purgePublicCache } from "./cache.js";
 import { hasNestedFields } from "./layout.js";
 import { readableList } from "./list.js";
 import { pluginScriptTags } from "./plugins.js";
-import { conflictGuardEnabled, publicUrl } from "./settings.js";
+import { conflictGuardEnabled, publicSite, publicUrl } from "./settings.js";
 import { CORE_KEY, INDEX_KEY, PAGE_KEY, SHELL_KEY } from "./storage.js";
 import { isStartupTiddler, needsPluginFile, tiddlerKey } from "./tiddlers.js";
 
@@ -30,8 +30,14 @@ const BROWSER_MODULES = [
 ];
 
 // Their settings. The public site's address: the admin wiki loads tiddler contents from there (no
-// worker request) and only asks the worker when that copy isn't current.
+// worker request) and only asks the worker when that copy isn't current. Empty for a private wiki
+// (README 2.1): the modules then know this site is the admin site, and read from the worker.
 const PUBLIC_URL_TITLE = "$:/cfworker/public-url";
+
+// What the page carries as the public address: the site with a trailing slash, or ""
+function publicAddress(env) {
+  return publicSite(env) ? publicUrl(env, "/") : "";
+}
 
 // What the page was built from, so the page publisher can tell when it needs publishing again
 const PAGE_SOURCE_TITLE = "$:/cfworker/page-source";
@@ -43,9 +49,9 @@ const PAGE_SOURCE_TITLE = "$:/cfworker/page-source";
 let lastBakeVersion = { settings: null, version: "" };
 
 export function bakeVersion(env) {
-  const enabled = conflictGuardEnabled(env), settings = enabled + "\n" + publicUrl(env, "/");
+  const enabled = conflictGuardEnabled(env), settings = enabled + "\n" + publicAddress(env);
   if (lastBakeVersion.settings !== settings) {
-    const input = (enabled ? BROWSER_MODULES.map(m => m.source).join("\n") : "off") + "\n" + publicUrl(env, "/");
+    const input = (enabled ? BROWSER_MODULES.map(m => m.source).join("\n") : "off") + "\n" + publicAddress(env);
     let hash = 5381;
     for (let i = 0; i < input.length; i++) {
       hash = ((hash * 33) ^ input.charCodeAt(i)) >>> 0;
@@ -151,7 +157,7 @@ async function preloadedTiddlers(env, entries, pageSource) {
   }));
   if (conflictGuardEnabled(env)) {
     for (const m of BROWSER_MODULES) store.push({ title: m.title, type: "application/javascript", "module-type": m.type, text: m.source });
-    store.push({ title: PUBLIC_URL_TITLE, text: publicUrl(env, "/") });
+    store.push({ title: PUBLIC_URL_TITLE, text: publicAddress(env) });
     store.push({ title: PAGE_SOURCE_TITLE, type: "application/json", text: JSON.stringify({ index: pageSource.index, fingerprint: pageSource.fingerprint, core: pageSource.core, shell: pageSource.shell || "" }) });
   }
   return store;
@@ -238,6 +244,8 @@ async function readPageSource(env) {
   return full && { html: new Uint8Array(await full.arrayBuffer()), index: full.etag, fingerprint: "", core, shell: "" };
 }
 
+// Where the page loads the core file from: the public site, or this site (root-relative) for a
+// private wiki. The page publisher writes the same URL into the shell (page.js checks it).
 export function coreFileUrl(env, version) {
   return publicUrl(env, `/${CORE_KEY}?v=${encodeURIComponent(version)}`);
 }

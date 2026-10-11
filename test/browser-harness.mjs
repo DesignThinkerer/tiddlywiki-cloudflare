@@ -45,11 +45,15 @@ export const PUBLIC_STATUS = { username: "GUEST", read_only: true, anonymous: tr
 //   outbound(request): answers the worker's own requests (Cloudflare's API, GitHub); {"success":true} by default
 //   r2Persist: a folder to keep R2 in
 //   queue: bind the backup queue, with its consumer, as deployed (backups then run in it)
+//   privateWiki: no PUBLIC_WIKI_URL: a private wiki (README 2.1); the stand-in still runs, so a
+//     request that reaches it shows up in publicRequests
 //   publicSite: hooks for the stand-in: cors() returns false to leave the CORS header out,
 //     override(key, url) returns text to serve instead of the object, rewrite(url, bytes) returns the
 //     bytes to send, delay(url) returns milliseconds to wait before answering (a slow connection)
-// Returns { mf, base, pub, bucket, publicRequests (each path and query, decoded), close() }
-export async function startSite({ index, publicStatus = false, bindings = {}, outbound, r2Persist, queue = false, publicSite = {} } = {}) {
+// Returns { mf, base, pub, bucket, publicRequests (each path and query, decoded), setBindings(extra),
+// close() }. setBindings restarts the worker with other variables (the same bucket, the same address),
+// as a change in the dashboard does: a wiki given a public site, say.
+export async function startSite({ index, publicStatus = false, bindings = {}, outbound, r2Persist, queue = false, privateWiki = false, publicSite = {} } = {}) {
   let bucket = null;
   const publicRequests = [];
   const publicServer = http.createServer(async (req, res) => {
@@ -83,13 +87,14 @@ export async function startSite({ index, publicStatus = false, bindings = {}, ou
     }
   });
   const pub = await listen(publicServer);
-  const mf = new Miniflare({
+  const options = {
     modules: true, scriptPath: WORKER, modulesRules: MODULE_RULES, compatibilityDate: "2024-09-23", port: 0,
     r2Buckets: ["WIKI_BUCKET"], ...(r2Persist ? { r2Persist } : {}),
     ...(queue ? { queueProducers: { BACKUP_QUEUE: "wiki-backup" }, queueConsumers: { "wiki-backup": { maxBatchSize: 10, maxBatchTimeout: 0.2, maxRetries: 3 } } } : {}),
-    bindings: { ACCESS: "off", PUBLIC_WIKI_URL: pub, ...bindings },
+    bindings: { ACCESS: "off", ...(privateWiki ? {} : { PUBLIC_WIKI_URL: pub }), ...bindings },
     outboundService: outbound || (async () => new Response('{"success":true}')),
-  });
+  };
+  const mf = new Miniflare(options);
   const base = (await mf.ready).toString().replace(/\/$/, "");
   bucket = await mf.getR2Bucket("WIKI_BUCKET");
   if (index !== undefined) {
@@ -101,6 +106,12 @@ export async function startSite({ index, publicStatus = false, bindings = {}, ou
   }
   return {
     mf, base, pub, bucket, publicRequests,
+    async setBindings(extra) {
+      await mf.setOptions({ ...options, port: Number(new URL(base).port), bindings: { ...options.bindings, ...extra } });
+      await mf.ready;
+      bucket = await mf.getR2Bucket("WIKI_BUCKET");
+      return bucket;
+    },
     async close() {
       await mf.dispose();
       publicServer.close();

@@ -71,11 +71,10 @@ exports.startup = function() {
 	}
 	var proto = Adaptor.prototype,
 		wiki = $tw.wiki,
-		publicBase = lib.publicBase(),
 		here = window.location.origin + "/";
 	// Only the admin site, the page served by the worker (the public one is read-only and has no
 	// worker behind it). The sync adaptor itself exists only after TiddlyWiki's own startup.
-	if(!publicBase || lib.siteOf(here) === lib.siteOf(publicBase)) {
+	if(!lib.onAdminSite(here)) {
 		return;
 	}
 	proto.cfworkerControlPanel = true;
