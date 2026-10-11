@@ -11,7 +11,8 @@ import { addTiddler, createChecks, createWatcher, finish, launchBrowser, readWik
 // R2 on disk: "no network" here is the worker and the public stand-in taken down (the browser's
 // offline mode doesn't cut a service worker's own requests), then brought back with the same data
 const r2Dir = fs.mkdtempSync(path.join(fs.realpathSync(process.env.TMPDIR || "/tmp"), "wiki-cold-"));
-const site = await startSite({ index: readWikiFile(), publicStatus: true, privateWiki: true, r2Persist: r2Dir });
+let corsOn = true;   // the zone's CORS rule on the public stand-in (README 2.7), or not
+const site = await startSite({ index: readWikiFile(), publicStatus: true, privateWiki: true, r2Persist: r2Dir, publicSite: { cors: () => corsOn } });
 const { base: BASE, pub: PUB } = site;
 const { check, results } = createChecks();
 const browser = await launchBrowser({ serviceWorkers: "allow" });
@@ -45,6 +46,8 @@ async function online(context) { await context.setOffline(false); await site.sta
 const status = p => p.evaluate(() => { const t = $tw.wiki.getTiddler("$:/temp/cfworker/outbox"); return t ? { waiting: t.fields.waiting, online: t.fields.online } : null; });
 const controller = p => p.evaluate(() => navigator.serviceWorker.controller ? navigator.serviceWorker.controller.scriptURL : null);
 const cached = p => p.evaluate(async name => { const c = await caches.open(name); return (await c.keys()).map(r => r.url); }, CACHE);
+// How the cache holds a URL: the response's type ("basic" from this site, "cors" from the public one, "opaque" never), or null
+const cachedType = (p, url) => p.evaluate(async ([name, u]) => { const c = await caches.open(name); const r = await c.match(u); return r ? r.type : null; }, [CACHE, url]);
 const got = (tag, from, test) => responses.slice(from).filter(r => r.tag === tag && test(r));
 
 // --- 1. The first visit registers the service worker; it controls the page from the next load -------
@@ -163,8 +166,35 @@ const bootedPublic = await A.waitForFunction(() => window.$tw && $tw.syncer && $
 await sleep(1500);
 check("...and offline, the wiki opens with them from the cache, the plugin running", bootedPublic && await A.evaluate(() => window.__helloRan === true) &&
   got("A", mark, r => r.url.startsWith(PUB + "/_plugins/") && r.fromSW).length >= 2, got("A", mark, r => r.url.startsWith(PUB)).map(r => `${r.fromSW ? "sw" : "net"} ${r.status} ${r.url.replace(PUB, "").split("?")[0]}`).join(", "));
+const publicFiles = (await cached(A)).filter(u => u.startsWith(PUB + "/_plugins/"));
+const types = await Promise.all(publicFiles.map(u => cachedType(A, u)));
+check("...kept as real answers, asked for with CORS, never opaque (the browser would charge megabytes each, and evict the site's storage, the outbox with it)",
+  publicFiles.length >= 2 && types.every(t => t === "cors"), `${publicFiles.length} files: ${types.join(", ")}`);
 await online(contextA);
+// Without the CORS header (the rule of README 2.7 missing): a new file (a second plugin) loads and runs
+// as a plain script, and isn't kept. (A new file, because a file the browser already holds in memory
+// is served from there, a year's cache, without asking the service worker.)
+const HELLO2 = "$:/plugins/test/hello2";
+const plugin2 = text => ({ title: HELLO2, "plugin-type": "plugin", type: "application/json", version: "1.0.0", text: JSON.stringify({ tiddlers: { [HELLO2 + "/startup.js"]: { type: "application/javascript", "module-type": "startup", text } } }) });
+const hello2File = `/_plugins/${encodeURIComponent(HELLO2)}.js?v=`;
+corsOn = false;
+await addTiddler(A, plugin2("exports.name='hello2';exports.platforms=['browser'];exports.synchronous=true;exports.startup=function(){window.__hello2Ran=1;};"));
+await settle(A);
 await reload(A);
+await sleep(1500);
+check("without the public site's CORS header, a plugin file still loads and runs online, as a plain script, and isn't kept", await A.evaluate(() => window.__hello2Ran === 1) && !(await cached(A)).some(u => u.includes(hello2File)),
+  (await cached(A)).filter(u => u.startsWith(PUB)).map(u => u.replace(PUB, "")).join(", "));
+corsOn = true;
+await addTiddler(A, plugin2("exports.name='hello2';exports.platforms=['browser'];exports.synchronous=true;exports.startup=function(){window.__hello2Ran=2;};"));   // a new version: a new address
+await settle(A);
+await reload(A);
+await sleep(1500);
+const hello2Url = (await cached(A)).find(u => u.includes(hello2File));
+check("...and kept, as a real answer, once the header is there", await A.evaluate(() => window.__hello2Ran === 2) && !!hello2Url && (await cachedType(A, hello2Url)) === "cors", `${hello2Url ? hello2Url.replace(PUB, "") : "not cached"}: ${hello2Url && await cachedType(A, hello2Url)}`);
+await A.evaluate(t => $tw.wiki.deleteTiddler(t), HELLO2);
+await settle(A);
+check("the browser was asked to keep this site's storage; the status says what it answered", ["persistent", "best-effort"].includes(await A.evaluate(() => $tw.wiki.getTiddler("$:/temp/cfworker/outbox")?.fields.storage)),
+  JSON.stringify(await A.evaluate(() => $tw.wiki.getTiddler("$:/temp/cfworker/outbox")?.fields.storage)));
 await A.evaluate(t => $tw.wiki.deleteTiddler(t), HELLO);
 await settle(A);
 await reload(A);

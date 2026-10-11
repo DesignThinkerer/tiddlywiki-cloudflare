@@ -10,7 +10,11 @@ By request:
   it is and never kept. Online, nothing changes.
 - The core file and the plugin files (_plugins/<name>.js?v=<version>, on this site or the public
   one): the cache first; their address carries their version, so a copy is never stale. One from the
-  public site is "opaque" (a plain <script> load from another site), kept as it is.
+  public site is asked for with CORS (the zone's rule allows the admin site, README 2.7): a real
+  answer, kept at its real size. Never an "opaque" one (a plain <script> load from another site):
+  the browser charges those several megabytes each against the site's storage, whatever their size,
+  and storage under pressure is evicted whole, the outbox with it. Without the CORS header the file
+  isn't kept: the page's own <script> load still works online.
 - The status file and the tiddler list: the network first, the cached one when the network fails,
   with X-Served-From: cache so the list sync knows (a device copy then counts whatever its revision).
 - Anything else (a tiddler's contents, a save, a delete, the page published): the network only.
@@ -130,19 +134,28 @@ function networkFirst(event,request,key,page) {
 	});
 }
 
-// The cache, else the network, kept if it answered (a same-site answer that's ok, or an opaque one
-// from the public site)
+// The cache, else the network, kept if it answered ok. A file on another site (the public one) is
+// asked for with CORS, so the answer can be seen and is stored at its real size; if that site doesn't
+// allow it, the page's own plain request goes out instead, and nothing is kept.
 function cacheFirst(request) {
+	var url = request.url,
+		sameSite = new URL(url).origin === self.location.origin;
 	return caches.open(CACHE).then(function(cache) {
-		return cache.match(request).then(function(hit) {
+		return cache.match(url).then(function(hit) {
 			if(hit) {
 				return hit;
 			}
-			return fetch(request).then(function(response) {
-				if(response && (response.ok || response.type === "opaque")) {
-					cache.put(request,response.clone()).catch(function() {});
+			// (Past the browser's own cache: a copy it took before the site allowed CORS has no
+			// permission in it, and such a file is kept for a year)
+			var asked = sameSite ? fetch(request) : fetch(new Request(url,{mode: "cors", credentials: "omit", cache: "reload"})).catch(function() {
+				return null;
+			});
+			return asked.then(function(response) {
+				if(response && response.ok) {
+					cache.put(url,response.clone()).catch(function() {});
+					return response;
 				}
-				return response;
+				return response || fetch(request);
 			});
 		});
 	});
