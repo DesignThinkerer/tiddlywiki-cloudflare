@@ -5,6 +5,7 @@
 // change. Two builds can overlap: each page records what it was built from, and an older build
 // doesn't replace a newer page (storePage).
 
+import { APP_HEAD, ensureAppFiles } from "./app.js";
 import { concatBytes, encoder } from "./bytes.js";
 import { PUBLIC_PAGE_PATHS, purgePublicCache } from "./cache.js";
 import { hasNestedFields } from "./layout.js";
@@ -87,7 +88,7 @@ export function bakeVersion(env) {
   if (lastBakeVersion.settings !== settings) {
     // (The service worker's address is in the page too: a new script, a new page)
     const input = (enabled ? BROWSER_MODULES.map(m => m.source).join("\n") + "\n" + swVersion() : "off") + "\n" + publicAddress(env);
-    lastBakeVersion = { settings, version: "7-" + hashText(input).toString(36) };
+    lastBakeVersion = { settings, version: "8-" + hashText(input).toString(36) };
   }
   return lastBakeVersion.version;
 }
@@ -223,7 +224,9 @@ function pageWithPreloads(pageSource, store, pluginTags) {
       `;
   }
   if (pluginTags && !pluginsPlaced) injected += `\n${pluginTags}\n`;
-  if (injected) html = insertAfterHead(html, `\n${injected}\n`);
+  // The app's manifest and icon, for the browser to install the wiki (app.js)
+  injected += `\n${APP_HEAD}\n`;
+  html = insertAfterHead(html, `\n${injected}\n`);
   return html;
 }
 
@@ -252,6 +255,8 @@ export async function rebakeHtml(env, ctx, list = null, source = null) {
       listVersion: String(listObject ? listObject.uploaded.getTime() : 0)
     });
     if (stored) ctx.waitUntil(purgePublicCache(env, PUBLIC_PAGE_PATHS.map(path => publicUrl(env, path))));
+    // The public site's manifest and icons, beside the page (finished even if the request ends first)
+    ctx.waitUntil(ensureAppFiles(env, ctx, pageSource));
     return { html, page: stored };
   } catch (err) {
     console.error("Failed to rebake HTML:", err);

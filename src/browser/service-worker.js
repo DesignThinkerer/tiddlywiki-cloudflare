@@ -15,8 +15,9 @@ By request:
   the browser charges those several megabytes each against the site's storage, whatever their size,
   and storage under pressure is evicted whole, the outbox with it. Without the CORS header the file
   isn't kept: the page's own <script> load still works online.
-- The status file and the tiddler list: the network first, the cached one when the network fails,
-  with X-Served-From: cache so the list sync knows (a device copy then counts whatever its revision).
+- The status file, the tiddler list and the app's manifest: the network first, the cached one when
+  the network fails, with X-Served-From: cache so the list sync knows (a device copy then counts
+  whatever its revision).
 - /favicon.ico: the browser asks for it at a navigation when the page has no icon link (TiddlyWiki
   sets its icon once started): answered here, empty, rather than by the worker.
 - Anything else (a tiddler's contents, a save, a delete, the page published): the network only.
@@ -57,7 +58,7 @@ function isFile(url) {
 	return /\/_plugins\/[^/]+\.js$/.test(url.pathname) && url.searchParams.has("v");
 }
 function isData(url) {
-	return url.origin === self.location.origin && (url.pathname === "/status" || url.pathname === "/recipes/default/tiddlers.json");
+	return url.origin === self.location.origin && (url.pathname === "/status" || url.pathname === "/recipes/default/tiddlers.json" || url.pathname === "/manifest.webmanifest");
 }
 
 self.addEventListener("fetch",function(event) {

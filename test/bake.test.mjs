@@ -335,7 +335,7 @@ const refusals = [];
 for (const [method, path, body] of [
   ["GET", "/"], ["GET", "/status"], ["GET", "/recipes/default/tiddlers.json"], ["GET", "/recipes/default/tiddlers/x"],
   ["PUT", "/recipes/default/tiddlers/x", JSON.stringify({ title: "x", text: "t" })], ["DELETE", "/bags/default/tiddlers/x"],
-  ["OPTIONS", "/recipes/default/tiddlers/x"], ["HEAD", "/index.html"]
+  ["OPTIONS", "/recipes/default/tiddlers/x"], ["HEAD", "/index.html"], ["GET", "/manifest.webmanifest"], ["GET", "/_app/icon-192.png"]
 ]) {
   const res = await mfClosed.dispatchFetch(baseClosed + path, { method, body, headers: body ? { "Content-Type": "application/json" } : {} });
   const text = await res.text();
@@ -480,6 +480,64 @@ function withAssets(extra = {}) {
   const none = await mfNoAsset.dispatchFetch(root + "/"), noneText = await none.text();
   check("the worker alone (pasted, without the empty wiki) and no index.html: 404 saying to upload one", none.status === 404 && noneText.includes("index.html") && /TiddlyWeb/.test(noneText), `status ${none.status}: ${noneText.slice(0, 80)}`);
   await mfNoAsset.dispose();
+}
+
+// --- The wiki as an installable app ---------------------------------------------------------------
+// The page carries the app's manifest (design 1.12), which the worker serves: the wiki's title as
+// the name, standalone, icons at 192 and 512 px inside the manifest as data URLs (a browser fetches
+// a manifest's icons without cookies, which Access refuses). The link says use-credentials, for the
+// same reason. The public site gets a copy in the bucket, with the icons at their own addresses.
+const pngSize = base64 => {
+  const bytes = Buffer.from(base64, "base64");
+  if (bytes.length < 24 || bytes.toString("latin1", 1, 4) !== "PNG") return null;
+  return { width: bytes.readUInt32BE(16), height: bytes.readUInt32BE(20) };
+};
+const icon = (manifest, size) => ((manifest && manifest.icons) || []).find(i => i.sizes === `${size}x${size}`);
+const dataPng = src => /^data:image\/png;base64,/.test(src || "") ? src.slice("data:image/png;base64,".length) : null;
+{
+  const mfApp = withAssets();
+  const root = (await mfApp.ready).toString().replace(/\/$/, "");
+  const store = await mfApp.getR2Bucket("WIKI_BUCKET");
+  const page = await (await mfApp.dispatchFetch(root + "/")).text();
+  check("the page links the app's manifest, with the site's cookies, and carries a theme colour and an iOS icon",
+    page.includes('<link rel="manifest" href="/manifest.webmanifest" crossorigin="use-credentials">') && /<meta name="theme-color" content="#[0-9a-f]{6}">/.test(page) && page.includes('<link rel="apple-touch-icon" href="/_app/icon-192.png">'));
+  const res = await mfApp.dispatchFetch(root + "/manifest.webmanifest");
+  const manifest = await res.json().catch(() => null);
+  check("the manifest is served as one: JSON, its content type, cached a day by the browser", res.status === 200 && !!manifest && (res.headers.get("Content-Type") || "").startsWith("application/manifest+json") && /max-age=86400/.test(res.headers.get("Cache-Control") || ""),
+    `status ${res.status}, ${res.headers.get("Content-Type")}, ${res.headers.get("Cache-Control")}`);
+  check("...complete: a name (the wiki's title, TiddlyWiki's own until set), start and scope at /, standalone, colours",
+    manifest?.name === "My TiddlyWiki" && manifest?.start_url === "/" && manifest?.scope === "/" && manifest?.display === "standalone" && /^#[0-9a-f]{6}$/.test(manifest?.theme_color || "") && /^#[0-9a-f]{6}$/.test(manifest?.background_color || ""), JSON.stringify(manifest).slice(0, 200));
+  const i192 = icon(manifest, 192) || {}, i512 = icon(manifest, 512) || {};
+  check("...two PNG icons, 192 and 512 px, inside the manifest as data URLs, for any purpose and maskable",
+    i192.type === "image/png" && i512.type === "image/png" && pngSize(dataPng(i192.src) || "")?.width === 192 && pngSize(dataPng(i512.src) || "")?.width === 512 && pngSize(dataPng(i512.src) || "")?.height === 512 && /maskable/.test(i512.purpose || ""),
+    `${JSON.stringify(pngSize(dataPng(i192.src) || ""))} ${JSON.stringify(pngSize(dataPng(i512.src) || ""))}`);
+  // The public site's copy: written with the page (after the answer), icons at their own addresses (no Access there)
+  let copy = null;
+  for (let i = 0; i < 20 && !copy; i++) { copy = await store.get("manifest.webmanifest"); if (!copy) await new Promise(r => setTimeout(r, 100)); }
+  const copyJson = copy ? await copy.json().catch(() => null) : null;
+  check("a page build writes the manifest into the bucket for the public site, with the icons at /_app/ addresses, and the default icons there",
+    !!copyJson && copyJson.start_url === "/" && icon(copyJson, 192)?.src === "/_app/icon-192.png" && icon(copyJson, 512)?.src === "/_app/icon-512.png" && !!(await store.head("_app/icon-192.png")) && !!(await store.head("_app/icon-512.png")) && (copy?.httpMetadata?.contentType || "").startsWith("application/manifest+json"),
+    JSON.stringify(copyJson).slice(0, 160));
+  // The wiki's title, once set: the name follows, and a short name when it's short
+  await store.put("recipes/default/tiddlers/$:/SiteTitle", JSON.stringify({ title: "$:/SiteTitle", text: "Notes" }), { customMetadata: { revision: "1", layout: "flat" } });
+  const named = await (await mfApp.dispatchFetch(root + "/manifest.webmanifest")).json();
+  await store.put("recipes/default/tiddlers/$:/SiteTitle", JSON.stringify({ title: "$:/SiteTitle", text: "A much longer title than fits" }), { customMetadata: { revision: "2", layout: "flat" } });
+  const longNamed = await (await mfApp.dispatchFetch(root + "/manifest.webmanifest")).json();
+  check("the wiki's title is the app's name, and its short name when it's 12 characters or fewer", named?.name === "Notes" && named?.short_name === "Notes" && longNamed?.name === "A much longer title than fits" && longNamed?.short_name === undefined,
+    `${JSON.stringify(named?.name)}/${JSON.stringify(named?.short_name)} ${JSON.stringify(longNamed?.short_name)}`);
+  // The owner's own icons, from the bucket
+  const own = Buffer.from(dataPng(i192.src) || "iVBORw0KGgo=", "base64");
+  own[own.length - 5] ^= 0xff;   // not the default's bytes (the test doesn't need a valid picture)
+  await store.put("_app/icon-192.png", new Uint8Array(own).buffer, { httpMetadata: { contentType: "image/png" } });
+  const customised = await (await mfApp.dispatchFetch(root + "/manifest.webmanifest")).json();
+  check("the owner's icon in the bucket (_app/icon-192.png) replaces the default in the manifest", Buffer.from(dataPng((icon(customised, 192) || {}).src) || "", "base64").equals(own) && dataPng((icon(customised, 512) || {}).src) === dataPng(i512.src));
+  const served = await mfApp.dispatchFetch(root + "/_app/icon-192.png");
+  const servedBytes = Buffer.from(await served.arrayBuffer());
+  check("...and is what /_app/icon-192.png serves (the iOS icon), as PNG, cached", served.status === 200 && servedBytes.equals(own) && (served.headers.get("Content-Type") || "").startsWith("image/png") && /max-age/.test(served.headers.get("Cache-Control") || ""));
+  await store.delete("_app/icon-192.png");
+  const fallback = await mfApp.dispatchFetch(root + "/_app/icon-512.png");
+  check("without an icon of the owner's, /_app/icon-<size>.png serves the default", fallback.status === 200 && pngSize(Buffer.from(await fallback.arrayBuffer()).toString("base64"))?.width === 512);
+  await mfApp.dispose();
 }
 
 console.log(`\n${results.filter(Boolean).length}/${results.length} passed`);

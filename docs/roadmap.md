@@ -9,25 +9,14 @@ A TiddlyWiki anyone hosts on Cloudflare's free plan in about ten minutes, from t
 ## Who it's for
 
 1. **A public wiki** — a blog, documentation, notes you share — edited on a private admin site. What the project does today.
-2. **A private notebook** — the admin site only, behind Access, no domain to own, edited offline, opened offline (done: README 2.1 and 3).
+2. **A private notebook** — the admin site only, behind Access, no domain to own, edited offline, opened offline, installed as an app (done: README 2.1 and 3).
 3. **Both at once, or one then the other:** a private wiki that later gets a public site, by adding one setting, with nothing to migrate (done, design 2.15).
 
 ## Next, in order
 
 Each step is one pull request, with its tests, its README section, its design entry and its changelog line. "Done when" is written as behaviour, and becomes the list of tests when the step starts.
 
-### 1. The admin wiki installable as an app
-
-**Why now:** with the service worker in place, what's missing for the browser to install the wiki as an app is a manifest and icons: the install button in Chrome's address bar, "Add to Home screen" on Android, its own window without the browser's bars. And an installed site is one Chrome grants persistent storage to by itself — the strongest answer to a browser clearing the outbox when short of space.
-
-**Done when:**
-- The page carries the app's manifest, served by the worker: the wiki's title as the name, start at `/`, standalone, a theme colour, icons at 192 and 512 px.
-- Behind Cloudflare Access the manifest is fetched with the session's cookie (`crossorigin="use-credentials"` on the link; the icons inside the manifest as data URLs, so nothing is fetched without it) — tested, since a manifest the browser can't fetch means no install, silently.
-- A plain icon of our own by default; the owner's own icons when `_app/icon-192.png` and `_app/icon-512.png` are in the bucket.
-- The manifest costs no worker request per page load (the budget suite says so).
-- README: "Installing the wiki as an app", with the iOS route (Safari's share menu).
-
-### 2. A setup check, in the Cloudflare tab
+### 1. A setup check, in the Cloudflare tab
 
 **Why now:** Access and the zone rules are set up by hand, and will stay so with the button; today a missing rule shows up as a `403` or a CORS error found by trial.
 
@@ -35,7 +24,7 @@ Each step is one pull request, with its tests, its README section, its design en
 - The tab reports each piece: Access on, the public site reachable at `PUBLIC_WIKI_URL` with the rewrite rule and the CORS header, backups set up, the queue bound; each missing one points at its README section.
 - It runs on demand (a button), so it costs nothing at page load.
 
-### 3. The Deploy to Cloudflare button
+### 2. The Deploy to Cloudflare button
 
 **Why last:** the button is the front door, so it goes on once what's behind it is in place: the private wiki, offline editing, cold starts and the setup check, each of which changes what the README's button section has to say. It clones the repository into the user's GitHub account, creates the bucket and the queue from `wrangler.toml`, asks for the secrets and deploys; it needs the repository public.
 
