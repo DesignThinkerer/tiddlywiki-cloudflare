@@ -175,28 +175,44 @@ export function createWatcher(site) {
   const requests = [], pageErrors = [];
   async function watch(page, tag) {
     page.on("pageerror", e => pageErrors.push(`${tag}: ${e.message}`));
+    // Two streams that aren't ordered with each other: Playwright's request events (one entry each)
+    // and the DevTools session's events, which say how each request ended (from the cache, from the
+    // network, or failed). Per URL, entries and outcomes are paired in order, whichever comes first
+    // waiting for the other: a request's outcome can't land on an older request for the same URL (a
+    // load before this one, served by the network), which is what matching the latest entry did when
+    // the outcome arrived first — a race lost on a slow machine, both files of a reload at once. (Seen
+    // failing, and this passing, with Playwright's event delayed by 30 ms here.)
+    const entries = new Map(), outcomes = new Map();   // url -> [{ entry }] / [{ cached, at }], waiting for the other
+    const queue = (map, url) => { if (!map.has(url)) map.set(url, []); return map.get(url); };
+    const pair = url => {
+      const es = entries.get(url), os = outcomes.get(url);
+      while (es && es.length && os && os.length) es.shift().cached = os.shift().cached;
+    };
     page.on("request", q => {
       const url = new URL(q.url());
       const origin = url.origin === site.base ? "worker" : url.origin === site.pub ? "public" : "other";
-      requests.push({ tag, origin, method: q.method(), url: q.url(), path: decodeURIComponent(url.pathname) + url.search, headers: q.headers(), cached: false });
+      const entry = { tag, origin, method: q.method(), url: q.url(), path: decodeURIComponent(url.pathname) + url.search, headers: q.headers(), cached: false, at: Date.now() };
+      requests.push(entry);
+      const os = outcomes.get(entry.url);
+      if (os) while (os.length && entry.at - os[0].at > 10000) os.shift();   // (an outcome that never got an entry)
+      queue(entries, entry.url).push(entry);
+      pair(entry.url);
     });
     const cdp = await page.context().newCDPSession(page);
     await cdp.send("Network.enable");
-    const urls = new Map(), marked = new Set();
-    const markCached = id => {
-      if (marked.has(id) || !urls.has(id)) return;
-      marked.add(id);
-      for (let i = requests.length - 1; i >= 0; i--) {
-        const r = requests[i];
-        if (r.tag === tag && r.url === urls.get(id) && !r.cached) {
-          r.cached = true;
-          return;
-        }
-      }
+    const urls = new Map(), ended = new Set();
+    const end = (id, cached) => {
+      if (ended.has(id) || !urls.has(id)) return;
+      ended.add(id);
+      const url = urls.get(id), now = Date.now(), es = entries.get(url);
+      if (es) while (es.length && now - es[0].at > 10000) es.shift();   // (an entry that never got an outcome: a redirect's first address)
+      queue(outcomes, url).push({ cached, at: now });
+      pair(url);
     };
     cdp.on("Network.requestWillBeSent", e => urls.set(e.requestId, e.request.url));
-    cdp.on("Network.requestServedFromCache", e => markCached(e.requestId));
-    cdp.on("Network.responseReceived", e => { if (e.response.fromDiskCache) markCached(e.requestId); });
+    cdp.on("Network.requestServedFromCache", e => end(e.requestId, true));
+    cdp.on("Network.responseReceived", e => end(e.requestId, !!e.response.fromDiskCache));
+    cdp.on("Network.loadingFailed", e => end(e.requestId, false));
   }
   return { requests, pageErrors, watch };
 }
