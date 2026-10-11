@@ -23,7 +23,8 @@ export function pluginFileKey(title) {
   return `${PLUGIN_FILE_DIR}${title}.js`;
 }
 
-// Encoded the same way as the tiddler URLs the public wiki already loads
+// Encoded the same way as the tiddler URLs the public wiki already loads; on the public site, or
+// root-relative (this site, the worker) for a private wiki
 function pluginFileUrl(env, title, revision) {
   return publicUrl(env, `/${PLUGIN_FILE_DIR}${encodeURIComponent(title)}.js?v=${encodeURIComponent(revision)}`);
 }

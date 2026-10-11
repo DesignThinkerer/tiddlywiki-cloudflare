@@ -37,19 +37,14 @@ exports.startup = function() {
 	}
 	var proto = Adaptor.prototype,
 		wiki = $tw.wiki,
-		publicBase = lib.publicBase(),
 		backupAsked = 0,          // when the worker last answered
 		backupProblem = null,     // the problem the alert was about, so a dismissed one stays dismissed
 		syncRunning = false;      // a full backup is going: asked at each list request meanwhile
 	proto.cfworkerBackupAlert = true;
 
 	// Only the admin site asks (a public tab reads the list from the public site, which has no answer)
-	function onAdminSite(adaptor) {
-		return !!publicBase && lib.siteOf(adaptor.host) !== lib.siteOf(publicBase);
-	}
-
 	function askBackupStatus(adaptor) {
-		return onAdminSite(adaptor) &&
+		return lib.onAdminSite(adaptor.host) &&
 			(!backupAsked || syncRunning || wiki.tiddlerExists(BACKUP_ALERT) || Date.now() - backupAsked >= BACKUP_CHECK_INTERVAL);
 	}
 

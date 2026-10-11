@@ -10,7 +10,7 @@ its own file, but with the core in a separate file:
   came with the page (the themes, TiddlyWeb: plugins the worker doesn't store), installed plugins that
   have raw markup, and your raw markup tiddlers; never one that was deleted, here or in another tab. TiddlyWiki writes everything else: the title, the
   language, the raw markup, the content for browsers without JavaScript. The core is loaded at the
-  end, from the public site.
+  end, from the public site (from the worker, at a root-relative URL, in a private wiki).
 - The core file: TiddlyWiki's own $:/core/templates/tiddlywiki5.js (boot code, library modules,
   $:/core), sent once per TiddlyWiki version.
 
@@ -84,11 +84,13 @@ exports.startup = function() {
 		source = JSON.parse(wiki.getTiddlerText(SOURCE,"") || "null");
 	} catch(e) {}
 	// Only on the admin site, with the list sync ($:/cfworker/list-sync.js)
-	if($tw.safeMode || !adaptor || !syncer || !source || !publicBase || lib.siteOf(adaptor.host) === lib.siteOf(publicBase) || typeof adaptor.cfworkerListed !== "function") {
+	if($tw.safeMode || !adaptor || !syncer || !source || !lib.onAdminSite(adaptor.host) || typeof adaptor.cfworkerListed !== "function") {
 		return;
 	}
+	// The core file is loaded from the public site, or from this site (root-relative, the worker)
+	// in a private wiki: the same URL the worker expects (page.js, coreFileUrl)
 	var coreVersion = $tw.version + "-" + CORE_FORMAT,
-		coreUrl = publicBase + "_plugins/tiddlywikicore.js?v=" + encodeURIComponent(coreVersion),
+		coreUrl = (publicBase || "/") + "_plugins/tiddlywikicore.js?v=" + encodeURIComponent(coreVersion),
 		published = source.fingerprint || "",   // what the page this tab loaded was built from
 		storedShell = source.shell || "",      // the stored shell it was built from, or this tab last published over (its version)
 		storedCore = source.core || "",

@@ -366,27 +366,34 @@ check("...not on a deployed hostname", decide("https://admin.example.com/", {}, 
 check("...and nothing else does (not ACCESS = no), even locally", decide("http://127.0.0.1:8787/", {}, { ACCESS: "no" }) === true && decide("http://127.0.0.1:8787/", {}, { ACCESS: "" }) === true);
 
 // --- The public site's address --------------------------------------------------------------------
-// PUBLIC_WIKI_URL is required: the page loads its plugin files and TiddlyWiki's core from it, so a
-// wiki must never fall back to someone else's site. Without it, or with one that isn't a site's
-// address, every request answers 500 saying so, and nothing is built or stored.
-async function withPublicUrl(value, run) {
+// PUBLIC_WIKI_URL is optional. Without it the worker is a private wiki (README 2.1): the page, the
+// core file and the plugin files are served by the worker itself, at root-relative URLs, the page
+// carries an empty public address, and nothing is purged. Set, it must be a site's address: the page
+// loads its plugin files and TiddlyWiki's core from it, so a wiki must never fall back to someone
+// else's site. With one that isn't, every request answers 500 saying so, and nothing is built or stored.
+async function withPublicUrl(value, run, bindings = {}) {
+  const calls = [];
   const instance = new Miniflare({
     modules: true, scriptPath: WORKER, modulesRules: MODULE_RULES, compatibilityDate: "2024-09-23", r2Buckets: ["WIKI_BUCKET"], port: 0,
-    bindings: { ACCESS: "off", ...(value === undefined ? {} : { PUBLIC_WIKI_URL: value }) },
-    outboundService: async () => new Response("{}", { status: 404 }),
+    bindings: { ACCESS: "off", ...(value === undefined ? {} : { PUBLIC_WIKI_URL: value }), ...bindings },
+    outboundService: async req => { calls.push(req.url); return new Response("{}", { status: 404 }); },
   });
   const root = (await instance.ready).toString().replace(/\/$/, "");
   const store = await instance.getR2Bucket("WIKI_BUCKET");
   await store.put("index.html", html("engine"));
-  try { return await run(root, instance, store); } finally { await instance.dispose(); }
+  try { return await run(root, instance, store, calls); } finally { await instance.dispose(); }
 }
-await withPublicUrl(undefined, async (root, instance, store) => {
+await withPublicUrl(undefined, async (root, instance, store, calls) => {
   const page = await instance.dispatchFetch(root + "/"), pageText = await page.text();
-  const save = await instance.dispatchFetch(root + "/recipes/default/tiddlers/x", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title: "x", text: "t" }) });
+  check("PUBLIC_WIKI_URL missing: a private wiki; the page is built and served, with an empty public address", page.status === 200 && pageText.includes('"title":"$:/cfworker/public-url","text":""') && !!(await store.head("baked.html")), `status ${page.status}`);
+  const plugin = "$:/plugins/test/private";
+  const save = await instance.dispatchFetch(root + "/recipes/default/tiddlers/" + encodeURIComponent(plugin), { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title: plugin, type: "application/json", "plugin-type": "plugin", text: '{"tiddlers":{}}' }) });
   await save.text();
-  check("PUBLIC_WIKI_URL missing: the page answers 500 and says which variable", page.status === 500 && pageText.includes("PUBLIC_WIKI_URL"), `status ${page.status}: ${pageText.slice(0, 60)}`);
-  check("...a save too, and nothing is built or stored", save.status === 500 && !(await store.head("baked.html")) && !(await store.head("recipes/default/tiddlers/x")), `status ${save.status}`);
-});
+  const bakedObj = await store.get("baked.html"), baked = bakedObj ? await bakedObj.text() : "";
+  check("...a plugin saved gets its file, which the page loads from this site at a root-relative URL", save.status === 204 && !!(await store.head(`_plugins/${plugin}.js`)) && baked.includes(`<script src="/_plugins/${encodeURIComponent(plugin)}.js?v=`), `status ${save.status}: ${baked.match(/<script src="[^"]*"/)?.[0]}`);
+  await new Promise(r => setTimeout(r, 300));
+  check("...and nothing was purged, though the purge settings are there: no public site to purge", !calls.some(url => url.includes("purge_cache")), calls.join(", "));
+}, { CF_ZONE_ID: "zone", CF_API_TOKEN: "token" });
 for (const [value, why] of [["wiki.example.com", "without https://"], ["https://wiki.example.com/wiki", "with a path"]]) {
   await withPublicUrl(value, async (root, instance) => {
     const page = await instance.dispatchFetch(root + "/"), pageText = await page.text();
@@ -400,8 +407,9 @@ await withPublicUrl("https://wiki.example.com/", async (root, instance) => {
 // The check itself, including the case Miniflare can't show: the address being this worker's own
 const site = (value, origin = "https://admin.example.com") => { try { return publicSiteError(value === undefined ? {} : { PUBLIC_WIKI_URL: value }, origin); } catch { return "error"; } };
 check("the public site's address: a site is accepted, with or without a trailing slash", site("https://wiki.example.com") === null && site("https://wiki.example.com/") === null && site("http://127.0.0.1:8787") === null);
+check("...and so is none at all, or blank: a private wiki", site(undefined) === null && site("") === null && site("  ") === null);
 check("...the worker's own address is refused, saying so", /own address|this worker/.test(site("https://admin.example.com") || "") && /own address|this worker/.test(site("https://admin.example.com/", "https://admin.example.com") || ""));
-check("...and so are a missing value, no scheme, another scheme, a path, a query", [undefined, "", "wiki.example.com", "ftp://wiki.example.com", "https://wiki.example.com/wiki", "https://wiki.example.com/?x"].every(v => typeof site(v) === "string" && site(v).includes("PUBLIC_WIKI_URL")));
+check("...and so are no scheme, another scheme, a path, a query", ["wiki.example.com", "ftp://wiki.example.com", "https://wiki.example.com/wiki", "https://wiki.example.com/?x"].every(v => typeof site(v) === "string" && site(v).includes("PUBLIC_WIKI_URL")));
 
 // --- The first visit ------------------------------------------------------------------------------
 // A new bucket is empty. The build makes seed/empty.html (an empty TiddlyWiki with the TiddlyWeb

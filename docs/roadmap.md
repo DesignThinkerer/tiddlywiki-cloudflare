@@ -9,27 +9,14 @@ A TiddlyWiki anyone hosts on Cloudflare's free plan in about ten minutes, from t
 ## Who it's for
 
 1. **A public wiki** — a blog, documentation, notes you share — edited on a private admin site. What the project does today.
-2. **A private notebook** — the admin site only, behind Access, no domain to own, edited offline when needed. Steps 1, 3 and 4 below.
-3. **Both at once, or one then the other:** a private wiki that later gets a public site, by adding one setting, with nothing to migrate. Step 1 has to keep that path open.
+2. **A private notebook** — the admin site only, behind Access, no domain to own (done: README 2.1), edited offline when needed (steps 2 and 3 below).
+3. **Both at once, or one then the other:** a private wiki that later gets a public site, by adding one setting, with nothing to migrate (done, design 2.15).
 
 ## Next, in order
 
 Each step is one pull request, with its tests, its README section, its design entry and its changelog line. "Done when" is written as behaviour, and becomes the list of tests when the step starts.
 
-### 1. A private wiki, without a public site
-
-**Why now:** the smallest change that opens the project to the second audience, and what the offline work builds on: a private wiki is what people want to edit offline. The button (step 2) needs a path with no domain, too.
-
-**Done when:**
-- `PUBLIC_WIKI_URL` is optional. Unset, the worker is a private wiki; set wrongly (no `https://`, a path, the worker's own address), still refused as it is today.
-- Without it, the page, TiddlyWiki's core file, the plugin files and tiddler contents are all served by the worker, behind Access, with root-relative URLs; a reload still reads from the device copy, so it costs no more requests than today.
-- The admin wiki's modules know they're on the admin site without a public address: the backup alert, the Cloudflare tab and the page publisher work; the published page carries relative URLs, and the worker's check of the shell accepts them.
-- No purge is attempted: there's nothing to purge.
-- Setting `PUBLIC_WIKI_URL` on a private wiki makes it public at the next page load, with no other change.
-- README: a "private wiki" setup path (bucket, queue, worker, Access, two settings; no domain, no zone rules), and the introduction no longer says "public by design" for every wiki.
-- Tests: a browser suite running the worker with no public site at all, and the bake suite's `PUBLIC_WIKI_URL` checks rewritten.
-
-### 2. The Deploy to Cloudflare button
+### 1. The Deploy to Cloudflare button
 
 **Why now:** the ten minutes. The button clones the repository into the user's GitHub account, creates the bucket and the queue from `wrangler.toml`, asks for the secrets and deploys; it needs the repository public.
 
@@ -40,7 +27,7 @@ Each step is one pull request, with its tests, its README section, its design en
 - Someone with a fresh Cloudflare account gets a working private wiki from the button without editing anything; a public one with the README's rules afterwards.
 - The repository is public.
 
-### 3. Editing offline, with the page open
+### 2. Editing offline, with the page open
 
 **Why now:** the private audience. The device copy already holds every tiddler for reading; what's missing is saving without a network.
 
@@ -51,9 +38,9 @@ Each step is one pull request, with its tests, its README section, its design en
 - Back online, the outbox is sent in order through the conflict guard: a tiddler changed elsewhere meanwhile gets a conflict copy and an alert, as today.
 - Tests: a browser suite with the network cut and restored under TiddlyWiki.
 
-### 4. A service worker, for cold starts
+### 3. A service worker, for cold starts
 
-**Why now:** after step 3 a page already open works offline; opening the wiki with no network still needs the page, the core file and the plugins from somewhere.
+**Why now:** after step 2 a page already open works offline; opening the wiki with no network still needs the page, the core file and the plugins from somewhere.
 
 **Done when:**
 - The admin wiki opens with no network, from a cache: page, core file, plugin files; the tiddlers from the device copy.
@@ -61,17 +48,13 @@ Each step is one pull request, with its tests, its README section, its design en
 - A Cloudflare Access login page is never cached: only answers that are the worker's own are kept (the page's ETag, the `text/html` check on a navigation).
 - Tests: a browser suite registering the service worker, then reloading offline.
 
-### 5. A setup check, in the Cloudflare tab
+### 4. A setup check, in the Cloudflare tab
 
 **Why now:** the button leaves Access and the zone rules to the user; today a missing rule shows up as a `403` or a CORS error found by trial.
 
 **Done when:**
 - The tab reports each piece: Access on, the public site reachable at `PUBLIC_WIKI_URL` with the rewrite rule and the CORS header, backups set up, the queue bound; each missing one points at its README section.
 - It runs on demand (a button), so it costs nothing at page load.
-
-### Housekeeping
-
-- Design 2 lacks one decision taken along the way: tags as text in the backup files was considered and rejected — the files stay the stored tiddler as it is, and the conversion happens at import (design 1.7). To add with the next change to design.md.
 
 ## Parked
 

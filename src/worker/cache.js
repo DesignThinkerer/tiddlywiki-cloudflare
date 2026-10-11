@@ -1,8 +1,9 @@
 // The public site's cache: the public wiki is served straight from the R2 bucket through
 // Cloudflare's cache, so after a change the worker purges exactly the public URLs that serve it
-// (single-file purge, not purge_everything; design 1.6).
+// (single-file purge, not purge_everything; design 1.6). A private wiki has no public site, so
+// nothing to purge.
 
-import { publicUrl, purges } from "./settings.js";
+import { publicSite, publicUrl, purges } from "./settings.js";
 
 // The query string is part of the cache key, so the tiddler list is purged under each URL
 // TiddlyWiki requests it with: the TiddlyWiki 5.4 filter, the filter of earlier versions, and bare.
@@ -31,7 +32,7 @@ export function listPurgeUrls(env) {
 
 export async function purgePublicCache(env, urls) {
   const zone = purges(env);
-  if (!zone || urls.length === 0) return;
+  if (!zone || !publicSite(env) || urls.length === 0) return;
   try {
     const res = await fetch(`https://api.cloudflare.com/client/v4/zones/${zone.zoneId}/purge_cache`, {
       method: "POST",

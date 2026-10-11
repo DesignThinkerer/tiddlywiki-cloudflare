@@ -3,7 +3,7 @@
 //
 // | variable             | read by                 |
 // |----------------------|-------------------------|
-// | PUBLIC_WIKI_URL      | publicSiteError, publicUrl (required) |
+// | PUBLIC_WIKI_URL      | publicSiteError, publicSite, publicUrl (optional: none is a private wiki) |
 // | ACCESS               | accessCheckOff (tests and local runs only) |
 // | CONFLICT_GUARD       | conflictGuardEnabled    |
 // | GITHUB_REPO, GITHUB_TOKEN, GITHUB_BRANCH | github |
@@ -13,17 +13,19 @@
 
 // PUBLIC_WIKI_URL, the public site's address (the bucket's custom domain, README 2.2): the page
 // loads its plugin files and TiddlyWiki's core file from it, the list sync reads tiddlers from
-// it, and purges name its URLs. Required, with no default: a wiki must never load its code from a
-// site that isn't its own. Checked at every request (index.js), so a worker without it does nothing
-// but say so.
+// it, and purges name its URLs. Optional: without it the wiki is private (README 2.1), the worker
+// serves all of that itself (publicUrl gives root-relative URLs), the page carries no public
+// address, and there is nothing to purge. Set, it has to be a site's address, with no default: a
+// wiki must never load its code from a site that isn't its own. Checked at every request
+// (index.js), so a worker with a wrong one does nothing but say so.
 //
 // Why the setting can't be used, or null. requestOrigin: where the request came to, which the
 // public site can't be: the worker isn't the public site, and the browser modules take a page at
 // the public address for the public site's (read-only, publishing nothing).
 export function publicSiteError(env, requestOrigin) {
-  const value = env.PUBLIC_WIKI_URL;
+  const value = publicSite(env);
   const expected = "the public site's address, https://<its hostname> (README 2.5)";
-  if (!value) return `PUBLIC_WIKI_URL isn't set: the worker needs ${expected}.`;
+  if (!value) return null;
   let url;
   try { url = new URL(value); } catch { url = null; }
   if (!url || (url.protocol !== "https:" && url.protocol !== "http:")) return `PUBLIC_WIKI_URL is "${value}", not ${expected}.`;
@@ -36,9 +38,15 @@ export function publicSiteError(env, requestOrigin) {
   return null;
 }
 
-// A URL on the public site (PUBLIC_WIKI_URL, checked before any request is handled)
+// The public site's address as set, trimmed, or "" for a private wiki
+export function publicSite(env) {
+  return String(env.PUBLIC_WIKI_URL || "").trim();
+}
+
+// A URL on the public site (PUBLIC_WIKI_URL, checked before any request is handled): the path
+// itself, root-relative, for a private wiki, where the worker serves it
 export function publicUrl(env, path) {
-  return env.PUBLIC_WIKI_URL.replace(/\/+$/, "") + path;
+  return publicSite(env).replace(/\/+$/, "") + path;
 }
 
 // ACCESS = "off" lets requests through without Cloudflare Access (access.js), for the tests and
