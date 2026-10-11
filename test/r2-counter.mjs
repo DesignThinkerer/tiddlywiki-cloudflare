@@ -45,7 +45,8 @@ function kind(key) {
   if (key.startsWith("_repair/")) return "repair";
   if (key === "_backup/status.json") return "backup status";
   if (key.startsWith("_backup/")) return "backup copy";
-  return key;   // baked.html, index.html, status...
+  if (key.startsWith("_app/")) return "app icon";
+  return key;   // baked.html, index.html, status, manifest.webmanifest...
 }
 
 // run: where to record the calls of a queue run too

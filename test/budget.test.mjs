@@ -12,12 +12,12 @@ import { addTiddler, createChecks, finish, launchBrowser, listen, readWikiFile, 
 const site = await startSite({ index: readWikiFile(), publicStatus: true, privateWiki: true });
 const { check, results } = createChecks();
 const pageErrors = [];
-// Every request that reaches the worker: { method, path, status, conditional }
+// Every request that reaches the worker: { method, path, status, conditional, cookie (sent with the site's cookies) }
 const arrived = [];
 const proxy = http.createServer((req, res) => {
   const target = new URL(req.url, site.base);
   const out = http.request({ hostname: target.hostname, port: target.port, path: req.url, method: req.method, headers: { ...req.headers, host: target.host } }, answer => {
-    arrived.push({ method: req.method, path: req.url.split("?")[0], status: answer.statusCode, conditional: !!(req.headers["if-none-match"] || req.headers["if-modified-since"]) });
+    arrived.push({ method: req.method, path: req.url.split("?")[0], status: answer.statusCode, conditional: !!(req.headers["if-none-match"] || req.headers["if-modified-since"]), cookie: /session=yes/.test(req.headers.cookie || "") });
     res.writeHead(answer.statusCode, answer.headers);
     answer.pipe(res);
   });
@@ -27,6 +27,8 @@ const proxy = http.createServer((req, res) => {
 const FRONT = await listen(proxy);
 const browser = await launchBrowser({ serviceWorkers: "allow" });
 const context = await browser.newContext();
+// A cookie on the admin site, as Cloudflare Access sets one: what the browser sends it with, and what it doesn't
+await context.addCookies([{ name: "session", value: "yes", url: FRONT + "/" }]);
 const page = await context.newPage();
 page.on("pageerror", e => pageErrors.push(e.message));
 // A visibility the test controls (headless Chromium doesn't hide a tab for real): window.__hidden, then a visibilitychange event
@@ -50,11 +52,22 @@ await waitFor(async () => !!(await site.bucket.head("_page/shell.html")), 30000)
 await sleep(1500);
 const first = since(0);
 // (The browser also asks for /favicon.ico at this first visit, before the service worker is in charge: from then on the service worker answers it)
-check("the first visit: the page, the status file, the tiddler list, the service worker's script once, the core file and the page published, and nothing else but the browser's favicon request",
+check("the first visit: the page, the status file, the tiddler list, the service worker's script once, the core file and the page published, and nothing else but the browser's favicon and manifest requests",
   first.filter(r => r.startsWith("GET / ")).length === 1 && first.includes("GET /status 200") && first.some(r => r.startsWith("GET /recipes/default/tiddlers.json")) &&
   first.filter(r => r.startsWith("GET /sw.js")).length === 1 && first.includes("PUT /page/core 204") && first.includes("PUT /page/shell 204") &&
-  first.every(r => /^GET \/ |^GET \/status |^GET \/recipes\/default\/tiddlers.json |^GET \/sw.js |^PUT \/page\/(core|shell) |^GET \/favicon.ico /.test(r)),
+  first.every(r => /^GET \/ |^GET \/status |^GET \/recipes\/default\/tiddlers.json |^GET \/sw.js |^GET \/manifest.webmanifest |^PUT \/page\/(core|shell) |^GET \/favicon.ico /.test(r)),
   first.join(", "));
+// The app's manifest, as the browser fetches it for an install (through the DevTools protocol: a headless browser fetches none by itself)
+const cdp = await context.newCDPSession(page);
+const beforeManifest = arrived.length;
+const appManifest = await cdp.send("Page.getAppManifest");
+const manifestFetch = arrived.slice(beforeManifest).find(r => r.path === "/manifest.webmanifest");
+check("the browser's fetch of the app's manifest reaches the worker with the site's cookies, as Cloudflare Access needs (a manifest it can't fetch means no install, silently), and reads clean",
+  !!manifestFetch && manifestFetch.cookie && manifestFetch.status === 200 && appManifest.url.endsWith("/manifest.webmanifest") && (appManifest.errors || []).length === 0 && JSON.parse(appManifest.data || "{}").name === "My TiddlyWiki",
+  `${JSON.stringify(manifestFetch)} ${JSON.stringify(appManifest.errors)}`);
+const installability = await cdp.send("Page.getInstallabilityErrors").catch(() => null);
+check("...and the browser finds the wiki installable (the one thing in its way here is the test browser's incognito mode)",
+  !!installability && installability.installabilityErrors.every(e => e.errorId === "in-incognito"), JSON.stringify(installability && installability.installabilityErrors));
 await addTiddler(page, { title: "A note", text: "so the list isn't empty" });
 await settle(page);
 

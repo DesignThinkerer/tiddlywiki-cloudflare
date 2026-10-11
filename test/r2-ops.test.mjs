@@ -37,17 +37,23 @@ const BUDGETS = {
   // Once per wiki: the page request's two reads, the engine and the status file written (create-only), the
   // engine looked up again, then the page build: its sources, the engine read in full, the missing list
   // made from the stored tiddlers (none), the page written
-  "first visit of a new wiki (empty bucket)": { "get baked.html": 1, "head index.html": 3, "put index.html": 1, "put status": 1, "get page shell": 1, "head core file": 1, "get index.html": 1, "get list": 1, "list tiddlers": 1, "get repair": 1, "put list": 2, "head baked.html": 1, "put baked.html": 1 },
+  // ...and the app's files for the public site, once: the manifest (the wiki's title read for it) and the two default icons
+  "first visit of a new wiki (empty bucket)": { "get baked.html": 1, "head index.html": 3, "put index.html": 1, "put status": 1, "get page shell": 1, "head core file": 1, "get index.html": 1, "get list": 1, "list tiddlers": 1, "get repair": 1, "put list": 2, "head baked.html": 1, "put baked.html": 1,
+    "head manifest.webmanifest": 1, "get tiddler": 1, "put manifest.webmanifest": 1, "head app icon": 2, "put app icon": 2 },
   // The page build reuses the list the save has just written. It's built from the published shell
   // when there is one for the current index.html (looked up at the same time as index.html's
   // version and the stored core file's), from index.html otherwise.
+  // (Each page build also looks at the public site's manifest, one head, and rewrites it only when
+  // the page's source changed: "publish a shell" below)
   "save a plugin (page rebuilt)": {
     "head tiddler": 1, "get list": 1, "put tiddler": 1, "put list": 1,
-    "head index.html": 1, "get page shell": 1, "head core file": 1, "get index.html": 1, "head plugin file": 1, "get tiddler": 1, "put plugin file": 1, "head baked.html": 1, "put baked.html": 1
+    "head index.html": 1, "get page shell": 1, "head core file": 1, "get index.html": 1, "head plugin file": 1, "get tiddler": 1, "put plugin file": 1, "head baked.html": 1, "put baked.html": 1,
+    "head manifest.webmanifest": 1
   },
   "delete a plugin (page rebuilt)": {
     "get list": 1, "head tiddler": 1, "delete tiddler": 1, "put list": 1, "delete plugin file": 1,
-    "head index.html": 1, "get page shell": 1, "head core file": 1, "get index.html": 1, "head baked.html": 1, "put baked.html": 1
+    "head index.html": 1, "get page shell": 1, "head core file": 1, "get index.html": 1, "head baked.html": 1, "put baked.html": 1,
+    "head manifest.webmanifest": 1
   },
   // The core file: once per TiddlyWiki version, checked against index.html and the stored one, at the
   // same time. The page is then marked outdated (copied with that mark), so the next load's page says
@@ -56,14 +62,18 @@ const BUDGETS = {
   "publish the same core file again": { "head index.html": 1, "head core file": 1 },
   // A shell: checked against index.html, the core file and the shell already kept, then the page is
   // built from it (without reading it back)
+  // (A new shell is a new page source: the public site's manifest is written again, the wiki's
+  // title read for it)
   "publish a shell (page rebuilt)": {
-    "head index.html": 1, "head core file": 1, "head page shell": 1, "put page shell": 1, "get list": 1, "head baked.html": 1, "put baked.html": 1
+    "head index.html": 1, "head core file": 1, "head page shell": 1, "put page shell": 1, "get list": 1, "head baked.html": 1, "put baked.html": 1,
+    "head manifest.webmanifest": 1, "get tiddler": 1, "put manifest.webmanifest": 1
   },
   "publish the same shell again": { "head index.html": 1, "head core file": 1, "head page shell": 1, "head baked.html": 1 },
   // With a shell, index.html itself isn't read
   "save a plugin, page built from the shell": {
     "head tiddler": 1, "get list": 1, "put tiddler": 1, "put list": 1,
-    "head index.html": 1, "get page shell": 1, "head core file": 1, "head plugin file": 1, "get tiddler": 1, "put plugin file": 1, "head baked.html": 1, "put baked.html": 1
+    "head index.html": 1, "get page shell": 1, "head core file": 1, "head plugin file": 1, "get tiddler": 1, "put plugin file": 1, "head baked.html": 1, "put baked.html": 1,
+    "head manifest.webmanifest": 1
   },
 };
 
