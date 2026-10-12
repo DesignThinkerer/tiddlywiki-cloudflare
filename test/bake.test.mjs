@@ -295,7 +295,7 @@ check("...the settings tab offers the fill of the device copy, TiddlyWiki's poll
   const baked = await bucket.get("baked.html"), engine = await bucket.get("index.html");
   const bakedBytes = await baked.arrayBuffer(), engineBytes = await engine.arrayBuffer();
   const variants = [
-    ["the settings tab", variant("Empty means the default.", "Empty means the default. (changed)"), text => (part(text, ADMIN + "/settings")?.text || "").includes("(changed)")],
+    ["the settings tab", variant("Leave a field empty to use the default value in parentheses.", "Leave a field empty to use the default value in parentheses. (changed)"), text => (part(text, ADMIN + "/settings")?.text || "").includes("(changed)")],
     ["the readme", variant("The admin wiki's side of [[TiddlyWiki on Cloudflare|", "The admin wiki's side (changed) of [[TiddlyWiki on Cloudflare|"), text => (part(text, ADMIN + "/readme")?.text || "").includes("(changed)")],
     ["a plugin field (the author)", variant('author: "https://github.com/DesignThinkerer/tiddlywiki-cloudflare"', 'author: "https://example.com/a-fork"'), text => preloads(text).find(t => t.title === ADMIN)?.author === "https://example.com/a-fork"],
     ["the package version", variant(`const PACKAGE_VERSION = "${packageVersion}"`, `const PACKAGE_VERSION = "${packageVersion}-next"`), text => (preloads(text).find(t => t.title === ADMIN)?.version || "").startsWith(`${packageVersion}-next+`)],
