@@ -123,7 +123,7 @@ The worker is deployed from your repository by Cloudflare's **Workers Builds**: 
    - **Deploy command:** the default, `npx wrangler deploy`.
    - **Builds for non-production branches:** off. A branch's preview would use the real bucket and queue.
    - **Build watch paths:** include only `src/*`, `build.mjs`, `tools/*`, `package.json`, `package-lock.json` and `wrangler.toml`, so a change to the README, or anything else, doesn't deploy.
-3. **The settings and the secrets,** under the worker's **Settings → Variables and Secrets**. A deploy keeps them all (`keep_vars` in `wrangler.toml`), so nothing of yours is in the repository. The settings can be plain variables or secrets, as you prefer; the two tokens must be secrets.
+3. **The settings and the secrets,** under the worker's **Settings → Variables and Secrets**. A deploy keeps them all (`keep_vars` in `wrangler.toml`), so nothing of yours is in the repository. The settings can be plain variables or secrets, as you prefer; the two tokens must be secrets — in the dialog, choose the type *Secret*: its default, *Text*, shows the value to anyone who opens the settings.
 
    | Name | What |
    |---|---|
@@ -289,6 +289,7 @@ If the page is rebuilt before step 4 (by a deploy, or by saving another plugin, 
 | Every request answers 403 "didn't come through Cloudflare Access" | No Access application covers the hostname you're using (2.6): Access isn't set up yet, or it's set up on the custom domain only and you're on `workers.dev` or a preview URL | Set Access up as **Worker Access → All traffic**, or use the hostname it covers. For a local run without Access, set `ACCESS = off` (2.5); it only works for a local address. |
 | The admin page says "There's no wiki yet" (404) | The bucket has no `index.html`, and the worker was deployed without the empty wiki (pasted into the dashboard alone, or `seed/` wasn't built) | Deploy with Wrangler or Workers Builds after `npm run build`, or upload `index.html` and `status` yourself (2.2). |
 | Every request answers 500 naming `PUBLIC_WIKI_URL` | The variable isn't the public site's address (2.5) | Set it to `https://` + the bucket's custom domain (2.2), nothing after the hostname; or remove it, for a private wiki. |
+| A Workers Builds run fails in the deploy step, before `Uploaded`, with `Received a malformed response from the API` or a `504 Gateway Timeout` on a `GET` | Cloudflare's API didn't answer one of Wrangler's reads of the worker (its secrets, its deployments) before the upload; the build itself passed ("Build command completed" is in the log) | Retry the build, or deploy from a machine: `npx wrangler deploy` in a clone (Node 22, 2.5). The site keeps serving the previous deployment meanwhile. If it keeps failing for an hour, report it to Cloudflare with the Ray ID from the log. |
 | A private wiki's first load on a new device takes a while, with one worker request per tiddler | There's no public site to read from, so each tiddler comes from the worker, once per device (5) | Nothing: the device keeps a copy, and later loads fetch only what changed. |
 | Alert "Edit conflict: … was changed in another tab or browser" | Another tab, device or script saved that tiddler after you started editing | Compare the tiddler with its `(conflict …)` copy, keep what you want and delete the copy. |
 | Console shows "blocked by CORS policy" for the public site | The transform rule is missing or scoped wrong | Add or fix it (2.7). Until then, tiddlers simply load through the worker. |
@@ -339,7 +340,7 @@ If the page is rebuilt before step 4 (by a deploy, or by saving another plugin, 
 
 ## 6. Development and tests
 
-Requirements: Node.js 20 or newer and a Chromium for the browser tests. (`npm run build` also makes `seed/empty.html`, the empty wiki the browser tests start from.)
+Requirements: Node.js 22 or newer (Wrangler 4 needs it) and a Chromium for the browser tests. (`npm run build` also makes `seed/empty.html`, the empty wiki the browser tests start from.)
 
 ```bash
 npm install
