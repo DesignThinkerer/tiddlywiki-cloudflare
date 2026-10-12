@@ -49,9 +49,11 @@ export const PUBLIC_STATUS = { username: "GUEST", read_only: true, anonymous: tr
 //     request that reaches it shows up in publicRequests
 //   publicSite: hooks for the stand-in: cors(url) returns false to leave the CORS header out,
 //     cacheStatus(url) returns the CF-Cache-Status to send (HIT by default; DYNAMIC is Cloudflare's
-//     for a path no cache rule covers), override(key, url) returns text to serve instead of the
-//     object, rewrite(url, bytes) returns the bytes to send, delay(url) returns milliseconds to wait
-//     before answering (a slow connection)
+//     for a path no cache rule covers), etag(url) and lastModified(url) return false to leave those
+//     headers out (Cloudflare removes an HTML answer's ETag when a feature of the zone rewrites the
+//     page: Email Address Obfuscation, on by default), override(key, url) returns text to serve
+//     instead of the object, rewrite(url, bytes) returns the bytes to send, delay(url) returns
+//     milliseconds to wait before answering (a slow connection)
 // Returns { mf, base, pub, bucket, publicRequests (each path and query, decoded), setBindings(extra),
 // stop(), start(), stopPublic(), startPublic(), close() }. setBindings restarts the worker with other
 // variables (the same bucket, the same address), as a change in the dashboard does: a wiki given a
@@ -83,7 +85,8 @@ export async function startSite({ index, publicStatus = false, bindings = {}, ou
         }
         headers["Content-Type"] = obj.httpMetadata?.contentType || "application/octet-stream";
         if (obj.httpMetadata?.cacheControl) headers["Cache-Control"] = obj.httpMetadata.cacheControl;
-        headers.ETag = obj.httpEtag;
+        if (!(publicSite.etag && !publicSite.etag(url))) headers.ETag = obj.httpEtag;
+        if (!(publicSite.lastModified && !publicSite.lastModified(url))) headers["Last-Modified"] = obj.uploaded.toUTCString();
         body = Buffer.from(await obj.arrayBuffer());
       } else {
         headers["Content-Type"] = "application/json";
