@@ -8,7 +8,7 @@ A TiddlyWiki anyone hosts on Cloudflare's free plan in about ten minutes, from t
 
 ## Who it's for
 
-1. **A public wiki** — a blog, documentation, notes you share — edited on a private admin site. What the project does today.
+1. **A public wiki** — a blog, documentation, notes you share — edited on a private admin site. What the project does today; its setup by hand checked from the wiki (done: README 3, "Checking the setup").
 2. **A private notebook** — the admin site only, behind Access, no domain to own, edited offline, opened offline, installed as an app (done: README 2.1 and 3).
 3. **Both at once, or one then the other:** a private wiki that later gets a public site, by adding one setting, with nothing to migrate (done, design 2.15).
 
@@ -16,17 +16,9 @@ A TiddlyWiki anyone hosts on Cloudflare's free plan in about ten minutes, from t
 
 Each step is one pull request, with its tests, its README section, its design entry and its changelog line. "Done when" is written as behaviour, and becomes the list of tests when the step starts.
 
-### 1. A setup check, in the Cloudflare tab
+### 1. The Deploy to Cloudflare button
 
-**Why now:** Access and the zone rules are set up by hand, and will stay so with the button; today a missing rule shows up as a `403` or a CORS error found by trial — or not at all: a CORS rule without the `/_plugins/` path kept the service worker from keeping the core and plugin files, silently, since the page's own request for a file works without the header (design 2.18).
-
-**Done when:**
-- The tab reports each piece: Access on, the public site reachable at `PUBLIC_WIKI_URL` with the rewrite rule and the CORS header (for the tiddler reads and for the files: the service worker's cache holding the core file is the test of the latter), backups set up, the queue bound; each missing one points at its README section.
-- It runs on demand (a button), so it costs nothing at page load.
-
-### 2. The Deploy to Cloudflare button
-
-**Why last:** the button is the front door, so it goes on once what's behind it is in place: the private wiki, offline editing, cold starts and the setup check, each of which changes what the README's button section has to say. It clones the repository into the user's GitHub account, creates the bucket and the queue from `wrangler.toml`, asks for the secrets and deploys; it needs the repository public.
+**Why last:** the button is the front door, so it goes on once what's behind it is in place: the private wiki, offline editing, cold starts and the setup check (all done), each of which changes what the README's button section has to say. It clones the repository into the user's GitHub account, creates the bucket and the queue from `wrangler.toml`, asks for the secrets and deploys; it needs the repository public.
 
 **Done when:**
 - `.dev.vars.example` names each secret with a line on where it comes from; `package.json` (`cloudflare.bindings`) describes the bucket and the queue, so the button's setup page explains them.

@@ -71,6 +71,18 @@ const keys1 = await cached(A);
 check("after that load the cache holds the page, the core file, the status file and the tiddler list",
   keys1.some(u => u === BASE + "/") && keys1.some(u => u.includes("/_plugins/tiddlywikicore.js?v=")) && keys1.some(u => u.endsWith("/status")) && keys1.some(u => u.includes("/recipes/default/tiddlers.json")),
   keys1.map(u => u.replace(BASE, "")).join(", "));
+// The setup check, from the Cloudflare tab (design 1.13): the worker's lines, then this browser's own
+const SETUP = "$:/temp/cfworker/setup-check", TAB = "$:/temp/cfworker/ControlPanel";
+async function setupCheck(p) {
+  await p.evaluate(t => { $tw.wiki.deleteTiddler(t); $tw.rootWidget.dispatchEvent({ type: "tm-cfworker-setup-check" }); }, SETUP);
+  const done = await waitFor(() => p.evaluate(t => $tw.wiki.tiddlerExists(t) && $tw.wiki.getTiddler(t).fields.checked !== undefined, SETUP), 20000);
+  const tab = done ? await p.evaluate(t => $tw.wiki.renderTiddler("text/plain", t).replace(/\s+/g, " "), TAB) : "";
+  return { done, tab, lines: (tab.match(/[✓✗–] [^✓✗–]+/g) || []).map(l => l.trim()) };
+}
+const setup1 = await setupCheck(A);
+check("the Cloudflare tab's \"Check the setup\" button lists the pieces: Access, the public site (nothing to check, a private wiki), backups, the queue, and this browser's service worker with the core file kept",
+  setup1.done && setup1.lines.some(l => /^✓ .*Access/.test(l)) && setup1.lines.some(l => /^– .*private/i.test(l)) && setup1.lines.some(l => /^✓ .*service worker/.test(l)) && setup1.lines.some(l => /^✓ .*core file/.test(l)),
+  setup1.lines.join(" | ") || `done ${setup1.done}`);
 
 // --- 2. With the network cut, the wiki opens from the cache and the device ---------------------------
 await offline(contextA);
@@ -216,6 +228,15 @@ const types = await Promise.all(publicFiles.map(u => cachedType(A, u)));
 check("...kept as real answers, asked for with CORS, never opaque (the browser would charge megabytes each, and evict the site's storage, the outbox with it)",
   publicFiles.length >= 2 && types.every(t => t === "cors"), `${publicFiles.length} files: ${types.join(", ")}`);
 await online(contextA);
+const setupPublic = await setupCheck(A);
+check("the setup check on a public wiki: the public site answering with the page, the CORS rule covering the reads and the files, this browser keeping the core file",
+  setupPublic.done && setupPublic.lines.some(l => /^✓ .*rewrite/i.test(l)) && setupPublic.lines.some(l => /^✓ .*\/recipes\//.test(l)) && setupPublic.lines.some(l => /^✓ .*\/_plugins\//.test(l)) && setupPublic.lines.some(l => /^✓ .*core file/.test(l)),
+  setupPublic.lines.join(" | ") || `done ${setupPublic.done}`);
+corsOn = false;
+const setupNoCors = await setupCheck(A);
+check("...without the CORS header: the files line fails naming /_plugins/ and README 2.7 (what nothing said before)", setupNoCors.done && setupNoCors.lines.some(l => /^✗ .*\/_plugins\/.*2\.7/.test(l)),
+  setupNoCors.lines.filter(l => /_plugins|recipes/.test(l)).join(" | ") || `done ${setupNoCors.done}`);
+corsOn = true;
 // Without the CORS header (the rule of README 2.7 missing): a new file (a second plugin) loads and runs
 // as a plain script, and isn't kept. (A new file, because a file the browser already holds in memory
 // is served from there, a year's cache, without asking the service worker.)
