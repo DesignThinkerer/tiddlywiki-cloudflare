@@ -753,13 +753,13 @@ exports.startup = function() {
 	proto.cfworkerOutboxRequest = function(mode,work) {
 		return storeRequest(mode,work,OUTBOX_NAME);
 	};
-	// The same on the tiddlers table, and how many tiddlers the worker's last list had: the device
-	// tab's measure ($:/cfworker/device.js)
+	// The same on the tiddlers table, and the titles the worker's last list had: the device tab's
+	// measure ($:/cfworker/device.js)
 	proto.cfworkerDeviceRequest = function(mode,work) {
 		return storeRequest(mode,work,STORE_NAME);
 	};
-	proto.cfworkerListedCount = function() {
-		return Object.keys(listedRevisions).length;
+	proto.cfworkerListedTitles = function() {
+		return Object.keys(listedRevisions);
 	};
 	// The device database removed (the device tab's Forget, which reloads the page after): this tab's
 	// connection closed first and nothing opened again meanwhile, the other tabs' closed by their
