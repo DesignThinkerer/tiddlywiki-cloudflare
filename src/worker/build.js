@@ -86,10 +86,21 @@ export const ADMIN_PLUGIN_TITLE = "$:/plugins/cfworker/admin";
 const PACKAGE_VERSION = "__PACKAGE_VERSION__";   // filled by build.mjs from package.json
 const PLUGIN_README_SOURCE = "__PLUGIN_README_SOURCE__";
 const PLUGIN_SETTINGS_SOURCE = "__PLUGIN_SETTINGS_SOURCE__";
+const PLUGIN_FIELDS = {
+  name: "TiddlyWiki on Cloudflare", description: "The admin wiki's side of the worker: conflicts, the tiddler list and the device copy, backups, the published page, editing and opening offline",
+  author: "https://github.com/DesignThinkerer/tiddlywiki-cloudflare", "core-version": ">=5.3.0", list: "readme settings"
+};
 let adminPluginVersion = "";
 
+// package.json's version, plus the hash of everything else in the plugin that doesn't depend on
+// the wiki: the modules, the service worker's address, the two tabs and the fields above. So the
+// version changes whenever any of them does, and the page, which carries the plugin, is rebuilt
+// (bakeVersion). Worked out once while the worker runs.
 export function pluginVersion() {
-  if (!adminPluginVersion) adminPluginVersion = PACKAGE_VERSION + "+" + hashText(BROWSER_MODULES.map(m => m.source).join("\n") + "\n" + swVersion()).toString(36);
+  if (!adminPluginVersion) {
+    const parts = [...BROWSER_MODULES.map(m => m.source), swVersion(), PLUGIN_README_SOURCE, PLUGIN_SETTINGS_SOURCE, JSON.stringify(PLUGIN_FIELDS)];
+    adminPluginVersion = PACKAGE_VERSION + "+" + hashText(parts.join("\n")).toString(36);
+  }
   return adminPluginVersion;
 }
 
@@ -102,24 +113,22 @@ function adminPlugin(env, pageSource) {
   tiddlers[`${ADMIN_PLUGIN_TITLE}/readme`] = { title: `${ADMIN_PLUGIN_TITLE}/readme`, text: PLUGIN_README_SOURCE };
   tiddlers[`${ADMIN_PLUGIN_TITLE}/settings`] = { title: `${ADMIN_PLUGIN_TITLE}/settings`, text: PLUGIN_SETTINGS_SOURCE };
   return {
-    title: ADMIN_PLUGIN_TITLE, "plugin-type": "plugin", type: "application/json",
-    name: "TiddlyWiki on Cloudflare", description: "The admin wiki's side of the worker: conflicts, the tiddler list and the device copy, backups, the published page, editing and opening offline",
-    author: "https://github.com/DesignThinkerer/tiddlywiki-cloudflare", version: pluginVersion(), "core-version": ">=5.3.0", list: "readme settings",
+    title: ADMIN_PLUGIN_TITLE, "plugin-type": "plugin", type: "application/json", ...PLUGIN_FIELDS, version: pluginVersion(),
     text: JSON.stringify({ tiddlers })
   };
 }
 
-// Changes whenever the browser modules or the public URL change, so baked.html is rebuilt after a
-// deploy (the number in front changes when the way pages are built changes). Asked at every page
-// load: worked out once while the worker runs (hashing the modules costs about 0.3 ms), again only
-// if its settings change.
+// Changes whenever the plugin (pluginVersion: the modules, the service worker, the tabs, the fields,
+// the package version) or the public URL changes, so baked.html is rebuilt after a deploy that
+// changes what the page carries, and not after one that doesn't (the number in front changes when
+// the way pages are built changes). Asked at every page load: worked out once while the worker
+// runs (hashing the modules costs about 0.3 ms), again only if its settings change.
 let lastBakeVersion = { settings: null, version: "" };
 
 export function bakeVersion(env) {
   const enabled = conflictGuardEnabled(env), settings = enabled + "\n" + publicAddress(env);
   if (lastBakeVersion.settings !== settings) {
-    // (The service worker's address is in the page too: a new script, a new page)
-    const input = (enabled ? BROWSER_MODULES.map(m => m.source).join("\n") + "\n" + swVersion() : "off") + "\n" + publicAddress(env);
+    const input = (enabled ? pluginVersion() : "off") + "\n" + publicAddress(env);
     lastBakeVersion = { settings, version: "9-" + hashText(input).toString(36) };
   }
   return lastBakeVersion.version;
