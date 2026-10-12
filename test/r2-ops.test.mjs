@@ -87,7 +87,7 @@ const mf = new Miniflare({
   modules: true, scriptPath: "test/r2-counter.mjs", modulesRoot: ROOT,
   modulesRules: [{ type: "ESModule", include: ["**/*.js", "**/*.mjs"] }, { type: "Text", include: ["**/*.html"] }],
   compatibilityDate: "2024-09-23", r2Buckets: ["WIKI_BUCKET"], port: 0,
-  bindings: { ACCESS: "off", PUBLIC_WIKI_URL: "https://my-tiddlywiki.theophile.dev" },
+  bindings: { ACCESS: "off", PUBLIC_WIKI_URL: "https://wiki.example.com" },
   queueProducers: { BACKUP_QUEUE: "wiki-backup" },   // as deployed: backups run later, in the queue consumer
   outboundService: async () => new Response('{"success":true}'),
 });
@@ -176,7 +176,7 @@ res = await measure("publish the same core file again", publishCore);
 check("...published", res.status === 204, `status ${res.status}`);
 const shellBody = ["<!doctype html>", '<html lang="en-GB">', "<head>", "<title>Shell</title>", "</head>", '<body class="tc-body">', "<!--~~ Ordinary tiddlers ~~-->",
   '<script class="tiddlywiki-tiddler-store" type="application/json">[{"title":"$:/plugins/tiddlywiki/tiddlyweb","plugin-type":"plugin","text":"{}"}\n]</script>',
-  "<!--~~ Load external JavaScripts ~~-->", '<script src="https://my-tiddlywiki.theophile.dev/_plugins/tiddlywikicore.js?v=' + CORE_V + '"></script>', "</body>", "</html>"].join("\n");
+  "<!--~~ Load external JavaScripts ~~-->", '<script src="https://wiki.example.com/_plugins/tiddlywikicore.js?v=' + CORE_V + '"></script>', "</body>", "</html>"].join("\n");
 const publishShell = async () => mf.dispatchFetch(`${base}/page/shell`, { method: "PUT", headers: { "Content-Type": "text/html", "X-Page-Fingerprint": "counted", "X-Page-Index": indexEtag, "X-Page-Shell": (await bucket.head("_page/shell.html"))?.etag || "" }, body: shellBody });
 res = await measure("publish a shell (page rebuilt)", publishShell);
 check("...published", res.status === 204, `status ${res.status}`);
@@ -195,7 +195,7 @@ const mfNew = new Miniflare({
   modules: true, scriptPath: "test/r2-counter.mjs", modulesRoot: ROOT,
   modulesRules: [{ type: "ESModule", include: ["**/*.js", "**/*.mjs"] }, { type: "Text", include: ["**/*.html"] }],
   compatibilityDate: "2024-09-23", r2Buckets: ["WIKI_BUCKET"], port: 0,
-  bindings: { ACCESS: "off", PUBLIC_WIKI_URL: "https://my-tiddlywiki.theophile.dev" },
+  bindings: { ACCESS: "off", PUBLIC_WIKI_URL: "https://wiki.example.com" },
   outboundService: async () => new Response('{"success":true}'),
 });
 const baseNew = (await mfNew.ready).toString().replace(/\/$/, "");

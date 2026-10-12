@@ -18,7 +18,7 @@ const mf = new Miniflare({
   modules: true, scriptPath: "test/r2-counter.mjs", modulesRoot: ROOT,
   modulesRules: [{ type: "ESModule", include: ["**/*.js", "**/*.mjs"] }, { type: "Text", include: ["**/*.html"] }],
   compatibilityDate: "2024-09-23", r2Buckets: ["WIKI_BUCKET"], port: 0,
-  bindings: { ACCESS: "off", PUBLIC_WIKI_URL: "https://my-tiddlywiki.theophile.dev", CF_ZONE_ID: "zone", CF_API_TOKEN: "token" },
+  bindings: { ACCESS: "off", PUBLIC_WIKI_URL: "https://wiki.example.com", CF_ZONE_ID: "zone", CF_API_TOKEN: "token" },
   outboundService: async req => {
     // (A purged file is a URL, or { url, headers } for a copy cached with those request headers)
     if (req.url.includes("/purge_cache")) purges.push({ time: Date.now(), files: ((await req.json()).files || []).map(f => typeof f === "string" ? f : f.url) });
@@ -554,7 +554,7 @@ check("a save landing between a delete's check and its removal: removed with it,
 // --- 4b. Overlapping page builds keep the newest shell -----------------------------------------------
 // A save's page build that read the shell before a new one was published, and stores its page after
 // that one's: the page stays built from the new shell (with the save's change, which it read too)
-const PUBLIC = "https://my-tiddlywiki.theophile.dev", CORE_V = "5.4.1-1";
+const PUBLIC = "https://wiki.example.com", CORE_V = "5.4.1-1";
 const coreSrc = `${PUBLIC}/_plugins/tiddlywikicore.js?v=${CORE_V}`;
 const MARK = name => `<!--~~ ${name} ~~-->`;
 const shellNamed = name => ["<!doctype html>", "<html>", "<head>", `<title>${name}</title>`, "</head>", "<body>", MARK("Ordinary tiddlers"),
@@ -640,7 +640,7 @@ for (const title of AWKWARD) {
   const stale = await save(title, { text: "v3" }, { "If-Match": etag });                 // the old one: refused
   const listed = await entry(title);
   await new Promise(r => setTimeout(r, 150));   // (purges run after the answer)
-  const purgeUrl = `https://my-tiddlywiki.theophile.dev/recipes/default/tiddlers/${encodeURIComponent(title)}`;
+  const purgeUrl = `https://wiki.example.com/recipes/default/tiddlers/${encodeURIComponent(title)}`;
   const purged = purges.slice(purgesBefore).some(p => p.files.includes(purgeUrl));
   const gone = await del(title, { "If-Match": second.headers.get("ETag") });
   const problems = [];
