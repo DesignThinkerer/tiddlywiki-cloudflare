@@ -30,7 +30,8 @@ const BROWSER_MODULES = [
   { title: "$:/cfworker/restore-import.js", type: "startup", source: "__RESTORE_IMPORT_SOURCE__" },
   { title: "$:/cfworker/control-panel.js", type: "startup", source: "__CONTROL_PANEL_SOURCE__" },
   { title: "$:/cfworker/outbox.js", type: "startup", source: "__OUTBOX_SOURCE__" },
-  { title: "$:/cfworker/cold-start.js", type: "startup", source: "__COLD_START_SOURCE__" }
+  { title: "$:/cfworker/cold-start.js", type: "startup", source: "__COLD_START_SOURCE__" },
+  { title: "$:/cfworker/device.js", type: "startup", source: "__DEVICE_SOURCE__" }
 ];
 
 // The admin wiki's service worker (src/browser/service-worker.js, design 1.11): not a module of the
@@ -79,26 +80,28 @@ const PAGE_SOURCE_TITLE = "$:/cfworker/page-source";
 
 // The modules and their settings travel as one plugin (design 2.21), $:/plugins/cfworker/admin:
 // its parts are shadow tiddlers (out of search, out of syncing, overridden only on purpose), and
-// Control Panel → Plugins lists it with the worker's version (package.json's, plus the hash of the
-// modules and the service worker) and two tabs, a readme and the settings (src/browser/*.txt).
+// Control Panel → Plugins lists it with the worker's version (package.json's, plus the hash of
+// everything else in it: pluginVersion) and three tabs, a readme, the settings and the device
+// (src/browser/*.txt).
 // Preloaded like the modules were: never stored, never a plugin file (tiddlers.js, page-publisher.js).
 export const ADMIN_PLUGIN_TITLE = "$:/plugins/cfworker/admin";
 const PACKAGE_VERSION = "__PACKAGE_VERSION__";   // filled by build.mjs from package.json
 const PLUGIN_README_SOURCE = "__PLUGIN_README_SOURCE__";
 const PLUGIN_SETTINGS_SOURCE = "__PLUGIN_SETTINGS_SOURCE__";
+const PLUGIN_DEVICE_SOURCE = "__PLUGIN_DEVICE_SOURCE__";
 const PLUGIN_FIELDS = {
   name: "TiddlyWiki on Cloudflare", description: "The admin wiki's side of the worker: conflicts, the tiddler list and the device copy, backups, the published page, editing and opening offline",
-  author: "https://github.com/DesignThinkerer/tiddlywiki-cloudflare", "core-version": ">=5.3.0", list: "readme settings"
+  author: "https://github.com/DesignThinkerer/tiddlywiki-cloudflare", "core-version": ">=5.3.0", list: "readme settings device"
 };
 let adminPluginVersion = "";
 
 // package.json's version, plus the hash of everything else in the plugin that doesn't depend on
-// the wiki: the modules, the service worker's address, the two tabs and the fields above. So the
+// the wiki: the modules, the service worker's address, the three tabs and the fields above. So the
 // version changes whenever any of them does, and the page, which carries the plugin, is rebuilt
 // (bakeVersion). Worked out once while the worker runs.
 export function pluginVersion() {
   if (!adminPluginVersion) {
-    const parts = [...BROWSER_MODULES.map(m => m.source), swVersion(), PLUGIN_README_SOURCE, PLUGIN_SETTINGS_SOURCE, JSON.stringify(PLUGIN_FIELDS)];
+    const parts = [...BROWSER_MODULES.map(m => m.source), swVersion(), PLUGIN_README_SOURCE, PLUGIN_SETTINGS_SOURCE, PLUGIN_DEVICE_SOURCE, JSON.stringify(PLUGIN_FIELDS)];
     adminPluginVersion = PACKAGE_VERSION + "+" + hashText(parts.join("\n")).toString(36);
   }
   return adminPluginVersion;
@@ -112,6 +115,7 @@ function adminPlugin(env, pageSource) {
   tiddlers[PAGE_SOURCE_TITLE] = { title: PAGE_SOURCE_TITLE, type: "application/json", text: JSON.stringify({ index: pageSource.index, fingerprint: pageSource.fingerprint, core: pageSource.core, shell: pageSource.shell || "" }) };
   tiddlers[`${ADMIN_PLUGIN_TITLE}/readme`] = { title: `${ADMIN_PLUGIN_TITLE}/readme`, text: PLUGIN_README_SOURCE };
   tiddlers[`${ADMIN_PLUGIN_TITLE}/settings`] = { title: `${ADMIN_PLUGIN_TITLE}/settings`, text: PLUGIN_SETTINGS_SOURCE };
+  tiddlers[`${ADMIN_PLUGIN_TITLE}/device`] = { title: `${ADMIN_PLUGIN_TITLE}/device`, text: PLUGIN_DEVICE_SOURCE };
   return {
     title: ADMIN_PLUGIN_TITLE, "plugin-type": "plugin", type: "application/json", ...PLUGIN_FIELDS, version: pluginVersion(),
     text: JSON.stringify({ tiddlers })

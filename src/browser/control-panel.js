@@ -30,7 +30,7 @@ var TAB = "$:/temp/cfworker/ControlPanel",
 	START = "tm-cfworker-backup-sync",
 	REFRESH = "tm-cfworker-backup-status",
 	CHECK = "tm-cfworker-setup-check",
-	CACHE = "cfworker-wiki-v1";   // the service worker's cache (service-worker.js)
+	CACHE = lib.SW_CACHE;   // the service worker's cache
 
 var TAB_TEXT = [
 	"!! The setup",

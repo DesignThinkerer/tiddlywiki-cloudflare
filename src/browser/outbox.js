@@ -51,7 +51,7 @@ var ITEM_TEXT = [
 	"<$text text={{{ [[" + STATUS + "]get[waiting]] }}}/> <$text text={{{ [[" + STATUS + "]get[waiting]compare:number:eq[1]then[change]else[changes]] }}}/> waiting since <$view tiddler='" + STATUS + "' field='since' format='date' template='0hh:0mm'/><br/>",
 	"<$list filter='[[" + STATUS + "]get[online]match[no]]' variable='off'>offline: kept on this device until sent</$list>",
 	"<$list filter='[[" + STATUS + "]get[online]match[yes]]' variable='on'>sending (kept on this device until then)</$list>",
-	"<$list filter='[[" + STATUS + "]get[storage]match[best-effort]]' variable='risk'><br/>''This browser hasn't promised to keep the device's copy'' (it may clear it when short of space): get back online soon.</$list>",
+	"<$list filter='[[" + STATUS + "]get[storage]match[best-effort]]' variable='risk'><br/>''This browser hasn't promised to keep the device's copy'' (it may clear it when short of space): get back online soon, or <$link to='$:/plugins/cfworker/admin/device'>ask it to keep this site's data</$link>.</$list>",
 	"</div>",
 	"<hr/>",
 	"</$list>"
@@ -150,16 +150,28 @@ exports.startup = function() {
 	wiki.addTiddler(new $tw.Tiddler({title: ITEM, tags: ["$:/tags/SyncerDropdown"], "list-after": "$:/plugins/tiddlywiki/tiddlyweb/syncer-actions/login-status", text: ITEM_TEXT}));
 	updateStatus();
 
-	// The browser is asked to keep this site's storage (the outbox, the device copy, the service
-	// worker's cache) rather than clear it when short of space: storage under pressure is evicted
-	// whole, and a change waiting in the outbox would go with it. Granted by the browser's own rules
-	// (Chrome: a site used often, installed, or bookmarked; Firefox asks the user); the status says.
-	if(typeof navigator === "object" && navigator.storage && typeof navigator.storage.persist === "function") {
-		navigator.storage.persist().then(function(granted) {
+	// Whether the browser has promised to keep this site's storage (the outbox, the device copy, the
+	// service worker's cache) rather than clear it when short of space: storage under pressure is
+	// evicted whole, and a change waiting in the outbox would go with it. Asked (persist()) only on
+	// a click in the device tab ($:/cfworker/device.js), never at page load: Firefox puts the question
+	// to the user, which at every load was a prompt at every load; Chrome and Safari answer by their
+	// own rules (a site used often, installed, or bookmarked). At load, only what was promised so far
+	// (persisted(), no question asked); the status says, and the dropdown while a change waits.
+	proto.cfworkerStorageKept = function(ask) {
+		var api = typeof navigator === "object" && navigator.storage,
+			call = api && (ask ? api.persist : api.persisted);
+		if(typeof call !== "function") {
+			return Promise.resolve(null);
+		}
+		return call.call(api).then(function(granted) {
 			storage = granted ? "persistent" : "best-effort";
 			updateStatus();
-		},function() {});
-	}
+			return !!granted;
+		},function() {
+			return null;
+		});
+	};
+	proto.cfworkerStorageKept(false);
 
 	window.addEventListener("online",function() {
 		setOnline(true);
