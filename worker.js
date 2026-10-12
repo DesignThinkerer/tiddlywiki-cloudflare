@@ -2044,7 +2044,7 @@ function adminPlugin(env, pageSource) {
   return {
     title: ADMIN_PLUGIN_TITLE, "plugin-type": "plugin", type: "application/json",
     name: "TiddlyWiki on Cloudflare", description: "The admin wiki's side of the worker: conflicts, the tiddler list and the device copy, backups, the published page, editing and opening offline",
-    author: "TiddlyWiki on Cloudflare", version: pluginVersion(), "core-version": ">=5.3.0", list: "readme settings",
+    author: "https://github.com/DesignThinkerer/tiddlywiki-cloudflare", version: pluginVersion(), "core-version": ">=5.3.0", list: "readme settings",
     text: JSON.stringify({ tiddlers })
   };
 }

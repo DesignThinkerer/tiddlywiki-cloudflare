@@ -266,8 +266,8 @@ const plugin = preloaded.find(t => t.title === ADMIN);
 let parts = {};
 try { parts = JSON.parse(plugin.text).tiddlers; } catch {}
 const packageVersion = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
-check("the page preloads the admin plugin: plugin-type plugin, a name, a description, the package's version with the build's hash, a readme and a settings tab",
-  !!plugin && plugin["plugin-type"] === "plugin" && plugin.type === "application/json" && !!plugin.name && !!plugin.description && typeof packageVersion === "string" && new RegExp("^" + packageVersion.replace(/\./g, "\\.") + "\\+[0-9a-z]+$").test(plugin.version || "") &&
+check("the page preloads the admin plugin: plugin-type plugin, a name, a description, the repository as its author, the package's version with the build's hash, a readme and a settings tab",
+  !!plugin && plugin["plugin-type"] === "plugin" && plugin.type === "application/json" && !!plugin.name && !!plugin.description && plugin.author === "https://github.com/DesignThinkerer/tiddlywiki-cloudflare" && typeof packageVersion === "string" && new RegExp("^" + packageVersion.replace(/\./g, "\\.") + "\\+[0-9a-z]+$").test(plugin.version || "") &&
   (plugin.list || "").split(" ").includes("readme") && (plugin.list || "").split(" ").includes("settings") && !!parts[ADMIN + "/readme"] && !!parts[ADMIN + "/settings"],
   plugin ? `version ${plugin.version}, list ${plugin.list}, parts ${Object.keys(parts).length}` : "no plugin tiddler");
 check("...its parts are the nine browser modules, each the right kind of module, each a JavaScript tiddler, and the page's settings (the public address, the service worker's address, the page's source)",
