@@ -251,7 +251,9 @@ exports.startup = function() {
 
 	// --- The device's copy of loaded tiddlers (IndexedDB) ----------------------------------------------
 	// One database, two tables: the tiddlers loaded (here), and the outbox, the changes made on this
-	// device that the worker doesn't have yet ($:/cfworker/outbox.js, through cfworkerDeviceRequest).
+	// device that the worker doesn't have yet ($:/cfworker/outbox.js, through cfworkerOutboxRequest).
+	// The device tab measures both and can remove the database ($:/cfworker/device.js, the end of
+	// this file).
 
 	var storeOff = typeof indexedDB !== "object" || !indexedDB,
 		storeOpening = null;
@@ -750,6 +752,54 @@ exports.startup = function() {
 	// makes it; resolves with its result, null for anything that fails (no IndexedDB, say)
 	proto.cfworkerOutboxRequest = function(mode,work) {
 		return storeRequest(mode,work,OUTBOX_NAME);
+	};
+	// The same on the tiddlers table, and how many tiddlers the worker's last list had: the device
+	// tab's measure ($:/cfworker/device.js)
+	proto.cfworkerDeviceRequest = function(mode,work) {
+		return storeRequest(mode,work,STORE_NAME);
+	};
+	proto.cfworkerListedCount = function() {
+		return Object.keys(listedRevisions).length;
+	};
+	// The device database removed (the device tab's Forget, which reloads the page after): this tab's
+	// connection closed first and nothing opened again meanwhile, the other tabs' closed by their
+	// versionchange handler (above). Resolves once it's gone — or after a few seconds if a connection
+	// hasn't closed: the removal then goes through when it does, before the reloaded page's open.
+	proto.cfworkerForgetDevice = function() {
+		if(storeOff) {
+			return Promise.resolve(false);
+		}
+		return storeDb().then(function(db) {
+			if(db) {
+				db.close();
+			}
+			storeOpening = null;
+			storeOff = true;
+			return new Promise(function(resolve) {
+				var request,
+					timer = setTimeout(function() {
+						resolve(true);
+					},5000);
+				function done(ok) {
+					clearTimeout(timer);
+					if(!ok) {
+						storeOff = false;
+					}
+					resolve(ok);
+				}
+				try {
+					request = indexedDB.deleteDatabase(STORE_DB);
+				} catch(e) {
+					return done(false);
+				}
+				request.onsuccess = function() {
+					done(true);
+				};
+				request.onerror = function() {
+					done(false);
+				};
+			});
+		});
 	};
 
 	// A tiddler deleted here before its load came (a delete kept on the device, put back at this

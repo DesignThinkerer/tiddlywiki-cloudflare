@@ -1,0 +1,33 @@
+What this browser keeps of the wiki, for opening and editing offline (README 3): the device copy (the tiddlers loaded here), the outbox (the changes not yet sent) and the service worker's files. Nothing here asks the worker anything.
+
+<$button message="tm-cfworker-device-measure">Measure</$button>
+
+<$list filter="[[$:/temp/cfworker/device]has[text]]" variable="measured">
+
+{{$:/temp/cfworker/device}}
+
+</$list>
+
+! Keeping it
+
+A browser short of space may clear a site's storage, a change waiting in the outbox with it, unless it has promised to keep it. Firefox asks you; Chrome and Safari decide by their own rules (a site used often, installed or bookmarked) and answer at once.
+
+<$list filter="[[$:/temp/cfworker/outbox]get[storage]match[persistent]]" variable="kept">This browser has promised to keep this site's data.</$list><$list filter="[[$:/temp/cfworker/outbox]get[storage]!match[persistent]]" variable="notyet"><$button message="tm-cfworker-device-keep">Ask the browser to keep this site's data</$button></$list>
+
+<$list filter="[[$:/temp/cfworker/device-message]field:about[keep]]">
+
+<$transclude mode="block"/>
+
+</$list>
+
+! Forgetting it
+
+Removes the device copy, the outbox and the service worker's files from this browser, then reloads: the wiki comes back from the worker and the copy fills again, as on a new device. Refused while a change or a draft waits in the outbox.
+
+<$button message="tm-cfworker-device-forget">Forget this device's copy</$button>
+
+<$list filter="[[$:/temp/cfworker/device-message]field:about[forget]]">
+
+<$transclude mode="block"/>
+
+</$list>

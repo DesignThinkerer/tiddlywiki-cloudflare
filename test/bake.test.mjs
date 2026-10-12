@@ -255,22 +255,23 @@ res = await putShell(fakeShell(), { fingerprint: "f1" });
 await res.arrayBuffer();
 check("the same shell again: nothing written, the page not rebuilt", res.status === 204 && (await bucket.head("baked.html")).etag === pageEtag2, `status ${res.status}`);
 check("the page carries the module that publishes", page.includes("$:/cfworker/page-publisher.js"));
-// The browser code is nine modules: a library the others require, startup modules for the
+// The browser code is ten modules: a library the others require, startup modules for the
 // admin tab's sync (the conflict guard, the tiddler list, the backup alert), the page publisher,
-// the restore import, the control panel's tab, the outbox and the cold start (the service worker).
-// They travel as one plugin (design 2.21), with the page's settings and the plugin's two tabs.
-const BROWSER_MODULES = [["$:/cfworker/lib.js", "library"], ["$:/cfworker/conflict-guard.js", "startup"], ["$:/cfworker/list-sync.js", "startup"], ["$:/cfworker/backup-alert.js", "startup"], ["$:/cfworker/page-publisher.js", "startup"], ["$:/cfworker/restore-import.js", "startup"], ["$:/cfworker/control-panel.js", "startup"], ["$:/cfworker/outbox.js", "startup"], ["$:/cfworker/cold-start.js", "startup"]];
+// the restore import, the control panel's tab, the outbox, the cold start (the service worker) and
+// the device tab. They travel as one plugin (design 2.21), with the page's settings and the
+// plugin's three tabs.
+const BROWSER_MODULES = [["$:/cfworker/lib.js", "library"], ["$:/cfworker/conflict-guard.js", "startup"], ["$:/cfworker/list-sync.js", "startup"], ["$:/cfworker/backup-alert.js", "startup"], ["$:/cfworker/page-publisher.js", "startup"], ["$:/cfworker/restore-import.js", "startup"], ["$:/cfworker/control-panel.js", "startup"], ["$:/cfworker/outbox.js", "startup"], ["$:/cfworker/cold-start.js", "startup"], ["$:/cfworker/device.js", "startup"]];
 const ADMIN = "$:/plugins/cfworker/admin";
 const preloaded = preloads(page);
 const plugin = preloaded.find(t => t.title === ADMIN);
 let parts = {};
 try { parts = JSON.parse(plugin.text).tiddlers; } catch {}
 const packageVersion = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
-check("the page preloads the admin plugin: plugin-type plugin, a name, a description, the repository as its author, the package's version with the build's hash, a readme and a settings tab",
+check("the page preloads the admin plugin: plugin-type plugin, a name, a description, the repository as its author, the package's version with the build's hash, a readme, a settings tab and a device tab",
   !!plugin && plugin["plugin-type"] === "plugin" && plugin.type === "application/json" && !!plugin.name && !!plugin.description && plugin.author === "https://github.com/DesignThinkerer/tiddlywiki-cloudflare" && typeof packageVersion === "string" && new RegExp("^" + packageVersion.replace(/\./g, "\\.") + "\\+[0-9a-z]+$").test(plugin.version || "") &&
-  (plugin.list || "").split(" ").includes("readme") && (plugin.list || "").split(" ").includes("settings") && !!parts[ADMIN + "/readme"] && !!parts[ADMIN + "/settings"],
+  ["readme", "settings", "device"].every(tab => (plugin.list || "").split(" ").includes(tab) && !!parts[ADMIN + "/" + tab]),
   plugin ? `version ${plugin.version}, list ${plugin.list}, parts ${Object.keys(parts).length}` : "no plugin tiddler");
-check("...its parts are the nine browser modules, each the right kind of module, each a JavaScript tiddler, and the page's settings (the public address, the service worker's address, the page's source)",
+check("...its parts are the ten browser modules, each the right kind of module, each a JavaScript tiddler, and the page's settings (the public address, the service worker's address, the page's source)",
   BROWSER_MODULES.every(([title, kind]) => { const t = parts[title]; return t && t["module-type"] === kind && t.type === "application/javascript" && t.text.length > 200; }) &&
   !!parts["$:/cfworker/public-url"] && /^\/sw\.js\?v=/.test(parts["$:/cfworker/sw-url"]?.text || "") && !!parts["$:/cfworker/page-source"],
   Object.keys(parts).join(", "));

@@ -286,6 +286,96 @@ await reload(A);
 await sleep(1500);
 check("the plugin deleted: the next load no longer refers to its file, which leaves the cache", !(await cached(A)).some(u => u.includes(helloFile)), (await cached(A)).map(u => u.replace(BASE, "").replace(PUB, "pub:")).join(", "));
 
+// --- 9. This device: the plugin's device tab (design 1.14) --------------------------------------------
+// What this browser keeps of the wiki, measured; the browser asked to keep it, on a click; the copy
+// forgotten. The browser's answer to persist() is counted and, when the test says, replaced: headless
+// Chromium never promises, and what's tested is what the page does with either answer.
+const DEVICE = "$:/plugins/cfworker/admin/device", MEASURE = "$:/temp/cfworker/device", DEVICE_SAID = "$:/temp/cfworker/device-message", ITEM = "$:/temp/cfworker/outbox-status";
+const DEVICE_DB = "cfworker-tiddlers";
+await contextA.addInitScript(() => {
+  if (!navigator.storage || typeof navigator.storage.persist !== "function") return;
+  const persist = navigator.storage.persist.bind(navigator.storage), persisted = navigator.storage.persisted.bind(navigator.storage);
+  window.__persistCalls = 0;
+  navigator.storage.persist = () => { window.__persistCalls++; return window.__persistAnswer === undefined ? persist() : Promise.resolve(window.__persistAnswer); };
+  navigator.storage.persisted = () => window.__persistAnswer === undefined ? persisted() : Promise.resolve(window.__persistAnswer);
+});
+const storageSaid = p => p.evaluate(() => $tw.wiki.getTiddler("$:/temp/cfworker/outbox")?.fields.storage);
+const deviceCount = (p, table = "tiddlers") => p.evaluate(([name, t]) => new Promise(resolve => {
+  const r = indexedDB.open(name);
+  r.onsuccess = () => { const db = r.result; try { const c = db.transaction(t, "readonly").objectStore(t).count(); c.onsuccess = () => { db.close(); resolve(c.result); }; c.onerror = () => { db.close(); resolve(-1); }; } catch { db.close(); resolve(-1); } };
+  r.onerror = () => resolve(-1);
+}), [DEVICE_DB, table]);
+const listedCount = async () => JSON.parse(await (await site.bucket.get("recipes/default/tiddlers.json")).text()).length;
+async function measure(p) {
+  await p.evaluate(t => { $tw.wiki.deleteTiddler(t); $tw.rootWidget.dispatchEvent({ type: "tm-cfworker-device-measure" }); }, MEASURE);
+  const done = await waitFor(() => p.evaluate(t => $tw.wiki.tiddlerExists(t) && $tw.wiki.getTiddler(t).fields.measured !== undefined, MEASURE), 20000);
+  return { done, text: done ? await p.evaluate(t => $tw.wiki.renderTiddler("text/plain", t).replace(/\s+/g, " "), MEASURE) : "" };
+}
+const said = p => p.evaluate(t => $tw.wiki.tiddlerExists(t) ? $tw.wiki.renderTiddler("text/plain", t).replace(/\s+/g, " ").trim() : "", DEVICE_SAID);
+await reload(A);
+await sleep(1500);
+check("the plugin has a device tab, a shadow like its others; the page doesn't ask the browser to keep the site's data at load, and says what it has promised so far",
+  await A.evaluate(d => $tw.wiki.isShadowTiddler(d) && $tw.wiki.getTiddlerList("$:/plugins/cfworker/admin").includes("device"), DEVICE) && (await A.evaluate(() => window.__persistCalls)) === 0 && (await storageSaid(A)) === "best-effort",
+  `persist() calls ${await A.evaluate(() => window.__persistCalls)}, storage ${await storageSaid(A)}`);
+await offline(contextA);
+await addTiddler(A, { title: "Device note", text: "written offline" });
+await waitFor(async () => (await status(A))?.waiting === "1", 10000);
+const item = await A.evaluate(t => $tw.wiki.renderTiddler("text/html", t), ITEM);
+check("while a change waits and the browser hasn't promised, the cloud dropdown says so, with a link to the device tab",
+  /hasn't promised/.test(item) && (item.includes(encodeURIComponent(DEVICE)) || item.includes(DEVICE)), item.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").slice(0, 240));
+const offlineMeasure = await measure(A);
+check("Measure, offline: the change waiting in the outbox is counted (the tab needs no network)", offlineMeasure.done && /1 change\b.* waiting in the outbox/.test(offlineMeasure.text), offlineMeasure.text.slice(0, 300));
+await online(contextA);
+await waitFor(async () => (await status(A))?.waiting === "0", 15000);
+await settle(A);
+await sleep(2000);   // (the fill done: the copy complete)
+mark = responses.length;
+const onlineMeasure = await measure(A);
+const kept = await deviceCount(A), listed = await listedCount();
+const copyLine = onlineMeasure.text.match(/(\d+) of (\d+) tiddlers/);
+check("Measure: the tiddlers kept on this device of those the worker lists, with their size; nothing waiting in the outbox",
+  onlineMeasure.done && !!copyLine && Number(copyLine[1]) === kept && Number(copyLine[2]) === listed && kept > 0 && /tiddlers kept \(\d+(\.\d+)? (B|KB|MB)\)/.test(onlineMeasure.text) && /nothing waiting in the outbox/.test(onlineMeasure.text),
+  `${onlineMeasure.text.slice(0, 200)} — device ${kept}, listed ${listed}`);
+check("...the files the service worker keeps, each with its size", /the page\) \(\d+(\.\d+)? (KB|MB)\)/.test(onlineMeasure.text) && /_plugins\/tiddlywikicore\.js[^)]*\(\d+(\.\d+)? (KB|MB)\)/.test(onlineMeasure.text) && /tiddlers\.json[^)]*\(\d+(\.\d+)? (B|KB|MB)\)/.test(onlineMeasure.text),
+  onlineMeasure.text.replace(/^.*?files/, "files").slice(0, 300));
+check("...what the browser says: this site's use of what it allows, and that it hasn't promised to keep it", /uses \d+(\.\d+)? (B|KB|MB|GB) of (the )?\d+(\.\d+)? (KB|MB|GB)/.test(onlineMeasure.text) && /hasn't promised/.test(onlineMeasure.text),
+  onlineMeasure.text.replace(/^.*?uses/, "uses").slice(0, 200));
+check("...and asks the worker nothing", got("A", mark, r => (r.url.startsWith(BASE) && !r.url.includes("/recipes/default/tiddlers.json")) || r.url.startsWith(PUB)).length === 0,
+  got("A", mark, r => r.url.startsWith(BASE) || r.url.startsWith(PUB)).map(r => r.url.replace(BASE, "").replace(PUB, "pub:")).join(", "));
+await A.evaluate(() => $tw.rootWidget.dispatchEvent({ type: "tm-cfworker-device-keep" }));
+await waitFor(async () => /promise/i.test(await said(A)), 10000);
+check("the button asks the browser to keep the site's data (one call, on the click) and says what it answered: not promised, here",
+  (await A.evaluate(() => window.__persistCalls)) === 1 && /didn't promise|hasn't promised/.test(await said(A)) && (await storageSaid(A)) === "best-effort", `calls ${await A.evaluate(() => window.__persistCalls)}: ${await said(A)}`);
+await A.evaluate(() => { window.__persistAnswer = true; $tw.wiki.deleteTiddler("$:/temp/cfworker/device-message"); $tw.rootWidget.dispatchEvent({ type: "tm-cfworker-device-keep" }); });
+await waitFor(async () => /promise/i.test(await said(A)), 10000);
+await offline(contextA);
+await addTiddler(A, { title: "Device note 2", text: "written offline, promised" });
+await waitFor(async () => (await status(A))?.waiting === "1", 10000);
+const itemKept = await A.evaluate(t => $tw.wiki.renderTiddler("text/html", t), ITEM);
+check("...promised: the tab says so, the measure too, and the dropdown no longer warns",
+  (await storageSaid(A)) === "persistent" && /has promised|promised to keep/.test(await said(A)) && !/hasn't promised/.test(itemKept) && /has promised/.test((await measure(A)).text), `${await said(A)} | ${itemKept.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").slice(0, 160)}`);
+// Forget, refused while a change waits
+const keysBefore = await cached(A);
+await A.evaluate(() => { window.__stillHere = 1; $tw.rootWidget.dispatchEvent({ type: "tm-cfworker-device-forget" }); });
+await waitFor(async () => /waiting/.test(await said(A)), 10000);
+await sleep(1000);
+check("Forget this device's copy, with a change waiting: refused, saying how many, nothing removed, no reload",
+  /1 change\b.*waiting/.test(await said(A)) && (await A.evaluate(() => window.__stillHere)) === 1 && (await deviceCount(A)) > 0 && (await deviceCount(A, "outbox")) === 1 && (await cached(A)).length === keysBefore.length,
+  `${await said(A)} — device ${await deviceCount(A)}, outbox ${await deviceCount(A, "outbox")}, cache ${(await cached(A)).length}/${keysBefore.length}`);
+await online(contextA);
+await waitFor(async () => (await status(A))?.waiting === "0", 15000);
+await settle(A);
+// Forget, with nothing waiting: the copy and the files go, the page reloads, and both are fetched again
+const publicMark = site.publicRequests.length;
+await A.evaluate(() => { window.__stillHere = 1; $tw.rootWidget.dispatchEvent({ type: "tm-cfworker-device-forget" }); });
+const reloaded = await waitFor(() => A.evaluate(() => window.__stillHere === undefined && !!window.$tw).catch(() => false), 20000);
+await ready(A);
+await sleep(2500);
+const fetchedAgain = site.publicRequests.slice(publicMark);
+check("...with nothing waiting: the device copy, the outbox and the service worker's files are gone, the page reloads, and the copy and the files are fetched again",
+  reloaded && fetchedAgain.some(u => u.includes("/_plugins/tiddlywikicore.js")) && fetchedAgain.some(u => u.startsWith("/recipes/default/tiddlers/")) && (await deviceCount(A)) > 0,
+  `reloaded ${reloaded}; fetched again: ${fetchedAgain.map(u => u.split("?")[0]).join(", ").slice(0, 300)}`);
+
 // --- 8. The public site registers nothing --------------------------------------------------------------
 const visitors = await browser.newContext();
 const { p: V } = await open(visitors, "V", PUB + "/", { wait: false });

@@ -67,6 +67,10 @@ exports.link = function(title) {
 	return value ? "<$link to=" + value + "><$text text=" + value + "/></$link>" : "'" + title + "'";
 };
 
+// The service worker's cache (service-worker.js, which has its own copy of the name: it isn't a
+// module of the wiki), read by the setup check and the device tab
+exports.SW_CACHE = "cfworker-wiki-v1";
+
 // The longest title the worker stores: an R2 key holds 1024 bytes, 25 of them before the title
 exports.MAX_TITLE_BYTES = 999;
 
