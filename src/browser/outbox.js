@@ -71,6 +71,8 @@ exports.startup = function() {
 		entries = Object.create(null),   // title -> {title, kind: save | delete | draft, fields, base, count, time}
 		fromDevice = null,               // what the device's outbox held at this page load, until put back
 		firstList = null,                // the first tiddler list of this page load, title -> revision
+		firstListFromCache = false,      // ...the service worker's copy, the network gone: a title it lacks isn't known gone
+		deferred = [],                   // deletes put back once a real list says whether their tiddler is still there
 		online = typeof navigator !== "object" || navigator.onLine !== false,
 		storage = "",                    // "persistent" once the browser has promised to keep this site's storage, "best-effort" if it won't
 		draftTimers = Object.create(null),
@@ -390,6 +392,12 @@ exports.startup = function() {
 			entry.count = wiki.getChangeCount(title);
 		} else if(entry.kind === "delete") {
 			if(!$tw.utils.hop(listed,title)) {
+				if(firstListFromCache) {
+					// A cached list may simply predate the tiddler: kept until a real list says
+					entries[title] = entry;
+					deferred.push(entry);
+					return;
+				}
 				// Gone from the worker since: nothing left to delete
 				request("readwrite",function(store) {
 					return store["delete"](title);
@@ -409,9 +417,19 @@ exports.startup = function() {
 			});
 		}
 	}
-	proto.cfworkerOnList(function(listed,previous) {
+	proto.cfworkerOnList(function(listed,previous,tiddlers,fromCache) {
+		if(!fromCache && deferred.length) {
+			var waiting = deferred;
+			deferred = [];
+			$tw.utils.each(waiting,function(entry) {
+				delete entries[entry.title];
+				putBackEntry(entry,listed);
+			});
+			updateStatus();
+		}
 		if(previous === null) {
 			firstList = listed;
+			firstListFromCache = !!fromCache;
 			putBack();
 		}
 	});

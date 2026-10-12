@@ -663,11 +663,15 @@ exports.startup = function() {
 						return setTimeout(fetchList,tries === 1 ? 1000 : 5000);
 					}
 				}
-				if(!err) {
-					var previous = lastListFetch ? listedRevisions : null;
-					listFromCache = !!(request && request.getResponseHeader && request.getResponseHeader("X-Served-From") === "cache");
+				if(err) {
+					return callback(err,tiddlers);
+				}
+				var previous = lastListFetch ? listedRevisions : null,
+					fromCache = !!(request && request.getResponseHeader && request.getResponseHeader("X-Served-From") === "cache");
+				completeList(tiddlers,previous,fromCache,function(list) {
+					listFromCache = fromCache;
 					listedRevisions = Object.create(null);
-					$tw.utils.each(tiddlers,function(fields) {
+					$tw.utils.each(list,function(fields) {
 						if(fields.revision !== undefined && fields.revision !== null) {
 							listedRevisions[fields.title] = String(fields.revision);
 						}
@@ -675,7 +679,10 @@ exports.startup = function() {
 					lastListFetch = Date.now();
 					listRequested = requested;
 					fillHoldUntil = Date.now() + FILL_PAUSE;
-					if(previous) {
+					// (A cached list removes nothing: completeList)
+					if(fromCache) {
+						// nothing forgotten
+					} else if(previous) {
 						forget(Object.keys(previous).filter(function(title) {
 							return !$tw.utils.hop(listedRevisions,title);
 						}));
@@ -684,17 +691,61 @@ exports.startup = function() {
 					}
 					$tw.utils.each(listListeners,function(listener) {
 						try {
-							listener(listedRevisions,previous,tiddlers);
+							listener(listedRevisions,previous,list,fromCache);
 						} catch(e) {
 							console.error("cfworker: a tiddler list listener failed:",e);
 						}
 					});
-				}
-				return callback(err,tiddlers);
+					callback(null,list);
+				});
 			}
 		}
 		fetchList();
 	};
+
+	// A list the service worker answered from its cache, the network gone (design 1.11), can be
+	// older than this device's last saves, and TiddlyWiki removes from the tab whatever a list
+	// doesn't name. So a cached list can only add: it's completed with what the tab knew — its last
+	// list and its own saves since (previous) — and, at a page load, with the device's copy, each at
+	// its known revision, so nothing is reloaded and nothing goes; the next real list removes what
+	// was deleted elsewhere meanwhile. then(list) with the completed list; a real list is passed on
+	// as it is.
+	function completeList(tiddlers,previous,fromCache,then) {
+		if(!fromCache) {
+			return then(tiddlers);
+		}
+		var seen = Object.create(null),
+			list = tiddlers.slice();
+		$tw.utils.each(tiddlers,function(fields) {
+			seen[fields.title] = true;
+		});
+		function add(fields) {
+			if(!seen[fields.title]) {
+				seen[fields.title] = true;
+				list.push(fields);
+			}
+		}
+		if(previous) {
+			$tw.utils.each(previous,function(revision,title) {
+				add({title: title, revision: revision});
+			});
+			return then(list);
+		}
+		storeRequest("readonly",function(store) {
+			return store.getAll();
+		}).then(function(entries) {
+			$tw.utils.each(entries || [],function(entry) {
+				if(entry && entry.fields && typeof entry.title === "string") {
+					var fields = $tw.utils.extend({},entry.fields);
+					delete fields.text;
+					fields.title = entry.title;
+					fields.revision = entry.revision;
+					add(fields);
+				}
+			});
+			then(list);
+		});
+	}
 
 	// The worker's latest tiddler list, title -> revision (null before the first): the page publisher
 	// ($:/cfworker/page-publisher.js) uses it to tell the tiddlers that came with the page from the
@@ -709,8 +760,10 @@ exports.startup = function() {
 		return listRequested;
 	};
 
-	// listener(listed, previous, entries) at each new tiddler list: listed and previous are title ->
-	// revision (previous: the list before, null for the first), entries the list's tiddlers (fields)
+	// listener(listed, previous, entries, fromCache) at each new tiddler list: listed and previous are
+	// title -> revision (previous: the list before, null for the first), entries the list's tiddlers
+	// (fields), fromCache whether it's the service worker's copy, completed (completeList), rather
+	// than the worker's
 	proto.cfworkerOnList = function(listener) {
 		listListeners.push(listener);
 	};

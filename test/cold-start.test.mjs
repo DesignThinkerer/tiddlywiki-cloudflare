@@ -130,6 +130,66 @@ await A.evaluate(() => $tw.wiki.deleteTiddler("$:/config/cfworker/LoadAll"));
 await settle(A);
 await reload(A);
 
+// --- 4c. Offline, the tiddler list is the device's last copy: it can only add (design 1.11) ----------
+// With no network the service worker answers the list from its cache, which can be older than the
+// device's last saves. Nothing goes on its account — from the tab, the device copy or the outbox —
+// until a real list comes, at the network's return.
+const DEVICE_STORE = "cfworker-tiddlers";
+const onDevice = (p, title) => p.evaluate(([name, t]) => new Promise(resolve => {
+  const r = indexedDB.open(name);
+  r.onsuccess = () => { const db = r.result; try { const g = db.transaction("tiddlers", "readonly").objectStore("tiddlers").get(t); g.onsuccess = () => { db.close(); resolve(!!g.result); }; g.onerror = () => { db.close(); resolve(null); }; } catch { db.close(); resolve(null); } };
+  r.onerror = () => resolve(null);
+}), [DEVICE_STORE, title]);
+const deviceTotal = p => p.evaluate(name => new Promise(resolve => {
+  const r = indexedDB.open(name);
+  r.onsuccess = () => { const db = r.result; try { const c = db.transaction("tiddlers", "readonly").objectStore("tiddlers").count(); c.onsuccess = () => { db.close(); resolve(c.result); }; c.onerror = () => { db.close(); resolve(-1); }; } catch { db.close(); resolve(-1); } };
+  r.onerror = () => resolve(-1);
+}), DEVICE_STORE);
+const cachedListTitles = p => p.evaluate(async name => { const c = await caches.open(name); const k = (await c.keys()).find(r => r.url.includes("/recipes/default/tiddlers.json")); if (!k) return null; const r = await c.match(k); return (await r.json()).map(t => t.title); }, CACHE);
+const inTab = (p, title) => p.evaluate(t => $tw.wiki.tiddlerExists(t) && !$tw.wiki.getTiddler(t).hasField("_is_skinny") ? $tw.wiki.getTiddlerText(t) : $tw.wiki.tiddlerExists(t) ? "(skinny)" : null, title);
+await addTiddler(A, { title: "Doomed note", text: "to be deleted offline" });
+await addTiddler(A, { title: "Elsewhere note", text: "to be deleted on another device" });
+await settle(A);
+await A.evaluate(() => $tw.syncer.syncFromServer());   // the service worker's copy of the list: with those two, without the next
+await sleep(1500);
+await addTiddler(A, { title: "Late note", text: "saved just before the network went" });
+await settle(A);
+const staleList = await cachedListTitles(A);
+check("(the service worker's copy of the list predates the last save)", Array.isArray(staleList) && staleList.includes("Doomed note") && !staleList.includes("Late note"), JSON.stringify(staleList));
+const deviceBefore = await deviceTotal(A);
+await offline(contextA);
+await A.evaluate(() => $tw.syncer.syncFromServer());
+await sleep(2500);
+check("a tiddler saved just before the network went is still in the tab after an offline poll, and still on the device",
+  (await inTab(A, "Late note")) === "saved just before the network went" && (await onDevice(A, "Late note")) === true && (await status(A))?.online === "no",
+  `tab ${JSON.stringify(await inTab(A, "Late note"))}, device ${await onDevice(A, "Late note")}`);
+await reload(A, { wait: false });
+await A.waitForFunction(() => window.$tw && $tw.syncer && $tw.wiki.tiddlerExists("$:/core"), null, { timeout: 30000 });
+await sleep(3000);
+check("...and after an offline reload: the device's copy completes the cached list, and nothing is pruned from it",
+  (await inTab(A, "Late note")) === "saved just before the network went" && (await onDevice(A, "Late note")) === true && (await deviceTotal(A)) === deviceBefore,
+  `tab ${JSON.stringify(await inTab(A, "Late note"))}, device ${await onDevice(A, "Late note")}, ${await deviceTotal(A)} of ${deviceBefore} on the device`);
+await A.evaluate(() => $tw.wiki.deleteTiddler("Doomed note"));
+await waitFor(async () => (await status(A))?.waiting === "1", 10000);
+await reload(A, { wait: false });
+await A.waitForFunction(() => window.$tw && $tw.syncer && $tw.wiki.tiddlerExists("$:/core"), null, { timeout: 30000 });
+await sleep(3000);
+check("a tiddler deleted offline is still gone after an offline reload, the delete still waiting", (await inTab(A, "Doomed note")) === null && (await status(A))?.waiting === "1",
+  `tab ${JSON.stringify(await inTab(A, "Doomed note"))}, ${JSON.stringify(await status(A))}`);
+// The worker back, this browser still offline: a tiddler deleted meanwhile (from another device: here, straight at the worker)
+await site.start();
+await site.startPublic();
+const elsewhereDelete = await fetch(BASE + "/bags/default/tiddlers/" + encodeURIComponent("Elsewhere note"), { method: "DELETE" });
+check("(deleted at the worker while this browser is offline)", elsewhereDelete.status < 300 && (await stored("Elsewhere note")) === null, `status ${elsewhereDelete.status}`);
+await contextA.setOffline(false);
+await A.evaluate(() => { $tw.syncer.processTaskQueue(); $tw.syncer.syncFromServer(); });
+const doomedGone = await waitFor(async () => (await stored("Doomed note")) === null, 15000);
+const elsewhereGone = await waitFor(() => A.evaluate(() => !$tw.wiki.tiddlerExists("Elsewhere note")), 15000);
+await settle(A);
+check("at the network's return, the delete reaches the worker, and a tiddler deleted on another device meanwhile goes from this one (a real list still removes)",
+  doomedGone && elsewhereGone && (await onDevice(A, "Elsewhere note")) === false && (await stored("Late note")) === "saved just before the network went" && (await status(A))?.waiting === "0",
+  `doomed gone ${doomedGone}, elsewhere gone ${elsewhereGone}, on device ${await onDevice(A, "Elsewhere note")}, ${JSON.stringify(await status(A))}`);
+
 // --- 4b. Another device, one visit online and no reload: it opens offline ---------------------------
 // (The service worker fills its cache as soon as it's in place: the page, its files, the status file
 // and the tiddler list, which a first visit loaded before it was there)
