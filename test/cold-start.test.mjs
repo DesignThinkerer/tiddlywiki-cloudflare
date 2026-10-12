@@ -340,7 +340,20 @@ check("...the files the service worker keeps, each with its size", /the page\) \
   onlineMeasure.text.replace(/^.*?files/, "files").slice(0, 300));
 check("...what the browser says: this site's use of what it allows, and that it hasn't promised to keep it", /uses \d+(\.\d+)? (B|KB|MB|GB) of (the )?\d+(\.\d+)? (KB|MB|GB)/.test(onlineMeasure.text) && /hasn't promised/.test(onlineMeasure.text),
   onlineMeasure.text.replace(/^.*?uses/, "uses").slice(0, 200));
-check("...and asks the worker nothing", got("A", mark, r => (r.url.startsWith(BASE) && !r.url.includes("/recipes/default/tiddlers.json")) || r.url.startsWith(PUB)).length === 0,
+// A tiddler the page itself carries (the site subtitle, saved on another device: the worker bakes
+// it into the page in full, so this tab never loads it and the copy never sees it) is counted apart
+await addTiddler(C, { title: "$:/SiteSubtitle", text: "set on another device" });
+await settle(C);
+await reload(A);
+await sleep(2000);
+const carriedMeasure = await measure(A);
+const carriedLine = carriedMeasure.text.match(/(\d+) of (\d+) tiddlers kept[^;]*/);
+check("...a tiddler the page carries (the site subtitle, set on another device) is listed, not in the copy, and counted apart as in the page itself",
+  carriedMeasure.done && !!carriedLine && Number(carriedLine[2]) === Number(carriedLine[1]) + 1 && /1 tiddler in the page itself/.test(carriedLine[0]) && !/not loaded yet/.test(carriedLine[0]) && await A.evaluate(() => $tw.wiki.getTiddlerText("$:/SiteSubtitle") === "set on another device"),
+  carriedLine ? carriedLine[0] : carriedMeasure.text.slice(0, 200));
+mark = responses.length;
+const quietMeasure = await measure(A);
+check("...and asks the worker nothing", quietMeasure.done && got("A", mark, r => (r.url.startsWith(BASE) && !r.url.includes("/recipes/default/tiddlers.json")) || r.url.startsWith(PUB)).length === 0,
   got("A", mark, r => r.url.startsWith(BASE) || r.url.startsWith(PUB)).map(r => r.url.replace(BASE, "").replace(PUB, "pub:")).join(", "));
 await A.evaluate(() => $tw.rootWidget.dispatchEvent({ type: "tm-cfworker-device-keep" }));
 await waitFor(async () => /promise/i.test(await said(A)), 10000);

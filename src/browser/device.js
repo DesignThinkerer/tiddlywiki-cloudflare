@@ -40,7 +40,7 @@ var MEASURE = "$:/temp/cfworker/device",
 exports.startup = function() {
 	var Adaptor = lib.findAdaptor();
 	if(!Adaptor || Adaptor.prototype.cfworkerDevice || typeof window === "undefined" ||
-		typeof Adaptor.prototype.cfworkerDeviceRequest !== "function" || typeof Adaptor.prototype.cfworkerOutboxRequest !== "function" || typeof Adaptor.prototype.cfworkerStorageKept !== "function") {
+		typeof Adaptor.prototype.cfworkerDeviceRequest !== "function" || typeof Adaptor.prototype.cfworkerListedTitles !== "function" || typeof Adaptor.prototype.cfworkerOutboxRequest !== "function" || typeof Adaptor.prototype.cfworkerStorageKept !== "function") {
 		return;
 	}
 	if(!lib.onAdminSite(window.location.origin + "/")) {
@@ -141,7 +141,28 @@ exports.startup = function() {
 			var copy = results[0], outbox = results[1], files = results[2], browser = results[3],
 				lines = [];
 			if(copy) {
-				lines.push("''This device:'' " + copy.length + " of " + proto.cfworkerListedCount() + " tiddlers kept (" + size(lib.utf8Length(JSON.stringify(copy))) + "); " + outboxLine(outbox) + ".");
+				// Of the tiddlers listed and not kept: the ones the page itself carries (the site title,
+				// the default tiddlers, the settings: baked in by the worker, in full, so TiddlyWiki never
+				// loads them and the copy never sees them; offline they come with the page), and the ones
+				// not loaded yet (the fill off, or still running)
+				var kept = Object.create(null), inPage = 0, notYet = 0, listed = proto.cfworkerListedTitles();
+				$tw.utils.each(copy,function(entry) {
+					kept[entry.title] = true;
+				});
+				$tw.utils.each(listed,function(title) {
+					if(kept[title]) {
+						return;
+					}
+					var tiddler = wiki.getTiddler(title);
+					if(tiddler && !tiddler.hasField("_is_skinny")) {
+						inPage++;
+					} else {
+						notYet++;
+					}
+				});
+				lines.push("''This device:'' " + copy.length + " of " + listed.length + " tiddlers kept (" + size(lib.utf8Length(JSON.stringify(copy))) + ")" +
+					(inPage || notYet ? " — " + [inPage ? count(inPage,"tiddler") + " in the page itself" : "", notYet ? count(notYet,"tiddler") + " not loaded yet" : ""].filter(Boolean).join(", ") : "") +
+					"; " + outboxLine(outbox) + ".");
 			} else {
 				lines.push("''This device:'' no device copy (the browser gave no database: nothing is kept here, and a change made offline isn't either).");
 			}
