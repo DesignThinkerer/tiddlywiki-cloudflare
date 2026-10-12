@@ -13,7 +13,7 @@ const MODULE_RULES = [{ type: "ESModule", include: ["**/*.js", "**/*.mjs"] }, { 
 const mf = new Miniflare({
   modules: true, scriptPath: WORKER, modulesRules: MODULE_RULES, compatibilityDate: "2024-09-23", r2Buckets: ["WIKI_BUCKET"], port: 0,
   // No Cloudflare Access in front of the tests, and the public site's address (see the end of this file)
-  bindings: { ACCESS: "off", PUBLIC_WIKI_URL: "https://my-tiddlywiki.theophile.dev" },
+  bindings: { ACCESS: "off", PUBLIC_WIKI_URL: "https://wiki.example.com" },
   outboundService: async () => new Response("{}", { status: 404 }),
 });
 const base = (await mf.ready).toString().replace(/\/$/, "");
@@ -26,7 +26,7 @@ await bucket.put("index.html", html("v1"));
 await bucket.put("baked.html", html("old baked page without the guard"));   // a baked.html from an older worker
 let page = await (await mf.dispatchFetch(base + "/baked.html")).text();
 check("an outdated baked.html is rebuilt on the first visit", page.includes("v1") && page.includes("$:/cfworker/conflict-guard.js"));
-check("the public URL is baked in for the browser module", page.includes("$:/cfworker/public-url") && page.includes("https://my-tiddlywiki.theophile.dev/"));
+check("the public URL is baked in for the browser module", page.includes("$:/cfworker/public-url") && page.includes("https://wiki.example.com/"));
 page = await (await mf.dispatchFetch(base + "/")).text();
 check("the next visit is served from the stored bake", page.includes("v1") && page.includes("conflict-guard.js"));
 await bucket.put("index.html", html("v2"));
@@ -133,7 +133,7 @@ await bucket.delete("files/note.txt");
 // everything but the core, which is a separate file (_plugins/tiddlywikicore.js?v=<version>-<format>).
 // The worker keeps the shell in _page/shell.html and builds the page from it while it matches the
 // current index.html. These stand-ins have the parts the worker relies on.
-const PUB = "https://my-tiddlywiki.theophile.dev";
+const PUB = "https://wiki.example.com";
 const CORE_V = "5.4.1-1";
 const coreUrl = v => `${PUB}/_plugins/tiddlywikicore.js?v=${v}`;
 // (The core plugin mentions the save template setting, escaped; snapshot: with TiddlyWiki's line that
@@ -306,7 +306,7 @@ check("...the settings tab offers the fill of the device copy, TiddlyWiki's poll
   const startVariant = async (script) => {
     const instance = new Miniflare({
       modules: true, script, scriptPath: WORKER, modulesRules: MODULE_RULES, compatibilityDate: "2024-09-23", r2Buckets: ["WIKI_BUCKET"], port: 0,
-      bindings: { ACCESS: "off", PUBLIC_WIKI_URL: "https://my-tiddlywiki.theophile.dev" },
+      bindings: { ACCESS: "off", PUBLIC_WIKI_URL: "https://wiki.example.com" },
       outboundService: async () => new Response("{}", { status: 404 }),
     });
     const root = (await instance.ready).toString().replace(/\/$/, "");
@@ -386,7 +386,7 @@ check("...and a shell for it is used once published", res.status === 204 && page
 // CONFLICT_GUARD = "off": the page is built without the browser modules (and still served)
 const mfOff = new Miniflare({
   modules: true, scriptPath: WORKER, modulesRules: MODULE_RULES, compatibilityDate: "2024-09-23", r2Buckets: ["WIKI_BUCKET"], port: 0,
-  bindings: { ACCESS: "off", PUBLIC_WIKI_URL: "https://my-tiddlywiki.theophile.dev", CONFLICT_GUARD: "off" },
+  bindings: { ACCESS: "off", PUBLIC_WIKI_URL: "https://wiki.example.com", CONFLICT_GUARD: "off" },
   outboundService: async () => new Response("{}", { status: 404 }),
 });
 const baseOff = (await mfOff.ready).toString().replace(/\/$/, "");
