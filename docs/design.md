@@ -31,6 +31,7 @@ The design of the worker: what each part does, and the reasons behind the choice
 | `PUT /page/shell` | The page published by the admin wiki, kept and used to build the page (1.9). |
 | `POST /backup/sync` | Starts a full backup, GitHub made to mirror the bucket (1.7): `202` with its status, `409` with the running one's, `400` without backups or the queue. |
 | `GET /backup/sync` | The last full backup's status. |
+| `GET /setup/check` | The setup check (1.13): each piece of the setup looked at, on demand. |
 | queue messages | Backup to GitHub (1.7). |
 
 A path that isn't valid percent-encoding (`%E0%A4%A`, say) gets `400`, in any request.
@@ -96,7 +97,7 @@ TiddlyWiki only runs JavaScript modules, plugins and startup actions that are pr
 - the sync settings `$:/config/SyncPollingInterval`, `$:/config/SyncThrottleInterval`, `$:/config/SyncFilter`, `$:/config/SyncDisableLazyLoading`: TiddlyWiki's syncer reads them once, when it starts
 - plugin disable flags, `$:/config/Plugins/Disabled/…`: read at boot too
 - every tiddler tagged `$:/tags/StartupAction` or one of its variants (`$:/tags/StartupAction/Browser`, `…/PostRender`)
-- the browser modules (`src/browser/`): the library `$:/cfworker/lib.js` the others require, the conflict guard `$:/cfworker/conflict-guard.js` (saves and deletes, section 2), the list sync `$:/cfworker/list-sync.js` (the tiddler list, reads from the public site, what isn't sent: 1.5), the backup alert `$:/cfworker/backup-alert.js` (1.7), the page publisher `$:/cfworker/page-publisher.js` (1.9), and the restore import `$:/cfworker/restore-import.js` (the backup's files dropped onto the wiki, 1.7), the control panel's Cloudflare tab `$:/cfworker/control-panel.js` (how backups go, the full backup, 1.7), and the outbox `$:/cfworker/outbox.js` (every change kept on the device until the worker has it, 1.10), and the cold start `$:/cfworker/cold-start.js` (the service worker registered, 1.11)
+- the browser modules (`src/browser/`): the library `$:/cfworker/lib.js` the others require, the conflict guard `$:/cfworker/conflict-guard.js` (saves and deletes, section 2), the list sync `$:/cfworker/list-sync.js` (the tiddler list, reads from the public site, what isn't sent: 1.5), the backup alert `$:/cfworker/backup-alert.js` (1.7), the page publisher `$:/cfworker/page-publisher.js` (1.9), and the restore import `$:/cfworker/restore-import.js` (the backup's files dropped onto the wiki, 1.7), the control panel's Cloudflare tab `$:/cfworker/control-panel.js` (how backups go, the full backup, 1.7; the setup check, 1.13), and the outbox `$:/cfworker/outbox.js` (every change kept on the device until the worker has it, 1.10), and the cold start `$:/cfworker/cold-start.js` (the service worker registered, 1.11)
 - `$:/cfworker/sw-url`: the service worker's address, `/sw.js?v=<its version>` (1.11)
 
 and, after that script, the app's links (1.12): the manifest, a theme colour, the iOS icon.
@@ -358,6 +359,21 @@ With the service worker (1.11), what the browser needs to install the wiki as an
 
 **What it costs:** one `head` per page build; the manifest written, and the title read for it, when the page's source changes; the icons written once per wiki. Nothing per page load (`test/budget.test.mjs`): the manifest is fetched at installs and launches, with the day's cache in between.
 
+### 1.13 The setup check
+
+Control Panel → Saving → Cloudflare → *Check the setup* (`$:/cfworker/control-panel.js`) asks the worker for `GET /setup/check` (`src/worker/setup.js`) and shows one line per piece of the setup, with a mark (✓ fine, ✗ missing or wrong, – nothing to check or optional), the worker's words on what it found, and the README section that fixes it. The pieces done by hand are the ones that can be wrong without a sound: the page's own requests work without the CORS header, a missing rewrite rule shows only to visitors, a wrong purge token fails in the worker's log.
+
+**From the worker,** each from its own requests, in parallel:
+- *Access:* this request came through it (`ctx.access`), which on a deployed worker is the only way in; on a local address with `ACCESS = off`, the line says so.
+- *The public site* (`PUBLIC_WIKI_URL`; a private wiki's lines say there's nothing to check): four requests to it — `/`, the tiddler list and the core file with the admin site as `Origin`, and `/status` — and the bucket's `baked.html` looked at (one `head`, the only R2 call). Reachable: an answer under 500 (a site that's down answers through Cloudflare's edge with a 5xx page as often as not at all). The rewrite rule: `/` answered 200 with the stored page's ETag (`W/` and quotes stripped: Cloudflare's compression weakens it); the body is never read. The CORS rule, each path on its own: `Access-Control-Allow-Origin` on the list's answer (`/recipes/`, the tiddler reads) and on the core file's (`/_plugins/`, the files kept for opening offline), the admin origin or `*`. The cache rules: `CF-Cache-Status` on the page's, the core file's and the status file's answers — a cache answer (`HIT`, `MISS`, `EXPIRED`, `STALE`, `UPDATING`, `REVALIDATED`) means a rule covers the path, `DYNAMIC` or no header that none does; reported, never a failure, since the rules are optional.
+- *Backups:* `GITHUB_REPO` and `GITHUB_TOKEN` set; GitHub asked for the repository with the token (`GET /repos/<repo>`: 401 a bad token, 404 a repository the token can't see), then for the branch (`GET /repos/<repo>/branches/<branch>`). Whether the token may write there only shows at the first save, which the backup alert reports (1.7).
+- *The queue:* the `BACKUP_QUEUE` binding present.
+- *Purges:* `CF_ZONE_ID` and `CF_API_TOKEN` set (optional: without them a change shows on the public site when its cached copy expires), then one purge, of the public site's `/status`, the token's only test — a token allowed only to purge can't read anything — and a harmless one (the status file never changes, and is cached again at the next visit).
+
+**From the browser,** two lines added in the tab: a service worker in place (`navigator.serviceWorker.controller`), and its cache (`cfworker-wiki-v1`) holding the core file — which is what the CORS rule's `/_plugins/` path is for on a public wiki (1.11), and what a device needs to open the wiki with no network.
+
+**What it costs:** nothing at page load. One request to the worker when the button is clicked, and from the worker up to four requests to the public site (bodies dropped unread), two to GitHub and one to Cloudflare's API; one R2 `head` (`test/r2-ops.test.mjs`). The purge is one API call, as a save's is.
+
 ## 2. Why it is built this way
 
 ### 2.1 The original failure was a missing header, not compression
@@ -517,3 +533,14 @@ Not done: the public site offline. Its readers get no service worker (nothing to
 - **A plain default icon of our own.** TiddlyWiki's logo isn't ours to ship as this app's icon, and `$:/favicon.ico` is whatever the owner put there, in whatever format, which the worker can't rasterise. So a plain page, drawn for this, with the owner's own PNGs replacing it from the bucket. The default copies go into the bucket at the first page build, so the owner finds the files to replace where they live.
 - **One page for both sites, so both get the manifest.** The page the worker builds is the same page the public site serves (1.3), and the public page linking a manifest the bucket doesn't have would be a console error on every public visit. So the worker keeps a copy in the bucket, written with the page when its source changes — one look per page build — and the public wiki comes out installable too, read-only. Not the alternative of two pages: everything else here rests on there being one.
 - **Not done: a manifest of the owner's own.** Colours, a different name, categories: a stored tiddler or a bucket file could override the whole manifest. Icons and the title cover what people change; the rest can come if asked for.
+
+### 2.20 The setup check: from the worker, on demand, one purge as the token's test
+
+Access and the zone's rules are set up by hand, and will stay so with the button (roadmap): the step was to make a missing piece show up in the wiki rather than by trial — the day before, a CORS rule scoped to `/recipes/` had kept the service worker from keeping the core file on every device, silently, since the page's own request for a file works without the header (2.18).
+
+- **Checked from the worker, not from the page.** The page could fetch the public site itself, but a browser shows a page nothing of a cross-site answer it wasn't allowed to see: a missing CORS header is a `TypeError`, with no status, no headers, and no way to tell "no rule" from "site down". The worker sees every header of every answer (`CF-Cache-Status`, `ETag`, `Access-Control-Allow-Origin`), sends the admin site as `Origin` itself, and reads the bucket for the stored page's ETag. The two things only a browser knows — a service worker in place, its copy of the core file — stay in the browser, two lines added in the tab.
+- **The rewrite rule by ETag, not by content.** The stored page's ETag against the public `/` answer's (weakened or not: Cloudflare's compression turns it into `W/…`): one `head`, no body read, and a `/` that serves anything else — the bucket's listing, a 404 page, `index.html` — fails it. Reading the body to look for a mark would cost a 2 MB download and a mark to keep in step.
+- **One purge as the purge token's test.** A token with *Cache Purge* alone can read nothing — `GET /zones/<id>` needs *Zone Read*, which the README doesn't ask for — so the only test is a purge. The status file's: harmless (it never changes, and is cached again at the next visit), one API call, as a save's purge is. An alternative was to show the last purge's outcome from the saves, kept in the bucket; that's a write per save for a check that's asked for once.
+- **On demand, never at page load.** A button, one worker request, a handful from the worker: the check is asked for when something is set up or in doubt. Running it at page load would be requests at every visit for an answer that doesn't change (1.11's budget).
+- **The cache rules reported, never failed.** They're optional (README 2.7): the public site works without them, slower. `DYNAMIC` on the page says the "Cache public wiki" rule is missing; on the core file, "Cache plugin files"; on the status file, "Cache status file". Said, with what was found, as information.
+- **Not done: a fix button.** The check names the README section; applying the rule needs the dashboard, or the API with a token the worker doesn't have (and shouldn't: a zone-editing token in a worker is more than a wiki should hold). The setup wizard stays parked (roadmap).

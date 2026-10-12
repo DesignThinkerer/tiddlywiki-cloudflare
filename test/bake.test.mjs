@@ -335,7 +335,7 @@ const refusals = [];
 for (const [method, path, body] of [
   ["GET", "/"], ["GET", "/status"], ["GET", "/recipes/default/tiddlers.json"], ["GET", "/recipes/default/tiddlers/x"],
   ["PUT", "/recipes/default/tiddlers/x", JSON.stringify({ title: "x", text: "t" })], ["DELETE", "/bags/default/tiddlers/x"],
-  ["OPTIONS", "/recipes/default/tiddlers/x"], ["HEAD", "/index.html"], ["GET", "/manifest.webmanifest"], ["GET", "/_app/icon-192.png"]
+  ["OPTIONS", "/recipes/default/tiddlers/x"], ["HEAD", "/index.html"], ["GET", "/manifest.webmanifest"], ["GET", "/_app/icon-192.png"], ["GET", "/setup/check"]
 ]) {
   const res = await mfClosed.dispatchFetch(baseClosed + path, { method, body, headers: body ? { "Content-Type": "application/json" } : {} });
   const text = await res.text();

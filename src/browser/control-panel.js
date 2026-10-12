@@ -4,10 +4,12 @@ type: application/javascript
 module-type: startup
 
 On the admin site, a "Cloudflare" tab in the control panel's Saving tab ($:/temp/cfworker/ControlPanel):
-how backups go (from $:/temp/cfworker/backup-status, kept by $:/cfworker/backup-alert.js), the last
-full backup, and the button that starts one (POST /backup/sync, design 1.7) or refreshes its status
-(GET /backup/sync). The worker answers are handed to the backup alert module, which keeps the status
-tiddler the tab shows.
+the setup check (GET /setup/check, design 1.13: each piece of the setup looked at by the worker, this
+browser's service worker and its copy of the core file added here, the lines kept in
+$:/temp/cfworker/setup-check); how backups go (from $:/temp/cfworker/backup-status, kept by
+$:/cfworker/backup-alert.js), the last full backup, and the button that starts one (POST /backup/sync,
+design 1.7) or refreshes its status (GET /backup/sync). The worker answers about backups are handed
+to the backup alert module, which keeps the status tiddler the tab shows.
 \*/
 (function(){
 
@@ -24,10 +26,23 @@ var lib = require("$:/cfworker/lib.js");
 var TAB = "$:/temp/cfworker/ControlPanel",
 	STATUS = "$:/temp/cfworker/backup-status",
 	MESSAGE = "$:/temp/cfworker/backup-sync-message",
+	SETUP = "$:/temp/cfworker/setup-check",
 	START = "tm-cfworker-backup-sync",
-	REFRESH = "tm-cfworker-backup-status";
+	REFRESH = "tm-cfworker-backup-status",
+	CHECK = "tm-cfworker-setup-check",
+	CACHE = "cfworker-wiki-v1";   // the service worker's cache (service-worker.js)
 
 var TAB_TEXT = [
+	"!! The setup",
+	"",
+	"What's set up by hand, looked at: Cloudflare Access; the public site, its rewrite rule, its CORS rule (both paths) and its cache rules; backups and the queue; purges; and this browser's copy for opening offline. A missing piece names the README section that fixes it. It runs only when asked (the worker makes a few requests of its own, and purges the public site's status file to test the purge token).",
+	"",
+	"<$button message='" + CHECK + "'>Check the setup</$button>",
+	"",
+	"<$list filter='[[" + SETUP + "]has[text]]' variable='checked'>",
+	"{{" + SETUP + "}}",
+	"</$list>",
+	"",
 	"!! Backups to GitHub",
 	"",
 	"<$list filter='[[" + STATUS + "]get[backups]match[off]]' variable='off'>",
@@ -128,6 +143,79 @@ exports.startup = function() {
 	});
 	$tw.rootWidget.addEventListener(REFRESH,function() {
 		request("GET");
+		return false;
+	});
+
+	// --- The setup check ------------------------------------------------------------------------------
+
+	// One line per piece: a mark (✓ fine, ✗ missing or wrong, – nothing to check or optional), the
+	// worker's text, the README section. Shown as text, whatever it contains (addresses, quotes).
+	function line(mark,text,readme) {
+		return "<li><$text text=\"\"\"" + mark + " " + text + (readme ? " (README " + readme + ")" : "") + "\"\"\"/></li>";
+	}
+	function mark(ok) {
+		return ok === true ? "✓" : ok === false ? "✗" : "–";
+	}
+	// This browser's own two lines: the service worker in place, and its copy of the core file,
+	// which is what the CORS rule's /_plugins/ path is for (design 1.11)
+	function browserLines(then) {
+		var lines = [],
+			controller = typeof navigator === "object" && navigator.serviceWorker && navigator.serviceWorker.controller;
+		lines.push(line(mark(!!controller),controller ?
+			"Opening offline: a service worker is in place in this browser." :
+			"Opening offline: no service worker is in place in this browser yet. Reload the page once, online.","3"));
+		if(typeof caches !== "object") {
+			lines.push(line("–","This browser has no cache storage here: nothing kept for opening offline.","3"));
+			return then(lines);
+		}
+		caches.open(CACHE).then(function(cache) {
+			return cache.keys();
+		}).then(function(keys) {
+			var kept = keys.some(function(request) {
+				return /\/_plugins\/tiddlywikicore\.js/.test(request.url);
+			});
+			lines.push(line(mark(kept),kept ?
+				"...and the core file is kept on this device: the wiki opens with no network (the page and its plugin files with it)." :
+				"...but the core file isn't kept on this device, so the wiki doesn't open with no network. On a public wiki, the CORS rule must cover /_plugins/ (see the line above); right after a first visit, give it a moment and check again.",kept ? "3" : "2.7"));
+			then(lines);
+		},function() {
+			lines.push(line("–","The cache storage couldn't be read.","3"));
+			then(lines);
+		});
+	}
+	function show(lines,checked) {
+		wiki.addTiddler(new $tw.Tiddler({
+			title: SETUP,
+			text: "<ul class='cfworker-setup-check'>\n" + lines.join("\n") + "\n</ul>\n\nChecked at <$view tiddler='" + SETUP + "' field='checked' format='date' template='0hh:0mm:0ss'/>.",
+			checked: $tw.utils.stringifyDate(checked || new Date())
+		}));
+	}
+	$tw.rootWidget.addEventListener(CHECK,function() {
+		wiki.addTiddler(new $tw.Tiddler({title: SETUP, text: "Checking…"}));
+		var host = ($tw.syncadaptor && $tw.syncadaptor.host) || here;
+		$tw.utils.httpRequest({
+			url: host + "setup/check",
+			type: "GET",
+			headers: {"X-Requested-With": "TiddlyWiki"},
+			callback: function(err,data,xhr) {
+				var status = xhr ? xhr.status : 0,
+					body = null,
+					lines = [];
+				try {
+					body = data ? JSON.parse(data) : null;
+				} catch(e) {}
+				if(body && Array.isArray(body.checks)) {
+					$tw.utils.each(body.checks,function(item) {
+						lines.push(line(mark(item.ok),String(item.text || ""),item.readme));
+					});
+				} else {
+					lines.push(line("✗",(status ? "The worker answered " + status + ": " : "The worker didn't answer: ") + String(data || err || "").slice(0,300),""));
+				}
+				browserLines(function(own) {
+					show(lines.concat(own));
+				});
+			}
+		});
 		return false;
 	});
 };

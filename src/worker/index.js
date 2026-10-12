@@ -5,7 +5,8 @@
 // modules, from the bottom up: bytes, tiddlers, storage, settings, access, http (the small shared
 // helpers); layout (reading and storing a tiddler), cache (public site purges), list (the tiddler
 // list and its rebuild), plugins (plugin files), build (building the page), page (serving and
-// publishing it); reads and saves (the handlers); backup/ (the GitHub backup through the queue).
+// publishing it); reads and saves (the handlers); backup/ (the GitHub backup through the queue);
+// setup (the setup check).
 // Each imports only from the ones before it (build.mjs refuses a cycle).
 //
 // worker.js is built from these by `npm run build` (build.mjs), with the browser modules of
@@ -21,6 +22,7 @@ import { publishCoreFile, publishShell, serveWiki } from "./page.js";
 import { serveList, serveObject, serveStatus } from "./reads.js";
 import { handleDelete, handleSave } from "./saves.js";
 import { publicSiteError } from "./settings.js";
+import { setupCheck } from "./setup.js";
 import { LIST_KEY } from "./storage.js";
 
 // The admin wiki is served by this worker and talks to it from its own origin (its reads of the
@@ -50,6 +52,8 @@ const ROUTES = [
   // A full backup (design 1.7): started by the admin wiki, and how the last one went
   { methods: ["POST"], matches: path => path === "/backup/sync", handle: (request, env, ctx, url, match, headers) => startBackupSync(request, env, ctx, headers) },
   { methods: ["GET"], matches: path => path === "/backup/sync", handle: (request, env, ctx, url, match, headers) => backupSyncStatus(env, headers) },
+  // The setup check (design 1.13): each piece of the setup looked at, on demand
+  { methods: ["GET"], matches: path => path === "/setup/check", handle: (request, env, ctx, url, match, headers) => setupCheck(request, env, ctx, headers) },
   // Any other read is an object of the bucket, by its key: the tiddler list, a tiddler, a file
   { methods: ["GET", "HEAD"], matches: path => decodePath(path.substring(1)), handle: (request, env, ctx, url, key, headers) =>
     key === LIST_KEY ? serveList(request, env, ctx, headers) : serveObject(request, env, key, headers) },

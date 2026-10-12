@@ -69,6 +69,9 @@ const BUDGETS = {
     "head manifest.webmanifest": 1, "get tiddler": 1, "put manifest.webmanifest": 1
   },
   "publish the same shell again": { "head index.html": 1, "head core file": 1, "head page shell": 1, "head baked.html": 1 },
+  // The setup check (on demand): the rewrite rule is checked by comparing the public page's ETag with
+  // the stored page's, one head; the rest is requests to the public site, GitHub and Cloudflare
+  "setup check": { "head baked.html": 1 },
   // With a shell, index.html itself isn't read
   "save a plugin, page built from the shell": {
     "head tiddler": 1, "get list": 1, "put tiddler": 1, "put list": 1,
@@ -123,6 +126,7 @@ await (await mf.dispatchFetch(base + "/")).arrayBuffer();
 await new Promise(r => setTimeout(r, 300));
 
 const pageLoad = await measure("page load (page up to date)", () => mf.dispatchFetch(base + "/"));
+await measure("setup check", () => mf.dispatchFetch(base + "/setup/check"));
 const notModified = await measure("page load, browser has the page (304)", () => mf.dispatchFetch(base + "/", { headers: { "If-None-Match": pageLoad.headers.get("ETag") || "none" } }));
 check("...answered 304", notModified.status === 304, `status ${notModified.status}`);
 const byDate = await measure("page load, browser has the page (304 by date)", () => mf.dispatchFetch(base + "/", { headers: { "If-Modified-Since": pageLoad.headers.get("Last-Modified") || "none" } }));

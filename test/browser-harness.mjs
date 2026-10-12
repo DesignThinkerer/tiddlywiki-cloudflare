@@ -47,9 +47,11 @@ export const PUBLIC_STATUS = { username: "GUEST", read_only: true, anonymous: tr
 //   queue: bind the backup queue, with its consumer, as deployed (backups then run in it)
 //   privateWiki: no PUBLIC_WIKI_URL: a private wiki (README 2.1); the stand-in still runs, so a
 //     request that reaches it shows up in publicRequests
-//   publicSite: hooks for the stand-in: cors() returns false to leave the CORS header out,
-//     override(key, url) returns text to serve instead of the object, rewrite(url, bytes) returns the
-//     bytes to send, delay(url) returns milliseconds to wait before answering (a slow connection)
+//   publicSite: hooks for the stand-in: cors(url) returns false to leave the CORS header out,
+//     cacheStatus(url) returns the CF-Cache-Status to send (HIT by default; DYNAMIC is Cloudflare's
+//     for a path no cache rule covers), override(key, url) returns text to serve instead of the
+//     object, rewrite(url, bytes) returns the bytes to send, delay(url) returns milliseconds to wait
+//     before answering (a slow connection)
 // Returns { mf, base, pub, bucket, publicRequests (each path and query, decoded), setBindings(extra),
 // stop(), start(), stopPublic(), startPublic(), close() }. setBindings restarts the worker with other
 // variables (the same bucket, the same address), as a change in the dashboard does: a wiki given a
@@ -65,7 +67,9 @@ export async function startSite({ index, publicStatus = false, bindings = {}, ou
     publicRequests.push(decodeURIComponent(url.pathname) + url.search);
     // The CORS header as the zone's rule sends it (README 2.7): under /recipes/ and /_plugins/ only
     const corsPath = url.pathname.startsWith("/recipes/") || url.pathname.startsWith("/_plugins/");
-    const headers = corsPath && !(publicSite.cors && !publicSite.cors()) ? { "Access-Control-Allow-Origin": "*" } : {};
+    const headers = corsPath && !(publicSite.cors && !publicSite.cors(url)) ? { "Access-Control-Allow-Origin": "*" } : {};
+    // As Cloudflare's edge sends them: whether the cache answered, and the object's ETag
+    headers["CF-Cache-Status"] = publicSite.cacheStatus ? publicSite.cacheStatus(url) : "HIT";
     try {
       const key = decodeURIComponent(url.pathname.slice(1)) || "baked.html";
       const wait = publicSite.delay ? publicSite.delay(url) : 0;
@@ -79,6 +83,7 @@ export async function startSite({ index, publicStatus = false, bindings = {}, ou
         }
         headers["Content-Type"] = obj.httpMetadata?.contentType || "application/octet-stream";
         if (obj.httpMetadata?.cacheControl) headers["Cache-Control"] = obj.httpMetadata.cacheControl;
+        headers.ETag = obj.httpEtag;
         body = Buffer.from(await obj.arrayBuffer());
       } else {
         headers["Content-Type"] = "application/json";
@@ -98,7 +103,15 @@ export async function startSite({ index, publicStatus = false, bindings = {}, ou
     r2Buckets: ["WIKI_BUCKET"], ...(r2Persist ? { r2Persist } : {}),
     ...(queue ? { queueProducers: { BACKUP_QUEUE: "wiki-backup" }, queueConsumers: { "wiki-backup": { maxBatchSize: 10, maxBatchTimeout: 0.2, maxRetries: 3 } } } : {}),
     bindings: { ACCESS: "off", ...(privateWiki ? {} : { PUBLIC_WIKI_URL: pub }), ...bindings },
-    outboundService: outbound || (async () => new Response('{"success":true}')),
+    // The worker's own requests: to the public stand-in as they are (the setup check asks it), the
+    // rest (GitHub, Cloudflare's API) to the suite's stub, or a bare success
+    outboundService: async request => {
+      if (new URL(request.url).origin === pub) {
+        // (The stand-in down: as Cloudflare's edge answers for a site that doesn't, a 5xx)
+        return fetch(request.url, { method: request.method, headers: request.headers }).catch(e => new Response("public stand-in down: " + e.message, { status: 523 }));
+      }
+      return outbound ? outbound(request) : new Response('{"success":true}');
+    },
   };
   let mf = new Miniflare(options);
   const base = (await mf.ready).toString().replace(/\/$/, "");
