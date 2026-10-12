@@ -2026,10 +2026,21 @@ const ADMIN_PLUGIN_TITLE = "$:/plugins/cfworker/admin";
 const PACKAGE_VERSION = "1.0.0";   // filled by build.mjs from package.json
 const PLUGIN_README_SOURCE = "The admin wiki's side of [[TiddlyWiki on Cloudflare|https://github.com/DesignThinkerer/tiddlywiki-cloudflare]]: the conflict guard, the tiddler list and the device copy, the backup alert, the page publisher, the restore import, the Cloudflare tab (Saving), the outbox (editing offline) and the service worker (opening offline).\n\nThe worker puts it in every page it builds: it always matches the worker, whose version is above, and isn't stored in the wiki. A part edited here is an override, as with any plugin, and stays until deleted.\n\nSettings: the //settings// tab. The worker's own (the public site, backups, purges): the Cloudflare dashboard, README 2.5.\n";
 const PLUGIN_SETTINGS_SOURCE = "Saved in the wiki (`$:/config/…`), so they hold on every device. What each one trades: README 3, \"The plugin and its settings\".\n\n! Settings\n\n<$checkbox tiddler=\"$:/config/cfworker/LoadAll\" field=\"text\" checked=\"yes\" unchecked=\"no\" default=\"yes\"> Load every tiddler onto this device in the background</$checkbox> — text search and backlinks then see everything; off, a tiddler loads when shown. Next page load.\n\n<$edit-text tiddler=\"$:/config/SyncPollingInterval\" tag=\"input\" type=\"number\" default=\"\" placeholder=\"60000\" size=\"8\"/> ms between an open tab's requests for the tiddler list: one worker request each (TiddlyWiki's own setting). Next page load.\n\n! Advanced\n\n''The defaults fit the free plan and are what the tests run: change these knowing what they trade.'' Empty means the default.\n\n* <$edit-text tiddler=\"$:/config/cfworker/DraftPause\" tag=\"input\" type=\"number\" default=\"\" placeholder=\"300\" size=\"6\"/> ms of typing before a draft is written to the device (300)\n* <$edit-text tiddler=\"$:/config/cfworker/FetchAhead\" tag=\"input\" type=\"number\" default=\"\" placeholder=\"6\" size=\"6\"/> tiddlers fetched at once in the background (6)\n* <$edit-text tiddler=\"$:/config/cfworker/PublishPause\" tag=\"input\" type=\"number\" default=\"\" placeholder=\"1000\" size=\"6\"/> ms after a save before the page is published (1000)\n* <$edit-text tiddler=\"$:/config/cfworker/BackupCheckMinutes\" tag=\"input\" type=\"number\" default=\"\" placeholder=\"60\" size=\"6\"/> minutes between asking how backups go (60)\n* <$edit-text tiddler=\"$:/config/cfworker/NetworkWait\" tag=\"input\" type=\"number\" default=\"\" placeholder=\"8\" size=\"6\"/> seconds the service worker waits for the network before the page it kept (8). Next page load.\n";
+const PLUGIN_FIELDS = {
+  name: "TiddlyWiki on Cloudflare", description: "The admin wiki's side of the worker: conflicts, the tiddler list and the device copy, backups, the published page, editing and opening offline",
+  author: "https://github.com/DesignThinkerer/tiddlywiki-cloudflare", "core-version": ">=5.3.0", list: "readme settings"
+};
 let adminPluginVersion = "";
 
+// package.json's version, plus the hash of everything else in the plugin that doesn't depend on
+// the wiki: the modules, the service worker's address, the two tabs and the fields above. So the
+// version changes whenever any of them does, and the page, which carries the plugin, is rebuilt
+// (bakeVersion). Worked out once while the worker runs.
 function pluginVersion() {
-  if (!adminPluginVersion) adminPluginVersion = PACKAGE_VERSION + "+" + hashText(BROWSER_MODULES.map(m => m.source).join("\n") + "\n" + swVersion()).toString(36);
+  if (!adminPluginVersion) {
+    const parts = [...BROWSER_MODULES.map(m => m.source), swVersion(), PLUGIN_README_SOURCE, PLUGIN_SETTINGS_SOURCE, JSON.stringify(PLUGIN_FIELDS)];
+    adminPluginVersion = PACKAGE_VERSION + "+" + hashText(parts.join("\n")).toString(36);
+  }
   return adminPluginVersion;
 }
 
@@ -2042,24 +2053,22 @@ function adminPlugin(env, pageSource) {
   tiddlers[`${ADMIN_PLUGIN_TITLE}/readme`] = { title: `${ADMIN_PLUGIN_TITLE}/readme`, text: PLUGIN_README_SOURCE };
   tiddlers[`${ADMIN_PLUGIN_TITLE}/settings`] = { title: `${ADMIN_PLUGIN_TITLE}/settings`, text: PLUGIN_SETTINGS_SOURCE };
   return {
-    title: ADMIN_PLUGIN_TITLE, "plugin-type": "plugin", type: "application/json",
-    name: "TiddlyWiki on Cloudflare", description: "The admin wiki's side of the worker: conflicts, the tiddler list and the device copy, backups, the published page, editing and opening offline",
-    author: "https://github.com/DesignThinkerer/tiddlywiki-cloudflare", version: pluginVersion(), "core-version": ">=5.3.0", list: "readme settings",
+    title: ADMIN_PLUGIN_TITLE, "plugin-type": "plugin", type: "application/json", ...PLUGIN_FIELDS, version: pluginVersion(),
     text: JSON.stringify({ tiddlers })
   };
 }
 
-// Changes whenever the browser modules or the public URL change, so baked.html is rebuilt after a
-// deploy (the number in front changes when the way pages are built changes). Asked at every page
-// load: worked out once while the worker runs (hashing the modules costs about 0.3 ms), again only
-// if its settings change.
+// Changes whenever the plugin (pluginVersion: the modules, the service worker, the tabs, the fields,
+// the package version) or the public URL changes, so baked.html is rebuilt after a deploy that
+// changes what the page carries, and not after one that doesn't (the number in front changes when
+// the way pages are built changes). Asked at every page load: worked out once while the worker
+// runs (hashing the modules costs about 0.3 ms), again only if its settings change.
 let lastBakeVersion = { settings: null, version: "" };
 
 function bakeVersion(env) {
   const enabled = conflictGuardEnabled(env), settings = enabled + "\n" + publicAddress(env);
   if (lastBakeVersion.settings !== settings) {
-    // (The service worker's address is in the page too: a new script, a new page)
-    const input = (enabled ? BROWSER_MODULES.map(m => m.source).join("\n") + "\n" + swVersion() : "off") + "\n" + publicAddress(env);
+    const input = (enabled ? pluginVersion() : "off") + "\n" + publicAddress(env);
     lastBakeVersion = { settings, version: "9-" + hashText(input).toString(36) };
   }
   return lastBakeVersion.version;

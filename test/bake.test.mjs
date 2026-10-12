@@ -279,6 +279,59 @@ check("...the settings tab offers the fill of the device copy, TiddlyWiki's poll
   ["$:/config/cfworker/LoadAll", "$:/config/SyncPollingInterval", "$:/config/cfworker/DraftPause", "$:/config/cfworker/FetchAhead", "$:/config/cfworker/PublishPause", "$:/config/cfworker/BackupCheckMinutes", "$:/config/cfworker/NetworkWait"].every(t => (parts[ADMIN + "/settings"]?.text || "").includes(t)) &&
   /300/.test(parts[ADMIN + "/settings"]?.text || "") && /free plan/.test(parts[ADMIN + "/settings"]?.text || ""),
   (parts[ADMIN + "/settings"]?.text || "").slice(0, 120));
+// The page carries the whole plugin, so a deploy that changes any part of it — a tab's text, a
+// field, the package version — has to rebuild the page, and one that changes only the worker's own
+// code must not (design 1.4: the page is rebuilt when it would differ, not at every deploy). Each
+// variant below is worker.js with that one change, started on the page this worker baked.
+{
+  const workerSource = fs.readFileSync(WORKER, "utf8");
+  const variant = (needle, replacement) => {
+    const at = workerSource.indexOf(needle);
+    if (at < 0 || workerSource.indexOf(needle, at + 1) >= 0) throw new Error(`worker.js should contain "${needle}" exactly once`);
+    return workerSource.replace(needle, replacement);
+  };
+  const bakedNow = await mf.dispatchFetch(base + "/"), baseline = preloads(await bakedNow.text()).find(t => t.title === ADMIN);
+  const baked = await bucket.get("baked.html"), engine = await bucket.get("index.html");
+  const bakedBytes = await baked.arrayBuffer(), engineBytes = await engine.arrayBuffer();
+  const variants = [
+    ["the settings tab", variant("Empty means the default.", "Empty means the default. (changed)"), text => (part(text, ADMIN + "/settings")?.text || "").includes("(changed)")],
+    ["the readme", variant("The admin wiki's side of [[TiddlyWiki on Cloudflare|", "The admin wiki's side (changed) of [[TiddlyWiki on Cloudflare|"), text => (part(text, ADMIN + "/readme")?.text || "").includes("(changed)")],
+    ["a plugin field (the author)", variant('author: "https://github.com/DesignThinkerer/tiddlywiki-cloudflare"', 'author: "https://example.com/a-fork"'), text => preloads(text).find(t => t.title === ADMIN)?.author === "https://example.com/a-fork"],
+    ["the package version", variant(`const PACKAGE_VERSION = "${packageVersion}"`, `const PACKAGE_VERSION = "${packageVersion}-next"`), text => (preloads(text).find(t => t.title === ADMIN)?.version || "").startsWith(`${packageVersion}-next+`)],
+  ];
+  const control = variant("The empty wiki module is empty: the build didn't make seed/empty.html?", "The empty wiki module is empty: the build didn't make seed/empty.html? (changed)");
+  const startVariant = async (script) => {
+    const instance = new Miniflare({
+      modules: true, script, scriptPath: WORKER, modulesRules: MODULE_RULES, compatibilityDate: "2024-09-23", r2Buckets: ["WIKI_BUCKET"], port: 0,
+      bindings: { ACCESS: "off", PUBLIC_WIKI_URL: "https://my-tiddlywiki.theophile.dev" },
+      outboundService: async () => new Response("{}", { status: 404 }),
+    });
+    const root = (await instance.ready).toString().replace(/\/$/, "");
+    const store = await instance.getR2Bucket("WIKI_BUCKET");
+    await store.put("index.html", engineBytes.slice(0), { httpMetadata: engine.httpMetadata });
+    await store.put("baked.html", bakedBytes.slice(0), { httpMetadata: baked.httpMetadata, customMetadata: baked.customMetadata });
+    const res = await instance.dispatchFetch(root + "/"), text = await res.text();
+    const head = await store.head("baked.html");
+    const stored = head ? { etag: head.etag, bakeVersion: head.customMetadata?.bakeVersion } : null;   // (read before dispose: a stub dies with its instance)
+    await instance.dispose();
+    return { res, text, stored };
+  };
+  for (const [what, script, carries] of variants) {
+    const { res, text, stored } = await startVariant(script);
+    const version = preloads(text).find(t => t.title === ADMIN)?.version;
+    check(`a deploy that changes only ${what} rebuilds the page: the new one is served and stored, with a new bake version`,
+      res.status === 200 && carries(text) && res.headers.get("X-Wiki-Page") !== baked.customMetadata.bakeVersion && stored?.bakeVersion === res.headers.get("X-Wiki-Page") && stored.etag !== baked.etag,
+      `status ${res.status}, carries ${carries(text)}, bake ${res.headers.get("X-Wiki-Page")} vs stored ${baked.customMetadata.bakeVersion}`);
+    check(`...and the plugin's version changes with it`, !!version && version !== baseline?.version, `${version} vs ${baseline?.version}`);
+  }
+  {
+    const { res, text, stored } = await startVariant(control);
+    const version = preloads(text).find(t => t.title === ADMIN)?.version;
+    check("a deploy that changes only the worker's own code keeps the page: served as stored, same bake version, same plugin version",
+      res.status === 200 && res.headers.get("X-Wiki-Page") === baked.customMetadata.bakeVersion && stored?.etag === baked.etag && version === baseline?.version,
+      `bake ${res.headers.get("X-Wiki-Page")} vs ${baked.customMetadata.bakeVersion}, version ${version} vs ${baseline?.version}`);
+  }
+}
 // Two admin tabs: the shell says which stored shell its page was built from, or last published over
 // (X-Page-Shell). One from a page older than the shell stored is refused, with the current version
 // in the answer, so the tab syncs and sends its page again, with the other tab's change in it;
