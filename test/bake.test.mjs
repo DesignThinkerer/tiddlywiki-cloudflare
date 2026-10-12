@@ -183,8 +183,13 @@ const preloads = text => {
   const from = at + "preloadTiddlers.concat(".length;
   return JSON.parse(text.slice(from, text.indexOf(");\n", from)));
 };
+// A part of the admin plugin the page preloads (the modules and their settings travel in it, design 2.21)
+const part = (text, title) => {
+  const plugin = preloads(text).find(t => t.title === "$:/plugins/cfworker/admin");
+  try { return plugin ? JSON.parse(plugin.text).tiddlers[title] || null : null; } catch { return null; }
+};
 const pageSource = text => {
-  const tiddler = preloads(text).find(t => t.title === "$:/cfworker/page-source");
+  const tiddler = part(text, "$:/cfworker/page-source");
   return tiddler ? JSON.parse(tiddler.text) : null;
 };
 await bucket.put("index.html", html("full engine"));
@@ -252,12 +257,28 @@ check("the same shell again: nothing written, the page not rebuilt", res.status 
 check("the page carries the module that publishes", page.includes("$:/cfworker/page-publisher.js"));
 // The browser code is nine modules: a library the others require, startup modules for the
 // admin tab's sync (the conflict guard, the tiddler list, the backup alert), the page publisher,
-// the restore import, the control panel's tab, the outbox and the cold start (the service worker)
+// the restore import, the control panel's tab, the outbox and the cold start (the service worker).
+// They travel as one plugin (design 2.21), with the page's settings and the plugin's two tabs.
 const BROWSER_MODULES = [["$:/cfworker/lib.js", "library"], ["$:/cfworker/conflict-guard.js", "startup"], ["$:/cfworker/list-sync.js", "startup"], ["$:/cfworker/backup-alert.js", "startup"], ["$:/cfworker/page-publisher.js", "startup"], ["$:/cfworker/restore-import.js", "startup"], ["$:/cfworker/control-panel.js", "startup"], ["$:/cfworker/outbox.js", "startup"], ["$:/cfworker/cold-start.js", "startup"]];
+const ADMIN = "$:/plugins/cfworker/admin";
 const preloaded = preloads(page);
-check("the page preloads the nine browser modules, each the right kind of module, each a JavaScript tiddler",
-  BROWSER_MODULES.every(([title, kind]) => { const t = preloaded.find(t => t.title === title); return t && t["module-type"] === kind && t.type === "application/javascript" && t.text.length > 200; }),
-  preloaded.filter(t => t.title.startsWith("$:/cfworker/")).map(t => `${t.title} (${t["module-type"]})`).join(", "));
+const plugin = preloaded.find(t => t.title === ADMIN);
+let parts = {};
+try { parts = JSON.parse(plugin.text).tiddlers; } catch {}
+const packageVersion = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
+check("the page preloads the admin plugin: plugin-type plugin, a name, a description, the package's version with the build's hash, a readme and a settings tab",
+  !!plugin && plugin["plugin-type"] === "plugin" && plugin.type === "application/json" && !!plugin.name && !!plugin.description && typeof packageVersion === "string" && new RegExp("^" + packageVersion.replace(/\./g, "\\.") + "\\+[0-9a-z]+$").test(plugin.version || "") &&
+  (plugin.list || "").split(" ").includes("readme") && (plugin.list || "").split(" ").includes("settings") && !!parts[ADMIN + "/readme"] && !!parts[ADMIN + "/settings"],
+  plugin ? `version ${plugin.version}, list ${plugin.list}, parts ${Object.keys(parts).length}` : "no plugin tiddler");
+check("...its parts are the nine browser modules, each the right kind of module, each a JavaScript tiddler, and the page's settings (the public address, the service worker's address, the page's source)",
+  BROWSER_MODULES.every(([title, kind]) => { const t = parts[title]; return t && t["module-type"] === kind && t.type === "application/javascript" && t.text.length > 200; }) &&
+  !!parts["$:/cfworker/public-url"] && /^\/sw\.js\?v=/.test(parts["$:/cfworker/sw-url"]?.text || "") && !!parts["$:/cfworker/page-source"],
+  Object.keys(parts).join(", "));
+check("...and no loose $:/cfworker/ tiddler is preloaded beside it", !preloaded.some(t => t.title.startsWith("$:/cfworker/")), preloaded.filter(t => t.title.startsWith("$:/cfworker/")).map(t => t.title).join(", "));
+check("...the settings tab offers the fill of the device copy, TiddlyWiki's polling interval, and the advanced settings each with its default",
+  ["$:/config/cfworker/LoadAll", "$:/config/SyncPollingInterval", "$:/config/cfworker/DraftPause", "$:/config/cfworker/FetchAhead", "$:/config/cfworker/PublishPause", "$:/config/cfworker/BackupCheckMinutes", "$:/config/cfworker/NetworkWait"].every(t => (parts[ADMIN + "/settings"]?.text || "").includes(t)) &&
+  /300/.test(parts[ADMIN + "/settings"]?.text || "") && /free plan/.test(parts[ADMIN + "/settings"]?.text || ""),
+  (parts[ADMIN + "/settings"]?.text || "").slice(0, 120));
 // Two admin tabs: the shell says which stored shell its page was built from, or last published over
 // (X-Page-Shell). One from a page older than the shell stored is refused, with the current version
 // in the answer, so the tab syncs and sends its page again, with the other tab's change in it;
@@ -316,8 +337,8 @@ const baseOff = (await mfOff.ready).toString().replace(/\/$/, "");
 await (await mfOff.getR2Bucket("WIKI_BUCKET")).put("index.html", html("engine without the modules"));
 const offResponse = await mfOff.dispatchFetch(baseOff + "/");
 const offPage = await offResponse.text();
-check("CONFLICT_GUARD off: the page is served without the browser modules", offResponse.status === 200 && offPage.includes("engine without the modules") &&
-  !offPage.includes("$:/cfworker/conflict-guard.js") && !offPage.includes("$:/cfworker/page-publisher.js") && !offPage.includes("$:/cfworker/lib.js") && !offPage.includes("$:/cfworker/list-sync.js") && !offPage.includes("$:/cfworker/backup-alert.js") && !offPage.includes("$:/cfworker/restore-import.js") && !offPage.includes("$:/cfworker/control-panel.js") && !offPage.includes("$:/cfworker/outbox.js") && !offPage.includes("$:/cfworker/cold-start.js"), `status ${offResponse.status}`);
+check("CONFLICT_GUARD off: the page is served without the browser modules (no plugin either)", offResponse.status === 200 && offPage.includes("engine without the modules") &&
+  !offPage.includes("$:/cfworker/conflict-guard.js") && !offPage.includes("$:/cfworker/page-publisher.js") && !offPage.includes("$:/cfworker/lib.js") && !offPage.includes("$:/cfworker/list-sync.js") && !offPage.includes("$:/cfworker/backup-alert.js") && !offPage.includes("$:/cfworker/restore-import.js") && !offPage.includes("$:/cfworker/control-panel.js") && !offPage.includes("$:/cfworker/outbox.js") && !offPage.includes("$:/cfworker/cold-start.js") && !offPage.includes("$:/plugins/cfworker/admin"), `status ${offResponse.status}`);
 await mfOff.dispose();
 
 // --- Cloudflare Access ----------------------------------------------------------------------------
@@ -385,7 +406,7 @@ async function withPublicUrl(value, run, bindings = {}) {
 }
 await withPublicUrl(undefined, async (root, instance, store, calls) => {
   const page = await instance.dispatchFetch(root + "/"), pageText = await page.text();
-  check("PUBLIC_WIKI_URL missing: a private wiki; the page is built and served, with an empty public address", page.status === 200 && pageText.includes('"title":"$:/cfworker/public-url","text":""') && !!(await store.head("baked.html")), `status ${page.status}`);
+  check("PUBLIC_WIKI_URL missing: a private wiki; the page is built and served, with an empty public address", page.status === 200 && part(pageText, "$:/cfworker/public-url")?.text === "" && !!(await store.head("baked.html")), `status ${page.status}`);
   const plugin = "$:/plugins/test/private";
   const save = await instance.dispatchFetch(root + "/recipes/default/tiddlers/" + encodeURIComponent(plugin), { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title: plugin, type: "application/json", "plugin-type": "plugin", text: '{"tiddlers":{}}' }) });
   await save.text();
@@ -393,6 +414,18 @@ await withPublicUrl(undefined, async (root, instance, store, calls) => {
   check("...a plugin saved gets its file, which the page loads from this site at a root-relative URL", save.status === 204 && !!(await store.head(`_plugins/${plugin}.js`)) && baked.includes(`<script src="/_plugins/${encodeURIComponent(plugin)}.js?v=`), `status ${save.status}: ${baked.match(/<script src="[^"]*"/)?.[0]}`);
   await new Promise(r => setTimeout(r, 300));
   check("...and nothing was purged, though the purge settings are there: no public site to purge", !calls.some(url => url.includes("purge_cache")), calls.join(", "));
+  // A part of the admin plugin overridden (edited in the wiki): saved as any module, it gets its file,
+  // which the page loads beside the plugin, so the override wins at boot, as TiddlyWiki has it
+  const overridden = "$:/cfworker/restore-import.js";
+  const override = await instance.dispatchFetch(root + "/recipes/default/tiddlers/" + encodeURIComponent(overridden), { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title: overridden, type: "application/javascript", "module-type": "startup", text: "exports.name='mine';exports.platforms=['browser'];exports.startup=function(){};" }) });
+  await override.text();
+  const withOverride = await (await store.get("baked.html")).text();
+  check("a part of the admin plugin overridden in the wiki: saved like any module, its file loaded by the page beside the plugin (the override wins at boot, as with any plugin)",
+    override.status === 204 && !!(await store.head(`_plugins/${overridden}.js`)) && withOverride.includes(`<script src="/_plugins/${encodeURIComponent(overridden)}.js?v=`) && withOverride.includes('"title":"$:/plugins/cfworker/admin"'),
+    `status ${override.status}`);
+  const own = await instance.dispatchFetch(root + "/recipes/default/tiddlers/" + encodeURIComponent("$:/plugins/cfworker/admin"), { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title: "$:/plugins/cfworker/admin", type: "application/json", "plugin-type": "plugin", text: '{"tiddlers":{}}' }) });
+  await own.text();
+  check("...the plugin tiddler itself, saved, gets no file: the page carries the worker's", own.status === 204 && !(await store.head("_plugins/$:/plugins/cfworker/admin.js")) && !(await (await store.get("baked.html")).text()).includes("_plugins/%24%3A%2Fplugins%2Fcfworker%2Fadmin.js"), `status ${own.status}`);
 }, { CF_ZONE_ID: "zone", CF_API_TOKEN: "token" });
 for (const [value, why] of [["wiki.example.com", "without https://"], ["https://wiki.example.com/wiki", "with a path"]]) {
   await withPublicUrl(value, async (root, instance) => {
@@ -402,7 +435,7 @@ for (const [value, why] of [["wiki.example.com", "without https://"], ["https://
 }
 await withPublicUrl("https://wiki.example.com/", async (root, instance) => {
   const page = await instance.dispatchFetch(root + "/"), pageText = await page.text();
-  check("a trailing slash is fine: the page is built, with the address baked in once", page.status === 200 && pageText.includes('"https://wiki.example.com/"') && !pageText.includes("wiki.example.com//"), `status ${page.status}`);
+  check("a trailing slash is fine: the page is built, with the address baked in once", page.status === 200 && part(pageText, "$:/cfworker/public-url")?.text === "https://wiki.example.com/" && !pageText.includes("wiki.example.com//"), `status ${page.status}`);
 });
 // The check itself, including the case Miniflare can't show: the address being this worker's own
 const site = (value, origin = "https://admin.example.com") => { try { return publicSiteError(value === undefined ? {} : { PUBLIC_WIKI_URL: value }, origin); } catch { return "error"; } };

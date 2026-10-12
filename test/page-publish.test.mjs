@@ -10,9 +10,10 @@ const ENGINE = readWikiFile();
 const site = await startSite({
   index: ENGINE, publicStatus: true,
   publicSite: {
-    // ?https: the page as built for a public URL on https, visited over http
+    // ?https: the page as built for a public URL on https, visited over http (the setting travels in
+    // the admin plugin's text: its quotes escaped once more)
     rewrite: (url, body) => url.searchParams.has("https")
-      ? Buffer.from(body.toString("utf8").replace('"title":"$:/cfworker/public-url","text":"http:', '"title":"$:/cfworker/public-url","text":"https:'))
+      ? Buffer.from(body.toString("utf8").replace('\\"title\\":\\"$:/cfworker/public-url\\",\\"text\\":\\"http:', '\\"title\\":\\"$:/cfworker/public-url\\",\\"text\\":\\"https:'))
       : body
   }
 });
@@ -101,6 +102,7 @@ await add(A, {
 await settle(A);
 await sleep(QUIET_WINDOW);
 check("installing a plugin doesn't publish the page (the plugin is a file, not part of the shell)", shellPuts("A", mark) === 0 && !(await shell()).includes(HELLO));
+check("the admin plugin itself, the worker's, is never published as a file: no file of it in the bucket, no tag for it in the page", !(await bucket.head("_plugins/$:/plugins/cfworker/admin.js")) && !(await (await bucket.get("baked.html")).text()).includes("_plugins/%24%3A%2Fplugins%2Fcfworker%2Fadmin.js"));
 await A.reload();
 await A.waitForFunction(() => window.$tw && $tw.syncer, null, { timeout: 30000 });
 await settle(A);

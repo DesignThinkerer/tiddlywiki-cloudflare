@@ -43,7 +43,7 @@ var lib = require("$:/cfworker/lib.js");
 var LOAD_ALL_TITLE = "$:/config/cfworker/LoadAll",
 	FILL_PAUSE = 200,     // ms after a list before the fill starts: what the page shows asks for its text first
 	READ_AHEAD = 24,      // tiddlers looked up ahead of the one TiddlyWiki is loading (on the device, or fetched)
-	FETCH_AHEAD = 6,      // ...of which fetched over the network at once
+	FETCH_AHEAD = 6,      // ...of which fetched over the network at once ($:/config/cfworker/FetchAhead, the plugin's settings)
 	PUBLIC_READ_TIMEOUT = 5000,
 	STORE_DB = "cfworker-tiddlers",
 	STORE_VERSION = 2,            // 1: the tiddlers table; 2: the outbox table too ($:/cfworker/outbox.js)
@@ -386,7 +386,7 @@ exports.startup = function() {
 					resolve(null);
 				});
 			}
-			if(fetching < FETCH_AHEAD) {
+			if(fetching < (parseInt(wiki.getTiddlerText("$:/config/cfworker/FetchAhead",""),10) || FETCH_AHEAD)) {
 				start();
 			} else if(urgent) {
 				fetchQueue.unshift(start);

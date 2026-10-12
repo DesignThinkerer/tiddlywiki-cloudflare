@@ -206,6 +206,25 @@ await online(contextA);
 await reload(A);
 check("(online again, the wiki is back, its core file kept)", await A.evaluate(() => $tw.wiki.getTiddlerText("First note") === "written online") && await waitFor(() => holds(A, CORE), 10000));
 
+// --- 6c. The advanced setting: the service worker's network wait, told to it by the page ------------
+// ($:/config/cfworker/NetworkWait, seconds, from the admin plugin's settings tab; the page posts it at each load)
+const swSettings = p => p.evaluate(() => new Promise(resolve => {
+  const timer = setTimeout(() => resolve(null), 4000);
+  navigator.serviceWorker.addEventListener("message", function once(e) {
+    if (e.data && e.data.cfworker === "settings") { clearTimeout(timer); navigator.serviceWorker.removeEventListener("message", once); resolve(e.data); }
+  });
+  navigator.serviceWorker.controller.postMessage({ cfworker: "ask" });
+}));
+check("the service worker waits 8 s for the network by default, and says so when asked", (await swSettings(A))?.networkWait === 8000, JSON.stringify(await swSettings(A)));
+await addTiddler(A, { title: "$:/config/cfworker/NetworkWait", text: "3" });
+await settle(A);
+await reload(A);
+check("...set to 3 s in the wiki: told to the service worker at the next page load", (await swSettings(A))?.networkWait === 3000, JSON.stringify(await swSettings(A)));
+await A.evaluate(() => $tw.wiki.deleteTiddler("$:/config/cfworker/NetworkWait"));
+await settle(A);
+await reload(A);
+check("...cleared: back to the default at the next load", (await swSettings(A))?.networkWait === 8000, JSON.stringify(await swSettings(A)));
+
 // --- 7. A public wiki: the core and plugin files come from the public site, and are cached too -------
 await site.setBindings({ PUBLIC_WIKI_URL: PUB });
 await reload(A);

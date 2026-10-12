@@ -77,6 +77,38 @@ function publicAddress(env) {
 // What the page was built from, so the page publisher can tell when it needs publishing again
 const PAGE_SOURCE_TITLE = "$:/cfworker/page-source";
 
+// The modules and their settings travel as one plugin (design 2.21), $:/plugins/cfworker/admin:
+// its parts are shadow tiddlers (out of search, out of syncing, overridden only on purpose), and
+// Control Panel → Plugins lists it with the worker's version (package.json's, plus the hash of the
+// modules and the service worker) and two tabs, a readme and the settings (src/browser/*.txt).
+// Preloaded like the modules were: never stored, never a plugin file (tiddlers.js, page-publisher.js).
+export const ADMIN_PLUGIN_TITLE = "$:/plugins/cfworker/admin";
+const PACKAGE_VERSION = "__PACKAGE_VERSION__";   // filled by build.mjs from package.json
+const PLUGIN_README_SOURCE = "__PLUGIN_README_SOURCE__";
+const PLUGIN_SETTINGS_SOURCE = "__PLUGIN_SETTINGS_SOURCE__";
+let adminPluginVersion = "";
+
+export function pluginVersion() {
+  if (!adminPluginVersion) adminPluginVersion = PACKAGE_VERSION + "+" + hashText(BROWSER_MODULES.map(m => m.source).join("\n") + "\n" + swVersion()).toString(36);
+  return adminPluginVersion;
+}
+
+function adminPlugin(env, pageSource) {
+  const tiddlers = {};
+  for (const m of BROWSER_MODULES) tiddlers[m.title] = { title: m.title, type: "application/javascript", "module-type": m.type, text: m.source };
+  tiddlers[PUBLIC_URL_TITLE] = { title: PUBLIC_URL_TITLE, text: publicAddress(env) };
+  tiddlers[SW_URL_TITLE] = { title: SW_URL_TITLE, text: `/sw.js?v=${swVersion()}` };
+  tiddlers[PAGE_SOURCE_TITLE] = { title: PAGE_SOURCE_TITLE, type: "application/json", text: JSON.stringify({ index: pageSource.index, fingerprint: pageSource.fingerprint, core: pageSource.core, shell: pageSource.shell || "" }) };
+  tiddlers[`${ADMIN_PLUGIN_TITLE}/readme`] = { title: `${ADMIN_PLUGIN_TITLE}/readme`, text: PLUGIN_README_SOURCE };
+  tiddlers[`${ADMIN_PLUGIN_TITLE}/settings`] = { title: `${ADMIN_PLUGIN_TITLE}/settings`, text: PLUGIN_SETTINGS_SOURCE };
+  return {
+    title: ADMIN_PLUGIN_TITLE, "plugin-type": "plugin", type: "application/json",
+    name: "TiddlyWiki on Cloudflare", description: "The admin wiki's side of the worker: conflicts, the tiddler list and the device copy, backups, the published page, editing and opening offline",
+    author: "TiddlyWiki on Cloudflare", version: pluginVersion(), "core-version": ">=5.3.0", list: "readme settings",
+    text: JSON.stringify({ tiddlers })
+  };
+}
+
 // Changes whenever the browser modules or the public URL change, so baked.html is rebuilt after a
 // deploy (the number in front changes when the way pages are built changes). Asked at every page
 // load: worked out once while the worker runs (hashing the modules costs about 0.3 ms), again only
@@ -88,7 +120,7 @@ export function bakeVersion(env) {
   if (lastBakeVersion.settings !== settings) {
     // (The service worker's address is in the page too: a new script, a new page)
     const input = (enabled ? BROWSER_MODULES.map(m => m.source).join("\n") + "\n" + swVersion() : "off") + "\n" + publicAddress(env);
-    lastBakeVersion = { settings, version: "8-" + hashText(input).toString(36) };
+    lastBakeVersion = { settings, version: "9-" + hashText(input).toString(36) };
   }
   return lastBakeVersion.version;
 }
@@ -173,8 +205,8 @@ async function storePage(env, html, meta) {
 }
 
 // What the page preloads ($tw.preloadTiddlers): the listed startup tiddlers, read from the bucket
-// (every stored tiddler is listed, so only listed ones are read), and the browser modules with
-// their settings, unless CONFLICT_GUARD is off
+// (every stored tiddler is listed, so only listed ones are read), and the admin plugin (the browser
+// modules with their settings), unless CONFLICT_GUARD is off
 async function preloadedTiddlers(env, entries, pageSource) {
   const store = [];
   const startupTitles = entries.filter(t => t.title && isStartupTiddler(t)).map(t => t.title);
@@ -187,12 +219,7 @@ async function preloadedTiddlers(env, entries, pageSource) {
       store.push(tiddler);
     } catch (e) {}
   }));
-  if (conflictGuardEnabled(env)) {
-    for (const m of BROWSER_MODULES) store.push({ title: m.title, type: "application/javascript", "module-type": m.type, text: m.source });
-    store.push({ title: PUBLIC_URL_TITLE, text: publicAddress(env) });
-    store.push({ title: SW_URL_TITLE, text: `/sw.js?v=${swVersion()}` });
-    store.push({ title: PAGE_SOURCE_TITLE, type: "application/json", text: JSON.stringify({ index: pageSource.index, fingerprint: pageSource.fingerprint, core: pageSource.core, shell: pageSource.shell || "" }) });
-  }
+  if (conflictGuardEnabled(env)) store.push(adminPlugin(env, pageSource));
   return store;
 }
 

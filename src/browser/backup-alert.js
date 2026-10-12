@@ -28,7 +28,7 @@ var BACKUP_ALERT = "$:/temp/cfworker/backup-alert",
 	BACKUP_HINT = "$:/temp/cfworker/backup-hint",
 	BACKUP_STATUS = "$:/temp/cfworker/backup-status",
 	HINT_DISMISSED_KEY = "cfworker-backup-hint-dismissed",
-	BACKUP_CHECK_INTERVAL = 60 * 60 * 1000;
+	BACKUP_CHECK_MINUTES = 60;   // between asking how backups go ($:/config/cfworker/BackupCheckMinutes, the plugin's settings)
 
 exports.startup = function() {
 	var Adaptor = lib.findAdaptor();
@@ -45,7 +45,7 @@ exports.startup = function() {
 	// Only the admin site asks (a public tab reads the list from the public site, which has no answer)
 	function askBackupStatus(adaptor) {
 		return lib.onAdminSite(adaptor.host) &&
-			(!backupAsked || syncRunning || wiki.tiddlerExists(BACKUP_ALERT) || Date.now() - backupAsked >= BACKUP_CHECK_INTERVAL);
+			(!backupAsked || syncRunning || wiki.tiddlerExists(BACKUP_ALERT) || Date.now() - backupAsked >= (parseInt(wiki.getTiddlerText("$:/config/cfworker/BackupCheckMinutes",""),10) || BACKUP_CHECK_MINUTES) * 60 * 1000);
 	}
 
 	// The worker's answer, parsed: "off" (no backups), "ok", or encoded JSON with what there is to

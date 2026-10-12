@@ -22,6 +22,8 @@ By request:
 - /favicon.ico: the browser asks for it at a navigation when the page has no icon link (TiddlyWiki
   sets its icon once started): answered here, empty, rather than by the worker.
 - Anything else (a tiddler's contents, a save, a delete, the page published): the network only.
+The page tells this worker its one setting at each load, the network wait ($:/config/cfworker/NetworkWait,
+the admin plugin's settings tab), which it keeps in its cache; asked, it answers with it.
 Whenever a page is cached, the files it refers to are kept with it (one missing is fetched) and the
 plugin files it no longer refers to leave the cache. Once in place (the first visit registers it, the
 page and the files already loaded past it), the worker takes the page, its files, the status file and
@@ -39,8 +41,40 @@ var CACHE = "cfworker-wiki-v1",
 	DATA_PATHS = ["/status", "/recipes/default/tiddlers.json", "/manifest.webmanifest"],
 	FILL_PATHS = ["/status", "/recipes/default/tiddlers.json"],   // taken with the page once this worker is in place
 	PAGE_KEY = self.location.origin + "/",
-	NETWORK_WAIT = 8000,   // ms before the cached page answers instead of a network that doesn't
+	SETTINGS_KEY = self.location.origin + "/__cfworker/settings",   // this worker's settings, kept in its cache (no object of that name)
+	NETWORK_WAIT = 8000,   // ms before the cached page answers instead of a network that doesn't ($:/config/cfworker/NetworkWait, told by the page)
 	NO_CORE = "No network, and no copy of TiddlyWiki's core file kept on this device: open the wiki once online first.";
+
+// The settings the page tells this worker at each load (cold-start.js): it reads no tiddler itself.
+// Kept in the cache, so a restarted worker has them before the page's next word.
+var settings = {networkWait: NETWORK_WAIT},
+	settingsLoaded = caches.open(CACHE).then(function(cache) {
+		return cache.match(SETTINGS_KEY);
+	}).then(function(kept) {
+		return kept ? kept.json() : null;
+	}).then(function(kept) {
+		if(kept && kept.networkWait > 0) {
+			settings.networkWait = kept.networkWait;
+		}
+	}).catch(function() {});
+
+self.addEventListener("message",function(event) {
+	var data = event.data || {};
+	if(data.cfworker === "settings") {
+		settingsLoaded.then(function() {
+			if(data.networkWait > 0) {
+				settings.networkWait = data.networkWait;
+			}
+			return caches.open(CACHE).then(function(cache) {
+				return cache.put(SETTINGS_KEY,new Response(JSON.stringify(settings),{headers: {"Content-Type": "application/json"}}));
+			});
+		}).catch(function() {});
+	} else if(data.cfworker === "ask" && event.source) {
+		settingsLoaded.then(function() {
+			event.source.postMessage({cfworker: "settings", networkWait: settings.networkWait});
+		});
+	}
+});
 
 self.addEventListener("install", function() {
 	self.skipWaiting();
@@ -130,13 +164,17 @@ function networkFirst(event,request,key,page) {
 			return response;
 		});
 		event.waitUntil(fetching.catch(function() {}));
-		timer = setTimeout(function() {
-			fromCache(key,page).then(function(hit) {
-				if(hit) {
-					serve(hit);
-				}
-			});
-		},NETWORK_WAIT);
+		settingsLoaded.then(function() {
+			if(!done) {
+				timer = setTimeout(function() {
+					fromCache(key,page).then(function(hit) {
+						if(hit) {
+							serve(hit);
+						}
+					});
+				},settings.networkWait);
+			}
+		});
 		fetching.then(serve,function() {
 			fromCache(key,page).then(function(hit) {
 				if(hit) {

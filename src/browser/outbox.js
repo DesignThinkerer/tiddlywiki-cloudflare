@@ -39,7 +39,7 @@ var lib = require("$:/cfworker/lib.js");
 
 var STATUS = "$:/temp/cfworker/outbox",
 	ITEM = "$:/temp/cfworker/outbox-status",
-	DRAFT_PAUSE = 300,   // ms of typing before a draft is written to the device
+	DRAFT_PAUSE = 300,   // ms of typing before a draft is written to the device ($:/config/cfworker/DraftPause, the plugin's settings)
 	KNOWN_WAIT = 100,    // ms between looks for a tiddler the syncer is about to know (a delete put back)
 	KNOWN_TRIES = 100,
 	ASK_WAIT = 300;      // ms a tab waits for the other tabs to say what they hold, before putting back
@@ -215,7 +215,7 @@ exports.startup = function() {
 					if(draft && draft.hasField("draft.of")) {
 						keep({title: title, kind: "draft", fields: draft.getFieldStrings(), time: existing && existing.kind === "draft" ? existing.time : now});
 					}
-				},DRAFT_PAUSE);
+				},parseInt(wiki.getTiddlerText("$:/config/cfworker/DraftPause",""),10) || DRAFT_PAUSE);
 				return;
 			}
 			if(change.deleted) {
