@@ -46,7 +46,7 @@
     "eslint": "^9.39.5",
     "globals": "^16.5.0",
     "miniflare": "3.20250718.3",
-    "playwright": "1.63.0",
+    "playwright": "1.64.0",
     "tiddlywiki": "5.4.1",
     "wrangler": "4.149.0"
   }
