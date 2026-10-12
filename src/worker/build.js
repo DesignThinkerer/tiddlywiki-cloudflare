@@ -86,6 +86,7 @@ const PAGE_SOURCE_TITLE = "$:/cfworker/page-source";
 // Preloaded like the modules were: never stored, never a plugin file (tiddlers.js, page-publisher.js).
 export const ADMIN_PLUGIN_TITLE = "$:/plugins/cfworker/admin";
 const PACKAGE_VERSION = "__PACKAGE_VERSION__";   // filled by build.mjs from package.json
+export const SHIPPED_VERSION = "__TIDDLYWIKI_VERSION__";   // the TiddlyWiki version of the empty wiki the worker ships (build.mjs)
 const PLUGIN_README_SOURCE = "__PLUGIN_README_SOURCE__";
 const PLUGIN_SETTINGS_SOURCE = "__PLUGIN_SETTINGS_SOURCE__";
 const PLUGIN_DEVICE_SOURCE = "__PLUGIN_DEVICE_SOURCE__";
@@ -101,7 +102,8 @@ let adminPluginVersion = "";
 // (bakeVersion). Worked out once while the worker runs.
 export function pluginVersion() {
   if (!adminPluginVersion) {
-    const parts = [...BROWSER_MODULES.map(m => m.source), swVersion(), PLUGIN_README_SOURCE, PLUGIN_SETTINGS_SOURCE, PLUGIN_DEVICE_SOURCE, JSON.stringify(PLUGIN_FIELDS)];
+    // (The shipped TiddlyWiki version is in the page too, for the Cloudflare tab: a new one, a new page)
+    const parts = [...BROWSER_MODULES.map(m => m.source), swVersion(), PLUGIN_README_SOURCE, PLUGIN_SETTINGS_SOURCE, PLUGIN_DEVICE_SOURCE, JSON.stringify(PLUGIN_FIELDS), SHIPPED_VERSION];
     adminPluginVersion = PACKAGE_VERSION + "+" + hashText(parts.join("\n")).toString(36);
   }
   return adminPluginVersion;
@@ -112,7 +114,7 @@ function adminPlugin(env, pageSource) {
   for (const m of BROWSER_MODULES) tiddlers[m.title] = { title: m.title, type: "application/javascript", "module-type": m.type, text: m.source };
   tiddlers[PUBLIC_URL_TITLE] = { title: PUBLIC_URL_TITLE, text: publicAddress(env) };
   tiddlers[SW_URL_TITLE] = { title: SW_URL_TITLE, text: `/sw.js?v=${swVersion()}` };
-  tiddlers[PAGE_SOURCE_TITLE] = { title: PAGE_SOURCE_TITLE, type: "application/json", text: JSON.stringify({ index: pageSource.index, fingerprint: pageSource.fingerprint, core: pageSource.core, shell: pageSource.shell || "" }) };
+  tiddlers[PAGE_SOURCE_TITLE] = { title: PAGE_SOURCE_TITLE, type: "application/json", text: JSON.stringify({ index: pageSource.index, fingerprint: pageSource.fingerprint, core: pageSource.core, shell: pageSource.shell || "", engine: engineVersion(pageSource.html), shipped: SHIPPED_VERSION }) };
   tiddlers[`${ADMIN_PLUGIN_TITLE}/readme`] = { title: `${ADMIN_PLUGIN_TITLE}/readme`, text: PLUGIN_README_SOURCE };
   tiddlers[`${ADMIN_PLUGIN_TITLE}/settings`] = { title: `${ADMIN_PLUGIN_TITLE}/settings`, text: PLUGIN_SETTINGS_SOURCE };
   tiddlers[`${ADMIN_PLUGIN_TITLE}/device`] = { title: `${ADMIN_PLUGIN_TITLE}/device`, text: PLUGIN_DEVICE_SOURCE };
@@ -151,6 +153,15 @@ export const PAGE_ETAG_SUFFIX = "-page";
 // Inserts markup right after <head ...>. Works on the bytes of index.html (a few MB): decoding,
 // editing and re-encoding the whole page as a string costs about ten times more CPU.
 export const pageDecoder = new TextDecoder("utf-8", { fatal: false, ignoreBOM: true });
+
+// The TiddlyWiki version a page (index.html, or the shell rendered from it) was made by: its
+// <meta name="tiddlywiki-version"> tag, in the head; "" when there's none. Looked for in the first
+// 64 KB (bytes or a string).
+export function engineVersion(html) {
+  const head = typeof html === "string" ? html.slice(0, 65536) : pageDecoder.decode(html.subarray(0, Math.min(html.length, 65536)));
+  const match = /<meta\s+name="tiddlywiki-version"\s+content="([^"]*)"/i.exec(head);
+  return match ? match[1] : "";
+}
 
 function insertAfterHead(html, markup) {
   for (const length of [16384, html.length]) {

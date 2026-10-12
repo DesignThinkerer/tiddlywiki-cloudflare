@@ -286,6 +286,7 @@ check("...the settings tab offers the fill of the device copy, TiddlyWiki's poll
 // variant below is worker.js with that one change, started on the page this worker baked.
 {
   const workerSource = fs.readFileSync(WORKER, "utf8");
+  const shippedVersion = JSON.parse(fs.readFileSync(new URL("../node_modules/tiddlywiki/package.json", import.meta.url), "utf8")).version;
   const variant = (needle, replacement) => {
     const at = workerSource.indexOf(needle);
     if (at < 0 || workerSource.indexOf(needle, at + 1) >= 0) throw new Error(`worker.js should contain "${needle}" exactly once`);
@@ -299,6 +300,7 @@ check("...the settings tab offers the fill of the device copy, TiddlyWiki's poll
     ["the readme", variant("The admin wiki's side of [[TiddlyWiki on Cloudflare|", "The admin wiki's side (changed) of [[TiddlyWiki on Cloudflare|"), text => (part(text, ADMIN + "/readme")?.text || "").includes("(changed)")],
     ["a plugin field (the author)", variant('author: "https://github.com/DesignThinkerer/tiddlywiki-cloudflare"', 'author: "https://example.com/a-fork"'), text => preloads(text).find(t => t.title === ADMIN)?.author === "https://example.com/a-fork"],
     ["the package version", variant(`const PACKAGE_VERSION = "${packageVersion}"`, `const PACKAGE_VERSION = "${packageVersion}-next"`), text => (preloads(text).find(t => t.title === ADMIN)?.version || "").startsWith(`${packageVersion}-next+`)],
+    ["the TiddlyWiki version it ships", variant(`const SHIPPED_VERSION = "${shippedVersion}"`, `const SHIPPED_VERSION = "9.9.9"`), text => pageSource(text)?.shipped === "9.9.9"],
   ];
   const control = variant("The empty wiki module is empty: the build didn't make seed/empty.html?", "The empty wiki module is empty: the build didn't make seed/empty.html? (changed)");
   const startVariant = async (script) => {
@@ -566,7 +568,43 @@ function withAssets(extra = {}) {
   const root = (await mfNoAsset.ready).toString().replace(/\/$/, "");
   const none = await mfNoAsset.dispatchFetch(root + "/"), noneText = await none.text();
   check("the worker alone (pasted, without the empty wiki) and no index.html: 404 saying to upload one", none.status === 404 && noneText.includes("index.html") && /TiddlyWeb/.test(noneText), `status ${none.status}: ${noneText.slice(0, 80)}`);
+  const noEngine = await mfNoAsset.dispatchFetch(root + "/engine/update", { method: "POST", headers: { "X-Requested-With": "TiddlyWiki" } }), noEngineText = await noEngine.text();
+  check("...and the engine update answers 404 the same way: nothing to put in place of the engine", noEngine.status === 404 && /empty wiki|seed/.test(noEngineText), `status ${noEngine.status}: ${noEngineText.slice(0, 80)}`);
   await mfNoAsset.dispose();
+}
+
+// --- The engine's version, and the engine updated (design 1.15) ---------------------------------------
+// The page says which TiddlyWiki version its engine (index.html) is, read from the page source when
+// the page is built, and which one the worker ships (the empty wiki module); POST /engine/update
+// replaces index.html with the shipped one, the next page load building the page from it.
+const twVersion = JSON.parse(fs.readFileSync(new URL("../node_modules/tiddlywiki/package.json", import.meta.url), "utf8")).version;
+{
+  const mfEngine = withAssets();
+  const root = (await mfEngine.ready).toString().replace(/\/$/, "");
+  const store = await mfEngine.getR2Bucket("WIKI_BUCKET");
+  const seeded = await (await mfEngine.dispatchFetch(root + "/")).text();
+  const seededSource = pageSource(seeded);
+  check("the page says which TiddlyWiki version its engine is and which one the worker ships: the same, for a page built from the shipped empty wiki",
+    !!seededSource && seededSource.engine === twVersion && seededSource.shipped === twVersion, JSON.stringify(seededSource));
+  // An older engine put in place (a version tag of its own), with a stored tiddler beside it
+  const oldEngine = emptyWiki.toString("utf8").replace(/<meta name="tiddlywiki-version" content="[^"]*"/, '<meta name="tiddlywiki-version" content="5.0.0"');
+  await store.put("index.html", oldEngine, { httpMetadata: { contentType: "text/html; charset=utf-8" } });
+  await store.put("recipes/default/tiddlers/Kept", JSON.stringify({ title: "Kept", text: "across engines" }), { customMetadata: { revision: "1", layout: "flat" } });
+  await store.put("recipes/default/tiddlers.json", JSON.stringify([{ title: "Kept", revision: "1" }]));
+  const older = pageSource(await (await mfEngine.dispatchFetch(root + "/")).text());
+  check("...an older engine in the bucket: the page says its version, and the newer one the worker ships", !!older && older.engine === "5.0.0" && older.shipped === twVersion, JSON.stringify(older));
+  const refused = await mfEngine.dispatchFetch(root + "/engine/update", { method: "POST" });
+  await refused.arrayBuffer();
+  check("POST /engine/update without the TiddlyWiki header is refused (400), the engine untouched", refused.status === 400 && (await (await store.get("index.html")).text()).includes('content="5.0.0"'), `status ${refused.status}`);
+  const updated = await mfEngine.dispatchFetch(root + "/engine/update", { method: "POST", headers: { "X-Requested-With": "TiddlyWiki" } });
+  const answer = await updated.json().catch(() => null);
+  const engineNow = await (await store.get("index.html")).text();
+  check("POST /engine/update replaces index.html with the worker's empty wiki, and names both versions", updated.status === 200 && answer?.from === "5.0.0" && answer?.to === twVersion && engineNow === emptyWiki.toString("utf8"),
+    `status ${updated.status}, answer ${JSON.stringify(answer)}, engine ${engineNow.length} bytes`);
+  const after = await mfEngine.dispatchFetch(root + "/"), afterText = await after.text(), afterSource = pageSource(afterText);
+  check("...the next page load is built from it, the tiddler untouched", after.status === 200 && afterSource?.engine === twVersion && afterText.includes('"title":"$:/plugins/tiddlywiki/tiddlyweb"') && !!(await store.get("recipes/default/tiddlers/Kept")) && (await (await store.get("recipes/default/tiddlers.json")).json()).some(t => t.title === "Kept"),
+    JSON.stringify(afterSource));
+  await mfEngine.dispose();
 }
 
 // --- The wiki as an installable app ---------------------------------------------------------------

@@ -6,10 +6,13 @@ module-type: startup
 On the admin site, a "Cloudflare" tab in the control panel's Saving tab ($:/temp/cfworker/ControlPanel):
 the setup check (GET /setup/check, design 1.13: each piece of the setup looked at by the worker, this
 browser's service worker and its copy of the core file added here, the lines kept in
-$:/temp/cfworker/setup-check); how backups go (from $:/temp/cfworker/backup-status, kept by
-$:/cfworker/backup-alert.js), the last full backup, and the button that starts one (POST /backup/sync,
-design 1.7) or refreshes its status (GET /backup/sync). The worker answers about backups are handed
-to the backup alert module, which keeps the status tiddler the tab shows.
+$:/temp/cfworker/setup-check); the engine (design 1.15: the TiddlyWiki version the page was built
+from and the one the worker ships, both in $:/cfworker/page-source, kept in $:/temp/cfworker/engine;
+when they differ, the button that has the worker replace index.html with the shipped one, POST
+/engine/update, after a second ask in the tab); how backups go (from $:/temp/cfworker/backup-status,
+kept by $:/cfworker/backup-alert.js), the last full backup, and the button that starts one (POST
+/backup/sync, design 1.7) or refreshes its status (GET /backup/sync). The worker answers about
+backups are handed to the backup alert module, which keeps the status tiddler the tab shows.
 \*/
 (function(){
 
@@ -30,6 +33,11 @@ var TAB = "$:/temp/cfworker/ControlPanel",
 	START = "tm-cfworker-backup-sync",
 	REFRESH = "tm-cfworker-backup-status",
 	CHECK = "tm-cfworker-setup-check",
+	ENGINE = "$:/temp/cfworker/engine",
+	ENGINE_MESSAGE = "$:/temp/cfworker/engine-message",
+	PAGE_SOURCE = "$:/cfworker/page-source",
+	UPDATE = "tm-cfworker-engine-update",
+	RELOAD = "tm-cfworker-engine-reload",
 	CACHE = lib.SW_CACHE;   // the service worker's cache
 
 var TAB_TEXT = [
@@ -41,6 +49,24 @@ var TAB_TEXT = [
 	"",
 	"<$list filter='[[" + SETUP + "]has[text]]' variable='checked'>",
 	"{{" + SETUP + "}}",
+	"</$list>",
+	"",
+	"!! The engine",
+	"",
+	"<$list filter='[[" + ENGINE + "]get[same]match[yes]]' variable='same'>TiddlyWiki {{" + ENGINE + "!!engine}}, the version the worker ships.</$list>",
+	"<$list filter='[[" + ENGINE + "]get[same]match[no]]' variable='differs'>TiddlyWiki <$list filter='[[" + ENGINE + "]has[engine]]' variable='known' emptyMessage='of an unknown version (the engine has no version tag)'>{{" + ENGINE + "!!engine}}</$list> — the worker ships {{" + ENGINE + "!!shipped}}. <$button set='" + ENGINE + "!!ask' setTo='yes'>Update the engine</$button>",
+	"",
+	"<$reveal state='" + ENGINE + "!!ask' type='match' text='yes'>",
+	"",
+	"The worker replaces the engine (`index.html`) with the one it ships, TiddlyWiki {{" + ENGINE + "!!shipped}}; the next page load runs it, publishes it and purges the public copy. Your tiddlers, the plugins you installed and the published page stay. What goes: a plugin that came with the current engine and wasn't installed from the wiki (an engine you uploaded yourself, say). A plugin you updated from the library keeps your version (README 3, \"Plugins\").",
+	"",
+	"<$button message='" + UPDATE + "'>Replace it</$button> <$button set='" + ENGINE + "!!ask' setTo='no'>Not now</$button>",
+	"",
+	"</$reveal>",
+	"</$list>",
+	"<$list filter='[[" + ENGINE_MESSAGE + "]has[text]]' variable='said'>",
+	"",
+	"{{" + ENGINE_MESSAGE + "}}",
 	"</$list>",
 	"",
 	"!! Backups to GitHub",
@@ -139,6 +165,46 @@ exports.startup = function() {
 
 	$tw.rootWidget.addEventListener(START,function() {
 		request("POST");
+		return false;
+	});
+
+	// --- The engine ------------------------------------------------------------------------------------
+
+	// The versions travel in the page: nothing to ask at load
+	var source = null;
+	try {
+		source = JSON.parse(wiki.getTiddlerText(PAGE_SOURCE,"") || "null");
+	} catch(e) {}
+	var engine = (source && source.engine) || "", shipped = (source && source.shipped) || "";
+	wiki.addTiddler(new $tw.Tiddler({title: ENGINE, engine: engine, shipped: shipped, same: engine && engine === shipped ? "yes" : "no", ask: "no"}));
+
+	function engineSay(text) {
+		wiki.addTiddler(new $tw.Tiddler({title: ENGINE_MESSAGE, text: text}));
+	}
+	$tw.rootWidget.addEventListener(UPDATE,function() {
+		engineSay("Replacing…");
+		wiki.setText(ENGINE,"ask",null,"no");
+		var host = ($tw.syncadaptor && $tw.syncadaptor.host) || here;
+		$tw.utils.httpRequest({
+			url: host + "engine/update",
+			type: "POST",
+			headers: {"X-Requested-With": "TiddlyWiki"},
+			callback: function(err,data,xhr) {
+				var status = xhr ? xhr.status : 0, body = null;
+				try {
+					body = data ? JSON.parse(data) : null;
+				} catch(e) {}
+				if(status === 200 && body && body.to) {
+					engineSay("Engine replaced: TiddlyWiki " + (body.from || "(unknown)") + " → " + body.to + ". <$button message='" + RELOAD + "'>Reload</$button> to run it: that load builds the page from it and publishes it.");
+					return;
+				}
+				engineSay("The engine wasn't replaced. " + (status ? "The worker answered " + status + ": " : "The worker didn't answer: ") + String(data || err || "").slice(0,300));
+			}
+		});
+		return false;
+	});
+	$tw.rootWidget.addEventListener(RELOAD,function() {
+		window.location.reload();
 		return false;
 	});
 	$tw.rootWidget.addEventListener(REFRESH,function() {

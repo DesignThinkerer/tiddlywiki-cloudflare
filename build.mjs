@@ -20,6 +20,8 @@ const PLACEHOLDERS = Object.fromEntries(readdirSync(browserDir).filter(name => /
   .map(name => [`"__${name.replace(/\.(js|txt)$/, "").toUpperCase().replace(/-/g, "_")}_SOURCE__"`, join(browserDir, name)]));
 // The package's version (package.json), shown as the admin plugin's with the build's hash
 const PACKAGE_VERSION = JSON.parse(readFileSync(join(root, "package.json"), "utf8")).version;
+// The TiddlyWiki version the worker ships: the package seed/empty.html is built from (tools/build-wiki.mjs)
+const TIDDLYWIKI_VERSION = JSON.parse(readFileSync(join(root, "node_modules", "tiddlywiki", "package.json"), "utf8")).version;
 // The app's files (src/app/: the default icons, PNG), embedded as base64: src/app/icon-192.png
 // replaces "__ICON_192_PNG_BASE64__"
 const appDir = join(root, "src/app");
@@ -90,6 +92,8 @@ for (const [placeholder, file] of Object.entries(APP_PLACEHOLDERS)) {
 }
 if (output.split('"__PACKAGE_VERSION__"').length !== 2) throw new Error('src/worker must contain "__PACKAGE_VERSION__" exactly once');
 output = output.replace('"__PACKAGE_VERSION__"', () => JSON.stringify(PACKAGE_VERSION));
+if (output.split('"__TIDDLYWIKI_VERSION__"').length !== 2) throw new Error('src/worker must contain "__TIDDLYWIKI_VERSION__" exactly once');
+output = output.replace('"__TIDDLYWIKI_VERSION__"', () => JSON.stringify(TIDDLYWIKI_VERSION));
 const unfilled = /"__[A-Z0-9_]+_(SOURCE|BASE64|VERSION)__"/.exec(output);
 if (unfilled) throw new Error(`src/worker uses ${unfilled[0]}, which no file in src/browser or src/app fills`);
 
