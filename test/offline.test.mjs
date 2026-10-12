@@ -76,7 +76,6 @@ check("...each change is on the device the moment it's made, with the revision i
   JSON.stringify(o1));
 
 // --- 2. The network back: sent at once, the line gone -----------------------------------------------
-mark = requests.length;
 const back = Date.now();
 await contextA.setOffline(false);
 const arrived = await waitFor(async () => (await stored("Offline 1")) === "written offline" && (await stored("Note A")) === "changed offline" && (await stored("Note B")) === null, 10000);
@@ -164,7 +163,6 @@ await A2.evaluate(([title, draft]) => $tw.wiki.addTiddler(new $tw.Tiddler($tw.wi
 await waitFor(async () => ((await outbox(A2)) || []).some(e => e.title === draftTitle && e.kind === "draft"), 10000);
 check("a draft is kept on the device as a draft, and doesn't count as a change waiting", (await status(A2))?.waiting === "0" && (await line(A2)) === "", JSON.stringify(await status(A2)));
 await contextA.setOffline(false);
-mark = requests.length;
 await A2.reload();
 await ready(A2);
 await sleep(1500);

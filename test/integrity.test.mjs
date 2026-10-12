@@ -357,7 +357,7 @@ got = await rebuildToEnd();
 check("the same damage again later starts a new rebuild: a tiddler saved in between is listed",
   got.status === 200 && !differences(summary(JSON.parse(got.text)), expected), `status ${got.status} ${got.status === 200 ? differences(summary(JSON.parse(got.text)), expected) : ""}`);
 await bucket.delete(LIST);
-got = await getList();
+await getList();
 await bucket.put(LIST, JSON.stringify(Object.entries(expected).map(([title, revision]) => ({ title, revision }))));
 res = await save("AAB saved in between", { text: "b" });
 expected["AAB saved in between"] = etagRevision(res);
@@ -457,7 +457,7 @@ check("a plugin whose file can't be deleted, deleted or saved as an ordinary tid
 // plugin files), not the bare index.html
 const P5 = "$:/plugins/test/page-five";
 await failNext("put baked.html");
-res = await save(P5, pagePlugin(P5));
+await save(P5, pagePlugin(P5));
 outdated = await waitForOutdated();
 await failNext("put baked.html");
 const servedWhileFailing = await loadPage();
@@ -672,7 +672,7 @@ check("wrangler.toml holds no secret, and every binding the worker needs",
 // static assets run behind a router that doesn't pass ctx.access on, which the Access check needs
 // What Wrangler would upload, from the file as it is (a dry run, no account needed): worker.js and
 // the empty wiki, nothing else of the repository (the default rules would sweep up node_modules)
-let attached = null, dryRun = "";
+let attached = null, dryRun;
 try {
   dryRun = execFileSync(process.execPath, [path.join(ROOT, "node_modules/wrangler/bin/wrangler.js"), "deploy", "--dry-run", "--outdir", mkdtempSync(path.join(tmpdir(), "wrangler-dry-"))],
     { cwd: ROOT, encoding: "utf8", timeout: 120000, env: { ...process.env, WRANGLER_SEND_METRICS: "false", CI: "1" }, stdio: ["ignore", "pipe", "pipe"] });
@@ -731,7 +731,6 @@ try {
 const restoreFile = fs.existsSync(path.join(clone, "restore.json")) ? JSON.parse(fs.readFileSync(path.join(clone, "restore.json"), "utf8")) : null;
 check("run as a command, the tool writes restore.json, the array TiddlyWiki imports, and says how many tiddlers",
   Array.isArray(restoreFile) && restoreFile.length === 3 && restoreFile[1].tags === "kept [[two words]]" && /3 tiddlers/.test(restoreRun), restoreRun.slice(0, 200));
-restoreRun = "";
 try {
   restoreRun = execFileSync(process.execPath, [path.join(ROOT, "tools/restore.mjs"), path.join(clone, "tiddlers/Hello, World.json"), path.join(clone, "one.json")], { encoding: "utf8", timeout: 30000, stdio: ["ignore", "pipe", "pipe"] });
 } catch (e) {
