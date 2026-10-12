@@ -94,7 +94,7 @@ var TAB_TEXT = [
 	"</$list>",
 	"<$list filter='[[" + STATUS + "]has[sync-error]]' variable='problem'>",
 	"",
-	"Its last step didn't go through: ``{{" + STATUS + "!!sync-error}}``. It's tried again by itself.",
+	"Its last step didn't go through: <code><$text text={{" + STATUS + "!!sync-error}}/></code>. It's tried again by itself.",
 	"</$list>",
 	"",
 	"<$button message='" + START + "'>Back up everything to GitHub</$button> <$button message='" + REFRESH + "'>Refresh</$button>",

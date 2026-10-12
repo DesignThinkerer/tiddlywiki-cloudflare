@@ -1,0 +1,13 @@
+# Dependency updates as pull requests, weekly: the npm packages (one PR per update, the tests run on
+# it) and the Actions the workflows use.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
