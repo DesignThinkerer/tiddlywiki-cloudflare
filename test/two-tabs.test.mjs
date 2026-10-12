@@ -691,6 +691,32 @@ check("a save stored though its answer was lost, edited again before it's tried 
   JSON.stringify({ saves: lostSaves, server: (await server("Lost answer"))?.text, alerts: await alerts(A) }));
 await clearAlerts(A);
 
+// --- 19b. The same for a new tiddler: the retry mustn't carry the first try's "must not exist" ------
+// A new tiddler's first save says If-None-Match: *. Stored, its answer lost, and the tiddler edited
+// before the retry: the retry is refused (412), the browser module recognises its own earlier save
+// and sends again based on it — with If-Match, and without the first try's header, or the worker
+// refuses that too and the tab makes a conflict copy of its own text.
+mark = net.length;
+loseAnswer = true;
+const newLostUrl = /\/recipes\/default\/tiddlers\/New%20lost%20answer$/;
+await A.route(newLostUrl, async route => {
+  if (route.request().method() !== "PUT" || !loseAnswer) return route.continue();
+  await route.fetch();                          // stored by the worker...
+  loseAnswer = false;
+  return route.fulfill({ status: 502, body: "answer lost" });   // ...but the tab sees an error
+});
+await create(A, "New lost answer", "v1");
+for (let i = 0; i < 100 && loseAnswer; i++) await new Promise(r => setTimeout(r, 100));
+await A.evaluate(() => $tw.wiki.addTiddler(new $tw.Tiddler($tw.wiki.getTiddler("New lost answer"), { text: "v2, edited before the retry" })));
+await settle(A);
+await A.unroute(newLostUrl);
+const newLostSaves = netSince(mark).filter(x => x.tag === "A" && x.method === "PUT" && x.path.endsWith("/New lost answer")).map(x => x.status);
+check("a new tiddler whose first save's answer was lost, edited again before the retry: sent again on the stored version, no conflict copy, the newer text saved",
+  !loseAnswer && (await conflictCopies(A, "New lost answer")).length === 0 && (await server("New lost answer"))?.text === "v2, edited before the retry" &&
+  !(await alerts(A)).some(t => t.includes("Edit conflict")) && newLostSaves.filter(s => s === 412).length <= 1,
+  JSON.stringify({ saves: newLostSaves, server: (await server("New lost answer"))?.text, alerts: await alerts(A) }));
+await clearAlerts(A);
+
 // --- 20. Titles at the edges, and a public site that doesn't answer ----------------------------------
 // (quietOrNot: false rather than a timeout, for a tab whose syncer would keep retrying)
 const quietOrNot = (page, ms = 20000) => settleTab(page, ms).then(() => true, () => false);
@@ -805,7 +831,7 @@ check("imported, it's created again on the server with every field the same, tag
   JSON.stringify({ lost, settled: restoredSettled, sends: restoreSends.map(x => `${x.status} ${x.ifMatch || x.ifNoneMatch}`), alerts: await alerts(A), backupFields, restored }));
 
 // --- Summary --------------------------------------------------------------------------------
-// (Leaving out the answer section 19 makes the tab see on purpose)
-const bad = net.filter(x => (x.status === 428 || x.status >= 500) && !(x.status === 502 && x.path.endsWith("/Lost answer")));
+// (Leaving out the answers sections 19 and 19b make the tab see on purpose)
+const bad = net.filter(x => (x.status === 428 || x.status >= 500) && !(x.status === 502 && /\/(Lost answer|New lost answer)$/.test(x.path)));
 check("no 428/5xx responses anywhere", bad.length === 0, JSON.stringify(bad));
 await finish({ check, results, pageErrors, browser, site, note: `; ${net.filter(x => x.status === 412).length} conflicts detected; ${net.length} writes` });
