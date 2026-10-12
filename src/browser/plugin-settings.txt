@@ -10,10 +10,10 @@ TiddlyWiki's own setting that spends worker requests:
 
 ! Advanced
 
-''The defaults fit the free plan and are what the tests run: change these only knowing what they trade.'' Empty means the default. Each takes effect at once, the last at the next page load.
+''The defaults fit the free plan and are what the tests run: change these only knowing what they trade.'' Empty means the default. A change takes effect at once, except the service worker's wait, which the page tells it at each page load.
 
 * <$edit-text tiddler="$:/config/cfworker/DraftPause" tag="input" type="number" default="" placeholder="300" size="6"/> ms of typing before a draft is written to the device (300): lower is more writes to the device, higher is more typing lost if the tab crashes.
 * <$edit-text tiddler="$:/config/cfworker/FetchAhead" tag="input" type="number" default="" placeholder="6" size="6"/> tiddlers fetched at once during the fill (6): more is a faster fill with more requests in flight; on a private wiki they're worker requests either way, the same number.
 * <$edit-text tiddler="$:/config/cfworker/PublishPause" tag="input" type="number" default="" placeholder="1000" size="6"/> ms after a save before the page is published to the public site (1000): a burst of saves is published once; shorter publishes sooner and more often.
 * <$edit-text tiddler="$:/config/cfworker/BackupCheckMinutes" tag="input" type="number" default="" placeholder="60" size="6"/> minutes between asking the worker how backups go (60), with a list request: one R2 read each, and the alert when backups fail comes that much later.
-* <$edit-text tiddler="$:/config/cfworker/NetworkWait" tag="input" type="number" default="" placeholder="8" size="6"/> seconds the service worker waits for the network before answering with the page it kept (8): longer suits a slow connection, shorter a dead one. Takes effect at the next page load.
+* <$edit-text tiddler="$:/config/cfworker/NetworkWait" tag="input" type="number" default="" placeholder="8" size="6"/> seconds the service worker waits for the network before answering with the page it kept (8): longer suits a slow connection, shorter a dead one. The page tells the service worker at each load, so this one takes effect at the next.
