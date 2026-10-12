@@ -1,19 +1,17 @@
-These settings are tiddlers of the wiki (`$:/config/…`): saved like any other, so they hold on every device.
+Saved in the wiki (`$:/config/…`), so they hold on every device. What each one trades: README 3, "The plugin and its settings".
 
 ! Settings
 
-<$checkbox tiddler="$:/config/cfworker/LoadAll" field="text" checked="yes" unchecked="no" default="yes"> Fill the device copy in the background</$checkbox> — every tiddler is loaded onto this device while a tab is shown, several at a time, so that text search, backlinks and the Missing and Orphans lists see everything. Off, a tiddler loads the moment it's shown and nothing else is fetched; those lists then see only what the tab has loaded (titles, tags and fields are always searched). Takes effect at the next page load.
+<$checkbox tiddler="$:/config/cfworker/LoadAll" field="text" checked="yes" unchecked="no" default="yes"> Load every tiddler onto this device in the background</$checkbox> — text search and backlinks then see everything; off, a tiddler loads when shown. Next page load.
 
-TiddlyWiki's own setting that spends worker requests:
-
-* <$edit-text tiddler="$:/config/SyncPollingInterval" tag="input" type="number" default="" placeholder="60000" size="8"/> milliseconds between an open tab's requests for the tiddler list, one worker request each: the default, a minute, is about 1,400 requests a day for a tab left open and shown (a tab in the background asks nothing, and catches up when shown). Takes effect at the next page load.
+<$edit-text tiddler="$:/config/SyncPollingInterval" tag="input" type="number" default="" placeholder="60000" size="8"/> ms between an open tab's requests for the tiddler list: one worker request each (TiddlyWiki's own setting). Next page load.
 
 ! Advanced
 
-''The defaults fit the free plan and are what the tests run: change these only knowing what they trade.'' Empty means the default. Each takes effect at once, the last at the next page load.
+''The defaults fit the free plan and are what the tests run: change these knowing what they trade.'' Empty means the default.
 
-* <$edit-text tiddler="$:/config/cfworker/DraftPause" tag="input" type="number" default="" placeholder="300" size="6"/> ms of typing before a draft is written to the device (300): lower is more writes to the device, higher is more typing lost if the tab crashes.
-* <$edit-text tiddler="$:/config/cfworker/FetchAhead" tag="input" type="number" default="" placeholder="6" size="6"/> tiddlers fetched at once during the fill (6): more is a faster fill with more requests in flight; on a private wiki they're worker requests either way, the same number.
-* <$edit-text tiddler="$:/config/cfworker/PublishPause" tag="input" type="number" default="" placeholder="1000" size="6"/> ms after a save before the page is published to the public site (1000): a burst of saves is published once; shorter publishes sooner and more often.
-* <$edit-text tiddler="$:/config/cfworker/BackupCheckMinutes" tag="input" type="number" default="" placeholder="60" size="6"/> minutes between asking the worker how backups go (60), with a list request: one R2 read each, and the alert when backups fail comes that much later.
-* <$edit-text tiddler="$:/config/cfworker/NetworkWait" tag="input" type="number" default="" placeholder="8" size="6"/> seconds the service worker waits for the network before answering with the page it kept (8): longer suits a slow connection, shorter a dead one. Takes effect at the next page load.
+* <$edit-text tiddler="$:/config/cfworker/DraftPause" tag="input" type="number" default="" placeholder="300" size="6"/> ms of typing before a draft is written to the device (300)
+* <$edit-text tiddler="$:/config/cfworker/FetchAhead" tag="input" type="number" default="" placeholder="6" size="6"/> tiddlers fetched at once in the background (6)
+* <$edit-text tiddler="$:/config/cfworker/PublishPause" tag="input" type="number" default="" placeholder="1000" size="6"/> ms after a save before the page is published (1000)
+* <$edit-text tiddler="$:/config/cfworker/BackupCheckMinutes" tag="input" type="number" default="" placeholder="60" size="6"/> minutes between asking how backups go (60)
+* <$edit-text tiddler="$:/config/cfworker/NetworkWait" tag="input" type="number" default="" placeholder="8" size="6"/> seconds the service worker waits for the network before the page it kept (8). Next page load.
