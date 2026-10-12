@@ -117,6 +117,12 @@ await A.evaluate(() => $tw.wiki.addTiddler(new $tw.Tiddler($tw.wiki.getCreationF
 await settle(A);
 check("a save after that is committed by its own backup message", await waitFor(async () => files.has("tiddlers/Saved after.json"), 20000));
 
+// A step's error, as the worker reports it in the status, is shown in the tab as text
+await A.evaluate(t => { const x = $tw.wiki.getTiddler(t); $tw.wiki.addTiddler(new $tw.Tiddler(x, { "sync-error": "GitHub answered 502: <bad gateway> {{not wikitext}}" })); }, STATUS);
+text = await tabText(A);
+check("a full backup step's error is shown in the tab, as text", /didn't go through/.test(text) && text.includes("GitHub answered 502: <bad gateway> {{not wikitext}}"), text.replace(/\s+/g, " ").slice(text.indexOf("didn't go through") - 20, text.indexOf("didn't go through") + 160));
+await A.evaluate(t => { const x = $tw.wiki.getTiddler(t); const f = { ...x.fields }; delete f["sync-error"]; $tw.wiki.addTiddler(new $tw.Tiddler(f)); }, STATUS);
+
 // 3. The public site has no tab (read-only, no worker behind it)
 const P = await openTab(PUB + "/", "P");
 check("the public site has no Cloudflare tab, no hint", !(await exists(P, TAB)) && !(await exists(P, HINT)));

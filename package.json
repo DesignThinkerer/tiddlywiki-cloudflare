@@ -1,8 +1,18 @@
 {
-  "name": "tiddlywiki-cloudflare-worker",
+  "name": "tiddlywiki-cloudflare",
   "version": "1.0.0",
   "private": true,
   "type": "module",
+  "license": "MIT",
+  "author": "Théophile Desmedt (https://github.com/DesignThinkerer)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/DesignThinkerer/tiddlywiki-cloudflare.git"
+  },
+  "homepage": "https://github.com/DesignThinkerer/tiddlywiki-cloudflare#readme",
+  "bugs": {
+    "url": "https://github.com/DesignThinkerer/tiddlywiki-cloudflare/issues"
+  },
   "engines": {
     "node": ">=22"
   },

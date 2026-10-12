@@ -12,7 +12,7 @@ const RULES = {
 };
 
 export default [
-  { ignores: ["worker.js", "assets/", "node_modules/", "tools/.refactor/"] },
+  { ignores: ["worker.js", "node_modules/"] },
   js.configs.recommended,
   {
     // The worker (Cloudflare's runtime: the service worker globals), the build and the tests (Node)

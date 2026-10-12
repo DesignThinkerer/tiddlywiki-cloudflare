@@ -41,14 +41,14 @@ async function getList(env) {
   return { object, text, entries: parseList(text) };
 }
 
-// The list, readable: { object, text, entries }. A missing or damaged list is rebuilt from the
-// stored tiddlers first; throws ListRebuilding while that takes more requests.
 // The revision a list (readableList) has for a title, or null if it isn't listed
 export function listedRevision(list, title) {
   const entry = list.entries.find(e => e.title === title);
   return entry && entry.revision !== undefined && entry.revision !== null ? String(entry.revision) : null;
 }
 
+// The list, readable: { object, text, entries }. A missing or damaged list is rebuilt from the
+// stored tiddlers first; throws ListRebuilding while that takes more requests.
 export async function readableList(env, ctx, options) {
   const list = await getList(env);
   if (list.entries) return list;
