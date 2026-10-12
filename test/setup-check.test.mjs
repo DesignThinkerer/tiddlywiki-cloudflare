@@ -27,12 +27,15 @@ function outbound(request) {
 let corsOff = [];        // the paths the CORS header is left off (a rule scoped short): "/recipes/", "/_plugins/"
 let rewriteOff = false;  // the public site's / serving something else than the page
 let cacheStatus = "HIT";
+let etagOff = false, lastModifiedOff = false;   // the page's ETag, then its Last-Modified too, removed by Cloudflare
 const site = await startSite({
   index: readWikiFile(), publicStatus: true, queue: true, outbound,
   bindings: { GITHUB_REPO: "someone/wiki-backup", GITHUB_TOKEN: "ghp_test", CF_ZONE_ID: "zone-1", CF_API_TOKEN: "cf_test" },
   publicSite: {
     cors: url => !corsOff.some(prefix => url.pathname.startsWith(prefix)),
     cacheStatus: () => cacheStatus,
+    etag: url => !(etagOff && url.pathname === "/"),
+    lastModified: url => !(lastModifiedOff && url.pathname === "/"),
     override: (key, url) => rewriteOff && url.pathname === "/" ? "<!doctype html><html><body>a directory listing, say</body></html>" : undefined
   }
 });
@@ -76,6 +79,20 @@ check("the rewrite rule missing (the public site's / isn't the page): named, wit
   ok(items, "rewrite") === false && /rewrite/i.test(text(items, "rewrite")) && readme(items, "rewrite") === "2.7" && ok(items, "public") === true && ok(items, "cors-reads") === true && ok(items, "cors-files") === true,
   `${line(items, "rewrite")} | public ${ok(items, "public")}`);
 rewriteOff = false;
+// Cloudflare removes an HTML answer's ETag when a feature of the zone rewrites the page (Email Address
+// Obfuscation is on by default): the page is then known by its date, and failing that by its content
+etagOff = true;
+({ items } = await run());
+check("the page's ETag removed by Cloudflare (a zone feature rewriting HTML): the rewrite line still passes, the page known by its Last-Modified", ok(items, "rewrite") === true, line(items, "rewrite"));
+lastModifiedOff = true;
+({ items } = await run());
+check("...ETag and Last-Modified both gone: known by its content, the worker's own mark in the page", ok(items, "rewrite") === true, line(items, "rewrite"));
+rewriteOff = true;
+({ items } = await run());
+check("...and with neither header, something else at /: still a failure, saying what was found (the status, no ETag, no Last-Modified)", ok(items, "rewrite") === false && /no ETag/.test(text(items, "rewrite")) && /no Last-Modified/.test(text(items, "rewrite")), line(items, "rewrite"));
+rewriteOff = false;
+etagOff = false;
+lastModifiedOff = false;
 corsOff = ["/_plugins/"];
 ({ items } = await run());
 check("the CORS header missing under /_plugins/ only: the files line fails naming that path and README 2.7, the reads line passes",

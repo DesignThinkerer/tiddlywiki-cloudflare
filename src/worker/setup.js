@@ -50,23 +50,42 @@ export async function setupCheck(request, env, ctx, corsHeaders) {
 }
 
 // One request to the public site, with the admin site as Origin when asked: what came back, by
-// its headers (the body is dropped unread)
-async function probe(url, origin) {
+// its headers. The body is dropped unread, unless the caller keeps it (keep) to read it itself.
+async function probe(url, origin, keep) {
   try {
     const res = await fetch(url, { headers: origin ? { Origin: origin } : {}, redirect: "follow" });
     const h = name => res.headers.get(name);
-    if (res.body) await res.body.cancel();
-    return { status: res.status, etag: h("ETag"), allowOrigin: h("Access-Control-Allow-Origin"), cache: h("CF-Cache-Status"), type: h("Content-Type") };
+    if (!keep && res.body) await res.body.cancel();
+    return { status: res.status, etag: h("ETag"), lastModified: h("Last-Modified"), allowOrigin: h("Access-Control-Allow-Origin"), cache: h("CF-Cache-Status"), type: h("Content-Type"), res: keep ? res : null };
   } catch (e) {
     return { error: e && e.message ? e.message : String(e) };
   }
 }
 
 const bareEtag = etag => (etag || "").replace(/^W\//, "").replace(/^"|"$/g, "");
+const seconds = date => Math.floor((date instanceof Date ? date.getTime() : Date.parse(date || "")) / 1000);
+// What every page the worker builds carries: its own tiddlers (build.js)
+const PAGE_MARK = "$:/cfworker/";
+
+// Whether the public site's / is the stored page: by ETag when the answer has one (bare of W/ and
+// quotes: Cloudflare's compression weakens it), else by date (Last-Modified against the object's
+// upload time: Cloudflare removes an HTML answer's ETag when a feature of the zone rewrites the
+// page, Email Address Obfuscation say, on by default, but keeps the date), else by the page's own
+// mark in the body, read only then
+async function isStoredPage(page, stored) {
+  if (page.status !== 200 || !stored) return false;
+  if (page.etag) return bareEtag(page.etag) === bareEtag(stored.httpEtag);
+  if (page.lastModified) return seconds(page.lastModified) === seconds(stored.uploaded);
+  try {
+    return (await page.res.text()).includes(PAGE_MARK);
+  } catch {
+    return false;
+  }
+}
 
 async function checkPublicSite(env, site, origin, add) {
   const [page, list, core, status, stored] = await Promise.all([
-    probe(publicUrl(env, "/"), null),
+    probe(publicUrl(env, "/"), null, true),
     probe(publicUrl(env, "/" + LIST_KEY), origin),
     probe(publicUrl(env, "/" + CORE_KEY), origin),
     probe(publicUrl(env, "/" + STATUS_KEY), null),
@@ -79,11 +98,14 @@ async function checkPublicSite(env, site, origin, add) {
     return;
   }
   add("public", true, `The public site answers at ${site}.`, README.site);
-  const storedEtag = stored ? bareEtag(stored.httpEtag) : "";
-  if (page.status === 200 && storedEtag && bareEtag(page.etag) === storedEtag) {
+  const isPage = await isStoredPage(page, stored);
+  if (page.res && page.res.body && !page.res.bodyUsed) await page.res.body.cancel().catch(() => {});
+  if (isPage) {
     add("rewrite", true, "The public site's / serves the wiki page (the rewrite rule / → /baked.html).", README.rules);
   } else {
-    add("rewrite", false, `The public site's / doesn't serve the wiki page (answered ${page.status}${page.etag ? `, ETag ${page.etag}` : ""}; the stored page's ETag is ${storedEtag ? `"${storedEtag}"` : "unknown: the page isn't built yet"}): the rewrite rule / → /baked.html is missing or wrong.`, README.rules);
+    const found = `answered ${page.status}, ${page.etag ? `ETag ${page.etag}` : "no ETag"}, ${page.lastModified ? `Last-Modified ${page.lastModified}` : "no Last-Modified"}`;
+    const known = stored ? `the stored page's are "${bareEtag(stored.httpEtag)}" and ${stored.uploaded.toUTCString()}` : "the page isn't built yet";
+    add("rewrite", false, `The public site's / doesn't serve the wiki page (${found}; ${known}): the rewrite rule / → /baked.html is missing or wrong.`, README.rules);
   }
   const allowed = r => !r.error && (r.allowOrigin === origin || r.allowOrigin === "*");
   const found = r => r.error ? `no answer: ${r.error}` : r.allowOrigin ? `Access-Control-Allow-Origin: ${r.allowOrigin}` : "no Access-Control-Allow-Origin header";
