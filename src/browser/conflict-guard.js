@@ -361,13 +361,14 @@ exports.startup = function() {
 			return callback(null);
 		}
 		var body = flatBody(tiddler),
-			headers = {"Content-type": "application/json", "X-Tiddler-Layout": "flat"},
 			tries = 0;
 		function send() {
+			// (The headers made afresh for each try: a retry based on the stored version, after a first
+			// try whose answer was lost, must not keep the first one's "must not exist")
 			$tw.utils.httpRequest({
 				url: self.host + "recipes/" + encodeURIComponent(self.recipe) + "/tiddlers/" + encodeURIComponent(title),
 				type: "PUT",
-				headers: addPreconditions(headers,title,base,info),
+				headers: addPreconditions({"Content-type": "application/json", "X-Tiddler-Layout": "flat"},title,base,info),
 				data: body,
 				callback: function(err,data,request) {
 					if(err) {
