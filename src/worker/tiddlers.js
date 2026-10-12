@@ -57,11 +57,15 @@ export function isStartupTiddler(tiddler) {
     : typeof tags === "string" && tags.includes("$:/tags/StartupAction"));
 }
 
-// Plugins (but not the core: it comes with index.html and is never synced) and JavaScript modules
+// The admin plugin, the worker's own (build.js): preloaded by every page build, never a file
+const ADMIN_PLUGIN = "$:/plugins/cfworker/admin";
+
+// Plugins (but not the core: it comes with index.html and is never synced; nor the admin plugin,
+// which the worker puts in the page itself) and JavaScript modules
 export function needsPluginFile(tiddler) {
   const pluginType = tiddler["plugin-type"];
   if (pluginType) {
-    return PLUGIN_FILE_TYPES.includes(pluginType) && tiddler.title !== "$:/core" && tiddler.platform !== "server";
+    return PLUGIN_FILE_TYPES.includes(pluginType) && tiddler.title !== "$:/core" && tiddler.title !== ADMIN_PLUGIN && tiddler.platform !== "server";
   }
   return MODULE_TYPES.includes(tiddler.type) && Boolean(tiddler["module-type"]);
 }

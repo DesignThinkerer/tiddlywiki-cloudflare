@@ -51,7 +51,7 @@ check("a new private wiki opens from an empty bucket, served by the worker, with
   first.status() === 200 && await A.evaluate(() => $tw.syncadaptor.conflictGuardInstalled === true && typeof $tw.syncadaptor.cfworkerListed === "function"));
 check("...the engine and the status file are in the bucket (for the day a public site is added), and the page built",
   !!(await bucket.head("index.html")) && !!(await bucket.head("status")) && !!(await bucket.head("baked.html")));
-check("...the page carries no public address", await A.evaluate(() => $tw.wiki.tiddlerExists("$:/cfworker/public-url") && $tw.wiki.getTiddlerText("$:/cfworker/public-url", "") === ""));
+check("...the page carries no public address (a part of the admin plugin, empty)", await A.evaluate(() => $tw.wiki.isShadowTiddler("$:/cfworker/public-url") && $tw.wiki.getTiddlerText("$:/cfworker/public-url", "x") === ""));
 check("...the tab is logged in and can write", await A.evaluate(() => $tw.wiki.getTiddlerText("$:/status/IsLoggedIn") === "yes" && $tw.wiki.getTiddlerText("$:/status/IsReadOnly") === "no"));
 const ENGINE = await text("index.html");
 const version = await A.evaluate(() => $tw.version);

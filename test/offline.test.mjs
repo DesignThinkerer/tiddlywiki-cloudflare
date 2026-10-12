@@ -233,4 +233,17 @@ await A5.unroute("**/recipes/default/tiddlers/**");
 await A5.evaluate(() => $tw.syncer.processTaskQueue());
 check("...the first tab sends it once the worker takes it", await waitFor(async () => (await stored("Held change")) === "waiting in the first tab", 25000));
 
+// --- 11. The advanced setting: the pause before a draft is written to the device ---------------------
+// ($:/config/cfworker/DraftPause, from the admin plugin's settings tab, read at each keystroke: no reload)
+await A5.evaluate(() => $tw.wiki.addTiddler(new $tw.Tiddler({ title: "$:/config/cfworker/DraftPause", text: "2500" })));
+await settle(A5);
+const slowDraft = "Draft of 'Slow draft'";
+await A5.evaluate(t => $tw.wiki.addTiddler(new $tw.Tiddler({ title: t, "draft.of": "Slow draft", "draft.title": "Slow draft", text: "typed slowly" })), slowDraft);
+await sleep(1200);
+const early = ((await outbox(A5)) || []).some(e => e.title === slowDraft);
+const late = await waitFor(async () => ((await outbox(A5)) || []).some(e => e.title === slowDraft), 6000);
+check("the draft pause set to 2.5 s: a draft reaches the device after that pause, not after the default 300 ms", !early && late, `on the device at 1.2 s: ${early}, by 6 s: ${late}`);
+await A5.evaluate(t => { $tw.wiki.deleteTiddler(t); $tw.wiki.deleteTiddler("$:/config/cfworker/DraftPause"); }, slowDraft);
+await settle(A5);
+
 await finish({ check, results, pageErrors, browser, site });

@@ -200,9 +200,12 @@ await settle(C, 60000);
 check("...and fills once shown, leaving out a tiddler deleted meanwhile, without an error", await allLoaded(C) && !tiddlerGets(mark, "C", "public").includes("Tiddler 31") && (await alerts(C)).length === 0,
   JSON.stringify(await alerts(C)));
 await C.close();
-// Hidden in the middle of the fill: it pauses (what was already asked for arrives), and goes on once shown
+// Hidden in the middle of the fill: it pauses (what was already asked for arrives), and goes on once shown.
+// (A new context: with the device copy the tab above filled, the fill would be over in a tenth of a
+// second, from the device; here it's the slow network's, 400 ms a fetch, several seconds long)
 slow = 400;
-const E = await open(admin3, `${base}/`, "E", { hidden: false });
+const adminE = await browser.newContext();
+const E = await open(adminE, `${base}/`, "E", { hidden: false });
 await waitFor(async () => (await loadedCount(E)) >= 10, 20000);
 await hide(E);
 await sleep(3000);   // what was under way finishes
@@ -302,5 +305,18 @@ await settle(W, 60000);
 check("without IndexedDB, a tab loads everything over the network, and again at the next load", await allLoaded(W) && firstWithout >= expected.size && tiddlerGets(mark, "W", "public").length >= expected.size,
   `${firstWithout} then ${tiddlerGets(mark, "W", "public").length} fetched for ${expected.size} tiddlers`);
 await W.close();
+
+// --- 9. The advanced setting: tiddlers fetched at once during the fill ------------------------------------
+// ($:/config/cfworker/FetchAhead, from the admin plugin's settings tab: set to 1, the fill goes one at a time)
+await put("$:/config/cfworker/FetchAhead", { text: "1" });   // (a page tiddler: the next page build preloads it)
+await (await mf.dispatchFetch(`${base}/`)).arrayBuffer();
+const oneAtATime = await browser.newContext();
+mark = requests.length;
+const X = await open(oneAtATime, `${base}/`, "X");
+await settle(X, 90000);
+check("the fetch-ahead setting at 1: a new device's fill fetches one tiddler at a time (several by default)", await allLoaded(X) && overlap.X === 1 && tiddlerGets(mark, "X", "public").length >= expected.size,
+  `at most ${overlap.X} in flight, ${tiddlerGets(mark, "X", "public").length} fetched`);
+await X.close();
+await remove("$:/config/cfworker/FetchAhead");
 
 await finish({ check, results, pageErrors, browser, site });

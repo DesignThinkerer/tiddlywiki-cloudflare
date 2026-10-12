@@ -51,7 +51,8 @@ var TEMPLATE = "$:/core/templates/tiddlywiki5-external-js.html",
 		"$:/core/wiki/rawmarkup", "$:/tags/RawMarkup", "$:/tags/RawMarkupWikified",
 		"$:/tags/RawMarkupWikified/TopHead", "$:/tags/RawMarkupWikified/TopBody", "$:/tags/RawMarkupWikified/BottomBody"
 	],
-	PAUSE = 1000,          // after a save, so a burst of saves is published once
+	PAUSE = 1000,          // after a save, so a burst of saves is published once ($:/config/cfworker/PublishPause, the plugin's settings)
+	LIST_SETTLE = 1000,    // after a tiddler list, before anything here counts as quiet: the page renders, and asks, first
 	QUIET_TIMEOUT = 60000; // waiting for saves and loads to finish
 
 // TiddlyWiki's page template, as its save templates use it (with the global macros). One change: the
@@ -153,7 +154,8 @@ exports.startup = function() {
 	// The plugins (like TiddlyWiki's own save filters, without $:/temp/: its $:/temp/info-plugin, made at
 	// each startup; and without pending imports) and the raw markup tiddlers, without drafts
 	function plugins() {
-		return wiki.filterTiddlers("[all[tiddlers]has[plugin-type]!is[draft]] -[[$:/core]] -[prefix[$:/temp/]] -[prefix[$:/state/]] -[plugin-type[import]] -[has[plugin-type]field:platform[server]]");
+		// (Not the admin plugin, the worker's own, which it puts in every page it builds)
+		return wiki.filterTiddlers("[all[tiddlers]has[plugin-type]!is[draft]] -[[$:/core]] -[[$:/plugins/cfworker/admin]] -[prefix[$:/temp/]] -[prefix[$:/state/]] -[plugin-type[import]] -[has[plugin-type]field:platform[server]]");
 	}
 	function rawMarkupTiddlers() {
 		var titles = [];
@@ -254,9 +256,15 @@ exports.startup = function() {
 
 	// Whether nothing is being saved, and nothing the page needs is being loaded. The fill of the
 	// other tiddlers (the list sync's, which says what's loading: cfworkerLoading) doesn't count: the
-	// page doesn't render them.
+	// page doesn't render them. Nor is the first second after a tiddler list quiet: the page renders
+	// what it shows then, and asks for its text, while the fill is held (list-sync.js), and the work
+	// here (the shell rendered, the core file read) would hold the render up and let the fill go first.
 	function quietNow() {
 		if(syncer.isDirty() || syncer.forceSyncFromServer) {
+			return false;
+		}
+		var lastList = adaptor.cfworkerListedSince ? adaptor.cfworkerListedSince() : 0;
+		if(lastList && Date.now() - lastList < LIST_SETTLE) {
 			return false;
 		}
 		var loading = adaptor.cfworkerLoading ? adaptor.cfworkerLoading() : null;
@@ -472,7 +480,7 @@ exports.startup = function() {
 			clearTimeout(timer);
 			timer = setTimeout(function() {
 				check(true);
-			},PAUSE);
+			},parseInt(wiki.getTiddlerText("$:/config/cfworker/PublishPause",""),10) || PAUSE);
 		}
 	}
 

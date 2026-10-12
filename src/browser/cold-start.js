@@ -21,7 +21,8 @@ exports.synchronous = true;
 
 var lib = require("$:/cfworker/lib.js");
 
-var SW_URL = "$:/cfworker/sw-url";
+var SW_URL = "$:/cfworker/sw-url",
+	NETWORK_WAIT = 8;   // s the service worker waits for the network before the kept page ($:/config/cfworker/NetworkWait, the plugin's settings)
 
 exports.startup = function() {
 	if(typeof window === "undefined" || typeof navigator !== "object" || !("serviceWorker" in navigator)) {
@@ -40,6 +41,13 @@ exports.startup = function() {
 	} catch(e) {
 		return;
 	}
+	// The service worker reads no tiddler: the page tells it its setting at each load, once it's in
+	// place (the first visit too, once it has activated), and it keeps it (service-worker.js)
+	navigator.serviceWorker.ready.then(function(registration) {
+		if(registration.active) {
+			registration.active.postMessage({cfworker: "settings", networkWait: (parseInt($tw.wiki.getTiddlerText("$:/config/cfworker/NetworkWait",""),10) || NETWORK_WAIT) * 1000});
+		}
+	},function() {});
 	var controller = navigator.serviceWorker.controller;
 	if(controller && controller.scriptURL === wanted) {
 		return;

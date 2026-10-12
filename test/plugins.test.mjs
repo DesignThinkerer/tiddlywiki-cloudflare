@@ -5,7 +5,7 @@ import fs from "node:fs";
 import path from "node:path";
 import vm from "node:vm";
 import { createRequire } from "node:module";
-import { addTiddler, createChecks, createWatcher, finish, launchBrowser, readWikiFile, settle as settleTab, startSite } from "./browser-harness.mjs";
+import { addTiddler, createChecks, createWatcher, finish, launchBrowser, readWikiFile, settle as settleTab, sleep, startSite } from "./browser-harness.mjs";
 
 const require = createRequire(import.meta.url);
 const ENGINE = readWikiFile();
@@ -294,6 +294,10 @@ await load();
 check("deleted plugin is gone after the reload", !(await isKatexActive()));
 
 // --- 13. Overlapping page builds never go backwards ---------------------------------------------------
+// (The tab just reloaded: its page publisher looks at the page once the first second after the list
+// is past, and a page it publishes then, newer, would replace the one put here on purpose)
+await settle();
+await sleep(1500);
 const current = await bucket.head("baked.html");
 await bucket.put("baked.html", "<html><head></head><body>from a newer list</body></html>",
   { httpMetadata: { contentType: "text/html; charset=utf-8" }, customMetadata: { ...current.customMetadata, listVersion: "99999999999999" } });

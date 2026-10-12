@@ -12,11 +12,14 @@ const root = fileURLToPath(new URL("./", import.meta.url));
 const workerDir = join(root, "src/worker");
 const browserDir = join(root, "src/browser");
 
-// The browser modules: each file src/browser/<name>.js replaces the placeholder "__<NAME>_SOURCE__"
-// (upper case, "-" as "_": src/browser/list-sync.js is "__LIST_SYNC_SOURCE__"), which src/worker
-// must hold exactly once (build.js's table), so a module can't be added without being baked
-const PLACEHOLDERS = Object.fromEntries(readdirSync(browserDir).filter(name => name.endsWith(".js")).sort()
-  .map(name => [`"__${name.slice(0, -3).toUpperCase().replace(/-/g, "_")}_SOURCE__"`, join(browserDir, name)]));
+// The browser modules, and the texts that go with them (the admin plugin's tabs, .txt): each file
+// src/browser/<name>.js or .txt replaces the placeholder "__<NAME>_SOURCE__" (upper case, "-" as
+// "_": src/browser/list-sync.js is "__LIST_SYNC_SOURCE__"), which src/worker must hold exactly once
+// (build.js's table), so a module can't be added without being baked
+const PLACEHOLDERS = Object.fromEntries(readdirSync(browserDir).filter(name => /\.(js|txt)$/.test(name)).sort()
+  .map(name => [`"__${name.replace(/\.(js|txt)$/, "").toUpperCase().replace(/-/g, "_")}_SOURCE__"`, join(browserDir, name)]));
+// The package's version (package.json), shown as the admin plugin's with the build's hash
+const PACKAGE_VERSION = JSON.parse(readFileSync(join(root, "package.json"), "utf8")).version;
 // The app's files (src/app/: the default icons, PNG), embedded as base64: src/app/icon-192.png
 // replaces "__ICON_192_PNG_BASE64__"
 const appDir = join(root, "src/app");
@@ -85,7 +88,9 @@ for (const [placeholder, file] of Object.entries(APP_PLACEHOLDERS)) {
   if (output.split(placeholder).length !== 2) throw new Error(`src/worker must contain ${placeholder} exactly once (for ${relative(root, file)})`);
   output = output.replace(placeholder, () => JSON.stringify(readFileSync(file).toString("base64")));
 }
-const unfilled = /"__[A-Z0-9_]+_(SOURCE|BASE64)__"/.exec(output);
+if (output.split('"__PACKAGE_VERSION__"').length !== 2) throw new Error('src/worker must contain "__PACKAGE_VERSION__" exactly once');
+output = output.replace('"__PACKAGE_VERSION__"', () => JSON.stringify(PACKAGE_VERSION));
+const unfilled = /"__[A-Z0-9_]+_(SOURCE|BASE64|VERSION)__"/.exec(output);
 if (unfilled) throw new Error(`src/worker uses ${unfilled[0]}, which no file in src/browser or src/app fills`);
 
 const target = join(root, "worker.js");

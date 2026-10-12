@@ -31,6 +31,15 @@ check("...TiddlyWiki loaded the browser modules: the library, and the eight star
     const alert = startup["$:/cfworker/backup-alert.js"];
     return !!library["$:/cfworker/lib.js"] && names.every(n => startup[n]) && alert.exports.after.includes("cfworker-list-sync");
   }));
+check("...as the shadows of the admin plugin, which the Plugins tab lists with its name and version; none of them a tiddler of the wiki",
+  await admin.evaluate(() => {
+    const info = $tw.wiki.getPluginInfo("$:/plugins/cfworker/admin");
+    const parts = ["$:/cfworker/lib.js", "$:/cfworker/conflict-guard.js", "$:/cfworker/list-sync.js", "$:/cfworker/backup-alert.js", "$:/cfworker/page-publisher.js", "$:/cfworker/restore-import.js", "$:/cfworker/control-panel.js", "$:/cfworker/outbox.js", "$:/cfworker/cold-start.js", "$:/cfworker/public-url", "$:/cfworker/sw-url", "$:/cfworker/page-source"];
+    const listed = $tw.wiki.filterTiddlers("[plugin-type[plugin]]").includes("$:/plugins/cfworker/admin");
+    const plugin = $tw.wiki.getTiddler("$:/plugins/cfworker/admin");
+    return !!info && listed && !!plugin && !!plugin.fields.name && /\+/.test(plugin.fields.version || "") && parts.every(t => $tw.wiki.isShadowTiddler(t) && !$tw.wiki.tiddlerExists(t)) &&
+      $tw.wiki.getTiddlerText("$:/plugins/cfworker/admin/readme", "").length > 100 && $tw.wiki.getTiddlerText("$:/plugins/cfworker/admin/settings", "").includes("$:/config/cfworker/LoadAll");
+  }), await admin.evaluate(() => JSON.stringify({ info: !!$tw.wiki.getPluginInfo("$:/plugins/cfworker/admin"), shadow: $tw.wiki.isShadowTiddler("$:/cfworker/lib.js"), real: $tw.wiki.tiddlerExists("$:/cfworker/lib.js") })));
 check("...and each part of the sync is in place: the conflict guard, the list (with its listeners), the alert's request",
   await admin.evaluate(() => $tw.syncadaptor.conflictGuardInstalled === true && typeof $tw.syncadaptor.cfworkerListed === "function" && typeof $tw.syncadaptor.cfworkerOnList === "function" && $tw.syncadaptor.cfworkerBackupAlert === true));
 check("...the tab is logged in and can write", await admin.evaluate(() => $tw.wiki.getTiddlerText("$:/status/IsLoggedIn") === "yes" && $tw.wiki.getTiddlerText("$:/status/IsReadOnly") === "no"));
