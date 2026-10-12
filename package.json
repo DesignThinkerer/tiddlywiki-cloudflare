@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "description": "TiddlyWiki served by a Cloudflare Worker from R2, with edit-conflict protection, a public cached copy and queued GitHub backups",
   "scripts": {
