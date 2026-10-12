@@ -677,6 +677,41 @@ check("...and that load publishes a shell for it (the stored core file reused, n
   (await bucket.head("_page/shell.html"))?.customMetadata?.index === (await bucket.head("index.html")).etag);
 await contextD.close();
 
+// --- 11b. The engine updated from the Cloudflare tab (design 1.15) -----------------------------------
+// An older engine in the bucket (the shipped one with a version tag of its own): the tab shows both
+// versions and the button; the update replaces index.html with the shipped engine, and the next load
+// runs it, publishes it, and still has the tiddlers.
+const TAB = "$:/temp/cfworker/ControlPanel", ENGINE_STATE = "$:/temp/cfworker/engine", ENGINE_SAID = "$:/temp/cfworker/engine-message";
+const shipped = (ENGINE.match(/<meta name="tiddlywiki-version" content="([^"]*)"/) || [])[1];
+const tabText = p => p.evaluate(t => $tw.wiki.renderTiddler("text/plain", t).replace(/\s+/g, " "), TAB);
+await bucket.put("index.html", ENGINE.replace(/<meta name="tiddlywiki-version" content="[^"]*"/, '<meta name="tiddlywiki-version" content="5.0.0"'));
+const contextG = await browser.newContext();
+mark = requests.length;
+const { p: G } = await openAdmin("G", contextG);
+await waitFor(async () => shellPuts("G", mark) > 0, 30000);
+await sleep(QUIET_WINDOW);
+await add(G, { title: "Kept across engines", text: "saved before the update" });
+await settle(G);
+const tabBefore = await tabText(G);
+check("the Cloudflare tab shows the engine's version and the one the worker ships, with the Update button, when they differ",
+  !!shipped && tabBefore.includes(`TiddlyWiki 5.0.0`) && tabBefore.includes(`the worker ships ${shipped}`) && tabBefore.includes("Update the engine") && await G.evaluate(t => $tw.wiki.getTiddler(t)?.fields.same === "no", ENGINE_STATE),
+  tabBefore.replace(/^.*?The engine/, "The engine").slice(0, 200));
+await G.evaluate(() => $tw.rootWidget.dispatchEvent({ type: "tm-cfworker-engine-update" }));
+await waitFor(() => G.evaluate(t => $tw.wiki.tiddlerExists(t) && !/Replacing/.test($tw.wiki.getTiddlerText(t)), ENGINE_SAID), 20000);
+const engineSaid = await G.evaluate(t => $tw.wiki.renderTiddler("text/plain", t).replace(/\s+/g, " "), ENGINE_SAID);
+check("the update replaces the engine with the shipped one and says so, with both versions", engineSaid.includes("5.0.0") && engineSaid.includes(shipped) && (await (await bucket.get("index.html")).text()) === ENGINE, engineSaid.slice(0, 200));
+mark = requests.length;
+await G.reload();
+await G.waitForFunction(() => window.$tw && $tw.wiki && $tw.rootWidget, null, { timeout: 30000 });
+await waitFor(async () => shellPuts("G", mark) > 0, 30000);
+await sleep(QUIET_WINDOW);
+const tabAfter = await tabText(G);
+check("...after the reload the wiki runs the shipped engine, the tab says the versions match (no button), the page is republished, and the tiddlers are still there",
+  tabAfter.includes(`TiddlyWiki ${shipped}, the version the worker ships`) && !tabAfter.includes("Update the engine") && shellPuts("G", mark) === 1 &&
+  (await bucket.head("_page/shell.html"))?.customMetadata?.index === (await bucket.head("index.html")).etag && await G.evaluate(() => $tw.wiki.getTiddlerText("Kept across engines") === "saved before the update"),
+  `${tabAfter.replace(/^.*?The engine/, "The engine").slice(0, 160)} | shell puts ${shellPuts("G", mark)}`);
+await contextG.close();
+
 // --- 12. Safe mode publishes nothing --------------------------------------------------------------
 const contextS = await browser.newContext();
 mark = requests.length;

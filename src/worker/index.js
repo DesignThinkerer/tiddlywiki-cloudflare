@@ -18,7 +18,7 @@ import { backupSyncStatus, startBackupSync } from "./backup/sync.js";
 import { decodePath, invalidPath } from "./http.js";
 import { APP_ICON_SIZES, MANIFEST_KEY, serveIcon, serveManifest } from "./app.js";
 import { serveServiceWorker } from "./build.js";
-import { publishCoreFile, publishShell, serveWiki } from "./page.js";
+import { publishCoreFile, publishShell, serveWiki, updateEngine } from "./page.js";
 import { serveList, serveObject, serveStatus } from "./reads.js";
 import { handleDelete, handleSave } from "./saves.js";
 import { publicSiteError } from "./settings.js";
@@ -54,6 +54,7 @@ const ROUTES = [
   { methods: ["GET"], matches: path => path === "/backup/sync", handle: (request, env, ctx, url, match, headers) => backupSyncStatus(env, headers) },
   // The setup check (design 1.13): each piece of the setup looked at, on demand
   { methods: ["GET"], matches: path => path === "/setup/check", handle: (request, env, ctx, url, match, headers) => setupCheck(request, env, ctx, headers) },
+  { methods: ["POST"], matches: path => path === "/engine/update", handle: (request, env, ctx, url, match, headers) => updateEngine(request, env, headers) },
   // Any other read is an object of the bucket, by its key: the tiddler list, a tiddler, a file
   { methods: ["GET", "HEAD"], matches: path => decodePath(path.substring(1)), handle: (request, env, ctx, url, key, headers) =>
     key === LIST_KEY ? serveList(request, env, ctx, headers) : serveObject(request, env, key, headers) },

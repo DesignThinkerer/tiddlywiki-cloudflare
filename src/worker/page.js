@@ -9,7 +9,7 @@
 // _plugins/tiddlywikicore.js, served by the public site as ?v=<TiddlyWiki version>-<format> and
 // cached for a year, like plugin files.
 
-import { EXTERNAL_SCRIPTS_MARKER, PAGE_ETAG_SUFFIX, bakeVersion, charStart, coreFileUrl, pageDecoder, rebakeHtml } from "./build.js";
+import { EXTERNAL_SCRIPTS_MARKER, PAGE_ETAG_SUFFIX, bakeVersion, charStart, coreFileUrl, engineVersion, pageDecoder, rebakeHtml } from "./build.js";
 import { parseEtagList, refusal, untilDone } from "./http.js";
 import { CORE_KEY, INDEX_KEY, PAGE_KEY, SHELL_KEY, STATUS_KEY, markPageOutdated, putIfAbsent } from "./storage.js";
 
@@ -74,18 +74,25 @@ const NO_WIKI = "There's no wiki yet: the bucket has no index.html, and this wor
   "go there by itself (a deploy through Wrangler or Workers Builds ships it, README 2.8). Upload an index.html, a TiddlyWiki " +
   "with the TiddlyWeb plugin, and the status file (README 2.8), then open this page again.";
 
-async function seedWiki(env) {
+// The empty wiki module, or null without it (logged)
+async function loadSeed() {
   let html;
   try {
     ({ default: html } = await import("./seed/empty.html"));   // (a literal: Miniflare resolves the module from it)
   } catch (e) {
     console.error("The empty wiki isn't among the worker's modules (a pasted worker.js?):", e.message);
-    return false;
+    return null;
   }
   if (typeof html !== "string" || !html) {
     console.error("The empty wiki module is empty: the build didn't make seed/empty.html?");
-    return false;
+    return null;
   }
+  return html;
+}
+
+async function seedWiki(env) {
+  const html = await loadSeed();
+  if (!html) return false;
   const index = await putIfAbsent(env, INDEX_KEY, html, { httpMetadata: { contentType: "text/html; charset=utf-8" } });
   const status = await putIfAbsent(env, STATUS_KEY, JSON.stringify(PUBLIC_STATUS), { httpMetadata: { contentType: "application/json" } });
   // (Either may have been there: the status file kept when the engine was deleted, or both put by
@@ -94,6 +101,28 @@ async function seedWiki(env) {
   if (put.length > 0) console.log(`New wiki: ${put.join(" and ")} put in the bucket`);
   return true;
 }
+
+// POST /engine/update, from the Cloudflare tab (design 1.15): index.html replaced with the empty
+// wiki the worker ships, so the next page load builds the page from it, publishes the core file and
+// the page for the new version and purges the public copy, as after a deletion of index.html by
+// hand. The tiddlers, the plugins installed from the wiki and the published page are untouched; a
+// plugin that came only with the old engine goes with it (the tab says so before). Two R2 calls:
+// the engine's head, for the version it replaces, and the write. Asked for with the header every
+// request of the browser modules carries, so a form on another site can't send it.
+export async function updateEngine(request, env, corsHeaders) {
+  if (request.headers.get("X-Requested-With") !== "TiddlyWiki") return refusal("The engine is updated from the admin wiki's Cloudflare tab (README 3).", corsHeaders);
+  const html = await loadSeed();
+  if (!html) return refusal(NO_SEED, corsHeaders, 404);
+  const current = await env.WIKI_BUCKET.get(INDEX_KEY, { range: { offset: 0, length: 65536 } });
+  const from = current ? engineVersion(await current.text()) : "";
+  const to = engineVersion(html);
+  await env.WIKI_BUCKET.put(INDEX_KEY, html, { httpMetadata: { contentType: "text/html; charset=utf-8" } });
+  console.log(`Engine replaced: TiddlyWiki ${from || "(no version tag)"} → ${to}`);
+  return new Response(JSON.stringify({ from, to }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json", "Cache-Control": "no-store" } });
+}
+
+const NO_SEED = "This worker was deployed without the empty wiki that would replace the engine (a deploy through Wrangler or " +
+  "Workers Builds ships it, README 2.8): nothing to put in place of index.html.";
 
 // Rebuilds the page after a save or delete. If that fails (an R2 error), the change itself is
 // stored: the page is marked outdated instead, so the next page load builds it (and writes any

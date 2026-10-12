@@ -72,6 +72,9 @@ const BUDGETS = {
   // The setup check (on demand): the rewrite rule is checked by comparing the public page's ETag with
   // the stored page's, one head; the rest is requests to the public site, GitHub and Cloudflare
   "setup check": { "head baked.html": 1 },
+  // The engine updated from the Cloudflare tab (on demand): the engine's head read for its version,
+  // the shipped empty wiki written over it; the page build follows at the next load, as above
+  "engine update": { "get index.html": 1, "put index.html": 1 },
   // With a shell, index.html itself isn't read
   "save a plugin, page built from the shell": {
     "head tiddler": 1, "get list": 1, "put tiddler": 1, "put list": 1,
@@ -211,6 +214,10 @@ const baseNew = (await mfNew.ready).toString().replace(/\/$/, "");
     (over.length ? "over budget: " + over.join(", ") + " | " : "") + `status ${res.status}, ` + Object.entries(counts).map(([c, n]) => `${c} ×${n}`).join(", "));
 }
 await mfNew.dispose();
+
+// Last, since it replaces the engine: the next page load would be a rebuild
+const engineUpdate = await measure("engine update", () => mf.dispatchFetch(base + "/engine/update", { method: "POST", headers: { "X-Requested-With": "TiddlyWiki" } }));
+check("...answered 200", engineUpdate.status === 200, `status ${engineUpdate.status}`);
 
 console.log(`\n${results.filter(Boolean).length}/${results.length} passed`);
 await mf.dispose();
