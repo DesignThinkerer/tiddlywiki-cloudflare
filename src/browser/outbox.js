@@ -19,8 +19,8 @@ that failed, every few seconds, and sends everything once the network is back; t
   leaves those to their tab, which sends them itself.
 - The network's return (the browser's online event) wakes the syncer at once, rather than at its
   next retry.
-- $:/temp/cfworker/outbox says how many changes wait (waiting), since when (since) and whether the
-  browser is online (online); an item in the dropdown of TiddlyWeb's cloud icon (the "Server
+- $:/temp/cfworker/outbox says how many changes wait (waiting), since when (since), whether the
+  browser is online (online) and whether the device took them (kept: "no" when a write failed); an item in the dropdown of TiddlyWeb's cloud icon (the "Server
   status" button, red while something is unsaved) shows that while something waits. TiddlyWiki's
   own "Network Error" alert isn't shown on the admin site: the icon and the dropdown say it, and
   the alert would be back at every retry (design 2.17). Its other alerts show as they do.
@@ -49,8 +49,8 @@ var ITEM_TEXT = [
 	"<$list filter='[[" + STATUS + "]get[waiting]!match[0]]' variable='n'>",
 	"<div class='tc-drop-down-info'>",
 	"<$text text={{{ [[" + STATUS + "]get[waiting]] }}}/> <$text text={{{ [[" + STATUS + "]get[waiting]compare:number:eq[1]then[change]else[changes]] }}}/> waiting since <$view tiddler='" + STATUS + "' field='since' format='date' template='0hh:0mm'/><br/>",
-	"<$list filter='[[" + STATUS + "]get[online]match[no]]' variable='off'>offline: kept on this device until sent</$list>",
-	"<$list filter='[[" + STATUS + "]get[online]match[yes]]' variable='on'>sending (kept on this device until then)</$list>",
+	"<$list filter='[[" + STATUS + "]get[online]match[no]]' variable='off'><$list filter='[[" + STATUS + "]get[kept]!match[no]]' variable='kept'>offline: kept on this device until sent</$list><$list filter='[[" + STATUS + "]get[kept]match[no]]' variable='unkept'>offline, and ''not kept on this device'': the browser refused to store it (no room left, or storage off here). Keep this tab open until the network is back.</$list></$list>",
+	"<$list filter='[[" + STATUS + "]get[online]match[yes]]' variable='on'><$list filter='[[" + STATUS + "]get[kept]!match[no]]' variable='kept'>sending (kept on this device until then)</$list><$list filter='[[" + STATUS + "]get[kept]match[no]]' variable='unkept'>sending — ''not kept on this device'' (the browser refused to store it): keep this tab open until it's sent.</$list></$list>",
 	"<$list filter='[[" + STATUS + "]get[storage]match[best-effort]]' variable='risk'><br/>''This browser hasn't promised to keep the device's copy'' (it may clear it when short of space): get back online soon, or <$link to='$:/plugins/cfworker/admin/device'>ask it to keep this site's data</$link>.</$list>",
 	"</div>",
 	"<hr/>",
@@ -82,10 +82,19 @@ exports.startup = function() {
 	function request(mode,work) {
 		return proto.cfworkerOutboxRequest(mode,work);
 	}
+	// (The write's result is looked at: null is no database, or a write the browser refused — a full
+	// quota, say — and the status then says the change isn't kept on this device, rather than that
+	// it is; the change still goes at the network's return, from this tab, while it's open)
 	function keep(entry) {
 		entries[entry.title] = entry;
 		request("readwrite",function(store) {
 			return store.put(entry);
+		}).then(function(result) {
+			var kept = result !== null;
+			if(entry.kept !== kept && entries[entry.title] === entry) {
+				entry.kept = kept;
+				updateStatus();
+			}
 		});
 		updateStatus();
 	}
@@ -113,8 +122,12 @@ exports.startup = function() {
 		statusTimer = setTimeout(function() {
 			statusTimer = null;
 			var waiting = 0,
-				since = null;
+				since = null,
+				unkept = false;
 			$tw.utils.each(entries,function(entry) {
+				if(entry.kept === false) {
+					unkept = true;
+				}
 				if(entry.kind !== "draft") {
 					waiting++;
 					if(since === null || entry.time < since) {
@@ -122,7 +135,7 @@ exports.startup = function() {
 					}
 				}
 			});
-			var fields = {title: STATUS, waiting: String(waiting), online: online ? "yes" : "no"},
+			var fields = {title: STATUS, waiting: String(waiting), online: online ? "yes" : "no", kept: unkept ? "no" : "yes"},
 				current = wiki.getTiddler(STATUS);
 			if(since !== null) {
 				fields.since = $tw.utils.stringifyDate(new Date(since));
@@ -130,7 +143,7 @@ exports.startup = function() {
 			if(storage) {
 				fields.storage = storage;
 			}
-			if(!current || current.fields.waiting !== fields.waiting || current.fields.online !== fields.online || current.fields.since !== fields.since || current.fields.storage !== fields.storage) {
+			if(!current || current.fields.waiting !== fields.waiting || current.fields.online !== fields.online || current.fields.since !== fields.since || current.fields.storage !== fields.storage || current.fields.kept !== fields.kept) {
 				wiki.addTiddler(new $tw.Tiddler(fields));
 			}
 		},0);

@@ -246,4 +246,25 @@ check("the draft pause set to 2.5 s: a draft reaches the device after that pause
 await A5.evaluate(t => { $tw.wiki.deleteTiddler(t); $tw.wiki.deleteTiddler("$:/config/cfworker/DraftPause"); }, slowDraft);
 await settle(A5);
 
+// --- 12. A browser that refuses the write (no room, storage off): the dropdown doesn't promise -------
+// The write to the device's outbox fails (every IndexedDB put throws, as a full quota does); the
+// change is still sent at the network's return, but meanwhile the dropdown must say it isn't kept
+// on this device, rather than promise it is.
+const contextR = await browser.newContext();
+await contextR.addInitScript(() => {
+  IDBObjectStore.prototype.put = function() { throw new DOMException("The quota has been exceeded.", "QuotaExceededError"); };
+});
+const R = await open(contextR, "R");
+await contextR.setOffline(true);
+await addTiddler(R, { title: "Unkept change", text: "made offline, in a browser that refuses to store it" });
+await waitFor(async () => (await status(R))?.waiting === "1", 10000);
+const kept = await R.evaluate(t => $tw.wiki.getTiddler(t)?.fields.kept, STATUS);
+const lineR = await line(R);
+check("a change the device refused to store: the status says so, and the dropdown says it isn't kept on this device, to keep the tab open — rather than that it is",
+  kept === "no" && /not kept on this device/.test(lineR || "") && /keep this tab open/i.test(lineR || "") && !/kept on this device until sent/.test(lineR || ""),
+  `kept ${kept}: ${lineR}`);
+await contextR.setOffline(false);
+check("...and it still reaches the worker at the network's return", await waitFor(async () => (await stored("Unkept change")) === "made offline, in a browser that refuses to store it", 15000) && (await status(R))?.waiting === "0", JSON.stringify(await status(R)));
+await contextR.close();
+
 await finish({ check, results, pageErrors, browser, site });
