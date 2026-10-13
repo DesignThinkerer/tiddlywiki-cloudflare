@@ -493,6 +493,34 @@ await withPublicUrl("https://wiki.example.com/", async (root, instance) => {
   const page = await instance.dispatchFetch(root + "/"), pageText = await page.text();
   check("a trailing slash is fine: the page is built, with the address baked in once", page.status === 200 && part(pageText, "$:/cfworker/public-url")?.text === "https://wiki.example.com/" && !pageText.includes("wiki.example.com//"), `status ${page.status}`);
 });
+// A shell published for another address loads the core file from there (its script tag names it):
+// it isn't built from, or both sites would load the core from a site that may be gone, and the admin
+// wiki, unable to start, would never publish another. The page comes from index.html, naming the
+// shell it replaces, until a shell for this address is published. In each direction: another public
+// address, a public wiki made private, a private wiki given a public site.
+const rootCoreSrc = `/_plugins/tiddlywikicore.js?v=${CORE_V}`;
+for (const [value, oldSrc, newSrc, why] of [
+  ["https://other.example.com", coreUrl(CORE_V), `https://other.example.com/_plugins/tiddlywikicore.js?v=${CORE_V}`, "another public address"],
+  [undefined, coreUrl(CORE_V), rootCoreSrc, "a public wiki made private"],
+  ["https://wiki.example.com", rootCoreSrc, coreUrl(CORE_V), "a private wiki given a public site"]
+]) {
+  await withPublicUrl(value, async (root, instance, store) => {
+    const index = (await store.head("index.html")).etag;
+    await store.put("_plugins/tiddlywikicore.js", fakeCore(), { httpMetadata: { contentType: "application/javascript" }, customMetadata: { v: CORE_V } });
+    const oldShell = await store.put("_page/shell.html", fakeShell().split(coreUrl(CORE_V)).join(oldSrc), { httpMetadata: { contentType: "text/html" }, customMetadata: { index, fingerprint: "f1" } });
+    const page = await instance.dispatchFetch(root + "/"), pageText = await page.text();
+    check(`a shell that loads the core from elsewhere (${why}) isn't built from: the page comes from index.html, naming the shell it replaces`,
+      page.status === 200 && !pageText.includes(oldSrc) && !pageText.includes("Published title") && pageText.includes("<body>engine</body>") && pageSource(pageText)?.fingerprint === "" && pageSource(pageText)?.shell === oldShell.etag,
+      `status ${page.status}, old core ${pageText.includes(oldSrc)}, shell title ${pageText.includes("Published title")}, source ${JSON.stringify(pageSource(pageText))} vs ${oldShell.etag}`);
+    const res = await instance.dispatchFetch(root + "/page/shell", { method: "PUT", body: fakeShell().split(coreUrl(CORE_V)).join(newSrc),
+      headers: { "Content-Type": "text/html", "X-Page-Fingerprint": "f2", "X-Page-Index": index, "X-Page-Shell": pageSource(pageText)?.shell || "" } });
+    await res.text();
+    const rebuilt = await (await instance.dispatchFetch(root + "/")).text();
+    check(`...a shell published for this address is accepted and built from (${why})`,
+      res.status === 204 && res.headers.get("X-Page-Shell") === (await store.head("_page/shell.html")).etag && rebuilt.includes(`<script src="${newSrc}"`) && rebuilt.includes("Published title"),
+      `status ${res.status}, core ${rebuilt.match(/<script src="[^"]*tiddlywikicore[^"]*"/)?.[0]}`);
+  });
+}
 // The check itself, including the case Miniflare can't show: the address being this worker's own
 const site = (value, origin = "https://admin.example.com") => { try { return publicSiteError(value === undefined ? {} : { PUBLIC_WIKI_URL: value }, origin); } catch { return "error"; } };
 check("the public site's address: a site is accepted, with or without a trailing slash", site("https://wiki.example.com") === null && site("https://wiki.example.com/") === null && site("http://127.0.0.1:8787") === null);
