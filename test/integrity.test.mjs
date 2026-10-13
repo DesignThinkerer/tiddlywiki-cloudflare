@@ -605,6 +605,21 @@ res = await save("Skinny, not stored", { tags: ["x"], _is_skinny: "" });
 const notStored = JSON.parse(await (await bucket.get("recipes/default/tiddlers/Skinny, not stored")).text());
 check("...and one the worker doesn't have is stored without text, without the mark", res.status === 204 && !("text" in notStored) && !("_is_skinny" in notStored),
   JSON.stringify(notStored));
+// A text sent with the mark was typed into the empty editor of a tiddler whose text hadn't loaded
+// (opened offline, say: README 5): it's what was meant, and is stored as sent. Only a save without a
+// text, or with an empty one (that editor starts empty), keeps the stored text
+res = await save("Skinny", { tags: ["todo", "done", "again"], _is_skinny: "", text: "typed into the empty editor" });
+skinnyStored = JSON.parse(await (await bucket.get("recipes/default/tiddlers/Skinny")).text());
+check("a save with the mark and a text typed in stores that text, without the mark", res.status === 204 && skinnyStored.text === "typed into the empty editor" && !("_is_skinny" in skinnyStored),
+  `status ${res.status} ${JSON.stringify(skinnyStored)}`);
+res = await mf.dispatchFetch(url("Skinny"), { method: "PUT", headers: { "Content-Type": "application/json", "If-Match": res.headers.get("ETag") },
+  body: JSON.stringify({ title: "Skinny", tags: ["todo"], text: "typed, in TiddlyWeb's layout", fields: { _is_skinny: "" } }) });
+skinnyStored = JSON.parse(await (await bucket.get("recipes/default/tiddlers/Skinny")).text());
+check("...also in TiddlyWeb's layout", res.status === 204 && skinnyStored.text === "typed, in TiddlyWeb's layout" && !("_is_skinny" in skinnyStored), `status ${res.status} ${JSON.stringify(skinnyStored)}`);
+res = await save("Skinny", { tags: ["todo"], _is_skinny: "", text: "" }, { "If-Match": res.headers.get("ETag") });
+skinnyStored = JSON.parse(await (await bucket.get("recipes/default/tiddlers/Skinny")).text());
+check("...while one with an empty text keeps the stored text", res.status === 204 && skinnyStored.text === "typed, in TiddlyWeb's layout" && JSON.stringify(skinnyStored.tags) === '["todo"]' && !("_is_skinny" in skinnyStored),
+  `status ${res.status} ${JSON.stringify(skinnyStored)}`);
 for (const title of ["Skinny", "Skinny, not stored"]) await del(title);
 
 // --- 5. A tiddler whose title only looks like a draft is saved like any other ---------------------
