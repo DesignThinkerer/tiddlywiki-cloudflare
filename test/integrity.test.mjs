@@ -693,6 +693,12 @@ check("wrangler.toml needs no edit: settings kept in the dashboard, the admin si
   tomlActive.includes("keep_vars = true") && tomlActive.includes("workers_dev = true") &&
   !/PUBLIC_WIKI_URL\s*=|CF_ZONE_ID\s*=|GITHUB_REPO\s*=|GITHUB_BRANCH\s*=|example\.com|YOUR-|OWNER\/REPO|^\s*routes?\s*=/m.test(tomlActive),
   (tomlActive.match(/.*(PUBLIC_WIKI_URL\s*=|CF_ZONE_ID\s*=|GITHUB_REPO\s*=|example\.com|YOUR-|OWNER\/REPO|^\s*routes?\s*=).*/mg) || []).join(" | "));
+// The test scripts all go through the runner, and test:suite ends with it, so the suites named
+// after it (npm run test:suite -- page-publish two-tabs) are the ones run, after a build
+const scripts = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8")).scripts || {};
+check("package.json: test, test:fast, test:browser and test:suite build, then run suites through tools/run-suites.mjs; test:suite takes the names after it",
+  ["test", "test:fast", "test:browser", "test:suite"].every(s => /^npm run build && node tools\/run-suites\.mjs/.test(scripts[s] || "")) && /node tools\/run-suites\.mjs$/.test(scripts["test:suite"] || ""),
+  JSON.stringify({ "test:suite": scripts["test:suite"] }));
 
 // --- 7. Restoring from the backup: tools/restore.mjs ------------------------------------------------
 // The backup's files are tiddlers as stored, with their tags as a list (TiddlyWeb's layout); TiddlyWiki's

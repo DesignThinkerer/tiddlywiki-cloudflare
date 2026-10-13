@@ -379,6 +379,7 @@ npm test                             # build (worker.js and seed/empty.html), ru
 | `npm run lint` | ESLint, with its recommended rules only: a name that doesn't exist (a function moved without its import, say), an unused one, an import assigned to. CI runs it first. |
 | `npm run test:fast` | The six suites that need no browser (a few minutes). |
 | `npm run test:browser` | The ten suites that run a real TiddlyWiki in Chromium. |
+| `npm run test:suite -- <name>…` | Only the suites named, after a build: `npm run test:suite -- page-publish two-tabs`. |
 | `npm run test:first` | A new wiki from an empty bucket, in Chromium. |
 | `npm run test:bake` | Page serving and rebuilding, the published page, the Access check, the public address, the first visit. |
 | `npm run test:integrity` | The tiddler list's integrity, the page after a failed build, draft-like titles and `.gitignore`. |
