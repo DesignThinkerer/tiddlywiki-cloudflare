@@ -14,6 +14,7 @@
 // | CF_ZONE_ID, CF_API_TOKEN | purges              |
 // | BACKUP_RETRY_SECONDS | backupRetrySeconds      |
 // | BACKUP_ALERT_MINUTES | backupAlertMinutes      |
+// | TEST_WAIT_SCALE      | waitMs (the tests only) |
 
 // PUBLIC_WIKI_URL, the public site's address (the bucket's custom domain, README 2.2): the page
 // loads its plugin files and TiddlyWiki's core file from it, the list sync reads tiddlers from
@@ -88,6 +89,16 @@ function backupRetrySeconds(env) {
 function backupAlertMinutes(env) {
   const minutes = parseFloat(env.BACKUP_ALERT_MINUTES);
   return minutes >= 0 ? minutes : 60;
+}
+
+// The worker's own waits — a direct backup's retries, the second purge after a list rebuild, the
+// outdated mark tried again — in ms, scaled by TEST_WAIT_SCALE, a fraction the test setups bind
+// (design 2.25): the same things happen sooner. Never set in a deployed worker: unset, 1. The
+// queue's delays are whole seconds (Cloudflare's API) and aren't scaled: BACKUP_RETRY_SECONDS is
+// their setting, and the tests run it at 1.
+function waitMs(env, ms) {
+  const scale = parseFloat(env.TEST_WAIT_SCALE);
+  return Math.max(1, Math.round(ms * (scale > 0 && scale < 1 ? scale : 1)));
 }
 
 // ===== src/worker/access.js ===================================================================================
@@ -907,7 +918,7 @@ async function queueBackup(env, job) {
       return await recordBackupResults(env, [], [job.title]);
     } catch (e) {
       if (attempt < 3) {
-        await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
+        await new Promise(resolve => setTimeout(resolve, waitMs(env, 1000 * attempt)));
         continue;
       }
       console.error(`[Backup] '${job.title}' could not be backed up:`, e.message);
@@ -1677,7 +1688,7 @@ async function rebuildList(env, ctx, damaged, { pageBuild = false } = {}) {
   // stand-in just before could otherwise put it back in Cloudflare's cache for a day
   const urls = listPurgeUrls(env);
   ctx.waitUntil(purgePublicCache(env, urls));
-  ctx.waitUntil(new Promise(resolve => setTimeout(resolve, 5000)).then(() => purgePublicCache(env, urls)));
+  ctx.waitUntil(new Promise(resolve => setTimeout(resolve, waitMs(env, 5000))).then(() => purgePublicCache(env, urls)));
   if (!pageBuild) ctx.waitUntil(markPageOutdated(env));
   // Served as is; parsed only by callers that need the entries (a save, a page build)
   return { object: written, text, fresh: true, get entries() { return parseList(text); } };
@@ -2417,7 +2428,7 @@ async function rebuildPage(env, ctx, list) {
     await markPageOutdated(env);
   } catch (e) {
     console.error("Could not mark the page outdated, trying again in a second:", e.message);
-    await new Promise(resolve => setTimeout(resolve, 1100));
+    await new Promise(resolve => setTimeout(resolve, waitMs(env, 1100)));
     await markPageOutdated(env);
   }
 }

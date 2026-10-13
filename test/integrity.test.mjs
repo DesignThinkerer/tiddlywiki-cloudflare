@@ -14,11 +14,14 @@ const LIST = "recipes/default/tiddlers.json";
 // The worker behind test/r2-counter.mjs, which can make chosen R2 calls fail. Cache purges are
 // recorded: { time, files (their URLs) }
 const purges = [];
+// The worker's in-process waits (the second purge after a rebuild, 5 s; the outdated mark tried
+// again, 1.1 s), scaled by this for the tests (TEST_WAIT_SCALE, design 2.25); the checks on them use it
+const WAIT_SCALE = 0.2, scaled = ms => Math.round(ms * WAIT_SCALE);
 const mf = new Miniflare({
   modules: true, scriptPath: "test/r2-counter.mjs", modulesRoot: ROOT,
   modulesRules: [{ type: "ESModule", include: ["**/*.js", "**/*.mjs"] }, { type: "Text", include: ["**/*.html"] }],
   compatibilityDate: "2024-09-23", r2Buckets: ["WIKI_BUCKET"], port: 0,
-  bindings: { ACCESS: "off", PUBLIC_WIKI_URL: "https://wiki.example.com", CF_ZONE_ID: "zone", CF_API_TOKEN: "token" },
+  bindings: { ACCESS: "off", PUBLIC_WIKI_URL: "https://wiki.example.com", CF_ZONE_ID: "zone", CF_API_TOKEN: "token", TEST_WAIT_SCALE: String(WAIT_SCALE) },
   outboundService: async req => {
     // (A purged file is a URL, or { url, headers } for a copy cached with those request headers)
     if (req.url.includes("/purge_cache")) purges.push({ time: Date.now(), files: ((await req.json()).files || []).map(f => typeof f === "string" ? f : f.url) });
@@ -154,10 +157,10 @@ const keptCopies = await Promise.all((await repairFiles()).map(async key => (awa
 check("...and keeping the damaged list aside in _repair/", keptCopies.includes(damaged));
 // Purged from the public cache at once, and again a little later (a public request that read the
 // damaged list just before could put it back in the cache). Nothing else is saved meanwhile.
-await new Promise(r => setTimeout(r, Math.max(0, rebuiltAt + 6500 - Date.now())));
+await new Promise(r => setTimeout(r, Math.max(0, rebuiltAt + scaled(5000) + 1500 - Date.now())));
 const listPurges = purges.filter(p => p.time >= rebuiltAt && p.files.some(f => f.includes("/recipes/default/tiddlers.json")));
-check("...and the list purged from the public cache at once, then again 5 seconds later",
-  listPurges.length === 2 && listPurges[0].time - rebuiltAt < 2000 && listPurges[1].time - listPurges[0].time >= 4500,
+check("...and the list purged from the public cache at once, then again 5 seconds later (scaled here: once more, no sooner than the wait, and well before 5 s)",
+  listPurges.length === 2 && listPurges[0].time - rebuiltAt < 2000 && listPurges[1].time - listPurges[0].time >= scaled(5000) * 0.9 && listPurges[1].time - listPurges[0].time < scaled(5000) + 1500,
   JSON.stringify(listPurges.map(p => p.time - rebuiltAt)));
 
 await bucket.put(LIST, damaged + " ");
@@ -479,11 +482,15 @@ await save(P7, pagePlugin(P7));
 await save(P8, pagePlugin(P8));
 const builtWithAll = (await storedPage()).includes(tagOf(P6)) && (await storedPage()).includes(tagOf(P7)) && (await storedPage()).includes(tagOf(P8));
 await failTimes("put baked.html", 2);
+const deleteP6At = Date.now();
 const deletedP6 = await del(P6);
+const deleteP6Ms = Date.now() - deleteP6At;
 outdated = (await storedPageMeta()).bakeVersion === "outdated";
 text = await loadPage();
 check("a plugin delete whose page build and outdated mark both fail: the mark is tried again, and the next page load builds the page without it",
   builtWithAll && deletedP6.status === 204 && outdated && !text.includes(tagOf(P6)), `status ${deletedP6.status}, outdated ${outdated}, page loads it: ${text.includes(tagOf(P6))}`);
+check("...the mark tried again after the wait (a second in production, scaled here): the delete answered after it, and well before a second",
+  deleteP6Ms >= scaled(1100) && deleteP6Ms < 1000, `answered after ${deleteP6Ms} ms`);
 await failTimes("put baked.html", 3);
 const failedP7 = await del(P7);
 const stillLoaded = (await storedPage()).includes(tagOf(P7)) && !!(await bucket.head(`_plugins/${P7}.js`));

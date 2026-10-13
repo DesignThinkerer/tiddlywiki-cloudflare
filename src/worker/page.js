@@ -11,6 +11,7 @@
 
 import { EXTERNAL_SCRIPTS_MARKER, PAGE_ETAG_SUFFIX, bakeVersion, charStart, coreFileUrl, engineVersion, pageDecoder, rebakeHtml } from "./build.js";
 import { parseEtagList, refusal, untilDone } from "./http.js";
+import { waitMs } from "./settings.js";
 import { CORE_KEY, INDEX_KEY, PAGE_KEY, SHELL_KEY, STATUS_KEY, markPageOutdated, putIfAbsent } from "./storage.js";
 
 function pageHeaders(htmlHeaders, page) {
@@ -136,7 +137,7 @@ export async function rebuildPage(env, ctx, list) {
     await markPageOutdated(env);
   } catch (e) {
     console.error("Could not mark the page outdated, trying again in a second:", e.message);
-    await new Promise(resolve => setTimeout(resolve, 1100));
+    await new Promise(resolve => setTimeout(resolve, waitMs(env, 1100)));
     await markPageOutdated(env);
   }
 }

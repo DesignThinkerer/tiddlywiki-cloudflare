@@ -10,6 +10,7 @@
 // | CF_ZONE_ID, CF_API_TOKEN | purges              |
 // | BACKUP_RETRY_SECONDS | backupRetrySeconds      |
 // | BACKUP_ALERT_MINUTES | backupAlertMinutes      |
+// | TEST_WAIT_SCALE      | waitMs (the tests only) |
 
 // PUBLIC_WIKI_URL, the public site's address (the bucket's custom domain, README 2.2): the page
 // loads its plugin files and TiddlyWiki's core file from it, the list sync reads tiddlers from
@@ -84,4 +85,14 @@ export function backupRetrySeconds(env) {
 export function backupAlertMinutes(env) {
   const minutes = parseFloat(env.BACKUP_ALERT_MINUTES);
   return minutes >= 0 ? minutes : 60;
+}
+
+// The worker's own waits — a direct backup's retries, the second purge after a list rebuild, the
+// outdated mark tried again — in ms, scaled by TEST_WAIT_SCALE, a fraction the test setups bind
+// (design 2.25): the same things happen sooner. Never set in a deployed worker: unset, 1. The
+// queue's delays are whole seconds (Cloudflare's API) and aren't scaled: BACKUP_RETRY_SECONDS is
+// their setting, and the tests run it at 1.
+export function waitMs(env, ms) {
+  const scale = parseFloat(env.TEST_WAIT_SCALE);
+  return Math.max(1, Math.round(ms * (scale > 0 && scale < 1 ? scale : 1)));
 }
