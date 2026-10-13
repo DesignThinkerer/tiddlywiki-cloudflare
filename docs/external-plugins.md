@@ -2,7 +2,7 @@
 
 These are the design notes behind [design.md 1.8](design.md#18-plugins-and-javascript-modules): the problem, the design and why it was chosen over baking plugins into the page, what it costs, the change step by step, and how to operate it.
 
-The tests are in `test/plugins.test.mjs`, which runs real plugins shipped with TiddlyWiki, markdown and KaTeX, on the admin site and on a stand-in for the public site (README 6.2).
+The tests are in `test/plugins.test.mjs`, which runs real plugins shipped with TiddlyWiki, markdown and KaTeX, on the admin site and on a stand-in for the public site (docs/tests.md).
 
 "The external-plugins plugin" below is `$:/plugins/theophile.dev/external-plugins`, which exports plugins as standalone `.js` files for single-file wikis. The plugin files here use the same format as its export template.
 
@@ -235,7 +235,7 @@ These figures come from the same test machine as in section 3, so read them as p
 ## 5. Where it is now
 
 - **The code:** `src/worker/plugins.js` (the files), `src/worker/build.js` (the page build, which writes them and puts the `<script>` tags in), `src/worker/layout.js` (the flat layout a save arrives in and is stored in), `src/worker/saves.js` (a plugin's save or delete rebuilding the page), and in `src/browser/conflict-guard.js` the part that sends saves in the flat layout.
-- **The tests:** `test/plugins.test.mjs`, and the plugin cases of `test/integrity.test.mjs` and `test/r2-ops.test.mjs` (README 6.2).
+- **The tests:** `test/plugins.test.mjs`, and the plugin cases of `test/integrity.test.mjs` and `test/r2-ops.test.mjs` (docs/tests.md).
 - **The cache rule for plugin files:** README 2.7.
 - **A plugin that breaks the page:** README 3.
 
