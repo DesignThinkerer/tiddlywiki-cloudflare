@@ -5,6 +5,7 @@ import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import { withoutAccess } from "../src/worker/access.js";
 import { publicSiteError } from "../src/worker/settings.js";
+import { isStartupTiddler } from "../src/worker/tiddlers.js";
 
 const WORKER = fileURLToPath(new URL("../worker.js", import.meta.url));
 // The worker's modules: worker.js, and the empty wiki as a text module (seed/empty.html), as Wrangler uploads them
@@ -521,6 +522,11 @@ for (const [value, oldSrc, newSrc, why] of [
       `status ${res.status}, core ${rebuilt.match(/<script src="[^"]*tiddlywikicore[^"]*"/)?.[0]}`);
   });
 }
+// TiddlyWiki's link-preview tags (its social metadata template) read the site URL, the domain and the
+// preview image from these three without loading them, so the admin wiki can only render them into
+// the page it publishes if every tab has them: preloaded with the page, like the site title
+check("$:/SiteUrl, $:/SiteDomain and $:/SitePreviewUrl are startup tiddlers, preloaded with the page",
+  ["$:/SiteUrl", "$:/SiteDomain", "$:/SitePreviewUrl"].every(t => isStartupTiddler({ title: t })) && !isStartupTiddler({ title: "$:/SiteUrl/other" }));
 // The check itself, including the case Miniflare can't show: the address being this worker's own
 const site = (value, origin = "https://admin.example.com") => { try { return publicSiteError(value === undefined ? {} : { PUBLIC_WIKI_URL: value }, origin); } catch { return "error"; } };
 check("the public site's address: a site is accepted, with or without a trailing slash", site("https://wiki.example.com") === null && site("https://wiki.example.com/") === null && site("http://127.0.0.1:8787") === null);

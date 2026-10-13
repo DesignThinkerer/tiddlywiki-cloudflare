@@ -34,6 +34,9 @@ export function isDraft(tiddler) {
 }
 
 const STARTUP_TITLES = ["$:/DefaultTiddlers", "$:/SiteTitle", "$:/SiteSubtitle",
+  // read by TiddlyWiki's link-preview tags when the admin wiki renders the page (design 1.9), in a
+  // way that loads nothing: every tab has to have them
+  "$:/SiteUrl", "$:/SiteDomain", "$:/SitePreviewUrl",
   // read at boot to choose the theme, language and palette
   "$:/theme", "$:/language", "$:/palette",
   // read once by TiddlyWiki's syncer, when it starts
