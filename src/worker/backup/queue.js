@@ -11,7 +11,7 @@
 
 import { decoder, encoder } from "../bytes.js";
 import { FLAT_LAYOUT } from "../layout.js";
-import { github } from "../settings.js";
+import { github, waitMs } from "../settings.js";
 import { TIDDLER_PREFIX } from "../storage.js";
 import { isEphemeralTitle, isNewerRevision, revisionOf, tiddlerKey } from "../tiddlers.js";
 import { backupRetryDelay, gitBlobSha, githubContents, isAccountWide, isRateLimit, isRefusal } from "./github.js";
@@ -72,7 +72,7 @@ export async function queueBackup(env, job) {
       return await recordBackupResults(env, [], [job.title]);
     } catch (e) {
       if (attempt < 3) {
-        await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
+        await new Promise(resolve => setTimeout(resolve, waitMs(env, 1000 * attempt)));
         continue;
       }
       console.error(`[Backup] '${job.title}' could not be backed up:`, e.message);

@@ -25,8 +25,9 @@ const { requests, pageErrors, watch } = createWatcher(site);   // requests: thos
 const count = (tag, method, path, from = 0) => requests.slice(from).filter(r => r.tag === tag && r.origin === "worker" && !r.cached && r.method === method && r.path.startsWith(path)).length;
 const shellPuts = (tag, from) => count(tag, "PUT", "/page/shell", from);
 const corePuts = (tag, from) => count(tag, "PUT", "/page/core", from);
-// The admin wiki publishes a moment after a save: long enough for that to have happened
-const QUIET_WINDOW = 3500;
+// The admin wiki publishes a moment after a save (the publisher's pause, 200 ms in the test pages, then its look at
+// the page): long enough for that to have happened
+const QUIET_WINDOW = 1500;
 const add = addTiddler;
 const status = p => p.evaluate(() => {
   const t = $tw.wiki.getTiddler("$:/temp/cfworker/page-publisher");
@@ -529,7 +530,7 @@ for (const entry of list) if (entry.title === "Splash") entry.revision = outside
 await bucket.put("recipes/default/tiddlers.json", JSON.stringify(list));
 const contextC = await browser.newContext();
 await contextC.route(url => url.pathname.endsWith("/tiddlers/Splash"), async route => {
-  await sleep(4000);
+  await sleep(1500);   // (slow: past the publisher's pause and its look after the list, scaled for the tests)
   await route.continue().catch(() => {});
 });
 mark = requests.length;

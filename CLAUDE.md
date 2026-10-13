@@ -25,10 +25,12 @@ Each with its reason and what enforces it. A change that crosses one needs the r
 
 ## Running the tests
 
-`npm test` runs every suite, each to the end, through `tools/run-suites.mjs` (each suite's output in `test-results/<suite>.log`, a summary, exit 1 if any failed) and takes longer than one tool call allows. Run the fast suites inline (`npm run build` once, then `node tools/run-suites.mjs bake integrity r2-ops cpu queue-backup setup-check`) and the browser suites in the background, one after the other as CI runs them (about 16 minutes):
+While iterating, run only the suites the change touches: `npm run test:suite -- page-publish two-tabs` builds, then runs the named suites (`tools/run-suites.mjs`: each to the end, its output in `test-results/<suite>.log`, a summary, exit 1 if any failed). Run the full `npm test` once at the end (`npm test -- --parallel 2` runs two suites at once, which this 2-CPU machine bears; more only with CPUs to spare), or leave it to CI on the pull request. In the cloud environment Playwright needs `CHROMIUM_PATH=/opt/pw-browsers/chromium` (its own browser build isn't installed there).
+
+A suite longer than one tool call allows (two-tabs, page-publish; `npm test` as a whole) goes in the background:
 
 ```bash
-CHROMIUM_PATH=/opt/pw-browsers/chromium nohup node tools/run-suites.mjs first-visit two-tabs plugins page-publish lazy-load backup-sync private offline cold-start budget > /tmp/browser.log 2>&1 &
+CHROMIUM_PATH=/opt/pw-browsers/chromium nohup npm run test:suite -- two-tabs page-publish > /tmp/suites.log 2>&1 &
 ```
 
 then poll the log. A browser suite that fails leaves `test-results/<suite>.requests.log` (every request its pages made, in order, how each ended) and `test-results/traces/<suite>/<n>.zip` (the test's actions and the page's console, in time: `npx playwright show-trace`); read those before guessing. Suites take free ports, so they can run together, but ten Chromium suites at once overload the machine and timing checks fail that pass in sequence: rerun a failed suite alone before reading anything into it. The browser suites share `test/browser-harness.mjs`; the GitHub and Cloudflare APIs are imitations, so nothing touches an account.

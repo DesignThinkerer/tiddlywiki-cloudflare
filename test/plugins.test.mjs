@@ -5,7 +5,7 @@ import fs from "node:fs";
 import path from "node:path";
 import vm from "node:vm";
 import { createRequire } from "node:module";
-import { addTiddler, createChecks, createWatcher, finish, launchBrowser, readWikiFile, settle as settleTab, sleep, startSite, waitFor } from "./browser-harness.mjs";
+import { addTiddler, createChecks, createWatcher, finish, launchBrowser, readWikiFile, settle as settleTab, startSite, waitFor } from "./browser-harness.mjs";
 
 const require = createRequire(import.meta.url);
 const ENGINE = readWikiFile();
@@ -294,15 +294,16 @@ await load();
 check("deleted plugin is gone after the reload", !(await isKatexActive()));
 
 // --- 13. Overlapping page builds never go backwards ---------------------------------------------------
-// (The tab just reloaded: its page publisher looks at the page once the first second after the list
-// is past, and a page it publishes then, newer, would replace the one put here on purpose)
+// (The tab's page publisher, looking at the page after a load, would publish a newer page over the
+// one put here on purpose: the tab is sent away, the save goes through the worker's API, and the
+// tab comes back for the next step)
 await settle();
-await sleep(1500);
+await page.goto("about:blank");
 const current = await bucket.head("baked.html");
 await bucket.put("baked.html", "<html><head></head><body>from a newer list</body></html>",
   { httpMetadata: { contentType: "text/html; charset=utf-8" }, customMetadata: { ...current.customMetadata, listVersion: "99999999999999" } });
-await add({ title: "$:/SiteSubtitle", text: "a startup tiddler, to trigger a build" });
-await settle();
+await mf.dispatchFetch(`${BASE}/recipes/default/tiddlers/${encodeURIComponent("$:/SiteSubtitle")}`,
+  { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title: "$:/SiteSubtitle", text: "a startup tiddler, to trigger a build" }) });
 check("an older build doesn't replace a page built from a newer tiddler list", (await bakedPage()).includes("from a newer list"));
 await bucket.put("_plugins/" + ML + ".js", "/* a newer version */", { customMetadata: { revision: "9999999999999" } });
 await bucket.delete("baked.html");
@@ -310,17 +311,20 @@ const rebuilt = await (await mf.dispatchFetch(BASE + "/")).text();
 check("an older build doesn't overwrite a newer plugin file, and points to it", (await pluginFile(ML)).text === "/* a newer version */" && rebuilt.includes(scriptTag(ML, "9999999999999")));
 const handList = await (await bucket.get("recipes/default/tiddlers.json")).text();
 await bucket.put("recipes/default/tiddlers.json", handList, { httpMetadata: { contentType: "application/json" } });   // replaced by hand
+await load();
 const beforeSubtitle = requests.length;
 await add({ title: "$:/SiteSubtitle", text: "after a hand-replaced list" });
 await settle();
 check("a tiddler list replaced by hand doesn't stop the page from being rebuilt", (await bakedPage()).includes("after a hand-replaced list"));
 
 // --- 14. Recovery: delete the file in R2, hard reload --------------------------------------------------
-// That save changed the shell (the subtitle is in it), so the tab publishes the page a second later,
-// and a page build writes back any plugin file that's missing: wait for the publish to be answered
-// before deleting the file on purpose. (Seen: the file written back between the delete and the
-// reload, and the wiki starting with the plugin.)
-await waitFor(() => requests.slice(beforeSubtitle).some(r => r.method === "PUT" && r.path === "/page/shell" && r.status));
+// That save changed the shell (the subtitle is in it), so the tab publishes the page a moment later,
+// and a page build writes back any plugin file that's missing: wait for that publish — one sent after
+// the save was, not the previous save's, which can land in between — to be answered before deleting
+// the file on purpose. (Seen: the file written back between the delete and the reload, and the wiki
+// starting with the plugin.)
+const subtitleSave = requests.slice(beforeSubtitle).find(r => r.method === "PUT" && r.path === "/recipes/default/tiddlers/$:/SiteSubtitle");
+await waitFor(() => requests.slice(beforeSubtitle).some(r => r.method === "PUT" && r.path === "/page/shell" && r.status && subtitleSave && r.at > subtitleSave.at));
 await bucket.delete("_plugins/" + ML + ".js");
 await context.close();
 context = await browser.newContext();   // a hard reload: nothing cached
@@ -381,6 +385,7 @@ check("a public tab never asks how backups go (only the admin site does)", !requ
 const listGetsBefore = tabListGets();
 await bucket.delete("recipes/default/tiddlers.json");
 await mf.dispatchFetch(BASE + "/recipes/default/tiddlers.json");   // an admin request: the first step
+const syncedAt = Date.now();
 await tab.evaluate(() => $tw.syncer.syncFromServer());
 await new Promise(r => setTimeout(r, 1500));
 let state = await tabState();
@@ -388,7 +393,9 @@ check("a missing list being rebuilt: an open public tab keeps its tiddlers, with
   tabListGets() > listGetsBefore && state.note && state.deleted.length === 0 && !state.crashed && state.alerts.length === 0 && pageErrors.length === tabErrors,
   `${tabListGets() - listGetsBefore} list requests ` + JSON.stringify(state) + " " + pageErrors.slice(tabErrors).join(" | "));
 const retries = requests.filter(r => r.tag === "public tab" && r.path.startsWith("/recipes/default/tiddlers.json") && r.path.includes("cfworker-retry="));
-check("...and asks again a second later, at a URL no cache holds (a cached stand-in can't outlive the rebuild)", retries.length >= 1,
+const standIn = requests.filter(r => r.tag === "public tab" && r.path.startsWith("/recipes/default/tiddlers.json")).find(r => r.at > syncedAt);
+check("...and asks again a moment later (a second in production, scaled for the tests), at a URL no cache holds (a cached stand-in can't outlive the rebuild)",
+  retries.length >= 1 && !!standIn && retries[0].at - standIn.at < 600, `again after ${retries.length && standIn ? retries[0].at - standIn.at : "-"} ms; ` +
   requests.filter(r => r.tag === "public tab" && r.path.startsWith("/recipes/default/tiddlers.json")).slice(-3).map(r => r.path.slice(0, 60) + "…" + r.path.slice(-30)).join(" | "));
 const rebuiltInTime = await rebuildList();
 await tab.waitForFunction(() => $tw.wiki.tiddlerExists("Filler 7"), null, { timeout: 15000 }).catch(() => {});

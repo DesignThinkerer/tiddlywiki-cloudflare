@@ -14,6 +14,7 @@
 
 import { concatBytes, decoder, encoder } from "./bytes.js";
 import { listPurgeUrls, purgePublicCache } from "./cache.js";
+import { waitMs } from "./settings.js";
 import { BadSave, FLAT_LAYOUT, readStoredFields } from "./layout.js";
 import { LIST_KEY, REPAIR_PROGRESS_KEY, TIDDLER_PREFIX, mapLimit, markPageOutdated, putIfAbsent } from "./storage.js";
 import { getTwTimestamp, isDraft, isEphemeralTitle, isNewerRevision, revisionOf } from "./tiddlers.js";
@@ -278,7 +279,7 @@ export async function rebuildList(env, ctx, damaged, { pageBuild = false } = {})
   // stand-in just before could otherwise put it back in Cloudflare's cache for a day
   const urls = listPurgeUrls(env);
   ctx.waitUntil(purgePublicCache(env, urls));
-  ctx.waitUntil(new Promise(resolve => setTimeout(resolve, 5000)).then(() => purgePublicCache(env, urls)));
+  ctx.waitUntil(new Promise(resolve => setTimeout(resolve, waitMs(env, 5000))).then(() => purgePublicCache(env, urls)));
   if (!pageBuild) ctx.waitUntil(markPageOutdated(env));
   // Served as is; parsed only by callers that need the entries (a save, a page build)
   return { object: written, text, fresh: true, get entries() { return parseList(text); } };

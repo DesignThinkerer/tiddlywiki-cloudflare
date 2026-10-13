@@ -92,6 +92,10 @@ async function fakeGitHub(req) {
 // ---- Worker with a queue -----------------------------------------------------------------------
 // (Behind test/r2-counter.mjs, which can make chosen R2 calls fail)
 const workerLog = [];   // what the worker printed (console.error included)
+// The direct backup's retries (a second, then two, in production) are scaled by this for the tests
+// (TEST_WAIT_SCALE, design 2.25). The queue's delays are whole seconds and aren't: BACKUP_RETRY_SECONDS
+// is their knob, 1 here, the least there is.
+const WAIT_SCALE = 0.2, scaled = ms => Math.round(ms * WAIT_SCALE);
 function makeWorker(port, withQueue, bindings = {}) {
   return new Miniflare({
     handleRuntimeStdio(stdout, stderr) {
@@ -99,7 +103,7 @@ function makeWorker(port, withQueue, bindings = {}) {
     },
     modules: true, scriptPath: "test/r2-counter.mjs", modulesRoot: ROOT, modulesRules: [{ type: "ESModule", include: ["**/*.js", "**/*.mjs"] }, { type: "Text", include: ["**/*.html"] }],
     compatibilityDate: "2024-09-23", r2Buckets: ["WIKI_BUCKET"], port,
-    bindings: { ACCESS: "off", PUBLIC_WIKI_URL: "https://wiki.example.com", GITHUB_REPO: "o/r", GITHUB_TOKEN: "ghtoken", BACKUP_RETRY_SECONDS: "1", ...bindings },
+    bindings: { ACCESS: "off", PUBLIC_WIKI_URL: "https://wiki.example.com", GITHUB_REPO: "o/r", GITHUB_TOKEN: "ghtoken", BACKUP_RETRY_SECONDS: "1", TEST_WAIT_SCALE: String(WAIT_SCALE), ...bindings },
     ...(withQueue ? {
       queueProducers: { BACKUP_QUEUE: "wiki-backup" },
       queueConsumers: { "wiki-backup": { maxBatchSize: 10, maxBatchTimeout: 0.2, maxRetries: 3 } },
@@ -500,11 +504,15 @@ check("an R2 error while recording how backups go doesn't make a backup that wen
 await bucket2.delete("_backup/status.json");
 // A direct backup that fails for good is recorded too; it's reported once it has failed for an hour
 faults.badCredentials = true;
+const noQueueAt = Date.now();
 await put("No queue failing", "x", base2, mf2);
 const recorded = await until(async () => !!(await bucket2.head("_backup/status.json")), 15000);
+const recordedMs = Date.now() - noQueueAt;
 check("no queue bound: a backup that fails for good is recorded, and reported only after an hour",
   recorded && JSON.parse(await (await bucket2.get("_backup/status.json")).text()).failing?.["No queue failing"]?.status === 401 && await backupStatus(base2, mf2) === "ok",
   recorded ? await (await bucket2.get("_backup/status.json")).text() : "not recorded");
+check("...after its two retries, a second then two apart in production (scaled here): recorded after those waits, and well before 3 s",
+  recorded && recordedMs >= scaled(3000) && recordedMs < 2500, `recorded after ${recordedMs} ms`);
 faults.badCredentials = false;
 await mf2.dispose();
 

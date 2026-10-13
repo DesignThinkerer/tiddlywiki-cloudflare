@@ -25,6 +25,7 @@
     "test": "npm run build && node tools/run-suites.mjs bake integrity r2-ops cpu queue-backup setup-check first-visit two-tabs plugins page-publish lazy-load backup-sync private offline cold-start budget",
     "test:fast": "npm run build && node tools/run-suites.mjs bake integrity r2-ops cpu queue-backup setup-check",
     "test:browser": "npm run build && node tools/run-suites.mjs first-visit two-tabs plugins page-publish lazy-load backup-sync private offline cold-start budget",
+    "test:suite": "npm run build && node tools/run-suites.mjs",
     "test:bake": "npm run build && node test/bake.test.mjs",
     "test:first": "npm run build && node test/first-visit.test.mjs",
     "test:integrity": "npm run build && node test/integrity.test.mjs",

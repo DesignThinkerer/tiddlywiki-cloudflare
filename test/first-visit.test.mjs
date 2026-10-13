@@ -63,4 +63,28 @@ const seen = await waitFor(() => visitor.evaluate(() => $tw.wiki.getTiddlerText(
 check("...a visitor sees the tiddler, read-only, through the status file the first visit wrote", seen && await visitor.evaluate(() => $tw.wiki.getTiddlerText("$:/status/IsReadOnly") === "yes" && $tw.wiki.getTiddlerText("$:/status/IsLoggedIn") === "no"));
 check("...and the visitor never used the worker", !requests.some(r => r.tag === "visitor" && r.origin === "worker"), requests.filter(r => r.tag === "visitor" && r.origin === "worker").map(r => r.path).join(", "));
 
+// 4. The test pages open with their waits shortened (browser-harness.mjs, design 2.25); a page of a
+// context without that has the waits a deployed wiki has
+const waits = p => p.evaluate(() => ({
+  throttle: $tw.syncer.throttleInterval, errorRetry: $tw.syncer.errorRetryInterval,
+  scale: $tw.modules.execute("$:/cfworker/lib.js").timeScale(), wait: $tw.modules.execute("$:/cfworker/lib.js").wait(1000)
+})).catch(e => ({ error: e.message }));
+const fastWaits = await waits(admin);
+check("the test pages shorten the waits: TiddlyWiki's throttle 50 ms and its error retry 1 s, the modules' waits scaled to a fifth",
+  fastWaits.throttle === 50 && fastWaits.errorRetry === 1000 && fastWaits.scale === 0.2 && fastWaits.wait === 200, JSON.stringify(fastWaits));
+const slow = await (await browser.newContext({ fast: false })).newPage();
+await slow.goto(base + "/");
+await slow.waitForFunction(() => window.$tw && $tw.syncer && $tw.syncer.timestampLastSyncFromServer, null, { timeout: 30000 });
+const slowWaits = await waits(slow);
+check("...a page without that has the waits a deployed wiki has: TiddlyWiki's 1 s and 5 s, the modules' as they are",
+  slowWaits.throttle === 1000 && slowWaits.errorRetry === 5000 && slowWaits.scale === 1 && slowWaits.wait === 1000, JSON.stringify(slowWaits));
+// A stored tiddler can't set the scale: only the harness's script, before the page boots
+await fetch(`${base}/recipes/default/tiddlers/${encodeURIComponent("$:/config/cfworker/TestTimeScale")}`,
+  { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title: "$:/config/cfworker/TestTimeScale", text: "0.5" }) });
+await slow.reload();
+await slow.waitForFunction(() => window.$tw && $tw.syncer && $tw.syncer.timestampLastSyncFromServer, null, { timeout: 30000 });
+const storedScale = await waits(slow);
+check("...and a tiddler of that name stored in the wiki changes nothing: the scale is the test harness's, not a setting",
+  await slow.evaluate(() => $tw.wiki.getTiddlerText("$:/config/cfworker/TestTimeScale") === "0.5") && storedScale.scale === 1 && storedScale.wait === 1000, JSON.stringify(storedScale));
+
 await finish({ check, results, pageErrors, browser, site });

@@ -135,7 +135,7 @@ check("with PUBLIC_WIKI_URL set, the next load rebuilds the page with the public
   await A.evaluate(() => $tw.wiki.getTiddlerText("Second note") === "Saved while another browser is open"));
 const republished = await waitFor(async () => (await text(SHELL)).includes(`<script src="${PUB}${CORE_PATH}"`), 30000);
 check("...the admin wiki publishes the page again, now loading the core from the public site", republished, (await text(SHELL)).match(/<script src="[^"]*tiddlywikicore[^"]*"/)?.[0]);
-await sleep(1500);
+await waitFor(async () => (await text("baked.html")).includes(`<script src="${PUB}${CORE_PATH}"`), 30000);   // the page built from it
 body = await (await reload(A)).body();
 check("...and the page loads its core and plugin files from there", body.toString().includes(`<script src="${PUB}${CORE_PATH}"`) && body.toString().includes(`<script src="${PUB}${helloPath}`),
   body.toString().match(/<script src="[^"]*hello[^"]*"/)?.[0] || "no plugin tag");

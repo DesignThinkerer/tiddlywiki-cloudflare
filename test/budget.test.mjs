@@ -45,6 +45,7 @@ async function ready() {
 }
 
 // --- 1. The first visit ------------------------------------------------------------------------------
+const registeredAt = Date.now();   // (the browser checks the service worker's script at navigations after its first minute: section 4)
 await page.goto(FRONT + "/");
 await ready();
 await waitFor(() => page.evaluate(async () => { const r = await navigator.serviceWorker.getRegistration(); return !!(r && r.active); }), 15000);
@@ -84,8 +85,22 @@ check("the first reload: the light page, the core file (once, kept by the servic
   second.includes("GET / 200*") && second.includes("GET /_plugins/tiddlywikicore.js 200") && second.some(r => /^GET \/recipes\/default\/tiddlers.json (200|304)\*$/.test(r)) && second.length === 3,
   second.join(", "));
 
-// --- 3. The steady state, past the browser's first minute: 2 requests a reload, both 304 -------------
-await sleep(65000);
+// --- 3. A background tab asks nothing (during the browser's first minute: section 4 waits for its end) ----
+await page.evaluate(() => { $tw.syncer.pollTimerInterval = 2000; $tw.syncer.processTaskQueue(); });   // polls every 2 s from now on (until the next reload)
+mark = arrived.length;
+await sleep(5000);
+check("(shown, polls set to every 2 s: the list is asked for, 304)", since(mark).length >= 2 && since(mark).every(r => r === "GET /recipes/default/tiddlers.json 304*"), since(mark).join(", "));
+await setHidden(true);
+await sleep(1000);
+mark = arrived.length;
+await sleep(7000);
+check("a tab in the background asks the worker nothing", since(mark).length === 0, since(mark).join(", "));
+await setHidden(false);
+const caughtUp = await waitFor(() => since(mark).some(r => r.startsWith("GET /recipes/default/tiddlers.json")), 10000);
+check("...and catches up once shown: a list request, nothing else", caughtUp && since(mark).every(r => r.startsWith("GET /recipes/default/tiddlers.json")), since(mark).join(", "));
+
+// --- 4. The steady state, past the browser's first minute: 2 requests a reload, both 304 -------------
+await sleep(Math.max(0, registeredAt + 65000 - Date.now()));   // (the rest of the minute: section 3 ran during it)
 const loads = [];
 for (let i = 0; i < 3; i++) {
   mark = arrived.length;
@@ -99,19 +114,5 @@ check("every later reload reaches the worker exactly twice: the page and the tid
   loads.map(load => load.join(", ")).join(" | "));
 check("...the service worker's script is never asked for again (the browser's own check uses its cache, the script fresh for a day)",
   !arrived.slice(first.length).some(r => r.path === "/sw.js"), arrived.slice(first.length).filter(r => r.path === "/sw.js").map(r => `${r.status}${r.conditional ? "*" : ""}`).join(", "));
-
-// --- 4. A background tab asks nothing ------------------------------------------------------------------
-await page.evaluate(() => { $tw.syncer.pollTimerInterval = 2000; $tw.syncer.processTaskQueue(); });   // polls every 2 s from now on
-mark = arrived.length;
-await sleep(5000);
-check("(shown, polls set to every 2 s: the list is asked for, 304)", since(mark).length >= 2 && since(mark).every(r => r === "GET /recipes/default/tiddlers.json 304*"), since(mark).join(", "));
-await setHidden(true);
-await sleep(1000);
-mark = arrived.length;
-await sleep(7000);
-check("a tab in the background asks the worker nothing", since(mark).length === 0, since(mark).join(", "));
-await setHidden(false);
-const caughtUp = await waitFor(() => since(mark).some(r => r.startsWith("GET /recipes/default/tiddlers.json")), 10000);
-check("...and catches up once shown: a list request, nothing else", caughtUp && since(mark).every(r => r.startsWith("GET /recipes/default/tiddlers.json")), since(mark).join(", "));
 
 await finish({ check, results, pageErrors, browser, site, cleanup: () => proxy.close() });

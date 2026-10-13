@@ -166,6 +166,32 @@ export async function startSite({ index, publicStatus = false, bindings = {}, ou
 // then on: what a suite watches at the page (the requests, their headers, the 304s) is no longer
 // what reaches the worker. So the suites block it by default and watch the page as before; the
 // cold-start suite, about the service worker, allows it and watches what comes from it.
+// Every page of a context opens with the waits shortened (design 2.25), through a script run before
+// the page's own: TiddlyWiki's syncer looks for work every 50 ms rather than 250, saves a tiddler
+// saved less than 50 ms before rather than 1 s, and retries after an error in 1 s rather than 5 —
+// its class's defaults, set as $tw is put together, so a stored $:/config/SyncThrottleInterval
+// still wins, as in production — and the modules' own waits (the publisher's pause, the public
+// read's timeout, the retries while the worker rebuilds the list) are scaled by
+// $tw.cfworkerTestTimeScale, which only a script run before boot can set: nothing stored in a wiki
+// does. newContext({ fast: false }) gives a context the production waits.
+export const FAST = { throttle: 50, taskTimer: 50, errorRetry: 1000, scale: 0.2 };
+function fastPage(fast) {
+  const tw = globalThis.$tw ??= Object.create(null);
+  tw.cfworkerTestTimeScale = fast.scale;
+  let Syncer;
+  Object.defineProperty(tw, "Syncer", {
+    configurable: true, enumerable: true,
+    get() { return Syncer; },
+    set(value) {
+      Syncer = value;
+      if (value && value.prototype) {
+        value.prototype.throttleInterval = fast.throttle;
+        value.prototype.taskTimerInterval = fast.taskTimer;
+        value.prototype.errorRetryInterval = fast.errorRetry;
+      }
+    }
+  });
+}
 // When a check failed, finish() leaves two things to read under test-results/ (TRACE=1 leaves them
 // always): <suite>.requests.log, every request the suite's pages made (createWatcher), in order,
 // with the time, the tab, the method, the path and how it ended; and traces/<suite>/<n>.zip, a
@@ -202,8 +228,9 @@ export function launchBrowser({ serviceWorkers = "block" } = {}) {
     const newContext = browser.newContext.bind(browser);
     fs.rmSync(TRACES, { recursive: true, force: true });
     fs.mkdirSync(TRACES, { recursive: true });
-    browser.newContext = async (options = {}) => {
+    browser.newContext = async ({ fast = true, ...options } = {}) => {
       const context = await newContext({ serviceWorkers, ...options });
+      if (fast) await context.addInitScript(fastPage, FAST);
       const full = process.env.TRACE === "full";
       await context.tracing.start({ screenshots: full, snapshots: full }).then(() => tracing.contexts.add(context), () => {});
       const close = context.close.bind(context);
@@ -292,15 +319,20 @@ export async function waitFor(condition, timeout = 20000) {
   return false;
 }
 
-// Waits until TiddlyWiki has nothing left to save or load (three polls in a row)
+// Waits until TiddlyWiki has nothing left to save or load: quiet at three looks in a row, 100 ms
+// apart (a change is dirty from its event, before the throttle, so one look would do; three cover
+// a task's answer and the next task it brings). The fill loads a list brings are held back for a
+// moment, out of TiddlyWiki's queue (list-sync.js, the fill pause), so they count too — unless the
+// tab is hidden, which holds them for good.
 export async function settle(page, timeout = 30000) {
   await page.waitForFunction(() => {
     const s = window.$tw && $tw.syncer;
     if (!s) return false;
-    const quiet = !s.isDirty() && s.numTasksInProgress === 0 && Object.keys(s.titlesToBeLoaded).length === 0 && !s.forceSyncFromServer;
+    const held = !document.hidden && s.syncadaptor && s.syncadaptor.cfworkerHeld ? s.syncadaptor.cfworkerHeld() : 0;
+    const quiet = !s.isDirty() && s.numTasksInProgress === 0 && Object.keys(s.titlesToBeLoaded).length === 0 && !s.forceSyncFromServer && held === 0;
     window.__quiet = quiet ? (window.__quiet || 0) + 1 : 0;
     return window.__quiet >= 3;
-  }, null, { timeout, polling: 300 });
+  }, null, { timeout, polling: 100 });
 }
 
 export const addTiddler = (page, fields) => page.evaluate(f => $tw.wiki.addTiddler(new $tw.Tiddler(f)), fields);
@@ -310,15 +342,29 @@ export async function finish({ check, results, pageErrors, browser, site, note =
   check("no page errors", pageErrors.length === 0, pageErrors.join(" | "));
   const passed = results.every(r => r.ok);
   console.log(`\n${results.filter(r => r.ok).length}/${results.length} passed${note}`);
-  for (const context of [...tracing.contexts]) await stopTrace(context);
-  if (passed && !process.env.TRACE) fs.rmSync(TRACES, { recursive: true, force: true });
-  else {
-    const log = writeRequestsLog();
-    if (log) console.log(`requests: ${path.relative(process.cwd(), log)}`);
-    if (tracing.files.length) console.log(`traces: ${tracing.files.map(f => path.relative(process.cwd(), f)).join(", ")} (npx playwright show-trace <file>)`);
-  }
+  if (passed && !process.env.TRACE) {
+    for (const context of [...tracing.contexts]) await stopTrace(context);
+    fs.rmSync(TRACES, { recursive: true, force: true });
+  } else await leaveEvidence();
   await browser.close();
   await site.close();
   if (cleanup) cleanup();
   process.exit(passed ? 0 : 1);
+}
+
+// What a failure leaves to read: the traces so far, and the request log
+async function leaveEvidence() {
+  for (const context of [...tracing.contexts]) await stopTrace(context);
+  const log = writeRequestsLog();
+  if (log) console.log(`requests: ${path.relative(process.cwd(), log)}`);
+  if (tracing.files.length) console.log(`traces: ${tracing.files.map(f => path.relative(process.cwd(), f)).join(", ")} (npx playwright show-trace <file>)`);
+}
+
+// A suite that dies on an error (a wait that timed out, say) leaves the same, then exits 1
+for (const event of ["unhandledRejection", "uncaughtException"]) {
+  process.on(event, async error => {
+    console.error(error);
+    await leaveEvidence().catch(() => {});
+    process.exit(1);
+  });
 }

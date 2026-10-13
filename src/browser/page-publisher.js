@@ -53,7 +53,10 @@ var TEMPLATE = "$:/core/templates/tiddlywiki5-external-js.html",
 	],
 	PAUSE = 1000,          // after a save, so a burst of saves is published once ($:/config/cfworker/PublishPause, the plugin's settings)
 	LIST_SETTLE = 1000,    // after a tiddler list, before anything here counts as quiet: the page renders, and asks, first
+	QUIET_POLL = 200,      // between looks while waiting for that
+	START_POLL = 300,      // between looks for the first tiddler list
 	QUIET_TIMEOUT = 60000; // waiting for saves and loads to finish
+// (The waits go through lib.wait: the tests scale them, a deployed wiki has them as they are)
 
 // TiddlyWiki's page template, as its save templates use it (with the global macros). One change: the
 // TiddlyWeb plugin writes each stored tiddler's "revision" as its changecount, a count of this tab's
@@ -264,7 +267,7 @@ exports.startup = function() {
 			return false;
 		}
 		var lastList = adaptor.cfworkerListedSince ? adaptor.cfworkerListedSince() : 0;
-		if(lastList && Date.now() - lastList < LIST_SETTLE) {
+		if(lastList && Date.now() - lastList < lib.wait(LIST_SETTLE)) {
 			return false;
 		}
 		var loading = adaptor.cfworkerLoading ? adaptor.cfworkerLoading() : null;
@@ -287,10 +290,10 @@ exports.startup = function() {
 			if(quietNow()) {
 				return callback(true);
 			}
-			if((waited += 200) >= QUIET_TIMEOUT) {
+			if((waited += lib.wait(QUIET_POLL)) >= QUIET_TIMEOUT) {
 				return callback(false);
 			}
-			setTimeout(guarded(done,poll),200);
+			setTimeout(guarded(done,poll),lib.wait(QUIET_POLL));
 		})();
 	}
 
@@ -480,7 +483,7 @@ exports.startup = function() {
 			clearTimeout(timer);
 			timer = setTimeout(function() {
 				check(true);
-			},parseInt(wiki.getTiddlerText("$:/config/cfworker/PublishPause",""),10) || PAUSE);
+			},parseInt(wiki.getTiddlerText("$:/config/cfworker/PublishPause",""),10) || lib.wait(PAUSE));
 		}
 	}
 
@@ -551,7 +554,7 @@ exports.startup = function() {
 	(function start() {
 		var listed = adaptor.cfworkerListed();
 		if(!listed) {
-			return setTimeout(start,300);
+			return setTimeout(start,lib.wait(START_POLL));
 		}
 		recordWhatCameWithPage(listed);
 		whenQuiet(function() {},function() {
