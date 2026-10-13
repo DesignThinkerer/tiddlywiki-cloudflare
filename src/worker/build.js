@@ -317,19 +317,38 @@ export async function rebakeHtml(env, ctx, list = null, source = null) {
 
 // What a page is built from: { html (bytes), index: index.html's ETag, fingerprint: the shell's
 // ("" for index.html itself), core: the stored core file's version ("" if none), shell: the stored
-// shell's ETag ("" for index.html itself), the version a tab sends back with the page it publishes
-// (publishShell) }, or null if there's no index.html
+// shell's ETag ("" for index.html itself, unless a stored shell was passed over: then its ETag, the
+// version the next one replaces), the version a tab sends back with the page it publishes
+// (publishShell) }, or null if there's no index.html.
+// The shell is used while it's the one published for this index.html and loads the core file from
+// where the page would (coreFileUrl: the public site, or this site for a private wiki). After a
+// change of the public address, the shell published for the old one names it in the core's script
+// tag: built from, both sites would load the core from a site that may be gone, and the admin wiki,
+// unable to start, would never publish another. It's passed over, and the page built from index.html
+// until the admin wiki publishes a shell for the new address, at its next load (design 1.9).
 async function readPageSource(env) {
   const [index, shell, coreFile] = await Promise.all([
     env.WIKI_BUCKET.head(INDEX_KEY), env.WIKI_BUCKET.get(SHELL_KEY), env.WIKI_BUCKET.head(CORE_KEY)
   ]);
   const core = coreFile?.customMetadata?.v || "";
-  if (shell && index && shell.customMetadata?.index === index.etag) {
-    return { html: new Uint8Array(await shell.arrayBuffer()), index: index.etag, fingerprint: shell.customMetadata.fingerprint || "", core, shellVersion: shell.uploaded.getTime(), shell: shell.etag };
-  }
-  if (shell) await shell.body.cancel();
+  const kept = shell && index && shell.customMetadata?.index === index.etag ? shell : null;
+  if (kept) {
+    const html = new Uint8Array(await kept.arrayBuffer());
+    if (loadsCoreFile(html, env, core)) {
+      return { html, index: index.etag, fingerprint: kept.customMetadata.fingerprint || "", core, shellVersion: kept.uploaded.getTime(), shell: kept.etag };
+    }
+    console.log("The published page loads the core file from elsewhere than the public site (or this site, for a private wiki): the page is built from index.html until the admin wiki publishes it again");
+  } else if (shell) await shell.body.cancel();
   const full = await env.WIKI_BUCKET.get(INDEX_KEY);
-  return full && { html: new Uint8Array(await full.arrayBuffer()), index: full.etag, fingerprint: "", core, shell: "" };
+  return full && { html: new Uint8Array(await full.arrayBuffer()), index: full.etag, fingerprint: "", core, shell: kept ? kept.etag : "" };
+}
+
+// Whether a shell loads the stored core file from where the page would: its script tag is at the end
+// of the page, so the last 64 KB are looked at (what publishShell checked on the whole shell)
+function loadsCoreFile(html, env, version) {
+  if (!version) return false;
+  const from = charStart(html, Math.max(0, html.length - 65536));
+  return pageDecoder.decode(html.subarray(from)).includes(`<script src="${coreFileUrl(env, version)}"`);
 }
 
 // Where the page loads the core file from: the public site, or this site (root-relative) for a
