@@ -265,4 +265,38 @@ await contextR.setOffline(false);
 check("...and it still reaches the worker at the network's return", await waitFor(async () => (await stored("Unkept change")) === "made offline, in a browser that refuses to store it", 15000) && (await status(R))?.waiting === "0", JSON.stringify(await status(R)));
 await contextR.close();
 
+// --- 13. A tiddler created offline, the tab closed, the same title created elsewhere meanwhile -------
+// The put-back at the next page load must say the tiddler mustn't exist yet (If-None-Match: *), as
+// the tab that made the change would have: the other browser's version stays, and this one is kept
+// as a conflict copy. (Section 3's header check can be met by the old page's own request, fired at
+// the online event just before the reload; here the tab is closed first, so only the put-back sends.)
+const contextP = await browser.newContext(), contextL = await browser.newContext();
+const P = await open(contextP, "P");
+await P.evaluate(() => { $tw.syncer.errorRetryInterval = 20000; });
+await contextP.setOffline(true);
+await addTiddler(P, { title: "Created on both", text: "written on the phone" });
+await waitFor(async () => ((await outbox(P)) || []).some(e => e.title === "Created on both" && e.kind === "save"), 10000);
+check("a tiddler created offline waits on the device with no base revision: the worker never had it", ((await outbox(P)) || []).some(e => e.title === "Created on both" && e.base === null), JSON.stringify(await outbox(P)));
+await P.close({ runBeforeUnload: true });
+await sleep(500);
+const L = await open(contextL, "L");
+await addTiddler(L, { title: "Created on both", text: "written on the laptop" });
+await settle(L);
+check("(another browser created the same title meanwhile)", (await stored("Created on both")) === "written on the laptop");
+await contextP.setOffline(false);
+mark = requests.length;
+const P2 = await open(contextP, "P2");
+const copiedP = await waitFor(() => P2.evaluate(() => $tw.wiki.filterTiddlers("[conflict-of[Created on both]]").length === 1), 15000);
+await settle(P2);
+const putBoth = sent("P2", "PUT", "Created on both", mark)[0];
+check("the tab closed while offline, reopened online: the put-back says the tiddler mustn't exist yet (If-None-Match: *)",
+  !!putBoth && putBoth.headers["if-none-match"] === "*" && !putBoth.headers["if-match"], JSON.stringify(putBoth?.headers || null));
+check("...so the other browser's version stays, and the one made offline is kept as a conflict copy, with an alert", copiedP && (await stored("Created on both")) === "written on the laptop" &&
+  await P2.evaluate(() => $tw.wiki.getTiddlerText("Created on both") === "written on the laptop" && $tw.wiki.getTiddlerText($tw.wiki.filterTiddlers("[conflict-of[Created on both]]")[0]) === "written on the phone" && $tw.wiki.getTiddlersWithTag("$:/tags/Alert").some(t => /conflict/i.test($tw.wiki.getTiddlerText(t)))),
+  `stored ${JSON.stringify(await stored("Created on both"))}, copies ${JSON.stringify(await P2.evaluate(() => $tw.wiki.filterTiddlers("[conflict-of[Created on both]]")))}`);
+await waitFor(async () => (await status(P2))?.waiting === "0", 5000);
+check("...and nothing waits", (await status(P2))?.waiting === "0" && JSON.stringify(await outbox(P2)) === "[]", JSON.stringify(await outbox(P2)));
+await contextP.close();
+await contextL.close();
+
 await finish({ check, results, pageErrors, browser, site });
