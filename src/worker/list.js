@@ -17,7 +17,7 @@ import { listPurgeUrls, purgePublicCache } from "./cache.js";
 import { waitMs } from "./settings.js";
 import { BadSave, FLAT_LAYOUT, readStoredFields } from "./layout.js";
 import { LIST_KEY, REPAIR_PROGRESS_KEY, TIDDLER_PREFIX, mapLimit, markPageOutdated, putIfAbsent } from "./storage.js";
-import { getTwTimestamp, isDraft, isEphemeralTitle, isNewerRevision, revisionOf } from "./tiddlers.js";
+import { getTwTimestamp, isDraft, isEphemeralTitle, isNewerRevision, revisionOf, tiddlerKey } from "./tiddlers.js";
 
 // Drops anything that should never have been listed (drafts, story list, state...)
 function scrubList(list) {
@@ -59,8 +59,9 @@ export async function readableList(env, ctx, options) {
   return { object: rebuilt.object, text: rebuilt.text, entries };
 }
 
-// mutator(entries) returns the new list, or null when nothing needs to change. list: the list already
-// read (readableList), used for the first attempt. Returns the list as now stored,
+// mutator(entries, attempt) returns the new list, or null when nothing needs to change (it may look
+// something up first: a retried attempt means another request changed the list meanwhile). list: the
+// list already read (readableList), used for the first attempt. Returns the list as now stored,
 // { object, text, entries }, so a page build right after needn't read it again.
 async function changeList(env, ctx, mutator, list = null, attempts = 5) {
   for (let attempt = 1; attempt <= attempts; attempt++) {
@@ -69,7 +70,7 @@ async function changeList(env, ctx, mutator, list = null, attempts = 5) {
     const etag = existing.etag || existing.httpEtag.replace(/"/g, "");
 
     const current = scrubList(entries);
-    const changed = mutator(current);
+    const changed = await mutator(current, attempt);
     if (changed === null) return { object: existing, text: existingText, entries: current };
 
     // Only if the list is still the one we read
@@ -114,16 +115,25 @@ function listEntry(title, fields, revision, date = getTwTimestamp()) {
 
 // Returns { previous: the entry it replaced, or null; list: the list as now stored; superseded: a
 // newer save of the tiddler is already listed (this save's list write was retried after it), so the
-// list keeps that one }
+// list keeps that one; gone: the tiddler is no longer stored at this revision (a delete, or a
+// recreate, landed while this save's list write was retried), so it isn't listed }
 export async function updateList(env, ctx, title, fields, revision, list = null) {
   const entry = listEntry(title, fields, revision);
-  let previous = null, superseded = false;
-  const stored = await changeList(env, ctx, (entries) => {
+  let previous = null, superseded = false, gone = false;
+  const stored = await changeList(env, ctx, async (entries, attempt) => {
     const idx = entries.findIndex(t => t.title === title);
     previous = idx >= 0 ? entries[idx] : null;
     superseded = !!previous && isNewerRevision(String(previous.revision), revision);
     if (superseded) return null;
     if (idx < 0) {
+      // Unlisted on a retried attempt: a delete may have landed meanwhile (its list write is what
+      // made this one fail) and removed the object with it, R2 deletes being unconditional. Only
+      // what's stored is listed, and a version recreated since is listed by its own save
+      if (attempt > 1) {
+        const object = await env.WIKI_BUCKET.head(tiddlerKey(title));
+        gone = !object || revisionOf(object) !== String(revision);
+        if (gone) return null;
+      }
       entries.push(entry);
       return entries;
     }
@@ -131,7 +141,7 @@ export async function updateList(env, ctx, title, fields, revision, list = null)
     // Listed twice (a hand edit, say): listed once from now on
     return entries.some((t, i) => i > idx && t.title === title) ? entries.filter((t, i) => i <= idx || t.title !== title) : entries;
   }, list);
-  return { previous, list: stored, superseded };
+  return { previous, list: stored, superseded, gone };
 }
 
 // Returns { removed: the entry it removed, or null if the title wasn't listed; list: the list as now

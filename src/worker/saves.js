@@ -155,9 +155,10 @@ export async function handleDelete(request, env, ctx, url, corsHeaders) {
 // retried: this is a save sent again (its first answer lost, or its list update failed): the list
 // may already say what it would say, so what's left of the first attempt is found another way.
 async function finishSave(env, ctx, title, fields, revision, list, adminOrigin, retried = false) {
-  const { previous, list: stored, superseded } = await updateList(env, ctx, title, fields, revision, list);
-  // A newer save of this tiddler got there first: its purge, plugin file and page build are the ones
-  if (superseded) return;
+  const { previous, list: stored, superseded, gone } = await updateList(env, ctx, title, fields, revision, list);
+  // A newer save of this tiddler got there first, or a delete removed it meanwhile: that request's
+  // purge, plugin file and page build are the ones
+  if (superseded || gone) return;
   // Only once the new list is in R2: a public request between the purge and the list update
   // would put the old list back in Cloudflare's cache
   ctx.waitUntil(purgePublicCache(env, tiddlerPurgeUrls(env, title, adminOrigin)));
