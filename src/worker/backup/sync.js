@@ -29,7 +29,7 @@ export async function startBackupSync(request, env, ctx, corsHeaders) {
     // Recorded first: a step checks it's the current full backup before working (queue.js)
     let sync = await recordSync(env, { ...start, startedAt: now, phase: "push" }, status);
     try {
-      await env.BACKUP_QUEUE.send({ action: "sync", phase: "push", after: null, time: now, tries: 0, ...start });
+      await env.BACKUP_QUEUE.send({ action: "sync", startedAt: now, phase: "push", after: null, time: now, tries: 0, ...start });
     } catch (e) {
       sync = await recordSync(env, { id, finished: now, error: `The queue didn't take the job: ${e.message}` });
       return jsonResponse(sync, 503, corsHeaders);
