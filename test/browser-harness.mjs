@@ -322,12 +322,15 @@ export async function waitFor(condition, timeout = 20000) {
 
 // Waits until TiddlyWiki has nothing left to save or load: quiet at three looks in a row, 100 ms
 // apart (a change is dirty from its event, before the throttle, so one look would do; three cover
-// a task's answer and the next task it brings, a list's loads, say)
+// a task's answer and the next task it brings). The fill loads a list brings are held back for a
+// moment, out of TiddlyWiki's queue (list-sync.js, the fill pause), so they count too — unless the
+// tab is hidden, which holds them for good.
 export async function settle(page, timeout = 30000) {
   await page.waitForFunction(() => {
     const s = window.$tw && $tw.syncer;
     if (!s) return false;
-    const quiet = !s.isDirty() && s.numTasksInProgress === 0 && Object.keys(s.titlesToBeLoaded).length === 0 && !s.forceSyncFromServer;
+    const held = !document.hidden && s.syncadaptor && s.syncadaptor.cfworkerHeld ? s.syncadaptor.cfworkerHeld() : 0;
+    const quiet = !s.isDirty() && s.numTasksInProgress === 0 && Object.keys(s.titlesToBeLoaded).length === 0 && !s.forceSyncFromServer && held === 0;
     window.__quiet = quiet ? (window.__quiet || 0) + 1 : 0;
     return window.__quiet >= 3;
   }, null, { timeout, polling: 100 });
@@ -340,15 +343,29 @@ export async function finish({ check, results, pageErrors, browser, site, note =
   check("no page errors", pageErrors.length === 0, pageErrors.join(" | "));
   const passed = results.every(r => r.ok);
   console.log(`\n${results.filter(r => r.ok).length}/${results.length} passed${note}`);
-  for (const context of [...tracing.contexts]) await stopTrace(context);
-  if (passed && !process.env.TRACE) fs.rmSync(TRACES, { recursive: true, force: true });
-  else {
-    const log = writeRequestsLog();
-    if (log) console.log(`requests: ${path.relative(process.cwd(), log)}`);
-    if (tracing.files.length) console.log(`traces: ${tracing.files.map(f => path.relative(process.cwd(), f)).join(", ")} (npx playwright show-trace <file>)`);
-  }
+  if (passed && !process.env.TRACE) {
+    for (const context of [...tracing.contexts]) await stopTrace(context);
+    fs.rmSync(TRACES, { recursive: true, force: true });
+  } else await leaveEvidence();
   await browser.close();
   await site.close();
   if (cleanup) cleanup();
   process.exit(passed ? 0 : 1);
+}
+
+// What a failure leaves to read: the traces so far, and the request log
+async function leaveEvidence() {
+  for (const context of [...tracing.contexts]) await stopTrace(context);
+  const log = writeRequestsLog();
+  if (log) console.log(`requests: ${path.relative(process.cwd(), log)}`);
+  if (tracing.files.length) console.log(`traces: ${tracing.files.map(f => path.relative(process.cwd(), f)).join(", ")} (npx playwright show-trace <file>)`);
+}
+
+// A suite that dies on an error (a wait that timed out, say) leaves the same, then exits 1
+for (const event of ["unhandledRejection", "uncaughtException"]) {
+  process.on(event, async error => {
+    console.error(error);
+    await leaveEvidence().catch(() => {});
+    process.exit(1);
+  });
 }

@@ -707,6 +707,24 @@ check("package.json: test, test:fast, test:browser and test:suite build, then ru
   ["test", "test:fast", "test:browser", "test:suite"].every(s => /^npm run build && node tools\/run-suites\.mjs/.test(scripts[s] || "")) && /node tools\/run-suites\.mjs$/.test(scripts["test:suite"] || ""),
   JSON.stringify({ "test:suite": scripts["test:suite"] }));
 
+// The runner (tools/run-suites.mjs): --parallel <n> runs that many suites at once; what isn't a
+// suite is reported as such, every suite runs, and a failure makes the exit code 1. (Two names that
+// aren't suites: nothing is run, which is the cheapest way to see the arguments read.)
+const runner = (...args) => {
+  try {
+    return { code: 0, out: execFileSync(process.execPath, [path.join(ROOT, "tools/run-suites.mjs"), ...args], { cwd: ROOT, encoding: "utf8", timeout: 60000, stdio: ["ignore", "pipe", "pipe"] }) };
+  } catch (e) {
+    return { code: e.status, out: String(e.stdout || "") + String(e.stderr || "") };
+  }
+};
+const parallelRun = runner("--parallel", "2", "no-such-suite-a", "no-such-suite-b");
+const parallelSummary = parallelRun.out.split("=== Summary ===")[1] || "";
+check("the runner takes --parallel <n> (not as a suite's name), runs every suite named, reports what isn't one, and exits 1",
+  parallelRun.code === 1 && (parallelSummary.match(/no such suite/g) || []).length === 2 && !/--parallel|FAIL\s+2\b/.test(parallelSummary) && /2 of 2 suites failed/.test(parallelSummary),
+  parallelSummary.trim().replace(/\s+/g, " ").slice(0, 200) || parallelRun.out.slice(-200));
+const noParallel = runner("--parallel", "0", "cpu");
+check("...and refuses a parallel count under 1", noParallel.code === 2 && /parallel/.test(noParallel.out), `exit ${noParallel.code}: ${noParallel.out.slice(0, 120)}`);
+
 // --- 7. Restoring from the backup: tools/restore.mjs ------------------------------------------------
 // The backup's files are tiddlers as stored, with their tags as a list (TiddlyWeb's layout); TiddlyWiki's
 // JSON import keeps only text fields, so they can't be imported as they are without losing every tag.

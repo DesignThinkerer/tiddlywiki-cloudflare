@@ -5,7 +5,7 @@ import fs from "node:fs";
 import path from "node:path";
 import vm from "node:vm";
 import { createRequire } from "node:module";
-import { addTiddler, createChecks, createWatcher, finish, launchBrowser, readWikiFile, settle as settleTab, sleep, startSite, waitFor } from "./browser-harness.mjs";
+import { addTiddler, createChecks, createWatcher, finish, launchBrowser, readWikiFile, settle as settleTab, startSite, waitFor } from "./browser-harness.mjs";
 
 const require = createRequire(import.meta.url);
 const ENGINE = readWikiFile();
@@ -294,15 +294,16 @@ await load();
 check("deleted plugin is gone after the reload", !(await isKatexActive()));
 
 // --- 13. Overlapping page builds never go backwards ---------------------------------------------------
-// (The tab just reloaded: its page publisher looks at the page once the first second after the list
-// is past, and a page it publishes then, newer, would replace the one put here on purpose)
+// (The tab's page publisher, looking at the page after a load, would publish a newer page over the
+// one put here on purpose: the tab is sent away, the save goes through the worker's API, and the
+// tab comes back for the next step)
 await settle();
-await sleep(700);   // (the publisher's look at the page after a list, scaled for the tests: browser-harness.mjs)
+await page.goto("about:blank");
 const current = await bucket.head("baked.html");
 await bucket.put("baked.html", "<html><head></head><body>from a newer list</body></html>",
   { httpMetadata: { contentType: "text/html; charset=utf-8" }, customMetadata: { ...current.customMetadata, listVersion: "99999999999999" } });
-await add({ title: "$:/SiteSubtitle", text: "a startup tiddler, to trigger a build" });
-await settle();
+await mf.dispatchFetch(`${BASE}/recipes/default/tiddlers/${encodeURIComponent("$:/SiteSubtitle")}`,
+  { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title: "$:/SiteSubtitle", text: "a startup tiddler, to trigger a build" }) });
 check("an older build doesn't replace a page built from a newer tiddler list", (await bakedPage()).includes("from a newer list"));
 await bucket.put("_plugins/" + ML + ".js", "/* a newer version */", { customMetadata: { revision: "9999999999999" } });
 await bucket.delete("baked.html");
@@ -310,17 +311,20 @@ const rebuilt = await (await mf.dispatchFetch(BASE + "/")).text();
 check("an older build doesn't overwrite a newer plugin file, and points to it", (await pluginFile(ML)).text === "/* a newer version */" && rebuilt.includes(scriptTag(ML, "9999999999999")));
 const handList = await (await bucket.get("recipes/default/tiddlers.json")).text();
 await bucket.put("recipes/default/tiddlers.json", handList, { httpMetadata: { contentType: "application/json" } });   // replaced by hand
+await load();
 const beforeSubtitle = requests.length;
 await add({ title: "$:/SiteSubtitle", text: "after a hand-replaced list" });
 await settle();
 check("a tiddler list replaced by hand doesn't stop the page from being rebuilt", (await bakedPage()).includes("after a hand-replaced list"));
 
 // --- 14. Recovery: delete the file in R2, hard reload --------------------------------------------------
-// That save changed the shell (the subtitle is in it), so the tab publishes the page a second later,
-// and a page build writes back any plugin file that's missing: wait for the publish to be answered
-// before deleting the file on purpose. (Seen: the file written back between the delete and the
-// reload, and the wiki starting with the plugin.)
-await waitFor(() => requests.slice(beforeSubtitle).some(r => r.method === "PUT" && r.path === "/page/shell" && r.status));
+// That save changed the shell (the subtitle is in it), so the tab publishes the page a moment later,
+// and a page build writes back any plugin file that's missing: wait for that publish — one sent after
+// the save was, not the previous save's, which can land in between — to be answered before deleting
+// the file on purpose. (Seen: the file written back between the delete and the reload, and the wiki
+// starting with the plugin.)
+const subtitleSave = requests.slice(beforeSubtitle).find(r => r.method === "PUT" && r.path === "/recipes/default/tiddlers/$:/SiteSubtitle");
+await waitFor(() => requests.slice(beforeSubtitle).some(r => r.method === "PUT" && r.path === "/page/shell" && r.status && subtitleSave && r.at > subtitleSave.at));
 await bucket.delete("_plugins/" + ML + ".js");
 await context.close();
 context = await browser.newContext();   // a hard reload: nothing cached

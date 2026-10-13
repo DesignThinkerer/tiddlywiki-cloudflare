@@ -806,6 +806,12 @@ exports.startup = function() {
 		return loading;
 	};
 
+	// How many fill loads are held back for the moment (after a list, while the tab is hidden): they're
+	// out of TiddlyWiki's queue meanwhile, so the syncer looks idle (the tests wait for them too)
+	proto.cfworkerHeld = function() {
+		return $tw.utils.count(held);
+	};
+
 	// A request on the device database's outbox table, for the outbox module: work(objectStore)
 	// makes it; resolves with its result, null for anything that fails (no IndexedDB, say)
 	proto.cfworkerOutboxRequest = function(mode,work) {

@@ -25,7 +25,7 @@ Each with its reason and what enforces it. A change that crosses one needs the r
 
 ## Running the tests
 
-While iterating, run only the suites the change touches: `npm run test:suite -- page-publish two-tabs` builds, then runs the named suites (`tools/run-suites.mjs`: each to the end, its output in `test-results/<suite>.log`, a summary, exit 1 if any failed). Run the full `npm test` once at the end, or leave it to CI on the pull request. In the cloud environment Playwright needs `CHROMIUM_PATH=/opt/pw-browsers/chromium` (its own browser build isn't installed there).
+While iterating, run only the suites the change touches: `npm run test:suite -- page-publish two-tabs` builds, then runs the named suites (`tools/run-suites.mjs`: each to the end, its output in `test-results/<suite>.log`, a summary, exit 1 if any failed). Run the full `npm test` once at the end (`npm test -- --parallel 2` runs two suites at once, which this 2-CPU machine bears; more only with CPUs to spare), or leave it to CI on the pull request. In the cloud environment Playwright needs `CHROMIUM_PATH=/opt/pw-browsers/chromium` (its own browser build isn't installed there).
 
 A suite longer than one tool call allows (two-tabs, page-publish; `npm test` as a whole) goes in the background:
 
