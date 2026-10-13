@@ -91,7 +91,7 @@ await contextA.setOffline(true);
 await addTiddler(A, { title: "Offline reload", text: "survives a reload" });
 await A.evaluate(() => $tw.wiki.addTiddler(new $tw.Tiddler($tw.wiki.getTiddler("Note A"), { text: "changed twice" })));
 await waitFor(async () => (await status(A))?.waiting === "2", 10000);
-await sleep(1500);   // (a retry or two)
+await sleep(800);   // (a retry, if one came, would come within this)
 check("offline again: still no alert, the dropdown saying offline", (await alerts(A)).length === 0 && /offline/.test((await line(A)) || ""), `alerts ${JSON.stringify(await alerts(A))}, item ${JSON.stringify(await line(A))}`);
 const noteARevision2 = await revisionOf("Note A");
 await contextA.setOffline(false);
@@ -165,7 +165,7 @@ check("a draft is kept on the device as a draft, and doesn't count as a change w
 await contextA.setOffline(false);
 await A2.reload();
 await ready(A2);
-await sleep(1500);
+await sleep(800);   // (a send, if one came, would come as the tab starts)
 check("...after a reload it's back, with its text, and the worker never received it",
   await A2.evaluate(([draft]) => $tw.wiki.getTiddlerText(draft) === "typing offline, not saved yet" && $tw.wiki.getTiddler(draft).fields["draft.of"] === "Note A", [draftTitle]) &&
   requests.filter(r => r.method === "PUT" && r.path.includes("Draft")).length === 0 && !(await bucket.head(TIDDLER.slice(1) + draftTitle)));
@@ -208,7 +208,7 @@ check("...and goes through once the worker takes it, clearing the dropdown's ite
 await A2.evaluate(([title, draft]) => $tw.wiki.addTiddler(new $tw.Tiddler($tw.wiki.getTiddler(title), { title: draft, "draft.of": title, "draft.title": title, text: "still typing in the other tab" })), ["Note A", draftTitle]);
 await waitFor(async () => ((await outbox(A2)) || []).some(e => e.title === draftTitle && e.text === "still typing in the other tab"), 10000);
 const A4 = await open(contextA, "A4");
-await sleep(1500);
+await sleep(800);   // (the outbox is looked at as the tab starts)
 check("a tab opened while another tab is typing a draft doesn't adopt it: the draft stays with its tab, and on the device",
   await A4.evaluate(d => !$tw.wiki.tiddlerExists(d), draftTitle) && await A2.evaluate(d => $tw.wiki.getTiddlerText(d) === "still typing in the other tab", draftTitle) && ((await outbox(A4)) || []).some(e => e.title === draftTitle),
   `in the new tab: ${await A4.evaluate(d => $tw.wiki.tiddlerExists(d), draftTitle)}`);
@@ -216,7 +216,7 @@ await A4.close();
 await A2.close({ runBeforeUnload: true });   // the guard asks (the draft holds changes); accepted
 await sleep(500);
 const A5 = await open(contextA, "A5");
-await sleep(1500);
+await waitFor(() => A5.evaluate(d => $tw.wiki.tiddlerExists(d), draftTitle), 10000);
 check("...and once that tab is gone, the next tab gets the draft back", await A5.evaluate(d => $tw.wiki.getTiddlerText(d) === "still typing in the other tab", draftTitle));
 await A5.evaluate(d => $tw.wiki.deleteTiddler(d), draftTitle);
 await A5.route("**/recipes/default/tiddlers/**", route => route.request().method() === "PUT" ? route.fulfill({ status: 500, body: "boom" }) : route.continue());
@@ -224,7 +224,7 @@ await addTiddler(A5, { title: "Held change", text: "waiting in the first tab" })
 await waitFor(async () => (await status(A5))?.waiting === "1", 10000);
 mark = requests.length;
 const A6 = await open(contextA, "A6");
-await sleep(2000);
+await sleep(1000);   // (a send, if one came, would come as the tab starts)
 check("a change an open tab is still trying to send isn't sent by a tab opened meanwhile", (await status(A6))?.waiting === "0" && sent("A6", "PUT", "Held change", mark).length === 0 && (await stored("Held change")) === null && ((await outbox(A6)) || []).some(e => e.title === "Held change"),
   `waiting ${(await status(A6))?.waiting}, sent by the new tab ${sent("A6", "PUT", "Held change", mark).length}, stored ${JSON.stringify(await stored("Held change"))}`);
 await A5.unroute("**/recipes/default/tiddlers/**");

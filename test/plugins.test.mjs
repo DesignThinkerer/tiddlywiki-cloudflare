@@ -297,7 +297,7 @@ check("deleted plugin is gone after the reload", !(await isKatexActive()));
 // (The tab just reloaded: its page publisher looks at the page once the first second after the list
 // is past, and a page it publishes then, newer, would replace the one put here on purpose)
 await settle();
-await sleep(1500);
+await sleep(700);   // (the publisher's look at the page after a list, scaled for the tests: browser-harness.mjs)
 const current = await bucket.head("baked.html");
 await bucket.put("baked.html", "<html><head></head><body>from a newer list</body></html>",
   { httpMetadata: { contentType: "text/html; charset=utf-8" }, customMetadata: { ...current.customMetadata, listVersion: "99999999999999" } });
@@ -381,6 +381,7 @@ check("a public tab never asks how backups go (only the admin site does)", !requ
 const listGetsBefore = tabListGets();
 await bucket.delete("recipes/default/tiddlers.json");
 await mf.dispatchFetch(BASE + "/recipes/default/tiddlers.json");   // an admin request: the first step
+const syncedAt = Date.now();
 await tab.evaluate(() => $tw.syncer.syncFromServer());
 await new Promise(r => setTimeout(r, 1500));
 let state = await tabState();
@@ -388,7 +389,9 @@ check("a missing list being rebuilt: an open public tab keeps its tiddlers, with
   tabListGets() > listGetsBefore && state.note && state.deleted.length === 0 && !state.crashed && state.alerts.length === 0 && pageErrors.length === tabErrors,
   `${tabListGets() - listGetsBefore} list requests ` + JSON.stringify(state) + " " + pageErrors.slice(tabErrors).join(" | "));
 const retries = requests.filter(r => r.tag === "public tab" && r.path.startsWith("/recipes/default/tiddlers.json") && r.path.includes("cfworker-retry="));
-check("...and asks again a second later, at a URL no cache holds (a cached stand-in can't outlive the rebuild)", retries.length >= 1,
+const standIn = requests.filter(r => r.tag === "public tab" && r.path.startsWith("/recipes/default/tiddlers.json")).find(r => r.at > syncedAt);
+check("...and asks again a moment later (a second in production, scaled for the tests), at a URL no cache holds (a cached stand-in can't outlive the rebuild)",
+  retries.length >= 1 && !!standIn && retries[0].at - standIn.at < 600, `again after ${retries.length && standIn ? retries[0].at - standIn.at : "-"} ms; ` +
   requests.filter(r => r.tag === "public tab" && r.path.startsWith("/recipes/default/tiddlers.json")).slice(-3).map(r => r.path.slice(0, 60) + "…" + r.path.slice(-30)).join(" | "));
 const rebuiltInTime = await rebuildList();
 await tab.waitForFunction(() => $tw.wiki.tiddlerExists("Filler 7"), null, { timeout: 15000 }).catch(() => {});

@@ -44,7 +44,12 @@ var LOAD_ALL_TITLE = "$:/config/cfworker/LoadAll",
 	FILL_PAUSE = 200,     // ms after a list before the fill starts: what the page shows asks for its text first
 	READ_AHEAD = 24,      // tiddlers looked up ahead of the one TiddlyWiki is loading (on the device, or fetched)
 	FETCH_AHEAD = 6,      // ...of which fetched over the network at once ($:/config/cfworker/FetchAhead, the plugin's settings)
-	PUBLIC_READ_TIMEOUT = 5000,
+	PUBLIC_READ_TIMEOUT = 5000,   // ms given to a read from the public site before the worker is asked instead
+	REBUILDING_RETRY = 500,       // ms before the list is asked again while the worker rebuilds it ("rebuilding")
+	STAND_IN_RETRY = 1000,        // ...and after a stand-in for a missing list (the first time, then STAND_IN_RETRY_LATER)
+	STAND_IN_RETRY_LATER = 5000,
+	FORGET_TIMEOUT = 5000,        // ms given to the browser to delete the device's database (cfworkerForgetDevice)
+	// (These go through lib.wait: the tests scale them, a deployed wiki has them as they are)
 	STORE_DB = "cfworker-tiddlers",
 	STORE_VERSION = 2,            // 1: the tiddlers table; 2: the outbox table too ($:/cfworker/outbox.js)
 	STORE_NAME = "tiddlers",
@@ -413,7 +418,7 @@ exports.startup = function() {
 		var controller = typeof AbortController === "function" ? new AbortController() : null,
 			timer = controller && setTimeout(function() {
 				controller.abort();
-			},PUBLIC_READ_TIMEOUT);
+			},lib.wait(PUBLIC_READ_TIMEOUT));
 		return fetch(url,{cache: "no-cache", credentials: sameSite ? "same-origin" : "omit", signal: controller ? controller.signal : undefined})
 			.then(function(response) {
 				return response.ok ? response.json() : false;
@@ -657,10 +662,10 @@ exports.startup = function() {
 				}
 				if(err && ++tries <= lib.REBUILD_RETRIES) {
 					if(lib.isRebuilding(request)) {
-						return setTimeout(fetchList,500);
+						return setTimeout(fetchList,lib.wait(REBUILDING_RETRY));
 					}
 					if(isListStandIn(request)) {
-						return setTimeout(fetchList,tries === 1 ? 1000 : 5000);
+						return setTimeout(fetchList,lib.wait(tries === 1 ? STAND_IN_RETRY : STAND_IN_RETRY_LATER));
 					}
 				}
 				if(err) {
@@ -832,7 +837,7 @@ exports.startup = function() {
 				var request,
 					timer = setTimeout(function() {
 						resolve(true);
-					},5000);
+					},lib.wait(FORGET_TIMEOUT));
 				function done(ok) {
 					clearTimeout(timer);
 					if(!ok) {

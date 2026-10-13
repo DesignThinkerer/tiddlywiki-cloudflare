@@ -191,7 +191,7 @@ const admin3 = await browser.newContext();
 mark = requests.length;
 const C = await open(admin3, `${base}/#Tiddler%2030`, "C", { hidden: true });
 const shownHidden = await waitFor(() => C.evaluate(() => $tw.wiki.getTiddlerText("Tiddler 30", null) !== null), 15000);
-await sleep(2500);
+await sleep(1500);   // (the fill, if it ran hidden, would start within the pause after the list)
 const hiddenGets = tiddlerGets(mark, "C", "public");
 check("a hidden tab loads what it shows and nothing more", shownHidden && JSON.stringify(hiddenGets) === '["Tiddler 30"]' && (await loadedCount(C)) === 1, `${JSON.stringify(hiddenGets.slice(0, 5))}, ${await loadedCount(C)} loaded`);
 // A tiddler deleted elsewhere while the fill is held: not loaded once shown (no error)
@@ -212,7 +212,7 @@ const adminE = await browser.newContext();
 const E = await open(adminE, `${base}/`, "E", { hidden: false });
 await waitFor(async () => (await loadedCount(E)) >= 10, 20000);
 await hide(E);
-await sleep(3000);   // what was under way finishes
+await sleep(3000);   // what was under way finishes (up to READ_AHEAD looked up, FETCH_AHEAD at a time, each slow)
 mark = requests.length;
 await sleep(1500);
 const whileHidden = tiddlerGets(mark, "E", "public").length, loadedWhileHidden = await loadedCount(E);
@@ -230,7 +230,7 @@ const admin4 = await browser.newContext();
 mark = requests.length;
 const D = await open(admin4, `${base}/#Tiddler%2050`, "D");
 const shown50 = await waitFor(() => D.evaluate(() => $tw.wiki.getTiddlerText("Tiddler 50", null) !== null), 15000);
-await sleep(2500);
+await sleep(1500);   // (a fill, if one ran, would start within the pause after the list)
 const offGets = tiddlerGets(mark, "D", "public").concat(tiddlerGets(mark, "D", "worker"));
 check("with $:/config/cfworker/LoadAll set to no, only the tiddler shown is fetched", shown50 && JSON.stringify(offGets) === '["Tiddler 50"]' && (await pending(D)) === 0 && (await loadedCount(D)) === 1,
   `${JSON.stringify(offGets.slice(0, 5))}, ${await pending(D)} pending, ${await loadedCount(D)} loaded`);

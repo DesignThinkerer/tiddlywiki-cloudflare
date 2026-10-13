@@ -33,6 +33,9 @@ var lib = require("$:/cfworker/lib.js");
 // Fields that don't count as "content" when deciding whether two versions really differ
 var BOOKKEEPING_FIELDS = ["revision","bag","recipe","permissions","modified","modifier"];
 
+// ms before a save or delete answered "rebuilding" is sent again (through lib.wait: the tests scale it)
+var REBUILDING_RETRY = 1000;
+
 // The body of a save in the worker's "flat" layout, the only one it stores; the worker appends its
 // own revision, bag and recipe. A field called "fields" stays nested as {fields: value}, the way
 // TiddlyWeb's layout has it: a flat "fields" is where TiddlyWeb's loader looks for nested fields.
@@ -373,7 +376,7 @@ exports.startup = function() {
 				callback: function(err,data,request) {
 					if(err) {
 						if(lib.isRebuilding(request) && ++tries <= lib.REBUILD_RETRIES) {
-							return setTimeout(send,1000);
+							return setTimeout(send,lib.wait(REBUILDING_RETRY));
 						}
 						if(request && request.status === 412) {
 							return resolveConflict(self,title,"save",callback,function(revision) {
@@ -442,7 +445,7 @@ exports.startup = function() {
 				callback: function(err,data,request) {
 					if(err) {
 						if(lib.isRebuilding(request) && ++tries <= lib.REBUILD_RETRIES) {
-							return setTimeout(send,1000);
+							return setTimeout(send,lib.wait(REBUILDING_RETRY));
 						}
 						if(request && request.status === 412) {
 							return resolveConflict(self,title,"delete",callback);

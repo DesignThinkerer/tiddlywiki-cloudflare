@@ -51,6 +51,10 @@ const CORE = "/_plugins/tiddlywikicore.js?v=";
 // The core file taken out of the cache (a copy lost: a browser clearing space, a copy that didn't finish)
 const dropCore = p => p.evaluate(async name => { const c = await caches.open(name); for (const k of await c.keys()) if (k.url.includes("/_plugins/tiddlywikicore.js")) await c.delete(k); }, CACHE);
 const holds = async (p, ...parts) => { const keys = await cached(p); return parts.every(part => keys.some(u => u.includes(part))); };
+// Offline, a tab never settles (a change waiting is retried): the device copy applied is what a load offline has to show
+const deviceApplied = (p, title = "First note", text = "written online") => waitFor(() => p.evaluate(([t, x]) => $tw.wiki.getTiddlerText(t) === x, [title, text]).catch(() => false), 15000);
+const bodyText = p => p.evaluate(() => document.body ? document.body.innerText.replace(/\s+/g, " ").trim() : "").catch(() => "");
+const cachedList = p => p.evaluate(async name => { const c = await caches.open(name); const r = await c.match("/recipes/default/tiddlers.json"); return r ? r.text() : ""; }, CACHE).catch(() => "");
 // How the cache holds a URL: the response's type ("basic" from this site, "cors" from the public one, "opaque" never), or null
 const cachedType = (p, url) => p.evaluate(async ([name, u]) => { const c = await caches.open(name); const r = await c.match(u); return r ? r.type : null; }, [CACHE, url]);
 const got = (tag, from, test) => responses.slice(from).filter(r => r.tag === tag && test(r));
@@ -66,7 +70,7 @@ await settle(A);
 let mark;
 await reload(A);
 check("...and controls the page from the next load, from a versioned address", /\/sw\.js\?v=[\w-]+$/.test((await controller(A)) || ""), JSON.stringify(await controller(A)));
-await sleep(1000);
+await waitFor(() => holds(A, BASE + "/", CORE, "/status", "/recipes/default/tiddlers.json"), 10000);
 const keys1 = await cached(A);
 check("after that load the cache holds the page, the core file, the status file and the tiddler list",
   keys1.some(u => u === BASE + "/") && keys1.some(u => u.includes("/_plugins/tiddlywikicore.js?v=")) && keys1.some(u => u.endsWith("/status")) && keys1.some(u => u.includes("/recipes/default/tiddlers.json")),
@@ -89,7 +93,7 @@ await offline(contextA);
 mark = responses.length;
 const { response: offlineLoad } = await reload(A, { wait: false }).then(r => ({ response: r })).catch(e => ({ response: null, error: e }));
 const booted = await A.waitForFunction(() => window.$tw && $tw.syncer && $tw.wiki.tiddlerExists("$:/core"), null, { timeout: 30000 }).then(() => true).catch(() => false);
-await sleep(2500);
+await deviceApplied(A);
 check("with no network, the wiki opens: the page from the service worker", !!offlineLoad && offlineLoad.status() === 200 && offlineLoad.fromServiceWorker() && booted, `status ${offlineLoad && offlineLoad.status()}`);
 check("...the core file, the status file and the tiddler list from the cache too, the tiddler from the device copy, logged in and writable",
   got("A", mark, r => r.url.includes("/_plugins/tiddlywikicore.js") && r.fromSW && r.status === 200).length === 1 &&
@@ -118,9 +122,9 @@ check("(a tiddler saved elsewhere is listed, not loaded, with the fill off)", aw
 await offline(contextA);
 await reload(A, { wait: false });
 await A.waitForFunction(() => window.$tw && $tw.syncer && $tw.wiki.tiddlerExists("$:/core"), null, { timeout: 30000 });
-await sleep(1500);
+await deviceApplied(A);
 await A.evaluate(() => { new $tw.Story().navigateTiddler("Unseen"); });
-await sleep(4000);
+await sleep(1500);   // (the load fails at once with no network; its retry, a second away in the test pages, would show an alert)
 // (TiddlyWiki's network alert for the failed load isn't shown on the admin wiki, design 2.17; it would have cleared it at once anyway, nothing being unsaved)
 check("a tiddler never loaded on this device, opened offline: still empty, the wiki saying it's offline, no alert, nothing broken",
   await A.evaluate(() => { const t = $tw.wiki.getTiddler("Unseen"); return !!t && t.fields.text === undefined; }) && (await status(A))?.online === "no" && await A.evaluate(() => $tw.wiki.getTiddlersWithTag("$:/tags/Alert").length === 0) && pageErrors.length === 0,
@@ -151,21 +155,24 @@ await addTiddler(A, { title: "Doomed note", text: "to be deleted offline" });
 await addTiddler(A, { title: "Elsewhere note", text: "to be deleted on another device" });
 await settle(A);
 await A.evaluate(() => $tw.syncer.syncFromServer());   // the service worker's copy of the list: with those two, without the next
-await sleep(1500);
+await waitFor(async () => (await cachedList(A)).includes("Elsewhere note"), 10000);
 await addTiddler(A, { title: "Late note", text: "saved just before the network went" });
 await settle(A);
 const staleList = await cachedListTitles(A);
 check("(the service worker's copy of the list predates the last save)", Array.isArray(staleList) && staleList.includes("Doomed note") && !staleList.includes("Late note"), JSON.stringify(staleList));
 const deviceBefore = await deviceTotal(A);
 await offline(contextA);
+const polledBefore = await A.evaluate(() => String($tw.syncer.timestampLastSyncFromServer));
 await A.evaluate(() => $tw.syncer.syncFromServer());
-await sleep(2500);
+await waitFor(() => A.evaluate(t => String($tw.syncer.timestampLastSyncFromServer) !== t, polledBefore), 10000);   // the offline poll answered (the cached list)
+await sleep(300);
 check("a tiddler saved just before the network went is still in the tab after an offline poll, and still on the device",
   (await inTab(A, "Late note")) === "saved just before the network went" && (await onDevice(A, "Late note")) === true && (await status(A))?.online === "no",
   `tab ${JSON.stringify(await inTab(A, "Late note"))}, device ${await onDevice(A, "Late note")}`);
 await reload(A, { wait: false });
 await A.waitForFunction(() => window.$tw && $tw.syncer && $tw.wiki.tiddlerExists("$:/core"), null, { timeout: 30000 });
-await sleep(3000);
+await deviceApplied(A, "Late note", "saved just before the network went");
+await sleep(500);   // (anything the cached list would prune goes as the list is taken)
 check("...and after an offline reload: the device's copy completes the cached list, and nothing is pruned from it",
   (await inTab(A, "Late note")) === "saved just before the network went" && (await onDevice(A, "Late note")) === true && (await deviceTotal(A)) === deviceBefore,
   `tab ${JSON.stringify(await inTab(A, "Late note"))}, device ${await onDevice(A, "Late note")}, ${await deviceTotal(A)} of ${deviceBefore} on the device`);
@@ -173,7 +180,9 @@ await A.evaluate(() => $tw.wiki.deleteTiddler("Doomed note"));
 await waitFor(async () => (await status(A))?.waiting === "1", 10000);
 await reload(A, { wait: false });
 await A.waitForFunction(() => window.$tw && $tw.syncer && $tw.wiki.tiddlerExists("$:/core"), null, { timeout: 30000 });
-await sleep(3000);
+await deviceApplied(A, "Late note", "saved just before the network went");
+await waitFor(async () => (await status(A))?.waiting === "1", 10000);
+await sleep(500);   // (the cached list would bring the deleted tiddler back as it's taken)
 check("a tiddler deleted offline is still gone after an offline reload, the delete still waiting", (await inTab(A, "Doomed note")) === null && (await status(A))?.waiting === "1",
   `tab ${JSON.stringify(await inTab(A, "Doomed note"))}, ${JSON.stringify(await status(A))}`);
 // The worker back, this browser still offline: a tiddler deleted meanwhile (from another device: here, straight at the worker)
@@ -212,8 +221,8 @@ await contextB.close();
 // --- 5. An answer without the worker's mark (Access refusing): shown as it is, never cached ----------
 await site.setBindings({ ACCESS: "" });   // the worker then refuses every request, as it does without Access
 const refusedLoad = await A.reload({ waitUntil: "commit" }).catch(() => null);
-await sleep(1000);
-const refusedBody = await A.evaluate(() => document.body ? document.body.innerText : "").catch(() => "");
+await waitFor(async () => /Access/.test(await bodyText(A)), 10000);
+const refusedBody = await bodyText(A);
 check("online, an answer without the worker's mark is shown as it is (here the worker refusing without Access), through the service worker",
   !!refusedLoad && refusedLoad.status() === 403 && refusedLoad.fromServiceWorker() && /Access/.test(refusedBody), `status ${refusedLoad && refusedLoad.status()}: ${refusedBody.slice(0, 60)}`);
 await offline(contextA);
@@ -234,13 +243,13 @@ await addTiddler(A, {
 });
 await settle(A);
 await reload(A);
-await sleep(1000);
 const helloFile = `/_plugins/${encodeURIComponent(HELLO)}.js?v=`;
+await waitFor(() => holds(A, helloFile), 10000);
 check("a plugin installed: the next load runs it, and its file is in the cache", await A.evaluate(() => window.__helloRan === true) && (await cached(A)).some(u => u.includes(helloFile)), (await cached(A)).map(u => u.replace(BASE, "")).join(", "));
 await offline(contextA);
 await reload(A, { wait: false });
 await A.waitForFunction(() => window.$tw && $tw.syncer && $tw.wiki.tiddlerExists("$:/core"), null, { timeout: 30000 });
-await sleep(1000);
+await waitFor(() => A.evaluate(() => window.__helloRan === true).catch(() => false), 10000);
 check("...and runs offline, from the cache", await A.evaluate(() => window.__helloRan === true));
 await online(contextA);
 
@@ -257,8 +266,9 @@ await cdpA.detach();
 await offline(contextA);
 const dialogsBefore = dialogs.length;
 await reload(A, { wait: false });
-await sleep(3000);
-const bodyNoCore = await A.evaluate(() => document.body ? document.body.innerText.replace(/\s+/g, " ").trim() : "").catch(() => "");
+await waitFor(async () => /core file/.test(await bodyText(A)), 15000);
+await sleep(500);   // (a "Cannot load" dialog, if one came, would come with it)
+const bodyNoCore = await bodyText(A);
 check("no network and no core file on the device: the page says so in a line (open the wiki once online), not the browser's \"Cannot load\" alert",
   /core file/.test(bodyNoCore) && /online/.test(bodyNoCore) && dialogs.length === dialogsBefore, `${JSON.stringify(bodyNoCore.slice(0, 120))}; dialogs: ${dialogs.slice(dialogsBefore).join(" | ")}`);
 await online(contextA);
@@ -288,17 +298,17 @@ check("...cleared: back to the default at the next load", (await swSettings(A))?
 await site.setBindings({ PUBLIC_WIKI_URL: PUB });
 await reload(A);
 await waitFor(async () => { const obj = await site.bucket.get("_page/shell.html"); return !!obj && (await obj.text()).includes(`${PUB}/_plugins/tiddlywikicore.js`); }, 30000);
-await sleep(1500);
+await waitFor(async () => { const obj = await site.bucket.get("baked.html"); return !!obj && (await obj.text()).includes(`${PUB}/_plugins/tiddlywikicore.js`); }, 30000);   // the page built from it
 mark = responses.length;
 await reload(A);
-await sleep(1500);
+await waitFor(() => holds(A, PUB + "/_plugins/tiddlywikicore.js", PUB + helloFile), 10000);   // kept by the service worker
 check("a public wiki: the admin page loads its core and plugin files from the public site", got("A", mark, r => r.url.startsWith(PUB + "/_plugins/") && r.status === 200).length >= 2,
   got("A", mark, r => r.url.startsWith(PUB)).map(r => r.url.replace(PUB, "")).join(", "));
 await offline(contextA);
 mark = responses.length;
 await reload(A, { wait: false });
 const bootedPublic = await A.waitForFunction(() => window.$tw && $tw.syncer && $tw.wiki.tiddlerExists("$:/core"), null, { timeout: 30000 }).then(() => true).catch(() => false);
-await sleep(1500);
+await waitFor(() => A.evaluate(() => window.__helloRan === true).catch(() => false), 10000);
 check("...and offline, the wiki opens with them from the cache, the plugin running", bootedPublic && await A.evaluate(() => window.__helloRan === true) &&
   got("A", mark, r => r.url.startsWith(PUB + "/_plugins/") && r.fromSW).length >= 2, got("A", mark, r => r.url.startsWith(PUB)).map(r => `${r.fromSW ? "sw" : "net"} ${r.status} ${r.url.replace(PUB, "").split("?")[0]}`).join(", "));
 const publicFiles = (await cached(A)).filter(u => u.startsWith(PUB + "/_plugins/"));
@@ -325,14 +335,15 @@ corsOn = false;
 await addTiddler(A, plugin2("exports.name='hello2';exports.platforms=['browser'];exports.synchronous=true;exports.startup=function(){window.__hello2Ran=1;};"));
 await settle(A);
 await reload(A);
-await sleep(1500);
+await waitFor(() => A.evaluate(() => window.__hello2Ran === 1).catch(() => false), 10000);
+await sleep(700);   // (the service worker keeps a file as the page loads it: long enough for that)
 check("without the public site's CORS header, a plugin file still loads and runs online, as a plain script, and isn't kept", await A.evaluate(() => window.__hello2Ran === 1) && !(await cached(A)).some(u => u.includes(hello2File)),
   (await cached(A)).filter(u => u.startsWith(PUB)).map(u => u.replace(PUB, "")).join(", "));
 corsOn = true;
 await addTiddler(A, plugin2("exports.name='hello2';exports.platforms=['browser'];exports.synchronous=true;exports.startup=function(){window.__hello2Ran=2;};"));   // a new version: a new address
 await settle(A);
 await reload(A);
-await sleep(1500);
+await waitFor(() => holds(A, hello2File), 10000);
 const hello2Url = (await cached(A)).find(u => u.includes(hello2File));
 check("...and kept, as a real answer, once the header is there", await A.evaluate(() => window.__hello2Ran === 2) && !!hello2Url && (await cachedType(A, hello2Url)) === "cors", `${hello2Url ? hello2Url.replace(PUB, "") : "not cached"}: ${hello2Url && await cachedType(A, hello2Url)}`);
 await A.evaluate(t => $tw.wiki.deleteTiddler(t), HELLO2);
@@ -342,7 +353,7 @@ check("the browser was asked to keep this site's storage; the status says what i
 await A.evaluate(t => $tw.wiki.deleteTiddler(t), HELLO);
 await settle(A);
 await reload(A);
-await sleep(1500);
+await waitFor(async () => !(await cached(A)).some(u => u.includes(helloFile)), 10000);
 check("the plugin deleted: the next load no longer refers to its file, which leaves the cache", !(await cached(A)).some(u => u.includes(helloFile)), (await cached(A)).map(u => u.replace(BASE, "").replace(PUB, "pub:")).join(", "));
 
 // --- 9. This device: the plugin's device tab (design 1.14) --------------------------------------------
@@ -372,7 +383,7 @@ async function measure(p) {
 }
 const said = p => p.evaluate(t => $tw.wiki.tiddlerExists(t) ? $tw.wiki.renderTiddler("text/plain", t).replace(/\s+/g, " ").trim() : "", DEVICE_SAID);
 await reload(A);
-await sleep(1500);
+await waitFor(async () => (await storageSaid(A)) !== "", 10000);
 check("the plugin has a device tab, a shadow like its others; the page doesn't ask the browser to keep the site's data at load, and says what it has promised so far",
   await A.evaluate(d => $tw.wiki.isShadowTiddler(d) && $tw.wiki.getTiddlerList("$:/plugins/cfworker/admin").includes("device"), DEVICE) && (await A.evaluate(() => window.__persistCalls)) === 0 && (await storageSaid(A)) === "best-effort",
   `persist() calls ${await A.evaluate(() => window.__persistCalls)}, storage ${await storageSaid(A)}`);
@@ -387,7 +398,7 @@ check("Measure, offline: the change waiting in the outbox is counted (the tab ne
 await online(contextA);
 await waitFor(async () => (await status(A))?.waiting === "0", 15000);
 await settle(A);
-await sleep(2000);   // (the fill done: the copy complete)
+await waitFor(async () => (await deviceCount(A)) >= await listedCount(), 15000);   // the fill done: the copy complete
 const onlineMeasure = await measure(A);
 const kept = await deviceCount(A), listed = await listedCount();
 const copyLine = onlineMeasure.text.match(/(\d+) of (\d+) tiddlers/);
@@ -403,7 +414,7 @@ check("...what the browser says: this site's use of what it allows, and that it 
 await addTiddler(C, { title: "$:/SiteSubtitle", text: "set on another device" });
 await settle(C);
 await reload(A);
-await sleep(2000);
+await waitFor(async () => (await deviceCount(A)) >= (await listedCount()) - 1, 15000);   // the fill done (the subtitle is in the page, not the copy)
 const carriedMeasure = await measure(A);
 const carriedLine = carriedMeasure.text.match(/(\d+) of (\d+) tiddlers kept[^;]*/);
 check("...a tiddler the page carries (the site subtitle, set on another device) is listed, not in the copy, and counted apart as in the page itself",
@@ -429,7 +440,7 @@ check("...promised: the tab says so, the measure too, and the dropdown no longer
 const keysBefore = await cached(A);
 await A.evaluate(() => { window.__stillHere = 1; $tw.rootWidget.dispatchEvent({ type: "tm-cfworker-device-forget" }); });
 await waitFor(async () => /waiting/.test(await said(A)), 10000);
-await sleep(1000);
+await sleep(500);   // (a reload, if one came, would come at once)
 check("Forget this device's copy, with a change waiting: refused, saying how many, nothing removed, no reload",
   /1 change\b.*waiting/.test(await said(A)) && (await A.evaluate(() => window.__stillHere)) === 1 && (await deviceCount(A)) > 0 && (await deviceCount(A, "outbox")) === 1 && (await cached(A)).length === keysBefore.length,
   `${await said(A)} — device ${await deviceCount(A)}, outbox ${await deviceCount(A, "outbox")}, cache ${(await cached(A)).length}/${keysBefore.length}`);
@@ -441,7 +452,7 @@ const publicMark = site.publicRequests.length;
 await A.evaluate(() => { window.__stillHere = 1; $tw.rootWidget.dispatchEvent({ type: "tm-cfworker-device-forget" }); });
 const reloaded = await waitFor(() => A.evaluate(() => window.__stillHere === undefined && !!window.$tw).catch(() => false), 20000);
 await ready(A);
-await sleep(2500);
+await waitFor(async () => (await deviceCount(A)) >= (await listedCount()) - 1 && await holds(A, BASE + "/", CORE), 15000);   // the copy and the files back
 const fetchedAgain = site.publicRequests.slice(publicMark);
 check("...with nothing waiting: the device copy, the outbox and the service worker's files are gone, the page reloads, and the copy and the files are fetched again",
   reloaded && fetchedAgain.some(u => u.includes("/_plugins/tiddlywikicore.js")) && fetchedAgain.some(u => u.startsWith("/recipes/default/tiddlers/")) && (await deviceCount(A)) > 0,

@@ -2,7 +2,7 @@
 // Covers edit-conflict protection, baking, public-cache purges, the 304 and the request savings.
 // Run: npm run test:tabs   (WIKI_HTML=path/to/your/index.html to test with your own wiki file)
 import http from "node:http";
-import { createChecks, createWatcher, finish, launchBrowser, listen, readWikiFile, settle as settleTab, startSite } from "./browser-harness.mjs";
+import { createChecks, createWatcher, FAST, finish, launchBrowser, listen, readWikiFile, settle as settleTab, startSite } from "./browser-harness.mjs";
 
 const outbound = [];
 // The public site's stand-in can leave out the CORS header, or serve an older copy of a tiddler
@@ -39,7 +39,7 @@ async function openTab(tag) {
     if (q.method() === "PUT" || q.method() === "DELETE") {
       const h = q.headers();
       net.push({ tag, method: q.method(), path: decodeURIComponent(new URL(q.url()).pathname), status: r.status(),
-        ifMatch: h["if-match"] || "", ifNoneMatch: h["if-none-match"] || "" });
+        ifMatch: h["if-match"] || "", ifNoneMatch: h["if-none-match"] || "", at: Date.now() });
     }
   });
   page.on("console", m => { if (m.type() === "error" && !m.text().startsWith("Failed to load resource") && !(tag === "D" && m.text().includes("CORS"))) pageErrors.push(`${tag} console: ${m.text()}`); });
@@ -58,7 +58,10 @@ async function create(page, title, text, extra = {}) {
     $tw.wiki.addTiddler(new $tw.Tiddler($tw.wiki.getCreationFields(), extra, { title, text }, $tw.wiki.getModificationFields()));
   }, [title, text, extra]);
 }
+// (A click in a tab behind another takes seconds: the browser throttles the frames Playwright waits
+// on before clicking. The tab is brought to the front first, as a user's would be.)
 async function startEdit(page, title) {
+  await page.bringToFront();
   await page.evaluate(t => new $tw.Story().navigateTiddler(t), title);
   const button = page.locator(`.tc-tiddler-frame[data-tiddler-title="${title}"] button[aria-label="Edit this tiddler"]`).first();
   // (A click lost to a refresh of the story river on a loaded machine: clicked again)
@@ -70,6 +73,7 @@ async function startEdit(page, title) {
   }
 }
 async function finishEdit(page, title, text, newTitle) {
+  await page.bringToFront();
   const draftTitle = await page.evaluate(([t, text, newTitle]) => {
     const d = $tw.wiki.findDraft(t);
     const fields = { text };
@@ -82,6 +86,7 @@ async function finishEdit(page, title, text, newTitle) {
 }
 // Deletes the tiddler from its open editor (TiddlyWiki asks for confirmation)
 async function deleteFromEditor(page, title) {
+  await page.bringToFront();
   const draftTitle = await page.evaluate(t => $tw.wiki.findDraft(t), title);
   page.once("dialog", dialog => dialog.accept());
   await page.locator(`.tc-tiddler-frame[data-tiddler-title="${draftTitle}"] button[aria-label="Delete this tiddler"]`).first().click();
@@ -165,9 +170,13 @@ await sync(A); await sync(B);
 mark = net.length;
 await editViaUI(A, "Alpha", "r1");
 await editViaUI(A, "Alpha", "r2");
+const r3At = Date.now();
 await editViaUI(A, "Alpha", "r3");
 await settle(A);
 check("rapid same-tab edits: no 412", !netSince(mark).some(x => x.status === 412), JSON.stringify(netSince(mark).filter(x=>x.status===412)));
+// (TiddlyWiki saves a tiddler saved less than a second before only after that second: 50 ms in the test pages, browser-harness.mjs)
+const r3Sent = netSince(mark).filter(x => x.tag === "A" && x.method === "PUT" && x.path.endsWith("/Alpha")).map(x => x.at - r3At);
+check("...the third edit sent within 600 ms of its save (TiddlyWiki's throttle, shortened in the test pages)", r3Sent.length >= 1 && r3Sent[r3Sent.length - 1] < 600, `sends at ${r3Sent.join(", ")} ms`);
 check("rapid same-tab edits: server has the last one", (await server("Alpha"))?.text === "r3");
 check("rapid same-tab edits: no conflict copies created", (await conflictCopies(A, "Alpha")).length === 2);
 await sync(B);
@@ -473,7 +482,7 @@ check("...and shows no error", (await alerts(A)).length === 0, JSON.stringify(aw
 await A.route("**/recipes/default/tiddlers.json*", route => route.fulfill({ status: 503, body: "Worker exceeded resource limits" }));
 reqMark = requests.length;
 await A.evaluate(() => $tw.syncer.syncFromServer());
-await new Promise(r => setTimeout(r, 2500));
+await new Promise(r => setTimeout(r, FAST.errorRetry * 1.5));   // TiddlyWiki's own retry comes once in this; the quiet retries would be many
 const plainRetries = requests.slice(reqMark).filter(r => r.tag === "A" && r.url.includes("tiddlers.json")).length;
 check("another 503 isn't retried quietly: TiddlyWiki reports it as before",
   plainRetries <= 2 && (await alerts(A)).some(text => text.includes("503")), `${plainRetries} list requests, alerts ${JSON.stringify(await alerts(A))}`);
@@ -762,8 +771,9 @@ await M.route(url => url.origin === PUB && url.pathname.endsWith("/tiddlers/Slow
 const slowStart = Date.now();
 await M.goto(base + "/");
 const slowLoaded = await M.waitForFunction(() => window.$tw && $tw.wiki && $tw.wiki.getTiddlerText("Slow public copy") === "loaded from the worker", null, { timeout: 30000 }).then(() => true, () => false);
-check("a public site that doesn't answer doesn't hold up loading: the text comes from the worker after a short wait",
-  slowLoaded, `${slowLoaded ? "loaded" : "not loaded"} after ${Math.round((Date.now() - slowStart) / 1000)} s`);
+const slowMs = Date.now() - slowStart;
+check("a public site that doesn't answer doesn't hold up loading: the text comes from the worker after a short wait (within 3 s here: the 5 s wait is scaled for the tests)",
+  slowLoaded && slowMs < 3000, `${slowLoaded ? "loaded" : "not loaded"} after ${slowMs} ms`);
 await M.close();
 
 // A conflict copy of a tiddler whose title is near the worker's limit (999 bytes): the copy's name,

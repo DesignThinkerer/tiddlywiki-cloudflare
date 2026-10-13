@@ -94,4 +94,27 @@ exports.isRebuilding = function(request) {
 	return !!request && request.status === 503 && request.getResponseHeader("X-Tiddler-List") === "rebuilding";
 };
 
+// The waits the modules sit through — the publisher's pause after a save, the time given to a
+// public read before the worker is asked instead, the retries while the worker rebuilds the list —
+// are constants in the modules, passed through wait().
+// $:/config/cfworker/TestTimeScale, a fraction, scales them all: the test suites put it in their
+// pages (test/browser-harness.mjs), so the same things happen sooner. Unset, as in a deployed wiki,
+// the constants apply as they are. A wait the owner set in the plugin's settings tab is taken as
+// it is, never scaled (design 2.25).
+var TIME_SCALE = "$:/config/cfworker/TestTimeScale",
+	timeScale = null;
+
+exports.timeScale = function() {
+	if(timeScale === null) {
+		var value = parseFloat($tw.wiki.getTiddlerText(TIME_SCALE,""));
+		timeScale = value > 0 && value < 1 ? value : 1;
+	}
+	return timeScale;
+};
+
+// ms, as a module waits by default, scaled for the tests
+exports.wait = function(ms) {
+	return Math.max(1,Math.round(ms * exports.timeScale()));
+};
+
 })();
