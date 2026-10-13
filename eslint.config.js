@@ -17,12 +17,14 @@ export default [
   {
     // The worker (Cloudflare's runtime: the service worker globals), the build and the tests (Node)
     files: ["src/worker/**/*.js", "build.mjs", "tools/**/*.mjs", "eslint.config.js"],
+    ignores: ["tools/screenshot.mjs"],
     languageOptions: { ecmaVersion: 2024, sourceType: "module", globals: { ...globals.serviceworker, ...globals.node } },
     rules: RULES
   },
   {
-    // The tests: Node, with code that runs in the browser's tabs (page.evaluate) in the same files
-    files: ["test/**/*.mjs"],
+    // The tests, and the screenshot tool built on them: Node, with code that runs in the browser's
+    // tabs (page.evaluate) in the same files
+    files: ["test/**/*.mjs", "tools/screenshot.mjs"],
     languageOptions: { ecmaVersion: 2024, sourceType: "module", globals: { ...globals.node, ...globals.browser, $tw: "readonly" } },
     rules: RULES
   },

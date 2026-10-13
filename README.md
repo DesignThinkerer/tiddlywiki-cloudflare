@@ -34,7 +34,7 @@ About ten minutes, in this order. Section 2 has each step in full, and the wiki'
 
 ![The admin wiki: the Control Panel's Cloudflare tab after "Check the setup", every line fine](docs/admin-wiki.png)
 
-*The admin wiki: TiddlyWiki as it is, with the Cloudflare tab the worker adds, after* Check the setup. *(From a local run of the tests, so the addresses are local ones.)*
+*The admin wiki: TiddlyWiki as it is, with the Cloudflare tab the worker adds, after* Check the setup. *(Taken from the test setup by* `npm run screenshot`*, so the addresses are local ones.)*
 
 This README covers the setup, operating the wiki, troubleshooting, the limits and the tests. How the worker works, and why it's built this way, are in [docs/design.md](docs/design.md); what each test suite covers, in [docs/tests.md](docs/tests.md).
 
@@ -375,6 +375,7 @@ npm test                             # build (worker.js and seed/empty.html), ru
 |---|---|
 | `npm run build` | Writes `worker.js`, and `seed/empty.html`, an empty TiddlyWiki with the TiddlyWeb plugin, from the installed `tiddlywiki` package (kept when it's already of that version; `node tools/build-wiki.mjs --force` rebuilds it). |
 | `npm run check:build` | Fails, writing nothing, if `worker.js` isn't what the sources build (run it before committing, so `worker.js` is never out of date). |
+| `npm run screenshot` | Writes `docs/admin-wiki.png`, the screenshot at the top of this README, from a wiki run through the test setup in Chromium (`tools/screenshot.mjs`): run it when the Cloudflare tab changes. |
 | `npm run lint` | ESLint, with its recommended rules only: a name that doesn't exist (a function moved without its import, say), an unused one, an import assigned to. CI runs it first. |
 | `npm run test:fast` | The six suites that need no browser (a few minutes). |
 | `npm run test:browser` | The ten suites that run a real TiddlyWiki in Chromium. |
@@ -406,11 +407,12 @@ GitHub runs the same two groups, as two jobs side by side, for every pull reques
 ├── tools/build-wiki.mjs      builds it from the tiddlywiki package (npm run build)
 ├── tools/restore.mjs         merges a clone of the backup into one file any TiddlyWiki imports (2.4)
 ├── tools/run-suites.mjs      runs test suites one after the other, each to the end, with a summary (npm test); their output under test-results/, not committed
+├── tools/screenshot.mjs      takes the README's screenshot from a wiki run through the test setup (npm run screenshot)
 ├── docs/
 │   ├── design.md             how the worker works, and why it's built this way
 │   ├── tests.md              what each test suite covers, the R2 calls per kind of request, the CPU budgets
 │   ├── external-plugins.md   design notes for plugin files (design 1.8)
-│   └── admin-wiki.png        the screenshot at the top of this README
+│   └── admin-wiki.png        GENERATED: the screenshot at the top of this README (npm run screenshot)
 ├── .github/workflows/ci.yml  runs the tests on GitHub for every pull request and push to main, keeping a failed job's test-results/
 ├── src/
 │   ├── worker/               the worker's source, one module per concern (below)
