@@ -63,7 +63,7 @@ check("the first visit registers the service worker", registered && await A.eval
 await waitFor(() => A.evaluate(async () => { const r = await navigator.serviceWorker.getRegistration(); return !!(r && r.active); }), 15000);
 await addTiddler(A, { title: "First note", text: "written online" });
 await settle(A);
-let mark = responses.length;
+let mark;
 await reload(A);
 check("...and controls the page from the next load, from a versioned address", /\/sw\.js\?v=[\w-]+$/.test((await controller(A)) || ""), JSON.stringify(await controller(A)));
 await sleep(1000);
@@ -211,7 +211,6 @@ await contextB.close();
 
 // --- 5. An answer without the worker's mark (Access refusing): shown as it is, never cached ----------
 await site.setBindings({ ACCESS: "" });   // the worker then refuses every request, as it does without Access
-mark = responses.length;
 const refusedLoad = await A.reload({ waitUntil: "commit" }).catch(() => null);
 await sleep(1000);
 const refusedBody = await A.evaluate(() => document.body ? document.body.innerText : "").catch(() => "");
@@ -389,7 +388,6 @@ await online(contextA);
 await waitFor(async () => (await status(A))?.waiting === "0", 15000);
 await settle(A);
 await sleep(2000);   // (the fill done: the copy complete)
-mark = responses.length;
 const onlineMeasure = await measure(A);
 const kept = await deviceCount(A), listed = await listedCount();
 const copyLine = onlineMeasure.text.match(/(\d+) of (\d+) tiddlers/);

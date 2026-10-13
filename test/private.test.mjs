@@ -129,7 +129,6 @@ check("...still without a request elsewhere", elsewhere("B").length === 0 && pub
 
 // --- 8. A public site given afterwards, in the dashboard: the next load takes it, nothing to migrate --
 bucket = await site.setBindings({ PUBLIC_WIKI_URL: PUB });
-mark = requests.length;
 await reload(A);
 check("with PUBLIC_WIKI_URL set, the next load rebuilds the page with the public address, and every tiddler is still there",
   await A.evaluate(([pub, title]) => $tw.wiki.getTiddlerText("$:/cfworker/public-url") === pub + "/" && $tw.wiki.getTiddlerText(title) === "Hello from a private wiki", [PUB, "First note"]) &&
@@ -137,7 +136,6 @@ check("with PUBLIC_WIKI_URL set, the next load rebuilds the page with the public
 const republished = await waitFor(async () => (await text(SHELL)).includes(`<script src="${PUB}${CORE_PATH}"`), 30000);
 check("...the admin wiki publishes the page again, now loading the core from the public site", republished, (await text(SHELL)).match(/<script src="[^"]*tiddlywikicore[^"]*"/)?.[0]);
 await sleep(1500);
-mark = requests.length;
 body = await (await reload(A)).body();
 check("...and the page loads its core and plugin files from there", body.toString().includes(`<script src="${PUB}${CORE_PATH}"`) && body.toString().includes(`<script src="${PUB}${helloPath}`),
   body.toString().match(/<script src="[^"]*hello[^"]*"/)?.[0] || "no plugin tag");
