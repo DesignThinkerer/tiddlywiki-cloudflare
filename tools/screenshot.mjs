@@ -3,6 +3,8 @@
 // test setup (test/browser-harness.mjs: the worker in Miniflare, the stand-in for the public site,
 // GitHub and Cloudflare's API imitated), so the addresses in the picture are local ones. Run it
 // when the tab changes: npm run screenshot (after npm run build; CHROMIUM_PATH as for the tests).
+// The picture is written only when every line of the check is fine: otherwise it says which aren't,
+// leaves the picture as it is, and exits 1.
 import { fileURLToPath } from "node:url";
 import { launchBrowser, readWikiFile, settle, startSite, waitFor } from "../test/browser-harness.mjs";
 
@@ -64,10 +66,14 @@ if (!checked) throw new Error("the setup check didn't finish");
 await page.evaluate(() => $tw.wiki.filterTiddlers("[tag[$:/tags/Alert]]").forEach(t => $tw.wiki.deleteTiddler(t)));
 await page.evaluate(() => window.scrollTo(0, 0));
 await new Promise(r => setTimeout(r, 1500));
-await page.screenshot({ path: OUT });
 const lines = await page.evaluate(() => $tw.wiki.renderTiddler("text/plain", "$:/temp/cfworker/ControlPanel").match(/[✓✗–] [^✓✗–]+/g) || []);
 const wrong = lines.filter(l => !l.startsWith("✓"));
-console.log(`${OUT}: ${lines.length} lines in the check${wrong.length ? ", NOT all fine: " + wrong.join(" | ") : ", all fine"}`);
+if (wrong.length) {
+  console.error(`NOT taken: ${wrong.length} of ${lines.length} lines in the check aren't fine: ${wrong.join(" | ")} (${OUT} left as it is)`);
+} else {
+  await page.screenshot({ path: OUT });
+  console.log(`${OUT}: ${lines.length} lines in the check, all fine`);
+}
 await browser.close();
 await site.close();
 process.exit(wrong.length ? 1 : 0);

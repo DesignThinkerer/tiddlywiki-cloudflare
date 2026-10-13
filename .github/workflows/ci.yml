@@ -1,9 +1,9 @@
 # Runs the tests for every pull request and every push to main. Two jobs side by side: the worker
 # suites finish in a few minutes; the browser suites (a real TiddlyWiki in Chromium) take longer.
-# Every suite runs to the end (tools/run-suites.mjs), and a failed job uploads test-results/ — each
-# suite's log and, for a browser suite that failed, the requests its pages made and a Playwright
-# trace of each browser context — so a failure on the runner can be read rather than guessed at
-# (README 6, design 2.24).
+# Every suite runs to the end (tools/run-suites.mjs), and a job that fails, or is cancelled by its
+# timeout, uploads test-results/ — each suite's log and, for a browser suite that failed, the
+# requests its pages made and a Playwright trace of each browser context — so a failure on the
+# runner can be read rather than guessed at (README 6, design 2.24).
 name: CI
 
 on:
@@ -39,7 +39,7 @@ jobs:
       - run: npm run check:build
       - run: npm run test:fast
       - uses: actions/upload-artifact@v4
-        if: failure()
+        if: failure() || cancelled()
         with:
           name: worker-test-results
           path: test-results/
@@ -60,7 +60,7 @@ jobs:
       - run: npx playwright install --with-deps chromium
       - run: npm run test:browser
       - uses: actions/upload-artifact@v4
-        if: failure()
+        if: failure() || cancelled()
         with:
           name: browser-test-results
           path: test-results/

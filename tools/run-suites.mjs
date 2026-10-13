@@ -1,7 +1,11 @@
 // Runs test suites and reports every failure, not only the first: each suite's output goes to the
 // terminal and to test-results/<suite>.log, a failing suite doesn't stop the next, and the summary
 // names what failed. Exits 1 if any suite failed.
-// Usage: node tools/run-suites.mjs [--parallel <n>] <suite>...   (a suite is test/<suite>.test.mjs)
+// Usage: node tools/run-suites.mjs [--parallel <n>] [--timeout <seconds>] <suite>...   (a suite is test/<suite>.test.mjs)
+// --timeout <seconds> stops a suite still running after that (15 minutes by default) and counts it
+// as failed: a suite that hangs (a wait with no limit, a browser that never answers) would otherwise
+// run to the CI job's timeout, which cancels the job. Stopped with SIGTERM, on which the browser
+// harness leaves its evidence (below), then SIGKILL five seconds later if it's still there.
 // --parallel <n> runs n suites at once (1 by default: one after the other, as CI runs them). Every
 // suite takes free ports and its own temporary folder, and writes its own files under test-results/,
 // so they can share a machine; what they share is its CPU, and a timing check that passes alone can
@@ -17,23 +21,27 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const RESULTS = path.join(ROOT, "test-results");
-const USAGE = "Usage: node tools/run-suites.mjs [--parallel <n>] <suite>...   (test/<suite>.test.mjs; --parallel <n>: n suites at once, 1 by default)";
+const DEFAULT_TIMEOUT = 900;   // seconds a suite may run
+const USAGE = "Usage: node tools/run-suites.mjs [--parallel <n>] [--timeout <seconds>] <suite>...   (test/<suite>.test.mjs; --parallel <n>: n suites at once, 1 by default; --timeout: seconds a suite may run, 900 by default)";
 
 const suites = [];
-let parallel = 1;
+let parallel = 1, timeout = DEFAULT_TIMEOUT;
 const args = process.argv.slice(2);
 for (let i = 0; i < args.length; i++) {
   const arg = args[i];
-  const value = arg.startsWith("--parallel=") ? arg.slice("--parallel=".length) : arg === "--parallel" ? args[++i] : null;
-  if (value === null) {
+  const option = /^--(parallel|timeout)(?:=(.*))?$/.exec(arg);
+  if (!option) {
     suites.push(arg);
     continue;
   }
-  parallel = Number(value);
-  if (!Number.isInteger(parallel) || parallel < 1) {
-    console.error(`--parallel takes a whole number of suites to run at once, 1 or more; got ${JSON.stringify(value)}.\n${USAGE}`);
+  const value = option[2] !== undefined ? option[2] : args[++i];
+  const n = Number(value);
+  if (!Number.isInteger(n) || n < 1) {
+    console.error(`--${option[1]} takes a whole number of ${option[1] === "parallel" ? "suites to run at once" : "seconds"}, 1 or more; got ${JSON.stringify(value)}.\n${USAGE}`);
     process.exit(2);
   }
+  if (option[1] === "parallel") parallel = n;
+  else timeout = n;
 }
 if (suites.length === 0) {
   console.error(USAGE);
@@ -55,7 +63,12 @@ function run(suite, live) {
     if (live) console.log(`\n=== ${suite} ===`);
     else console.log(`started ${suite}`);
     const child = spawn(process.execPath, [file], { cwd: ROOT, env: process.env, stdio: ["ignore", "pipe", "pipe"] });
-    let summary = "";
+    let summary = "", timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGTERM");
+      setTimeout(() => child.kill("SIGKILL"), 5000).unref();
+    }, timeout * 1000);
     for (const stream of [child.stdout, child.stderr]) {
       stream.on("data", chunk => {
         if (live) process.stdout.write(chunk);
@@ -66,9 +79,11 @@ function run(suite, live) {
       });
     }
     child.on("close", code => {
+      clearTimeout(timer);
       log.end();
       if (!live) process.stdout.write(`\n=== ${suite} ===\n${Buffer.concat(chunks)}`);
-      resolve({ suite, ok: code === 0, seconds: Math.round((Date.now() - started) / 1000), note: summary || (code === 0 ? "" : `exit ${code}`) });
+      const note = timedOut ? `timed out after ${timeout} s${summary ? ` (${summary})` : ""}` : summary || (code === 0 ? "" : `exit ${code}`);
+      resolve({ suite, ok: code === 0 && !timedOut, seconds: Math.round((Date.now() - started) / 1000), note });
     });
   });
 }

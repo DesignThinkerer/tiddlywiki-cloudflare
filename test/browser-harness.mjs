@@ -350,6 +350,7 @@ export async function finish({ check, results, pageErrors, browser, site, note =
   if (passed && !process.env.TRACE) {
     for (const context of [...tracing.contexts]) await stopTrace(context);
     fs.rmSync(TRACES, { recursive: true, force: true });
+    fs.rmSync(path.join(RESULTS, `${SUITE}.requests.log`), { force: true });   // (a failed run's, stale now)
   } else await leaveEvidence();
   await browser.close();
   await site.close();
@@ -373,3 +374,9 @@ for (const event of ["unhandledRejection", "uncaughtException"]) {
     process.exit(1);
   });
 }
+// So does one the runner stops (tools/run-suites.mjs, its --timeout: SIGTERM)
+process.on("SIGTERM", async () => {
+  console.error("stopped by the runner (its timeout)");
+  await leaveEvidence().catch(() => {});
+  process.exit(1);
+});

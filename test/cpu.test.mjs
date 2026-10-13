@@ -12,8 +12,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const WORKER = fileURLToPath(new URL("../worker.js", import.meta.url));
 // worker.js keeps these to itself: a copy that exports them
 const copy = path.join(os.tmpdir(), `worker-cpu-${process.pid}.mjs`);
-fs.writeFileSync(copy, fs.readFileSync(WORKER, "utf8") + "\nexport { readSave, backupJob };\n");
-const { readSave, backupJob } = await import(pathToFileURL(copy).href);
+fs.writeFileSync(copy, fs.readFileSync(WORKER, "utf8") + "\nexport { readSave, backupJob, updateList };\n");
+const { readSave, backupJob, updateList } = await import(pathToFileURL(copy).href);
 fs.unlinkSync(copy);
 
 const results = [];
@@ -71,6 +71,24 @@ const backupCpu = await measure(() => backupJob(env, job()));
 globalThis.fetch = realFetch;
 check(`backing up a ${size} plugin from its R2 copy: at most 2.5× JSON.parse of it`,
   sentBytes > stored.length && backupCpu <= 2.5 * reference, `${ratio(backupCpu)}, request ${(sentBytes / 1e6).toFixed(1)} MB`);
+
+// 3. A save's list update: the whole tiddler list read, changed and written again (README 5 calls it
+// a save's largest cost, about 1 ms per 400–500 tiddlers), for a wiki of 2,000 tiddlers
+const LIST_KEY = "recipes/default/tiddlers.json";
+const entries = Array.from({ length: 2000 }, (_, i) => ({
+  title: `Tiddler ${i}`, tags: ["one", "two words"], type: "text/vnd.tiddlywiki", modified: "20261013120000000", created: "20261013120000000",
+  bag: "default", recipe: "default", revision: String(1791000000000 + i), color: "red", caption: `Caption of tiddler ${i}`, _is_skinny: ""
+}));
+const listBytes = encoder.encode(JSON.stringify(entries));
+const listReference = await measure(() => JSON.parse(decoder.decode(listBytes)));
+const listEnv = { WIKI_BUCKET: {
+  get: async k => k === LIST_KEY ? { etag: "list-1", httpEtag: '"list-1"', text: async () => decoder.decode(listBytes) } : null,
+  put: async () => ({ etag: "list-2", httpEtag: '"list-2"' }),
+  head: async () => null
+} };
+const listCpu = await measure(() => updateList(listEnv, {}, "Tiddler 1000", { title: "Tiddler 1000", tags: ["one"], text: "changed" }, "1791000099999"));
+check(`a save's list update for a wiki of ${entries.length} tiddlers (${Math.round(listBytes.length / 1e3)} KB): at most 3× JSON.parse of the list`,
+  listCpu <= 3 * listReference, `${listCpu.toFixed(2)} ms, ${(listCpu / listReference).toFixed(2)}× JSON.parse (${listReference.toFixed(2)} ms); ${Math.round(entries.length / listCpu)} tiddlers per ms of CPU`);
 
 console.log(`\n${results.filter(Boolean).length}/${results.length} passed`);
 process.exit(results.every(Boolean) ? 0 : 1);

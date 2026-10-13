@@ -721,8 +721,8 @@ check("awkward titles (comma, %, #, &, +, accents, emoji, spaces, quotes, slashe
 // wrangler.toml is part of the repository (the worker's names and settings, no secret in it: those are
 // set as secrets); Wrangler's local files aren't
 const ignored = fs.readFileSync(path.join(ROOT, ".gitignore"), "utf8").split(/\r?\n/).map(l => l.trim());
-const missing = [".dev.vars", ".wrangler/"].filter(p => !ignored.includes(p));
-check(".gitignore covers .dev.vars and .wrangler/, and not wrangler.toml", missing.length === 0 && !ignored.includes("wrangler.toml") && fs.existsSync(path.join(ROOT, "wrangler.toml")),
+const missing = [".dev.vars", ".wrangler/", "restore.json", "wiki/"].filter(p => !ignored.includes(p));
+check(".gitignore covers .dev.vars and .wrangler/, restore.json and wiki/ (what a restore leaves, README 2.4), and not wrangler.toml", missing.length === 0 && !ignored.includes("wrangler.toml") && fs.existsSync(path.join(ROOT, "wrangler.toml")),
   missing.length ? "missing: " + missing.join(", ") : ignored.includes("wrangler.toml") ? "wrangler.toml is ignored" : fs.existsSync(path.join(ROOT, "wrangler.toml")) ? "" : "no wrangler.toml");
 const toml = fs.existsSync(path.join(ROOT, "wrangler.toml")) ? fs.readFileSync(path.join(ROOT, "wrangler.toml"), "utf8") : "";
 const tomlActive = toml.split(/\r?\n/).filter(l => !l.trim().startsWith("#")).join("\n");   // (what Wrangler reads: comments aside)
@@ -777,6 +777,21 @@ check("the runner takes --parallel <n> (not as a suite's name), runs every suite
   parallelSummary.trim().replace(/\s+/g, " ").slice(0, 200) || parallelRun.out.slice(-200));
 const noParallel = runner("--parallel", "0", "cpu");
 check("...and refuses a parallel count under 1", noParallel.code === 2 && /parallel/.test(noParallel.out), `exit ${noParallel.code}: ${noParallel.out.slice(0, 120)}`);
+// --timeout <seconds>: a suite still running after that is stopped and counted as failed, so a
+// suite that hangs doesn't run to the job's timeout (a temporary suite that doesn't end by itself)
+const hangSuite = `hang-${process.pid}`;
+fs.writeFileSync(path.join(ROOT, "test", `${hangSuite}.test.mjs`), "console.log('hanging');\nsetTimeout(() => {}, 20000);\n");
+let timedOut;
+try {
+  timedOut = runner("--timeout", "1", hangSuite);
+} finally {
+  fs.rmSync(path.join(ROOT, "test", `${hangSuite}.test.mjs`), { force: true });
+}
+const timedOutSummary = timedOut.out.split("=== Summary ===")[1] || "";
+check("--timeout <seconds>: a suite still running after that is stopped and fails, the summary saying it timed out",
+  timedOut.code === 1 && /timed out/.test(timedOutSummary) && /1 of 1 suites failed/.test(timedOutSummary), timedOutSummary.trim().replace(/\s+/g, " ").slice(0, 200) || timedOut.out.slice(-200));
+const noTimeout = runner("--timeout", "0", "no-such-suite");
+check("...and refuses a timeout under a second", noTimeout.code === 2 && /timeout/.test(noTimeout.out), `exit ${noTimeout.code}: ${noTimeout.out.slice(0, 120)}`);
 
 // --- 7. Restoring from the backup: tools/restore.mjs ------------------------------------------------
 // The backup's files are tiddlers as stored, with their tags as a list (TiddlyWeb's layout); TiddlyWiki's
@@ -823,6 +838,35 @@ try {
 const oneFile = fs.existsSync(path.join(clone, "one.json")) ? JSON.parse(fs.readFileSync(path.join(clone, "one.json"), "utf8")) : null;
 check("...and does the same for a single file (one tiddler restored from its history on GitHub)", Array.isArray(oneFile) && oneFile.length === 1 && oneFile[0].title === "Hello, World" && oneFile[0].tags === "kept [[two words]]", restoreRun.slice(0, 200));
 fs.rmSync(clone, { recursive: true, force: true });
+
+// --- 8. The build refuses what it can't inline -----------------------------------------------------
+// build.mjs inlines src/worker into one file: an import from anywhere but src/worker can't be
+// inlined (dropped, its name would be undefined when the worker runs), and a top-level var declared
+// in two modules would silently become one (var allows it; const and let were already refused). Run
+// on a copy of the sources, with a module added.
+const buildRoot = mkdtempSync(path.join(tmpdir(), "build-copy-"));
+fs.cpSync(path.join(ROOT, "src"), path.join(buildRoot, "src"), { recursive: true });
+for (const f of ["build.mjs", "package.json"]) fs.copyFileSync(path.join(ROOT, f), path.join(buildRoot, f));
+fs.symlinkSync(path.join(ROOT, "node_modules"), path.join(buildRoot, "node_modules"), "dir");
+const build = () => {
+  try {
+    return { code: 0, out: execFileSync(process.execPath, [path.join(buildRoot, "build.mjs")], { cwd: buildRoot, encoding: "utf8", timeout: 60000, stdio: ["ignore", "pipe", "pipe"] }) };
+  } catch (e) {
+    return { code: e.status, out: String(e.stdout || "") + String(e.stderr || "") };
+  }
+};
+const extra = (name, text) => fs.writeFileSync(path.join(buildRoot, "src/worker", name), text);
+const asIs = build();
+check("(the build runs on a copy of the sources)", asIs.code === 0 && fs.existsSync(path.join(buildRoot, "worker.js")), asIs.out.slice(-200));
+extra("extra.js", 'import { readFileSync } from "node:fs";\nexport function extraRead() { return readFileSync("x"); }\n');
+const foreign = build();
+check("a module importing from outside src/worker (node:fs, say) fails the build, naming the module and the import",
+  foreign.code !== 0 && /extra\.js/.test(foreign.out) && /node:fs/.test(foreign.out), foreign.out.slice(-300));
+extra("extra.js", "var shared = 1;\nexport function extraOne() { return shared; }\n");
+extra("extra2.js", "var shared = 2;\nexport function extraTwo() { return shared; }\n");
+const twiceVar = build();
+check("a top-level var declared in two modules fails the build, naming both", twiceVar.code !== 0 && /shared/.test(twiceVar.out) && /extra\.js/.test(twiceVar.out) && /extra2\.js/.test(twiceVar.out), twiceVar.out.slice(-300));
+fs.rmSync(buildRoot, { recursive: true, force: true });
 
 console.log(`\n${results.filter(Boolean).length}/${results.length} passed`);
 await mf.dispose();
