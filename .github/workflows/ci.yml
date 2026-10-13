@@ -38,7 +38,7 @@ jobs:
       # worker.js is committed: it must be what src/ builds
       - run: npm run check:build
       - run: npm run test:fast
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: failure() || cancelled()
         with:
           name: worker-test-results
@@ -59,7 +59,7 @@ jobs:
       - run: npm ci
       - run: npx playwright install --with-deps chromium
       - run: npm run test:browser
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: failure() || cancelled()
         with:
           name: browser-test-results
