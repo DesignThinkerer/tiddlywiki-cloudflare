@@ -558,6 +558,44 @@ check("a save landing between a delete's check and its removal: removed with it,
   res.status === 204 && squeezedDeleted.status === 204 && !(await storedRevision("Squeezed")) === !(await entry("Squeezed")),
   `save ${res.status}, delete ${squeezedDeleted.status}, stored ${await storedRevision("Squeezed")}, listed ${(await entry("Squeezed"))?.revision}`);
 
+// A save whose list write is retried after a delete's: the delete removed the object (this save's
+// version, or the one it was based on: R2 deletes can't be conditional) and the entry, and its list
+// write is what made the save's fail. Retried, the save finds its title unlisted: it must not list
+// what isn't stored. Here the delete's removal is delayed past the save's store, and the save's list
+// write held until after the delete's
+res = await save("Phantom", { text: "v1" }, { "If-None-Match": "*" });
+const phantomV1 = res.headers.get("ETag");
+await delayNext("delete tiddler", 600);
+await delayNext("put list", 900);
+const phantomDelete = del("Phantom", { "If-Match": phantomV1 });
+await pause(150);
+const phantomSave = save("Phantom", { text: "v2" }, { "If-Match": phantomV1 });
+const [phantomDeleted, phantomSaved] = await Promise.all([phantomDelete, phantomSave]);
+await pause(300);
+check("a save whose list write is retried after a delete's removal doesn't list the deleted tiddler again",
+  phantomDeleted.status === 204 && phantomSaved.status === 204 && !(await storedRevision("Phantom")) && !(await entry("Phantom")),
+  `delete ${phantomDeleted.status}, save ${phantomSaved.status}, stored ${await storedRevision("Phantom")}, listed ${(await entry("Phantom"))?.revision}`);
+// ...the same with a delete based on the version the save stored, landing while that write is held
+res = await save("Phantom 2", { text: "v1" }, { "If-None-Match": "*" });
+await delayNext("put list", 700);
+const phantomSave2 = save("Phantom 2", { text: "v2" }, { "If-Match": res.headers.get("ETag") });
+await pause(200);
+const phantomDeleted2 = await del("Phantom 2", { "If-Match": `"default/Phantom%202/${await storedRevision("Phantom 2")}:auto"` });
+const phantomSaved2 = await phantomSave2;
+await pause(300);
+check("...nor one whose stored version a delete removed while its list write was held",
+  phantomDeleted2.status === 204 && phantomSaved2.status === 204 && !(await storedRevision("Phantom 2")) && !(await entry("Phantom 2")),
+  `delete ${phantomDeleted2.status}, save ${phantomSaved2.status}, stored ${await storedRevision("Phantom 2")}, listed ${(await entry("Phantom 2"))?.revision}`);
+// ...while a save whose list write is retried after another tiddler's save is listed as before
+await delayNext("put list", 600);
+const heldSave = save("Held beside", { text: "held" });
+await pause(200);
+res = await save("Beside it", { text: "lands first" });
+const heldSaved = await heldSave;
+check("...while a save whose list write is retried after another tiddler's save is still listed",
+  heldSaved.status === 204 && res.status === 204 && !!(await entry("Held beside")) && (await entry("Held beside")).revision === await storedRevision("Held beside") && !!(await entry("Beside it")),
+  `listed ${(await entry("Held beside"))?.revision}, stored ${await storedRevision("Held beside")}`);
+
 // --- 4b. Overlapping page builds keep the newest shell -----------------------------------------------
 // A save's page build that read the shell before a new one was published, and stores its page after
 // that one's: the page stays built from the new shell (with the save's change, which it read too)
