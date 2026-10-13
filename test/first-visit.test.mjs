@@ -87,4 +87,11 @@ const storedScale = await waits(slow);
 check("...and a tiddler of that name stored in the wiki changes nothing: the scale is the test harness's, not a setting",
   await slow.evaluate(() => $tw.wiki.getTiddlerText("$:/config/cfworker/TestTimeScale") === "0.5") && storedScale.scale === 1 && storedScale.wait === 1000, JSON.stringify(storedScale));
 
+// 5. Logout, in the cloud icon's dropdown: the session is Cloudflare Access's, ended at its own
+// address (README 2.6), not at a /logout route the worker doesn't have
+const loggedOut = admin.waitForURL("**/cdn-cgi/access/logout", { timeout: 10000 }).then(() => true, () => false);
+await admin.evaluate(() => $tw.rootWidget.dispatchEvent({ type: "tm-logout" }));
+check("Logout (the cloud icon's dropdown) goes to Cloudflare Access's logout page, which ends the session; nothing posted to a /logout of the worker",
+  await loggedOut && !requests.some(r => r.tag === "admin" && r.path === "/logout"), `at ${admin.url()}; /logout requests: ${requests.filter(r => r.tag === "admin" && r.path === "/logout").map(r => `${r.method} ${r.status}`).join(", ")}`);
+
 await finish({ check, results, pageErrors, browser, site });

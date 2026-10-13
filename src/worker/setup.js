@@ -67,17 +67,22 @@ const seconds = date => Math.floor((date instanceof Date ? date.getTime() : Date
 // What every page the worker builds carries: its own tiddlers (build.js)
 const PAGE_MARK = "$:/cfworker/";
 
-// Whether the public site's / is the stored page: by ETag when the answer has one (bare of W/ and
-// quotes: Cloudflare's compression weakens it), else by date (Last-Modified against the object's
-// upload time: Cloudflare removes an HTML answer's ETag when a feature of the zone rewrites the
-// page, Email Address Obfuscation say, on by default, but keeps the date), else by the page's own
-// mark in the body, read only then
-async function isStoredPage(page, stored) {
+// What the public site's / is: the stored page ("current"), known by ETag when the answer has one
+// (bare of W/ and quotes: Cloudflare's compression weakens it), else by date (Last-Modified against
+// the object's upload time: Cloudflare removes an HTML answer's ETag when a feature of the zone
+// rewrites the page, Email Address Obfuscation say, on by default, but keeps the date); failing
+// those, by the page's own mark in the body, read only then: with neither header, the page
+// ("current", nothing says otherwise), and with a header that doesn't match, an earlier build of it
+// ("earlier": Cloudflare's cached copy, the page rebuilt since, purged at the next save or expiring
+// with the cache rule's TTL), which is the wiki page too, so the rule is in place; or not the page
+// at all (false)
+async function whichPage(page, stored) {
   if (page.status !== 200 || !stored) return false;
-  if (page.etag) return bareEtag(page.etag) === bareEtag(stored.httpEtag);
-  if (page.lastModified) return seconds(page.lastModified) === seconds(stored.uploaded);
+  const headed = !!(page.etag || page.lastModified);
+  if (page.etag && bareEtag(page.etag) === bareEtag(stored.httpEtag)) return "current";
+  if (!page.etag && page.lastModified && seconds(page.lastModified) === seconds(stored.uploaded)) return "current";
   try {
-    return (await page.res.text()).includes(PAGE_MARK);
+    return (await page.res.text()).includes(PAGE_MARK) ? (headed ? "earlier" : "current") : false;
   } catch {
     return false;
   }
@@ -98,10 +103,12 @@ async function checkPublicSite(env, site, origin, add) {
     return;
   }
   add("public", true, `The public site answers at ${site}.`, README.site);
-  const isPage = await isStoredPage(page, stored);
+  const which = await whichPage(page, stored);
   if (page.res && page.res.body && !page.res.bodyUsed) await page.res.body.cancel().catch(() => {});
-  if (isPage) {
+  if (which === "current") {
     add("rewrite", true, "The public site's / serves the wiki page (the rewrite rule / → /baked.html).", README.rules);
+  } else if (which === "earlier") {
+    add("rewrite", true, "The public site's / serves the wiki page (the rewrite rule / → /baked.html), an earlier build of it: Cloudflare's cached copy, purged at the next save, or when the cache rule's TTL runs out.", README.rules);
   } else {
     const found = `answered ${page.status}, ${page.etag ? `ETag ${page.etag}` : "no ETag"}, ${page.lastModified ? `Last-Modified ${page.lastModified}` : "no Last-Modified"}`;
     const known = stored ? `the stored page's are "${bareEtag(stored.httpEtag)}" and ${stored.uploaded.toUTCString()}` : "the page isn't built yet";

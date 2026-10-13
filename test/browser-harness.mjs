@@ -53,8 +53,9 @@ export const PUBLIC_STATUS = { username: "GUEST", read_only: true, anonymous: tr
 //     for a path no cache rule covers), etag(url) and lastModified(url) return false to leave those
 //     headers out (Cloudflare removes an HTML answer's ETag when a feature of the zone rewrites the
 //     page: Email Address Obfuscation, on by default), override(key, url) returns text to serve
-//     instead of the object, rewrite(url, bytes) returns the bytes to send, delay(url) returns
-//     milliseconds to wait before answering (a slow connection)
+//     instead of the object (or { body, headers } to serve it with headers of its own: an earlier
+//     build of the page from Cloudflare's cache, with its ETag), rewrite(url, bytes) returns the
+//     bytes to send, delay(url) returns milliseconds to wait before answering (a slow connection)
 // Returns { mf, base, pub, bucket, publicRequests (each path and query, decoded), setBindings(extra),
 // stop(), start(), stopPublic(), startPublic(), close() }. setBindings restarts the worker with other
 // variables (the same bucket, the same address), as a change in the dashboard does: a wiki given a
@@ -78,6 +79,10 @@ export async function startSite({ index, publicStatus = false, bindings = {}, ou
       const wait = publicSite.delay ? publicSite.delay(url) : 0;
       if (wait > 0) await new Promise(r => setTimeout(r, wait));
       let body = publicSite.override ? publicSite.override(key, url) : undefined;
+      if (body !== undefined && typeof body === "object" && !Buffer.isBuffer(body)) {
+        Object.assign(headers, body.headers || {});
+        body = body.body;
+      }
       if (body === undefined) {
         const obj = await bucket.get(key);
         if (!obj) {
@@ -89,7 +94,7 @@ export async function startSite({ index, publicStatus = false, bindings = {}, ou
         if (!(publicSite.etag && !publicSite.etag(url))) headers.ETag = obj.httpEtag;
         if (!(publicSite.lastModified && !publicSite.lastModified(url))) headers["Last-Modified"] = obj.uploaded.toUTCString();
         body = Buffer.from(await obj.arrayBuffer());
-      } else {
+      } else if (!headers["Content-Type"]) {
         headers["Content-Type"] = "application/json";
       }
       if (publicSite.rewrite) body = publicSite.rewrite(url, Buffer.from(body));

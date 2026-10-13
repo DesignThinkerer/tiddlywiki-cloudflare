@@ -53,7 +53,8 @@ var LOAD_ALL_TITLE = "$:/config/cfworker/LoadAll",
 	STORE_DB = "cfworker-tiddlers",
 	STORE_VERSION = 2,            // 1: the tiddlers table; 2: the outbox table too ($:/cfworker/outbox.js)
 	STORE_NAME = "tiddlers",
-	OUTBOX_NAME = "outbox";
+	OUTBOX_NAME = "outbox",
+	ACCESS_LOGOUT = "/cdn-cgi/access/logout";   // Cloudflare Access's logout page, on the admin site's own address
 
 exports.startup = function() {
 	var Adaptor = lib.findAdaptor();
@@ -83,6 +84,15 @@ exports.startup = function() {
 		fillHoldUntil = 0,
 		fillTimer = null,
 		deliveryTimer = null;
+
+	// TiddlyWeb's Logout (the cloud icon's dropdown) posts to a /logout route the worker doesn't
+	// have: the session is Cloudflare Access's, ended at its own address (README 2.6), which then
+	// shows its login page. On the admin site only: the public site has no session, and no button.
+	if(lib.onAdminSite(window.location.origin + "/")) {
+		proto.logout = function() {
+			window.location.href = ACCESS_LOGOUT;
+		};
+	}
 
 	// The "put" saver probes the page URL (OPTIONS + HEAD) on every load, but it can't save to the
 	// worker (saving goes through the sync adaptor), so switch it off
