@@ -4,6 +4,7 @@ What changed, and what an update asks of you, newest first. Your worker is deplo
 
 ## Unreleased
 
+- **Fixed: the Cloudflare tab's *Full backup* heading showed as text** (`!!! Full backup`, run into the sentences around it): the section sits in a list widget whose content TiddlyWiki parsed inline. The page is rebuilt at the next admin load.
 - **Fixed: a full backup step's error is shown in the Cloudflare tab.** It was written inside a code run, which TiddlyWiki renders literally, so the tab showed the transclusion instead of the error. The page is rebuilt at the next admin load.
 - **Fixed: a change the device refused to store is no longer reported as kept.** The result of the write to the device's outbox was ignored, so with no IndexedDB, or a full quota, the cloud icon's dropdown still said the change was kept on this device. It now says it isn't, and to keep the tab open until the change is sent (it still goes at the network's return). The page is rebuilt at the next admin load.
 - **Fixed: a new tiddler's save retried after a lost answer no longer makes a false conflict copy.** The retry, based on the version the first try had stored, kept the first try's "must not exist" header beside its `If-Match`, so the worker refused it again and the tab made a conflict copy of its own text, with an alert. Each try now sends its own headers. The page is rebuilt at the next admin load.

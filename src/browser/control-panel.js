@@ -75,6 +75,7 @@ var TAB_TEXT = [
 	"Backups are off: the worker has no `GITHUB_REPO` and `GITHUB_TOKEN` (README 2.4). Set them, and every save is committed to GitHub.",
 	"</$list>",
 	"<$list filter='[[" + STATUS + "]get[backups]match[on]]' variable='on'>",
+	"",
 	"Every save is committed to GitHub as it happens (README 2.4).",
 	"",
 	"!!! Full backup",
@@ -102,6 +103,7 @@ var TAB_TEXT = [
 	"<$list filter='[[" + MESSAGE + "]has[text]]' variable='said'>",
 	"{{" + MESSAGE + "}}",
 	"</$list>",
+	"",
 	"</$list>"
 ].join("\n");
 
