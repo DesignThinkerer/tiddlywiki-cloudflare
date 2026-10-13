@@ -477,7 +477,6 @@ const otherStored = JSON.parse(await (await bucket.get("recipes/default/tiddlers
 const otherCopies = await W.evaluate(t => $tw.wiki.filterTiddlers("[field:conflict-of[" + t + "]]"), BUNDLED);
 check("...while a tab that updated it from the page's version too gets a conflict, not an overwrite",
   otherStored === "9.9.9" && otherCopies.length === 1, `stored ${otherStored}, copies ${JSON.stringify(otherCopies)}`);
-await contextW.close();
 // Deleting that update removes the plugin, as in a single-file wiki (where the update replaced the
 // page's version), and so does deleting a plugin that came with the page, never updated
 const NEVER_UPDATED = "$:/themes/tiddlywiki/snowwhite";
@@ -495,6 +494,22 @@ check("deleting the update of a plugin that came with the page removes it, as in
   !inStore(html, BUNDLED) && !inStore(html, NEVER_UPDATED) && leftInV[0] === null && leftInV[1] === null && !(await bucket.head("recipes/default/tiddlers/" + BUNDLED)),
   `in the shell ${inStore(html, BUNDLED)} / ${inStore(html, NEVER_UPDATED)}, in a new tab ${JSON.stringify(leftInV)}`);
 await contextV.close();
+// The tab that had the page's version, then loaded the update from the worker (W): it still holds the
+// plugin, as TiddlyWiki keeps $:/ tiddlers that leave the server, but its copy now carries a revision
+// from the worker, so it's a deleted plugin, not one that came with the page: left out of W's next publish
+await W.evaluate(() => $tw.syncer.syncFromServer());
+await settle(W);
+const stillInW = await W.evaluate(t => $tw.wiki.tiddlerExists(t), BUNDLED);
+mark = requests.length;
+await add(W, { title: "$:/SiteSubtitle", text: "from the tab that loaded the update" });
+await settle(W);
+const publishedByW = await waitFor(async () => (await shell()).includes("from the tab that loaded the update"), 20000);
+html = await shell();
+check("...and a tab that had the page's version, then loaded the update, doesn't put the plugin back at its next publish",
+  stillInW && publishedByW && !inStore(html, BUNDLED), `still in W ${stillInW}, published ${publishedByW}, in the shell ${inStore(html, BUNDLED)}`);
+await contextW.close();
+await A.evaluate(() => $tw.syncer.syncFromServer());   // (A takes W's subtitle, which it changes again later)
+await settle(A);
 // To get index.html's version back (README 3): delete the published shell and the page in R2, then open
 // the admin wiki. The page is built from index.html, with the plugin, and that tab publishes it again.
 await bucket.delete("_page/shell.html");
@@ -724,5 +739,30 @@ check("an admin tab in TiddlyWiki's safe mode doesn't publish or sync", requests
   (r.method === "PUT" || r.method === "DELETE" || r.path.startsWith("/recipes/"))).length === 0 && await S.evaluate(() => $tw.safeMode === true),
   JSON.stringify(requests.slice(mark).filter(r => r.tag === "S").map(r => r.method + " " + r.path)));
 await contextS.close();
+
+// --- 13. The link-preview tags, whatever a tab has loaded ----------------------------------------------
+// TiddlyWiki's Open Graph tags take the site URL and the preview image from $:/SiteUrl and
+// $:/SitePreviewUrl, read in a way that loads nothing: a tab that hasn't loaded them would publish a
+// page without the tags. The worker preloads them with the page, so every tab has them
+const contextK = await browser.newContext();
+const { p: K } = await openAdmin("K", contextK);
+await settle(K);
+await add(K, { title: "$:/config/cfworker/LoadAll", text: "no" });   // (from now on a tab loads only what it shows)
+await add(K, { title: "$:/SiteUrl", text: "https://wiki.example.com/" });
+await add(K, { title: "$:/SitePreviewUrl", text: "https://wiki.example.com/preview.png" });
+await settle(K);
+const tagsPublished = await waitFor(async () => (await shell()).includes('content="https://wiki.example.com/preview.png"'), 20000);
+await contextK.close();
+const contextL = await browser.newContext();
+mark = requests.length;
+const { p: L } = await openAdmin("L", contextL);
+await settle(L);
+await sleep(QUIET_WINDOW * 2);
+html = await shell();
+check("the Open Graph URL and image, from $:/SiteUrl and $:/SitePreviewUrl, stay in the page a tab that loads only what it shows publishes: the worker preloads them",
+  tagsPublished && /<meta property="og:url" content="https:\/\/wiki\.example\.com\/"/.test(html) && /<meta property="og:image" content="https:\/\/wiki\.example\.com\/preview\.png"/.test(html) &&
+  await L.evaluate(() => !$tw.wiki.getTiddler("$:/SiteUrl").hasField("_is_skinny")),
+  `published by K ${tagsPublished}, og:url ${(/<meta property="og:url"[^>]*>/.exec(html) || ["none"])[0]}, shell puts by L ${shellPuts("L", mark)}`);
+await contextL.close();
 
 await finish({ check, results, pageErrors, browser, site });

@@ -177,15 +177,22 @@ exports.startup = function() {
 	//   same plugin). Other stored plugins are only files;
 	// - the raw markup tiddlers, stored or that came with the page.
 	// Nothing deleted, here or in another tab (see recordWhatCameWithPage).
+	// Whether a tiddler not on the worker's list is still one that came with the page: recorded so at
+	// the first list, and without a revision from the worker since. One stored since (updated from the
+	// wiki, in any tab) carries one from its next load: once the list drops it, it's a deleted tiddler,
+	// not one that came with the page, and stays out, whichever tab deleted it. (So checked at each
+	// render, not only when the record was made.)
+	function stillCameWithPage(title) {
+		return !!(cameWithPage && cameWithPage[title]) && !hasStoredRevision(title);
+	}
 	function pageTitles() {
 		var listed = adaptor.cfworkerListed() || {},
 			since = adaptor.cfworkerListedSince ? adaptor.cfworkerListedSince() : 0,
-			came = cameWithPage || {},
 			titles = plugins().filter(function(title) {
-				return onServer(title,listed,since) ? hasRawMarkup(title) : !!came[title];
+				return onServer(title,listed,since) ? hasRawMarkup(title) : stillCameWithPage(title);
 			});
 		$tw.utils.pushTop(titles,rawMarkupTiddlers().filter(function(title) {
-			return onServer(title,listed,since) || !!came[title];
+			return onServer(title,listed,since) || stillCameWithPage(title);
 		}));
 		return titles.sort();
 	}
