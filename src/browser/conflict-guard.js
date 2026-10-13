@@ -344,9 +344,13 @@ exports.startup = function() {
 
 	// A change kept on the device ($:/cfworker/outbox.js), made from this server revision, put back
 	// into the wiki: the next save or delete of this title is based on it, not on what the list
-	// says now, so a version saved elsewhere meanwhile is a conflict, as it would have been
+	// says now, so a version saved elsewhere meanwhile is a conflict, as it would have been. The
+	// outbox keeps null for a tiddler the worker never had: the save then says it mustn't exist yet
+	// (If-None-Match: *), as the tab that made the change would have, so a title created elsewhere
+	// meanwhile is a conflict too. (revisionBase takes null for "unknown", which would send the save
+	// unconditionally, over whatever is there.)
 	proto.cfworkerBaseFor = function(title,revision) {
-		var base = revisionBase(revision);
+		var base = revision === null ? null : revisionBase(revision);
 		pendingBases[title] = {base: base};
 		if(typeof base === "string") {
 			deleteBases[title] = base;
