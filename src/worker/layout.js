@@ -137,6 +137,7 @@ export async function readSave(request) {
 function flatSave(fields, body) {
   return {
     fields,
+    body,
     stored: revision => concatBytes([body.subarray(0, body.length - 1), storedSuffix(revision)])
   };
 }
@@ -149,10 +150,18 @@ function storedSuffix(revision) {
 // A tiddler TiddlyWiki has only the fields of (from the tiddler list; the text loads separately) is
 // marked _is_skinny. Changed before its text arrives (a checkbox clicked during the first sync, say),
 // it's saved without the text: the stored text is kept, as TiddlyWiki's own server does, rather than
-// stored as nothing, and the mark isn't stored. current: the stored object, read with its body.
+// stored as nothing, and the mark isn't stored. A text sent with the mark was typed into the empty
+// editor of such a tiddler (opened offline, say, README 5: TiddlyWiki's draft copies the mark, and
+// the editor starts empty): it's what was meant, and is stored as sent; only a save without a text,
+// or with an empty one, keeps the stored text. current: the stored object, read with its body.
 export async function keepStoredText(save, current) {
   const { _is_skinny, ...fields } = save.fields;
   const head = encoder.encode(JSON.stringify(fields));
+  const at = textKeyOffset(save.body);
+  const typed = at === -1 ? null : save.body.subarray(at, save.body.length - 1);   // ',"text":"..."' as sent
+  if (typed && typed.length > TEXT_KEY.length + 2) {   // more than ,"text":""
+    return flatSave(fields, concatBytes([head.subarray(0, head.length - 1), typed, encoder.encode("}")]));
+  }
   let text = new Uint8Array(0);   // ',"text":"..."' of the stored tiddler
   if (current) {
     const stored = new Uint8Array(await current.arrayBuffer());

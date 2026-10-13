@@ -256,6 +256,26 @@ const stored52 = await (await bucket.get("recipes/default/tiddlers/Tiddler 52"))
 check("...a skinny tiddler changed before its text loaded keeps its text on the worker, and the tab loads it",
   loaded52 && stored52.text === text(52) && JSON.stringify(stored52.tags) === '["done"]' && (await D.evaluate(() => $tw.wiki.getTiddlerText("Tiddler 52"))) === text(52) && tiddlerGets(mark, "D", "public").includes("Tiddler 52"),
   JSON.stringify(tiddlerGets(mark, "D", "public")));
+// A skinny tiddler edited before its text loaded (opened offline, say): TiddlyWiki's draft carries the
+// mark, and its editor starts empty. What's typed there is what was meant: stored, and the tab shows it
+const edited53 = await D.evaluate(() => {
+  const wiki = $tw.wiki, title = "Tiddler 53";
+  const find = w => w.parseTreeNode && w.parseTreeNode.type === "navigator" ? w : (w.children || []).map(find).find(Boolean);
+  const navigator = find($tw.rootWidget);
+  navigator.dispatchEvent({ type: "tm-edit-tiddler", param: title });   // the edit button
+  const draft = wiki.findDraft(title), draftHadMark = wiki.getTiddler(draft).hasField("_is_skinny");
+  wiki.addTiddler(new $tw.Tiddler(wiki.getTiddler(draft), { text: "typed into the empty editor" }));   // typing
+  navigator.dispatchEvent({ type: "tm-save-tiddler", param: draft });   // the save button
+  return { wasSkinny: wiki.getTiddler(title).hasField("_is_skinny") || draftHadMark, draftHadMark };
+});
+await settle(D);
+const loaded53 = await waitFor(() => D.evaluate(() => !$tw.wiki.getTiddler("Tiddler 53").hasField("_is_skinny")), 15000);
+const stored53 = await (await bucket.get("recipes/default/tiddlers/Tiddler 53")).json();
+check("...a skinny tiddler edited before its text loaded, its empty editor typed into: the typed text is stored, without the mark, and shown",
+  edited53.draftHadMark && loaded53 && stored53.text === "typed into the empty editor" && !("_is_skinny" in stored53) &&
+  (await D.evaluate(() => $tw.wiki.getTiddlerText("Tiddler 53"))) === "typed into the empty editor",
+  JSON.stringify({ ...edited53, stored: stored53.text.slice(0, 40), markStored: "_is_skinny" in stored53, shown: String(await D.evaluate(() => $tw.wiki.getTiddlerText("Tiddler 53", null))).slice(0, 40) }));
+expected.set("Tiddler 53", "typed into the empty editor");
 await D.close();
 // With TiddlyWiki's own lazy loading off, every tiddler has to be loaded in full: the setting is ignored
 await put("$:/config/SyncDisableLazyLoading", { text: "yes" });
