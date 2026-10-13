@@ -350,6 +350,8 @@ npx playwright install chromium      # or: export CHROMIUM_PATH=/path/to/chrome
 npm test                             # build (worker.js and seed/empty.html), run all sixteen suites
 ```
 
+`npm test` runs every suite to the end, even after one fails, and ends with a summary naming what failed (`tools/run-suites.mjs`); each suite's output is also in `test-results/<suite>.log`. A browser suite that fails leaves two more things there: `test-results/<suite>.requests.log`, every request its pages made, in order, with the time, the tab, the path and how it ended (answered, from the browser's cache, or given up on), and `test-results/traces/<suite>/<n>.zip`, a Playwright trace of each browser context — the test's actions and the page's console messages in time — opened with `npx playwright show-trace <file>`. `TRACE=1` keeps both for a passing suite too; `TRACE=full` adds screenshots and DOM snapshots to the traces (they slow the page down, so a timing check can fail with them).
+
 | Command | What it runs |
 |---|---|
 | `npm run build` | Writes `worker.js`, and `seed/empty.html`, an empty TiddlyWiki with the TiddlyWeb plugin, from the installed `tiddlywiki` package (kept when it's already of that version; `node tools/build-wiki.mjs --force` rebuilds it). |
@@ -373,7 +375,7 @@ npm test                             # build (worker.js and seed/empty.html), ru
 | `npm run test:budget` | What reaches the worker per page load, counted behind a proxy, the service worker in place (see below). |
 | `npm run test:setup` | The setup check, against the public stand-in with Cloudflare's headers, GitHub and Cloudflare's API imitated (see below). |
 
-GitHub runs the same two groups, as two jobs side by side, for every pull request and every push to `main` (`.github/workflows/ci.yml`), after the lint and after checking that `worker.js` is what `src/` builds.
+GitHub runs the same two groups, as two jobs side by side, for every pull request and every push to `main` (`.github/workflows/ci.yml`), after the lint and after checking that `worker.js` is what `src/` builds. One run per commit: a newer commit on the same branch cancels an older one's run. A job that fails keeps its `test-results/` for a week (the run's page → *Artifacts*): the logs, and the request log and traces of each browser suite that failed.
 
 ### 6.1 Repository layout
 
@@ -383,10 +385,11 @@ GitHub runs the same two groups, as two jobs side by side, for every pull reques
 ├── seed/empty.html           GENERATED, not committed: an empty TiddlyWiki with TiddlyWeb, what a new wiki starts from (2.8), uploaded with the worker
 ├── tools/build-wiki.mjs      builds it from the tiddlywiki package (npm run build)
 ├── tools/restore.mjs         merges a clone of the backup into one file any TiddlyWiki imports (2.4)
+├── tools/run-suites.mjs      runs test suites one after the other, each to the end, with a summary (npm test); their output under test-results/, not committed
 ├── docs/
 │   ├── design.md             how the worker works, and why it's built this way
 │   └── external-plugins.md   design notes for plugin files (design 1.8)
-├── .github/workflows/ci.yml  runs the tests on GitHub for every pull request and push to main
+├── .github/workflows/ci.yml  runs the tests on GitHub for every pull request and push to main, keeping a failed job's test-results/
 ├── src/
 │   ├── worker/               the worker's source, one module per concern (below)
 │   │   ├── index.js          the entry point: the Access and settings checks, the route table, the queue consumer
@@ -449,7 +452,7 @@ The browser modules live in their own files so they can be read and edited as no
 
 ### 6.2 The tests
 
-The tests run the real worker in Cloudflare's local runtime (workerd, through Miniflare) with a local R2 bucket and queue. Outgoing calls to GitHub and Cloudflare's API are answered by imitations, so nothing touches your accounts. Every suite takes free local ports, so they can run at the same time. The ten browser suites share their setup, `test/browser-harness.mjs`: the worker, the stand-in for the public site, Chromium, and the helpers that wait for TiddlyWiki or record each tab's requests (marking the ones the browser answered from its cache, which never reached a server). (On a machine too busy to keep up, such as with the browser suites running alongside, the backup suite's "never overlapped" check can fail: Miniflare then starts a second batch before the first ends, which `max_concurrency = 1` prevents on Cloudflare. A browser suite can also time out waiting for TiddlyWiki there. Each passes run on its own.)
+The tests run the real worker in Cloudflare's local runtime (workerd, through Miniflare) with a local R2 bucket and queue. Outgoing calls to GitHub and Cloudflare's API are answered by imitations, so nothing touches your accounts. Every suite takes free local ports, so they can run at the same time (`npm test` runs them one after the other, as CI does: ten Chromium suites at once overload a machine, and a timing check that passes in sequence fails there — rerun such a suite alone before reading anything into it). The ten browser suites share their setup, `test/browser-harness.mjs`: the worker, the stand-in for the public site, Chromium, and the helpers that wait for TiddlyWiki or record each tab's requests (marking the ones the browser answered from its cache, which never reached a server, and the ones it gave up on). Miniflare has no `max_concurrency` for a queue, and starts a second batch while one runs once messages pile up; `test/r2-counter.mjs` runs the batches one at a time, as Cloudflare does with the setting in `wrangler.toml`, so the backup suite's "never overlapped" check holds on a busy machine too.
 
 `test:bake` covers:
 - Page serving: rebuild on an outdated bake or a new `index.html`, the `304` for an unchanged page (also with a weakened ETag, and by date alone, including two pages built within the same second), a byte order mark; CORS, a bad `PUT` path, and `/status`, kept by the browser for a week and no longer baked into the page; a tiddler read (its revision as ETag) and a file read (R2's), each answered `304` to a browser that has it (also with a weakened ETag, and to a `HEAD`), and sent when it has another version.

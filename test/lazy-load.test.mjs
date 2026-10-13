@@ -106,8 +106,12 @@ const firstShown = await waitFor(() => A.evaluate(n => $tw.wiki.getTiddlerText("
 const gotSoFar = tiddlerGets(mark, "A", "public");
 check("the tiddler opened directly is the first one fetched, before the background fill", firstShown && gotSoFar[0] === `Tiddler ${N}`, JSON.stringify(gotSoFar.slice(0, 5)));
 await settle(A, 60000);
-check("...then everything fills in, from the public site, nothing through the worker", await allLoaded(A) && tiddlerGets(mark, "A", "worker").length === 0,
-  `worker ${tiddlerGets(mark, "A", "worker").length}, public ${tiddlerGets(mark, "A", "public").length}`);
+// (A public read the browser gave up on — the stand-in answering in more than the module's few
+// seconds, on a loaded machine — falls back to the worker by design: allowed for that tiddler only)
+const gaveUp = requests.slice(mark).filter(r => r.tag === "A" && r.origin === "public" && r.failed && r.path.startsWith(TIDDLER_PATH)).map(r => r.path.slice(TIDDLER_PATH.length));
+const viaWorker = tiddlerGets(mark, "A", "worker");
+check("...then everything fills in, from the public site, nothing through the worker (but a tiddler whose public read the browser gave up on)", await allLoaded(A) && viaWorker.every(t => gaveUp.includes(t)),
+  `worker ${viaWorker.length} (${viaWorker.filter(t => gaveUp.includes(t)).length} after a public read given up on), public ${tiddlerGets(mark, "A", "public").length}`);
 check("...several at a time", overlap.A >= 3, `at most ${overlap.A} in flight`);
 let keys = await storedKeys(A);
 check("...and every loaded tiddler is kept on the device", Array.isArray(keys) && keys.length >= N, `${keys && keys.length} stored`);
