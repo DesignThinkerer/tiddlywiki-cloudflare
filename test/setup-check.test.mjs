@@ -28,6 +28,7 @@ let corsOff = [];        // the paths the CORS header is left off (a rule scoped
 let rewriteOff = false;  // the public site's / serving something else than the page
 let cacheStatus = "HIT";
 let etagOff = false, lastModifiedOff = false;   // the page's ETag, then its Last-Modified too, removed by Cloudflare
+let earlierBuild = null;   // { body, headers }: an earlier build of the page served at /, from Cloudflare's cache
 const site = await startSite({
   index: readWikiFile(), publicStatus: true, queue: true, outbound,
   bindings: { GITHUB_REPO: "someone/wiki-backup", GITHUB_TOKEN: "ghp_test", CF_ZONE_ID: "zone-1", CF_API_TOKEN: "cf_test" },
@@ -36,7 +37,7 @@ const site = await startSite({
     cacheStatus: () => cacheStatus,
     etag: url => !(etagOff && url.pathname === "/"),
     lastModified: url => !(lastModifiedOff && url.pathname === "/"),
-    override: (key, url) => rewriteOff && url.pathname === "/" ? "<!doctype html><html><body>a directory listing, say</body></html>" : undefined
+    override: (key, url) => url.pathname !== "/" ? undefined : rewriteOff ? "<!doctype html><html><body>a directory listing, say</body></html>" : earlierBuild || undefined
   }
 });
 const { base: BASE } = site;
@@ -93,6 +94,18 @@ check("...and with neither header, something else at /: still a failure, saying 
 rewriteOff = false;
 etagOff = false;
 lastModifiedOff = false;
+// Cloudflare's cache serving an earlier build of the page (rebuilt since: a plugin installed, the
+// engine updated; the copy is purged at the next save, or expires with the cache rule's TTL): the
+// wiki page all the same, so the rule is in place, and the line says what it found
+const currentPage = await (await fetch(site.pub + "/")).text();
+earlierBuild = { body: currentPage, headers: { "Content-Type": "text/html; charset=utf-8", ETag: '"0123456789abcdef0123456789abcdef"', "Last-Modified": new Date(Date.now() - 86400000).toUTCString() } };
+({ items } = await run());
+check("an earlier build of the page at / (Cloudflare's cached copy, its ETag not the stored page's): the rewrite line passes, saying it's an earlier build from the cache",
+  ok(items, "rewrite") === true && /earlier build/i.test(text(items, "rewrite")) && /cache/i.test(text(items, "rewrite")), line(items, "rewrite"));
+delete earlierBuild.headers.ETag;
+({ items } = await run());
+check("...with no ETag and an older Last-Modified: the same", ok(items, "rewrite") === true && /earlier build/i.test(text(items, "rewrite")), line(items, "rewrite"));
+earlierBuild = null;
 corsOff = ["/_plugins/"];
 ({ items } = await run());
 check("the CORS header missing under /_plugins/ only: the files line fails naming that path and README 2.7, the reads line passes",
