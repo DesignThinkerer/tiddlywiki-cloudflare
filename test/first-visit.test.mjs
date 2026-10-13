@@ -24,17 +24,17 @@ check("the first admin visit serves a page that boots TiddlyWiki, with the brows
 check("...the engine and the public status file are now in the bucket, and the page built", !!(await bucket.head("index.html")) && !!(await bucket.head("status")) && !!(await bucket.head("baked.html")));
 const published = await waitFor(async () => !!(await bucket.head("_page/shell.html")) && !!(await bucket.head("_plugins/tiddlywikicore.js")), 30000);
 check("...and that load publishes the core file and the page for the public site (README 2.8)", published);
-check("...TiddlyWiki loaded the browser modules: the library, and the eight startup modules, the backup alert after the list sync",
+check("...TiddlyWiki loaded the browser modules: the library, and the nine startup modules, the backup alert after the list sync",
   await admin.evaluate(() => {
     const startup = $tw.modules.types.startup || {}, library = $tw.modules.types.library || {};
-    const names = ["$:/cfworker/conflict-guard.js", "$:/cfworker/list-sync.js", "$:/cfworker/backup-alert.js", "$:/cfworker/page-publisher.js", "$:/cfworker/restore-import.js", "$:/cfworker/control-panel.js", "$:/cfworker/outbox.js", "$:/cfworker/cold-start.js"];
+    const names = ["$:/cfworker/conflict-guard.js", "$:/cfworker/list-sync.js", "$:/cfworker/backup-alert.js", "$:/cfworker/page-publisher.js", "$:/cfworker/restore-import.js", "$:/cfworker/control-panel.js", "$:/cfworker/outbox.js", "$:/cfworker/cold-start.js", "$:/cfworker/device.js"];
     const alert = startup["$:/cfworker/backup-alert.js"];
     return !!library["$:/cfworker/lib.js"] && names.every(n => startup[n]) && alert.exports.after.includes("cfworker-list-sync");
   }));
 check("...as the shadows of the admin plugin, which the Plugins tab lists with its name and version; none of them a tiddler of the wiki",
   await admin.evaluate(() => {
     const info = $tw.wiki.getPluginInfo("$:/plugins/cfworker/admin");
-    const parts = ["$:/cfworker/lib.js", "$:/cfworker/conflict-guard.js", "$:/cfworker/list-sync.js", "$:/cfworker/backup-alert.js", "$:/cfworker/page-publisher.js", "$:/cfworker/restore-import.js", "$:/cfworker/control-panel.js", "$:/cfworker/outbox.js", "$:/cfworker/cold-start.js", "$:/cfworker/public-url", "$:/cfworker/sw-url", "$:/cfworker/page-source"];
+    const parts = ["$:/cfworker/lib.js", "$:/cfworker/conflict-guard.js", "$:/cfworker/list-sync.js", "$:/cfworker/backup-alert.js", "$:/cfworker/page-publisher.js", "$:/cfworker/restore-import.js", "$:/cfworker/control-panel.js", "$:/cfworker/outbox.js", "$:/cfworker/cold-start.js", "$:/cfworker/device.js", "$:/cfworker/public-url", "$:/cfworker/sw-url", "$:/cfworker/page-source", "$:/plugins/cfworker/admin/readme", "$:/plugins/cfworker/admin/settings", "$:/plugins/cfworker/admin/device"];
     const listed = $tw.wiki.filterTiddlers("[plugin-type[plugin]]").includes("$:/plugins/cfworker/admin");
     const plugin = $tw.wiki.getTiddler("$:/plugins/cfworker/admin");
     return !!info && listed && !!plugin && !!plugin.fields.name && /\+/.test(plugin.fields.version || "") && parts.every(t => $tw.wiki.isShadowTiddler(t) && !$tw.wiki.tiddlerExists(t)) &&

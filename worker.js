@@ -166,8 +166,9 @@ function concatBytes(parts) {
 // | _page/shell.html                     | the page published by the admin wiki (page.js)    |
 // | _plugins/<title>.js                  | one file per plugin or module (plugins.js)        |
 // | _plugins/tiddlywikicore.js           | TiddlyWiki's core file (page.js)                  |
+// | manifest.webmanifest, _app/icon-*.png | the public site's manifest, and the app's icons (app.js) |
 // | _repair/…                            | a damaged list, and a rebuild's progress (list.js) |
-// | _backup/status.json                  | how backups go (backup/status.js)                 |
+// | _backup/status.json                  | how backups go, and the last full backup (backup/status.js) |
 // | _backup/versions/…                   | versions too big for a queue message (backup/queue.js) |
 
 const INDEX_KEY = "index.html";
@@ -2331,7 +2332,7 @@ const EXTERNAL_SCRIPTS_MARKER = "<!--~~ Load external JavaScripts ~~-->";
 
 // ===== src/worker/page.js =====================================================================================
 
-// Serving the page, and the page the admin wiki publishes (design 1.3, 4.9).
+// Serving the page, and the page the admin wiki publishes (design 1.3, 1.9).
 //
 // The admin wiki renders the page itself, with TiddlyWiki's own $:/core/templates/tiddlywiki5-external-js.html
 // (src/browser/page-publisher.js): the shell, which is everything TiddlyWiki writes in its file (title,
@@ -2596,7 +2597,7 @@ async function publishShell(request, env, ctx, corsHeaders) {
 // What /status answers on the admin site: TiddlyWeb's status. TiddlyWiki asks for it at every page
 // load, before the tiddler list. It never changes, so the browser keeps it for a week (private: for
 // that browser only): the next loads don't ask the worker, nor wait for its answer. (The public site
-// has its own file, README 2.2.)
+// has its own file, README 2.8.)
 const ADMIN_STATUS = { username: "admin", read_only: false, anonymous: false, logout_is_available: true, space: { recipe: "default" } };
 
 const STATUS_CACHE = "private, max-age=604800";
@@ -2728,8 +2729,8 @@ async function handleSave(request, env, ctx, url, corsHeaders) {
       }
       // The stored tiddler isn't the version the list has: a save whose list update failed, retried
       // with other content (edited again since) or not at all (its tab closed). Refused all the same,
-      // since it isn't based on that version (only the conflict guard can tell its own save, README
-      // 4.4), but that save is finished: the list, the public cache and the page catch up with it.
+      // since it isn't based on that version (only the conflict guard can tell its own save, design
+      // 1.4), but that save is finished: the list, the public cache and the page catch up with it.
       if (current && listedRevision(list, title) !== currentRevision) {
         const fields = await storedFields(env, current);
         if (fields) await untilDone(ctx, finishSave(env, ctx, title, fields, currentRevision, list, url.origin, true));
@@ -3043,7 +3044,7 @@ async function checkPurges(env, site, add) {
 // ===== src/worker/index.js ====================================================================================
 
 // TiddlyWiki on Cloudflare: the admin worker. The entry point: the request router, and the queue
-// consumer. See README.md for the whole picture, and 4.1 for the requests answered here.
+// consumer. See README.md for the whole picture, and design 1.1 for the requests answered here.
 //
 // Every request goes: Access check → settings check → the route whose method and path match. The
 // modules, from the bottom up: bytes, tiddlers, storage, settings, access, http (the small shared

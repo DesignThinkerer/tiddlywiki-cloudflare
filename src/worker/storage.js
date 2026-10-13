@@ -12,8 +12,9 @@
 // | _page/shell.html                     | the page published by the admin wiki (page.js)    |
 // | _plugins/<title>.js                  | one file per plugin or module (plugins.js)        |
 // | _plugins/tiddlywikicore.js           | TiddlyWiki's core file (page.js)                  |
+// | manifest.webmanifest, _app/icon-*.png | the public site's manifest, and the app's icons (app.js) |
 // | _repair/…                            | a damaged list, and a rebuild's progress (list.js) |
-// | _backup/status.json                  | how backups go (backup/status.js)                 |
+// | _backup/status.json                  | how backups go, and the last full backup (backup/status.js) |
 // | _backup/versions/…                   | versions too big for a queue message (backup/queue.js) |
 
 export const INDEX_KEY = "index.html";

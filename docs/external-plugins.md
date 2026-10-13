@@ -221,8 +221,8 @@ These figures come from the same test machine as in section 3, so read them as p
 **Worker requests:** unchanged by this change: plugin files never reach the worker. (A page load was three requests, and is two since the browser keeps `/status` for a week, design 1.5.)
 
 **Per plugin save:**
-- **R2 writes (Class A):** the tiddler, the tiddler list, the plugin file, `baked.html`, plus the backup copy for a version over 100 KB.
-- **R2 reads (Class B):** eight with a published shell (nine before the first publish, when the page is built from `index.html`), plus one `HEAD` per other plugin and one read per listed startup tiddler for the page build.
+- **R2 writes (Class A):** the tiddler, the tiddler list, the plugin file, `baked.html`, plus the backup copy for a version too big for a queue message (about 64 KB of text, design 1.7).
+- **R2 reads (Class B):** nine with a published shell (ten before the first publish, when the page is built from `index.html`), plus one `HEAD` per other plugin and one read per listed startup tiddler for the page build.
 - **Subrequests:** all of the above, plus the queue message, count against the Free plan's 1,000 calls to Cloudflare services per request; only the purges count against its 50 external ones.
 - **Purges:** the tiddler's URLs and the two page URLs, as for any page change. Never plugin files.
 

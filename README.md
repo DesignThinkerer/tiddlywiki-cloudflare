@@ -118,7 +118,7 @@ With a custom domain, everything in the bucket is public through it, including e
 
 Under **Storage & Databases → Queues**, create the queue (`wiki-backup`). That's all: the deploy (2.5) binds the worker to it as its producer and consumer, with the settings in `wrangler.toml` (batches of 10, 5 seconds, one at a time, 3 retries). Don't lower the retries: the worker counts on them for its waits (design 1.7).
 
-Until the worker is bound to the queue, it runs the same backup directly after each save, with a couple of quick retries but no long-term waiting; so the order of these steps doesn't matter.
+Create the queue before the worker's first deploy (2.5): Wrangler refuses to deploy while a queue named in `wrangler.toml` doesn't exist. A worker without the queue binding (pasted into the dashboard without it, 2.5) runs the same backup directly after each save, with a couple of quick retries but no long-term waiting.
 
 ### 2.4 The backup repository (optional)
 
@@ -308,7 +308,7 @@ If the page is rebuilt before step 4 (by a deploy, or by saving another plugin, 
 | Symptom | Likely cause | What to do |
 |---|---|---|
 | Every request answers 403 "didn't come through Cloudflare Access" | No Access application covers the hostname you're using (2.6): Access isn't set up yet, or it's set up on the custom domain only and you're on `workers.dev` or a preview URL | Set Access up as **Worker Access → All traffic**, or use the hostname it covers. For a local run without Access, set `ACCESS = off` (2.5); it only works for a local address. |
-| The admin page says "There's no wiki yet" (404) | The bucket has no `index.html`, and the worker was deployed without the empty wiki (pasted into the dashboard alone, or `seed/` wasn't built) | Deploy with Wrangler or Workers Builds after `npm run build`, or upload `index.html` and `status` yourself (2.2). |
+| The admin page says "There's no wiki yet" (404) | The bucket has no `index.html`, and the worker was deployed without the empty wiki (pasted into the dashboard alone, or `seed/` wasn't built) | Deploy with Wrangler or Workers Builds after `npm run build`, or upload `index.html` and `status` yourself (2.8). |
 | Every request answers 500 naming `PUBLIC_WIKI_URL` | The variable isn't the public site's address (2.5) | Set it to `https://` + the bucket's custom domain (2.2), nothing after the hostname; or remove it, for a private wiki. |
 | A Workers Builds run fails in the deploy step, before `Uploaded`, with `Received a malformed response from the API` or a `504 Gateway Timeout` on a `GET` | Cloudflare's API didn't answer one of Wrangler's reads of the worker (its secrets, its deployments) before the upload; the build itself passed ("Build command completed" is in the log) | Retry the build, or deploy from a machine: `npx wrangler deploy` in a clone (Node 22, 2.5). The site keeps serving the previous deployment meanwhile. If it keeps failing for an hour, report it to Cloudflare with the Ray ID from the log. |
 | A private wiki's first load on a new device takes a while, with one worker request per tiddler | There's no public site to read from, so each tiddler comes from the worker, once per device (5) | Nothing: the device keeps a copy, and later loads fetch only what changed. |
@@ -399,20 +399,24 @@ The suites run with the waits shortened (design 2.25). The browser modules' fixe
 | `npm run test:budget` | What reaches the worker per page load, counted behind a proxy, the service worker in place. |
 | `npm run test:setup` | The setup check, against the public stand-in with Cloudflare's headers, GitHub and Cloudflare's API imitated. |
 
-GitHub runs the same two groups, as two jobs side by side, for every pull request and every push to `main` (`.github/workflows/ci.yml`), after the lint and after checking that `worker.js` is what `src/` builds. One run per commit: a newer commit on the same branch cancels an older one's run. A job that fails keeps its `test-results/` for a week (the run's page → *Artifacts*): the logs, and the request log and traces of each browser suite that failed.
+GitHub runs the same two groups, as two jobs side by side, for every pull request and every push to `main` (`.github/workflows/ci.yml`), after the lint and after checking that `worker.js` is what `src/` builds. One run per commit: a re-run of a commit's run never cancels another commit's, and an older commit's run goes on when a newer one is pushed. A job that fails keeps its `test-results/` for a week (the run's page → *Artifacts*): the logs, and the request log and traces of each browser suite that failed.
 
 ### 6.1 Repository layout
 
 ```
 ├── README.md                 this document
+├── CHANGELOG.md              what shipped, newest first, and what an update asks of you
+├── CLAUDE.md                 how work on the repository happens: the principles, the process, where writing goes
+├── LICENSE                   MIT
 ├── worker.js                 GENERATED: the file you deploy (npm run build)
 ├── seed/empty.html           GENERATED, not committed: an empty TiddlyWiki with TiddlyWeb, what a new wiki starts from (2.8), uploaded with the worker
 ├── tools/build-wiki.mjs      builds it from the tiddlywiki package (npm run build)
 ├── tools/restore.mjs         merges a clone of the backup into one file any TiddlyWiki imports (2.4)
-├── tools/run-suites.mjs      runs test suites one after the other, each to the end, with a summary (npm test); their output under test-results/, not committed
+├── tools/run-suites.mjs      runs test suites, each to the end, one after the other or several at once (--parallel), with a summary (npm test); their output under test-results/, not committed
 ├── tools/screenshot.mjs      takes the README's screenshot from a wiki run through the test setup (npm run screenshot)
 ├── docs/
 │   ├── design.md             how the worker works, and why it's built this way
+│   ├── roadmap.md            what's ahead, in order, and what's parked and why
 │   ├── tests.md              what each test suite covers, the R2 calls per kind of request, the CPU budgets
 │   ├── external-plugins.md   design notes for plugin files (design 1.8)
 │   └── admin-wiki.png        GENERATED: the screenshot at the top of this README (npm run screenshot)
@@ -436,7 +440,7 @@ GitHub runs the same two groups, as two jobs side by side, for every pull reques
 │       ├── lib.js            what they share: the sync adaptor, the public site's address, whether this is the admin site, titles in alerts (a TiddlyWiki library module)
 │       ├── conflict-guard.js saves and deletes: the revision each is based on, conflicts, the flat layout
 │       ├── list-sync.js      the tiddler list, loading (what's shown first, the device's copy, the fill), what isn't sent
-│       ├── backup-alert.js   the alert while backups to GitHub keep failing (4.7)
+│       ├── backup-alert.js   the alert while backups to GitHub keep failing (design 1.7)
 │       ├── page-publisher.js the page published from the admin wiki (design 1.9)
 │       ├── restore-import.js the backup's files dropped onto the wiki, imported with their tags (2.4)
 │       ├── control-panel.js  the control panel's Cloudflare tab: the setup check (3), how backups go, the full backup (2.4)

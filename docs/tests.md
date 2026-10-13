@@ -34,21 +34,21 @@ Each suite, check by check, as `npm run test:<name>` runs it, with the R2 calls 
 
 | Request | R2 calls |
 |---|---|
-| First visit of a new wiki (once) | 16: the page request's two reads, the engine and the status file written, the engine looked up again, then the page build with the missing list made from the stored tiddlers (none) |
+| First visit of a new wiki (once) | 23: the page request's two reads, the engine and the status file written, the engine looked up again, then the page build with the missing list made from the stored tiddlers (none), and the app's files: the manifest looked up, the wiki's title read for it, the two default icons looked up and written, the manifest written |
 | Admin page load, page up to date | 2: read `baked.html`, check `index.html` |
 | Admin page load, the browser has the page (`304`) | 2: check `baked.html` (its body isn't read), check `index.html` |
 | Tiddler list, first fetch or unchanged (`304`) | 1 |
 | Tiddler list asking how backups go (page load, then hourly) | 2, at the same time: the list and `_backup/status.json` |
 | Tiddler read from the worker (a public copy that's stale or missing, or the conflict guard), first or unchanged (`304`) | 1 |
 | The setup check (`GET /setup/check`) | 1: `baked.html` looked up, its ETag against the public site's `/` (the rest is requests to the public site, GitHub and Cloudflare, bodies unread) |
-| Update the engine (`POST /engine/update`) | 2: the engine's head read for its version, the shipped empty wiki written over it (the page build follows at the next load) |
+| Update the engine (`POST /engine/update`) | 2: the engine's first 64 KB read for its version, the shipped empty wiki written over it (the page build follows at the next load) |
 | Start a full backup (`POST /backup/sync`) | 3: the backup status, the tiddler list, the status written; then, in the queue, a step is 1 listing, 2 reads per tiddler, the status read and written |
 | Save a new tiddler, or an update | 4: look it up and read the list (both at once), write the tiddler, write the list |
 | Save refused (`412`) | 2: look it up and read the list, both at once (the stored tiddler itself is read only if it's the same size as the save, to recognise a save sent again) |
 | Save sent again, already stored | 5: look it up, read it to compare, read and write the list, and look for a plugin file the first attempt may have left behind (design 1.8) |
 | Delete | 4: read the list, look it up, delete it, write the list |
-| Save a plugin | 12: the save's 4, and the page build: look up `index.html` and the stored core file and read the published shell (all at once), check and write the plugin file, read the stored plugin, check and write `baked.html`. The page build reuses the list the save wrote, and checks every other plugin's file too (one `HEAD` each). Before the first publish, with no shell, it reads `index.html` as well: 13. |
-| Delete a plugin | 10: the delete's 4, the page build's 5 without that plugin's file, then the file deleted (11 before the first publish) |
+| Save a plugin | 13: the save's 4, and the page build: look up `index.html` and the stored core file and read the published shell (all at once), check and write the plugin file, read the stored plugin, check and write `baked.html`, and look up the public site's manifest. The page build reuses the list the save wrote, and checks every other plugin's file too (one `HEAD` each). Before the first publish, with no shell, it reads `index.html` as well: 14. |
+| Delete a plugin | 11: the delete's 4, the page build's 6 without that plugin's file (the manifest looked up among them), then the file deleted (12 before the first publish) |
 
 Backups don't appear here: with the queue bound, as deployed, they run later in the queue consumer.
 
@@ -85,7 +85,7 @@ Reading the save in full, or building the backup's request through strings, fail
 - the fallback without a queue, its failure recorded after its two retries (a second then two in production, scaled for the tests) and well before 3 s.
 
 `test:first` starts from an empty bucket, with `seed/empty.html` uploaded with the worker, and covers:
-- the first admin page load, which puts the engine and the status file in the bucket and boots a logged-in, writable wiki with the browser modules (the library and the eight startup modules, loaded in order, each part of the sync in place) and nothing to load, and publishes the core file and the page for the public site;
+- the first admin page load, which puts the engine and the status file in the bucket and boots a logged-in, writable wiki with the browser modules (the library and the nine startup modules, loaded in order, each part of the sync in place) and nothing to load, and publishes the core file and the page for the public site;
 - a tiddler saved from it, stored and listed;
 - the public site (the stand-in) serving the page to a visitor who sees the tiddler, read-only, without ever using the worker;
 - the test pages' waits (design 2.25): TiddlyWiki's throttle 50 ms and its error retry 1 s, the modules' waits scaled to a fifth; a page of a context without the harness's script keeping TiddlyWiki's 1 s and 5 s and the modules' waits as they are, and a stored `$:/config/cfworker/TestTimeScale` tiddler changing nothing.

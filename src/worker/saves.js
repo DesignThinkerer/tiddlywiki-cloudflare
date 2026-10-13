@@ -51,8 +51,8 @@ export async function handleSave(request, env, ctx, url, corsHeaders) {
       }
       // The stored tiddler isn't the version the list has: a save whose list update failed, retried
       // with other content (edited again since) or not at all (its tab closed). Refused all the same,
-      // since it isn't based on that version (only the conflict guard can tell its own save, README
-      // 4.4), but that save is finished: the list, the public cache and the page catch up with it.
+      // since it isn't based on that version (only the conflict guard can tell its own save, design
+      // 1.4), but that save is finished: the list, the public cache and the page catch up with it.
       if (current && listedRevision(list, title) !== currentRevision) {
         const fields = await storedFields(env, current);
         if (fields) await untilDone(ctx, finishSave(env, ctx, title, fields, currentRevision, list, url.origin, true));
