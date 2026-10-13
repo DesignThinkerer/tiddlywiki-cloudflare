@@ -40,4 +40,5 @@ then poll the log. A browser suite that fails leaves `test-results/<suite>.reque
 | What's ahead, in order, with "done when"; what's parked and why | `docs/roadmap.md` |
 | What was decided, the alternatives, why | `docs/design.md` section 2 (section 1 is how it works; code comments cite "design 1.4") |
 | What shipped and what an update asks of a user | `CHANGELOG.md` |
-| How to set up, operate, troubleshoot; limits; tests | `README.md` |
+| How to set up, operate, troubleshoot; limits; how to run the tests | `README.md` |
+| What each test suite covers; the R2-call and CPU budgets | `docs/tests.md` |
