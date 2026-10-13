@@ -623,6 +623,20 @@ await sync(K);
 check("...after that, the next requests don't ask (once an hour)", !requests.slice(reqMark16).some(r => r.tag === "K" && r.headers["x-backup-status"]),
   JSON.stringify(requests.slice(reqMark16).filter(r => r.tag === "K").map(r => r.url)));
 await K.close();
+// A backup the runtime cut short (a version of several MB, over the free plan's CPU time: the queue
+// tried it four times, nothing recorded why): the note the worker left before trying, reported
+const BACKUP_STUCK = "$:/temp/cfworker/backup-stuck";
+await bucket.put("_backup/status.json", JSON.stringify({ failing: {}, running: { "Gamma": { revision: "1791000000000", size: 4800000, started: Date.now() - 20 * 60000, attempt: 4 } } }));
+const K2 = await openTab("K2");
+await K2.waitForFunction(t => $tw.wiki.tiddlerExists(t), BACKUP_STUCK, { timeout: 10000 }).catch(() => {});
+const stuckAlert = await K2.evaluate(t => { const a = $tw.wiki.getTiddler(t); return a ? { tags: a.fields.tags, text: a.fields.text } : null; }, BACKUP_STUCK);
+check("a backup cut short four times on a big version shows as an alert: the tiddler, its size, how many times, what it most likely is (README 5) and what to do",
+  !!stuckAlert && (stuckAlert.tags || []).includes("$:/tags/Alert") && stuckAlert.text.includes('<$link to="Gamma">') && /4\.[0-9] MB/.test(stuckAlert.text) && /4 times/.test(stuckAlert.text) && /CPU/.test(stuckAlert.text) && /README 5|\(5\)/.test(stuckAlert.text),
+  JSON.stringify(stuckAlert));
+await bucket.delete("_backup/status.json");
+await sync(K2);
+check("...and goes once the note is gone (each list request asks while it shows)", !(await K2.evaluate(t => $tw.wiki.tiddlerExists(t), BACKUP_STUCK)));
+await K2.close();
 
 // --- 17. A tiddler changed before its text has loaded keeps its text -------------------------------
 // After a page load, TiddlyWiki has each tiddler's fields from the list, and loads the texts one by

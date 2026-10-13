@@ -8,7 +8,9 @@ the backup status only then, and answers in a header of the same response: no ex
 the page loads, then hourly, and at each request while the alert shows or a full backup runs; keeps
 the answer in $:/temp/cfworker/backup-status (whether backups are on, the last full backup: the
 control panel's Cloudflare tab reads it, $:/cfworker/control-panel.js); shows an alert while backups
-keep failing; and, once per browser, a hint that a full backup is needed when backups are on and
+keep failing, and one for a backup the runtime cut short (a version of several MB, over the free
+plan's CPU time: the queue tried it four times, the worker's note before each try is what's left);
+and, once per browser, a hint that a full backup is needed when backups are on and
 none has ever run (tiddlers saved before they were set up aren't on GitHub otherwise). The request
 and its answer go through the list sync ($:/cfworker/list-sync.js).
 \*/
@@ -25,6 +27,7 @@ exports.synchronous = true;
 var lib = require("$:/cfworker/lib.js");
 
 var BACKUP_ALERT = "$:/temp/cfworker/backup-alert",
+	BACKUP_STUCK = "$:/temp/cfworker/backup-stuck",
 	BACKUP_HINT = "$:/temp/cfworker/backup-hint",
 	BACKUP_STATUS = "$:/temp/cfworker/backup-status",
 	HINT_DISMISSED_KEY = "cfworker-backup-hint-dismissed",
@@ -39,21 +42,23 @@ exports.startup = function() {
 		wiki = $tw.wiki,
 		backupAsked = 0,          // when the worker last answered
 		backupProblem = null,     // the problem the alert was about, so a dismissed one stays dismissed
+		backupStuck = null,       // the same for the backup cut short
 		syncRunning = false;      // a full backup is going: asked at each list request meanwhile
 	proto.cfworkerBackupAlert = true;
 
 	// Only the admin site asks (a public tab reads the list from the public site, which has no answer)
 	function askBackupStatus(adaptor) {
 		return lib.onAdminSite(adaptor.host) &&
-			(!backupAsked || syncRunning || wiki.tiddlerExists(BACKUP_ALERT) || Date.now() - backupAsked >= (parseInt(wiki.getTiddlerText("$:/config/cfworker/BackupCheckMinutes",""),10) || BACKUP_CHECK_MINUTES) * 60 * 1000);
+			(!backupAsked || syncRunning || wiki.tiddlerExists(BACKUP_ALERT) || wiki.tiddlerExists(BACKUP_STUCK) || Date.now() - backupAsked >= (parseInt(wiki.getTiddlerText("$:/config/cfworker/BackupCheckMinutes",""),10) || BACKUP_CHECK_MINUTES) * 60 * 1000);
 	}
 
 	// The worker's answer, parsed: "off" (no backups), "ok", or encoded JSON with what there is to
-	// say: the oldest failing backup {count, title, since, error, status}, sync (the last full
-	// backup), backups: "off". Returns { backups, problem, sync } or null for an answer it can't read.
+	// say: the oldest failing backup {count, title, since, error, status}, stuck (a backup cut short:
+	// {count, title, size, attempts, started}), sync (the last full backup), backups: "off". Returns
+	// { backups, problem, stuck, sync } or null for an answer it can't read.
 	function parseAnswer(answer) {
 		if(answer === "ok" || answer === "off") {
-			return {backups: answer === "ok" ? "on" : "off", problem: null, sync: null};
+			return {backups: answer === "ok" ? "on" : "off", problem: null, stuck: null, sync: null};
 		}
 		var report;
 		try {
@@ -67,8 +72,12 @@ exports.startup = function() {
 		return {
 			backups: report.backups === "off" ? "off" : "on",
 			problem: report.count ? report : null,
+			stuck: report.stuck && typeof report.stuck === "object" && report.stuck.title ? report.stuck : null,
 			sync: report.sync && typeof report.sync === "object" ? report.sync : null
 		};
+	}
+	function sizeText(bytes) {
+		return typeof bytes === "number" && bytes >= 0 ? (bytes >= 1048576 ? (bytes / 1048576).toFixed(1) + " MB" : Math.round(bytes / 1024) + " KB") : "?";
 	}
 
 	function dateField(ms) {
@@ -130,6 +139,32 @@ exports.startup = function() {
 		}));
 	}
 
+	// The alert for a backup the runtime cut short. stuck: {count, title, size, attempts, started}
+	// of the oldest. Nothing retries it (the queue dropped it): the next save of the tiddler does.
+	function showStuck(stuck) {
+		if(!stuck) {
+			backupStuck = null;
+			if(wiki.tiddlerExists(BACKUP_STUCK)) {
+				wiki.deleteTiddler(BACKUP_STUCK);
+			}
+			return;
+		}
+		var key = stuck.title + " " + stuck.started;
+		if(key === backupStuck && !wiki.tiddlerExists(BACKUP_STUCK)) {
+			return;
+		}
+		backupStuck = key;
+		wiki.addTiddler(new $tw.Tiddler({
+			title: BACKUP_STUCK,
+			tags: ["$:/tags/Alert"],
+			component: "GitHub backup",
+			modified: new Date(),
+			text: "The backup of " + lib.link(stuck.title) + " (" + sizeText(stuck.size) + ") was cut short " + stuck.attempts + " times and dropped" +
+				(stuck.count > 1 ? ", and " + (stuck.count - 1) + " more like it" : "") + ": most likely the free plan's CPU time ran out on a tiddler this size (README 5). " +
+				"GitHub keeps the last version of it that went through; the wiki keeps this one. It's tried again at the next save of it: split it, or move the worker to a paid plan."
+		}));
+	}
+
 	// Once per browser: backups are on and no full backup has ever run. Closing the alert is
 	// remembered on this device (localStorage); a full backup makes it moot everywhere.
 	function hintDismissed() {
@@ -180,6 +215,9 @@ exports.startup = function() {
 		noteStatus(status);
 		if(status.problem !== undefined) {
 			showProblem(status.problem);
+		}
+		if(status.stuck !== undefined) {
+			showStuck(status.stuck);
 		}
 		showHint(status);
 	};
