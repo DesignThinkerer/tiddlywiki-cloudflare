@@ -84,6 +84,28 @@ export async function queueBackup(env, job) {
 // The pause of every backup, if one is on (nextPause in status.js), kept for the later runs in this isolate
 let backupPause = null;
 
+// The titles recorded as failing in the status file (status.js), as this instance knows them: read
+// once, at its first backup that goes through (the file is otherwise read only by a run with a
+// failure, a retry or a pause), then kept up to date with what it records and clears. null until
+// then. A backup of such a title that goes through clears its entry whatever its own history: a
+// fresh save of a tiddler a full backup found refused, fixed since, say.
+let failingTitles = null;
+
+async function recordedAsFailing(env, title) {
+  if (failingTitles === null) {
+    try {
+      failingTitles = new Set((await readBackupStatus(env, true)).failing.keys());
+    } catch {
+      return false;   // not known this time: the next backup that goes through asks again
+    }
+  }
+  return failingTitles.has(title);
+}
+
+function noteFailing(failures) {
+  if (failingTitles) for (const failure of failures) failingTitles.add(failure.title);
+}
+
 // Queue consumer
 export async function processBackupBatch(batch, env) {
   const messages = [...batch.messages].sort((a, b) =>
@@ -124,10 +146,13 @@ export async function processBackupBatch(batch, env) {
       backupPause = null;   // GitHub takes backups (again)
       // (The backup is done: a copy that can't be removed is only left behind)
       if (msg.body.contentKey) await env.WIKI_BUCKET.delete(msg.body.contentKey).catch(() => {});
-      // Only a version that failed or waited before can clear a recorded failure, or a recorded pause
-      if (msg.body.tries > 0 || msg.body.paused || msg.attempts > 1) {
+      // A version that failed or waited before clears a recorded failure, and a recorded pause; so
+      // does any version of a title recorded as failing (recordedAsFailing)
+      const waited = msg.body.tries > 0 || msg.body.paused || msg.attempts > 1;
+      if (waited || await recordedAsFailing(env, msg.body.title)) {
         cleared.push(msg.body.title);
-        pause = null;
+        if (failingTitles) failingTitles.delete(msg.body.title);
+        if (waited) pause = null;
       }
     } catch (e) {
       if (isRateLimit(e) || e.status === 401 || (isAccountWide(e) && denied !== undefined && denied !== msg.body.title)) {
@@ -196,13 +221,14 @@ export async function processBackupBatch(batch, env) {
       await requeueBackup(env, msg, delay, true);
     }
   }
+  noteFailing(failures);
   if (failures.length || cleared.length || pause !== undefined) await recordBackupResults(env, failures, cleared, pause, stored);
 }
 
 // --- A full backup (design 1.7): GitHub made to mirror the bucket -----------------------------------
 // Started from the admin wiki (POST /backup/sync, sync.js), for tiddlers that predate the backup, a
 // restore, a tiddler put in R2 by hand, or any doubt. A message carries where it stands: { action:
-// "sync", id, phase, after, pending, total, done, committed, removed, failed, steps, time, tries }.
+// "sync", id, startedAt, phase, after, pending, total, done, committed, removed, failed, steps, time, tries }.
 // The push phase walks the stored tiddlers in key order (after: the last key walked), each through the
 // same backup as a save (backupJob): nothing is committed for one GitHub has the same bytes of, and a
 // file GitHub refuses is reported like a save's would be, the walk going on. Then the prune phase lists
@@ -220,8 +246,10 @@ const SYNC_MIN_CALLS = 8;
 
 const SYNC_LIST_LIMIT = 100;
 
-// Titles kept in a prune message: more than that, and the tree is listed again once they're removed
-const SYNC_PENDING_LIMIT = 300;
+// What a prune message carries of the files still to remove (titles and shas, as the queue would
+// measure them): what fits with room to spare under a message's 64 KB, so a step stays 3 operations;
+// more than that, and the tree is listed again once they're removed
+const SYNC_PENDING_BYTES = 56 * 1024;
 
 // One step. Returns the next step's message, or null once done. Throws on an error that stops the
 // step (GitHub down, a rate limit, a refused token, R2): the step is retried, its progress recorded
@@ -238,23 +266,29 @@ async function syncStep(env, body, work, budget) {
   const used = () => work.calls - callsAtStart;
   let { done = 0, committed = 0, removed = 0, failed = 0, steps = 0, total = null } = body;
   steps++;
-  const failures = [];
+  const failures = [], through = [];   // what GitHub refused, and the titles it took or already had
   let next;
   try {
-    next = await syncWork(env, github, body, work, budget, used, counts => ({ done, committed, removed, failed } = counts), failures);
+    next = await syncWork(env, github, body, work, budget, used, counts => ({ done, committed, removed, failed } = counts), failures, through);
   } catch (e) {
     await recordSync(env, { id: body.id, error: String(e.detail || e.message || e).slice(0, 200) }, stored).catch(() => {});
     throw e;
   }
   console.log(`[Backup] Sync step ${steps}: ${done}/${total ?? "?"} walked, ${committed} committed, ${removed} removed, ${failed} failed, ${used()} GitHub calls`);
-  if (failures.length) await recordBackupResults(env, failures, [], undefined);
-  await recordSync(env, { id: body.id, startedAt: body.time, total, phase: next ? next.phase : "prune", steps, done, committed, removed, failed, error: undefined, ...(next ? {} : { finished: Date.now() }) });
-  return next ? { action: "sync", id: body.id, total, done, committed, removed, failed, steps, time: Date.now(), tries: 0, ...next } : null;
+  // A tiddler recorded as failing that this step committed, or found GitHub already has: cleared
+  const cleared = through.filter(title => stored.failing.has(title));
+  noteFailing(failures);
+  if (failingTitles) for (const title of cleared) failingTitles.delete(title);
+  if (failures.length || cleared.length) await recordBackupResults(env, failures, cleared, undefined);
+  const startedAt = body.startedAt || body.time;
+  await recordSync(env, { id: body.id, startedAt, total, phase: next ? next.phase : "prune", steps, done, committed, removed, failed, error: undefined, ...(next ? {} : { finished: Date.now() }) });
+  return next ? { action: "sync", id: body.id, startedAt, total, done, committed, removed, failed, steps, time: Date.now(), tries: 0, ...next } : null;
 }
 
 // The step's work: the next slice of the push, or of the prune. report(counts) hands back the counts
-// as they stand (also when an error stops the step partway). Returns what the next step is, or null.
-async function syncWork(env, github, body, work, budget, used, report, failures) {
+// as they stand (also when an error stops the step partway); through gets the titles GitHub took or
+// already had. Returns what the next step is, or null.
+async function syncWork(env, github, body, work, budget, used, report, failures, through) {
   let { done = 0, committed = 0, removed = 0, failed = 0 } = body;
   const counts = () => report({ done, committed, removed, failed });
   if (body.phase === "push") {
@@ -274,6 +308,7 @@ async function syncWork(env, github, body, work, budget, used, report, failures)
             const job = { action: "save", title, revision: revisionOf(obj), content: new Uint8Array(await obj.arrayBuffer()), time: Date.now() };
             try {
               if (await backupJob(env, job, work) === "committed") committed++;
+              through.push(title);
             } catch (e) {
               if (!isRefusal(e)) throw e;
               failed++;
@@ -312,7 +347,19 @@ async function syncWork(env, github, body, work, budget, used, report, failures)
       if (e.status !== 404 && e.status !== 409) throw e;
     }
   }
-  if (pending.length) return { phase: "prune", pending: pending.slice(0, SYNC_PENDING_LIMIT), ...(pending.length > SYNC_PENDING_LIMIT ? { more: true } : {}) };
+  if (pending.length) {
+    // As many as fit the next message (a title takes two bytes a character past Latin-1, as a text does)
+    const carried = [];
+    let bytes = 0;
+    for (const file of pending) {
+      bytes += (file.title.length + file.sha.length + 32) * (/[^\x00-\xff]/.test(file.title) ? 2 : 1);
+      if (bytes > SYNC_PENDING_BYTES && carried.length) break;
+      carried.push(file);
+    }
+    // (more: files past this message, to find by listing the tree again once these are removed;
+    // kept from the message before, where the list came from, until that listing)
+    return { phase: "prune", pending: carried, ...(carried.length < pending.length || body.more ? { more: true } : {}) };
+  }
   return body.more ? { phase: "prune" } : null;
 }
 

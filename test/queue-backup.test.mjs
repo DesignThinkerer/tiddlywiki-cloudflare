@@ -441,8 +441,18 @@ await until(async () => repoText("Odd path") !== undefined && await backupStatus
 // 16. Every backup failing (here a token GitHub no longer accepts): reported with the oldest one and
 // how many are waiting, only to a request that asks. It pauses every backup, so the ones waiting make
 // a few GitHub calls in all, not a few each. Cleared once they go through, and the pause with them
-faults.badCredentials = true;
 const queueOps = async () => (await mf.dispatchFetch(`${base}/__qops`)).json();
+// 15b. A backup GitHub takes is 3 queue operations: the message sent, delivered once, acknowledged
+// (the budget CLAUDE.md and README 5 state): no retry, no second delivery
+await queueOps();                                          // (starts a new count)
+const opsTitles = Array.from({ length: 5 }, (_, i) => `Ops ${i + 1}`);
+for (const t of opsTitles) await put(t, `ops ${t}`);
+await until(() => opsTitles.every(t => repoText(t) !== undefined), 30000);
+await new Promise(r => setTimeout(r, 700));                 // (the last acknowledgement follows its commit)
+const plainOps = await queueOps();
+check("a backup GitHub takes is 3 queue operations: sent, delivered once, acknowledged (5 saves: 15)",
+  plainOps.sends === 5 && plainOps.deliveries === 5 && plainOps.acks === 5 && plainOps.retries === 0, JSON.stringify(plainOps));
+faults.badCredentials = true;
 await queueOps();                                          // (starts a new count)
 const tokenSaved = Date.now();
 const tokenCalls = () => ghCalls.filter(c => c.includes("tiddlers/Token ")).length;
@@ -577,6 +587,7 @@ check("...the counts say what happened: walked (the one saved meanwhile too), co
   (await backupStatus(base3, mf3))?.title === "Old refused", JSON.stringify(final));
 const stepCalls = syncLogs().map(l => Number((l.match(/(\d+) GitHub calls/) || [])[1])).filter(n => !isNaN(n));
 check("...in steps, each within a run's budget of GitHub calls (40), several steps for 63 tiddlers", stepCalls.length >= 3 && stepCalls.every(n => n <= 40), `steps: ${stepCalls.join(", ")}`);
+check("...the status keeps the start time across the steps", final.startedAt === started.startedAt, `${final.startedAt} vs ${started.startedAt}`);
 // A second run commits nothing
 const commitsBefore = commits.length;
 res17 = await startSync();
@@ -584,6 +595,40 @@ await until(async () => { const s = await syncStatus(); return s.finished && s.i
 const second = await syncStatus();
 check("a second sync commits nothing and removes nothing (idempotent)", res17.status === 202 && commits.length === commitsBefore && second.committed === 0 && second.removed === 0 && second.done === listEntries.length + 1, JSON.stringify(second));
 faults.refuseText.clear();
+// The refused tiddler, fixed and saved: its backup, a fresh message, goes through and clears the
+// recorded failure at once, rather than a day later, when the entry goes stale
+await put("Old refused", "fixed: nothing GitHub refuses", base3, mf3);
+// (after a full backup, the report always carries its status: cleared means no failing entry in it)
+const noFailure = s => s === "ok" || (!!s && typeof s === "object" && !s.count);
+const refusedCleared = await until(async () => repoText("Old refused") !== undefined && noFailure(await backupStatus(base3, mf3)), 30000);
+check("a file GitHub refused during a full backup, fixed and saved: the alert goes once the save's backup goes through", refusedCleared, `status ${JSON.stringify(await backupStatus(base3, mf3))}`);
+// ...and a later full backup that commits a refused tiddler clears it too
+faults.refuseText.add("SECRET_MARK");
+await storeByHand("Old refused 2", "another SECRET_MARK");
+{
+  const current = JSON.parse(await (await bucket3.get("recipes/default/tiddlers.json")).text());
+  current.push(listEntries[listEntries.length - 1]);
+  await bucket3.put("recipes/default/tiddlers.json", JSON.stringify(current));
+}
+await startSync();
+await until(async () => { const s = await syncStatus(); return s.finished && s.id !== second.id; }, 60000);
+const refusedAgain = ((await backupStatus(base3, mf3))?.count || 0) >= 1;   // ("Old refused 2" recorded; the oldest is named)
+faults.refuseText.clear();
+await startSync();
+const committedLater = await until(async () => { const s = await syncStatus(); return s.finished && s.failed === 0 && repoText("Old refused 2") !== undefined; }, 60000);
+check("...and a later full backup that commits it clears it too", refusedAgain && committedLater && noFailure(await backupStatus(base3, mf3)),
+  `recorded ${refusedAgain}, committed ${committedLater}, status ${JSON.stringify(await backupStatus(base3, mf3))}`);
+// Files to remove with long titles: a prune step's next message carries what fits a queue message
+// (under 64 KB, so a step stays 3 operations), over more steps, not a fixed number of titles
+const longGone = Array.from({ length: 300 }, (_, i) => `tiddlers/${"gone title ".repeat(80)}${i}.json`);
+for (const path of longGone) files.set(path, { sha: blobSha(Buffer.from("x")), text: "x" });
+await mf3.dispatchFetch(`${base3}/__qops`);                 // (starts a new count)
+await startSync();
+const pruned = await until(async () => { const s = await syncStatus(); return s.finished && s.removed >= 300; }, 90000);
+const pruneOps = await (await mf3.dispatchFetch(`${base3}/__qops`)).json();
+check("files to remove with long titles: the prune's steps carry what fits a queue message, and every file is removed",
+  pruned && longGone.every(p => !files.has(p)) && pruneOps.maxMessageBytes <= 64000,
+  `removed ${(await syncStatus()).removed} in ${(await syncStatus()).steps} steps, largest message ${pruneOps.maxMessageBytes} bytes`);
 // A full backup whose steps were lost (hours without progress) doesn't block a new one
 const lostStart = Date.now() - 9 * 3600 * 1000;
 await bucket3.put("_backup/status.json", JSON.stringify({ failing: {}, sync: { id: "lost", startedAt: lostStart, updatedAt: lostStart, total: 5, phase: "push", steps: 1, done: 2, committed: 2, removed: 0, failed: 0 } }));
