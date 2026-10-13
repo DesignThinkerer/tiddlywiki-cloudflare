@@ -494,6 +494,45 @@ faults.noWriteAccess = false;
 check("...and cleared once they go through", await until(async () => writeTitles.every(t => repoText(t) !== undefined) &&
   await backupStatus() === "ok" && !(await bucket.head("_backup/status.json")), 60000));
 
+// 18. A backup the runtime cuts short (the free plan's CPU time, on a version of several MB): nothing
+// after the cut runs, the queue delivers the batch again, three times, then drops it, and nothing
+// recorded why. For a version over 1 MB the worker notes, before the heavy part, that it's at it
+// (the status file: 2 R2 calls), and clears the note when done; a note left behind is reported
+const runsOf = async () => (await mf.dispatchFetch(`${base}/__runs`)).json();
+const statusFile = async () => { const o = await bucket.get("_backup/status.json"); return o ? JSON.parse(await o.text()) : null; };
+await runsOf();                                            // (starts a new count)
+await mf.dispatchFetch(`${base}/__die`, { method: "POST", body: JSON.stringify({ call: "put backup status", times: 4 }) });
+const cutText = "c".repeat(1200000);
+const cutSaved = Date.now();
+await put("Cut short", cutText);
+const fourTimes = await until(async () => (await statusFile())?.running?.["Cut short"]?.attempt === 4, 30000);
+await new Promise(r => setTimeout(r, 2500));               // (a fifth delivery, if one came, would have come)
+const cutRuns = (await runsOf()).filter(run => run.includes("put backup status"));
+const noted = (await statusFile())?.running?.["Cut short"];
+const cutStatus = await backupStatus();
+check("a version over 1 MB whose backup is cut short four times (the delivery and the queue's three retries), then dropped: noted before each try, nothing committed",
+  fourTimes && cutRuns.length === 4 && !!noted && noted.size > 1200000 && noted.attempt === 4 && noted.started >= cutSaved && repoText("Cut short") === undefined,
+  `runs with the note ${cutRuns.length}, note ${JSON.stringify(noted)}, on GitHub ${repoText("Cut short") !== undefined}`);
+check("...and reported to the admin wiki: the tiddler, its size, how many times, since when",
+  !!cutStatus && typeof cutStatus === "object" && cutStatus.stuck?.title === "Cut short" && cutStatus.stuck.attempts === 4 && cutStatus.stuck.size > 1200000 && cutStatus.stuck.count === 1 && cutStatus.stuck.started >= cutSaved,
+  JSON.stringify(cutStatus));
+check("...the note costs the run two R2 calls before the heavy part (the status file read and written), after the copy is looked at",
+  cutRuns.length === 4 && cutRuns.every(run => { const i = run.indexOf("get backup copy"); return i >= 0 && run.slice(i + 1, i + 3).join(",") === "get backup status,put backup status"; }),
+  JSON.stringify(cutRuns[0]));
+// A backup of the tiddler that goes through clears the note (here its next save)
+await runsOf();
+await put("Cut short", cutText + "!");
+const cutThrough = await until(async () => textOf(repoText("Cut short")) === cutText + "!" && await backupStatus() === "ok", 30000);
+const throughRun = (await runsOf()).find(run => run.includes("get backup copy")) || [];
+check("...a backup of it that goes through clears the note and the report, and costs the run four status-file calls in all (the note, then its clearing)",
+  cutThrough && !(await bucket.head("_backup/status.json")) && throughRun.filter(c => c.includes("backup status")).length === 4, `status ${JSON.stringify(await backupStatus())}, run ${JSON.stringify(throughRun)}`);
+await runsOf();
+await put("Small plain", "a small version writes no note");
+await until(() => repoText("Small plain") !== undefined, 30000);
+await new Promise(r => setTimeout(r, 500));
+const smallRuns = await runsOf();
+check("a version under 1 MB writes no note: no status-file call in its run", smallRuns.length >= 1 && smallRuns.every(run => !run.some(c => c.includes("backup status"))), JSON.stringify(smallRuns));
+
 // 10. Without a queue binding, it commits directly like before
 const mf2 = makeWorker(0, false);
 const base2 = (await mf2.ready).toString().replace(/\/$/, "");

@@ -8,6 +8,9 @@
 // deliveries of one message), maxMessageBytes (the largest message sent, as JSON) }, and starts a new count:
 // Cloudflare counts a send, a delivery and an ack as one operation each (a retry is the next delivery).
 // POST /__qfail with { times } makes the next sends to the queue throw, as when it refuses them.
+// POST /__die with { call, times } ends the queue run at the next such R2 calls, once each has
+// completed, as Cloudflare ends one that exceeds its CPU time: nothing after it runs (the call's
+// result never arrives), the batch isn't acknowledged, and the queue delivers it again.
 // Used by test/r2-ops.test.mjs, test/integrity.test.mjs and test/queue-backup.test.mjs; never deployed.
 import worker from "../worker.js";
 
@@ -17,6 +20,8 @@ let failures = [];          // { call, times, delay }: calls to make fail, or wa
 let runs = [];              // the R2 calls of each queue run
 let qops = { sends: 0, deliveries: 0, acks: 0, retries: 0, maxAttempts: 0, maxMessageBytes: 0 };
 let qfail = 0;              // sends left to refuse
+let dies = [];              // { call, times }: calls after which the queue run ends
+let endRun = null;          // ends the queue run in progress (the race in queueOne)
 
 // The queue binding, counting what's sent
 function countedQueue(queue) {
@@ -67,6 +72,12 @@ function counted(bucket, run) {
           if (failure.delay) return new Promise(r => setTimeout(r, failure.delay)).then(() => value.apply(target, args));
           return Promise.reject(new Error(`R2 ${call} failed (test)`));
         }
+        const die = run && endRun && dies.find(d => d.call === call && d.times > 0);
+        if (die) {
+          die.times--;
+          const end = endRun;
+          return Promise.resolve(value.apply(target, args)).then(() => { end(); return new Promise(() => {}); });
+        }
         if (running.size > 0) overlaps.push([...running.keys(), call].sort().join(" + "));
         running.set(call, (running.get(call) || 0) + 1);
         const done = () => running.get(call) > 1 ? running.set(call, running.get(call) - 1) : running.delete(call);
@@ -89,6 +100,11 @@ export default {
     }
     if (new URL(request.url).pathname === "/__qfail") {
       qfail = (await request.json()).times || 1;
+      return new Response(null, { status: 204 });
+    }
+    if (new URL(request.url).pathname === "/__die") {
+      const { call, times = 1 } = await request.json();
+      dies.push({ call, times });
       return new Response(null, { status: 204 });
     }
     if (new URL(request.url).pathname === "/__qops") {
@@ -135,7 +151,14 @@ export default {
       ack() { qops.acks++; return m.ack(); },
       retry(options) { qops.retries++; return m.retry(options); }
     }));
-    return worker.queue({ queue: batch.queue, messages, ackAll: () => batch.ackAll(), retryAll: o => batch.retryAll(o) },
-      { ...env, WIKI_BUCKET: counted(env.WIKI_BUCKET, run), BACKUP_QUEUE: countedQueue(env.BACKUP_QUEUE) }, ctx);
+    let ended;
+    const died = new Promise((_, reject) => { ended = () => reject(new Error("the queue run ended (test: as at the CPU limit)")); });
+    endRun = ended;
+    try {
+      return await Promise.race([died, worker.queue({ queue: batch.queue, messages, ackAll: () => batch.ackAll(), retryAll: o => batch.retryAll(o) },
+        { ...env, WIKI_BUCKET: counted(env.WIKI_BUCKET, run), BACKUP_QUEUE: countedQueue(env.BACKUP_QUEUE) }, ctx)]);
+    } finally {
+      endRun = null;
+    }
   }
 };

@@ -15,7 +15,7 @@ import { github, waitMs } from "../settings.js";
 import { TIDDLER_PREFIX } from "../storage.js";
 import { isEphemeralTitle, isNewerRevision, revisionOf, tiddlerKey } from "../tiddlers.js";
 import { backupRetryDelay, gitBlobSha, githubContents, isAccountWide, isRateLimit, isRefusal } from "./github.js";
-import { backupFailure, nextPause, readBackupStatus, recordBackupResults, recordSync } from "./status.js";
+import { BIG_BACKUP_BYTES, QUEUE_RETRIES, backupFailure, nextPause, noteRunning, readBackupStatus, recordBackupResults, recordSync } from "./status.js";
 
 // A queue message, as sent: a version that would make it bigger waits in R2. (The queue takes up to
 // 128 KB, but counts an operation per 64 KB of message: over 64 KB, a backup would cost 6 instead of 3.)
@@ -111,7 +111,7 @@ export async function processBackupBatch(batch, env) {
   const messages = [...batch.messages].sort((a, b) =>
     (a.body.time - b.body.time) || String(a.body.revision).localeCompare(String(b.body.revision)));
   const held = new Map();   // title -> delay: a version of it failed, its later versions wait with it
-  const failures = [], cleared = [];   // for the backup status (backupFailure)
+  const failures = [], cleared = [], finished = [];   // for the backup status (backupFailure; finished: big versions noted, done with)
   let pause;                // for the status file: a pause that starts in this run, or null if one is over
   let stored;               // the status file, if read in this run
   let denied;               // a tiddler GitHub answered 403 or 404 in this run (see isAccountWide)
@@ -140,8 +140,9 @@ export async function processBackupBatch(batch, env) {
       continue;
     }
     attempts++;
+    const delivery = { attempt: msg.attempts };   // (noted: a big version, noted as under way)
     try {
-      await backupJob(env, msg.body, work);
+      await backupJob(env, msg.body, work, delivery);
       msg.ack();
       backupPause = null;   // GitHub takes backups (again)
       // (The backup is done: a copy that can't be removed is only left behind)
@@ -155,6 +156,7 @@ export async function processBackupBatch(batch, env) {
         if (waited) pause = null;
       }
     } catch (e) {
+      if (delivery.noted) finished.push(msg.body.title);
       if (isRateLimit(e) || e.status === 401 || (isAccountWide(e) && denied !== undefined && denied !== msg.body.title)) {
         // Every backup waits: this one, the rest of this run (above), and the next runs. (A rate
         // limit isn't a failure to report: a big import waits like this for hours.)
@@ -183,7 +185,9 @@ export async function processBackupBatch(batch, env) {
       // versions logic keeps GitHub on the newest)
       if (!isRefusal(e)) held.set(msg.body.title, delay);
       failures.push(backupFailure(msg.body, e));
+      continue;
     }
+    if (delivery.noted) finished.push(msg.body.title);
   }
   // A full backup's step: one a run, with the calls the saves left (a step itself records what it did)
   let stepRun = false;
@@ -195,7 +199,7 @@ export async function processBackupBatch(batch, env) {
     }
     stepRun = true;
     try {
-      const next = await syncStep(env, msg.body, work, budget);
+      const next = await syncStep(env, msg.body, work, budget, { attempt: msg.attempts, sync: msg.body.id });
       msg.ack();
       backupPause = null;
       if (next) await env.BACKUP_QUEUE.send(next);
@@ -222,7 +226,7 @@ export async function processBackupBatch(batch, env) {
     }
   }
   noteFailing(failures);
-  if (failures.length || cleared.length || pause !== undefined) await recordBackupResults(env, failures, cleared, pause, stored);
+  if (failures.length || cleared.length || finished.length || pause !== undefined) await recordBackupResults(env, failures, cleared, pause, stored, finished);
 }
 
 // --- A full backup (design 1.7): GitHub made to mirror the bucket -----------------------------------
@@ -255,7 +259,7 @@ const SYNC_PENDING_BYTES = 56 * 1024;
 // step (GitHub down, a rate limit, a refused token, R2): the step is retried, its progress recorded
 // as an error meanwhile. A step of a full backup another one has replaced since (started again
 // after this one's step was lost for hours) does nothing.
-async function syncStep(env, body, work, budget) {
+async function syncStep(env, body, work, budget, delivery) {
   const stored = await readBackupStatus(env, true);
   if (stored.sync && stored.sync.id !== body.id && stored.sync.startedAt > body.time) {
     console.log("[Backup] Sync step of a full backup replaced by a newer one: dropped");
@@ -266,11 +270,12 @@ async function syncStep(env, body, work, budget) {
   const used = () => work.calls - callsAtStart;
   let { done = 0, committed = 0, removed = 0, failed = 0, steps = 0, total = null } = body;
   steps++;
-  const failures = [], through = [];   // what GitHub refused, and the titles it took or already had
+  const failures = [], through = [], finished = [];   // what GitHub refused, the titles it took or already had, the big ones noted
   let next;
   try {
-    next = await syncWork(env, github, body, work, budget, used, counts => ({ done, committed, removed, failed } = counts), failures, through);
+    next = await syncWork(env, github, body, work, budget, used, counts => ({ done, committed, removed, failed } = counts), failures, through, finished, delivery);
   } catch (e) {
+    if (finished.length) await recordBackupResults(env, [], [], undefined, undefined, finished);
     await recordSync(env, { id: body.id, error: String(e.detail || e.message || e).slice(0, 200) }, stored).catch(() => {});
     throw e;
   }
@@ -279,7 +284,7 @@ async function syncStep(env, body, work, budget) {
   const cleared = through.filter(title => stored.failing.has(title));
   noteFailing(failures);
   if (failingTitles) for (const title of cleared) failingTitles.delete(title);
-  if (failures.length || cleared.length) await recordBackupResults(env, failures, cleared, undefined);
+  if (failures.length || cleared.length || finished.length) await recordBackupResults(env, failures, cleared, undefined, undefined, finished);
   const startedAt = body.startedAt || body.time;
   await recordSync(env, { id: body.id, startedAt, total, phase: next ? next.phase : "prune", steps, done, committed, removed, failed, error: undefined, ...(next ? {} : { finished: Date.now() }) });
   return next ? { action: "sync", id: body.id, startedAt, total, done, committed, removed, failed, steps, time: Date.now(), tries: 0, ...next } : null;
@@ -287,8 +292,10 @@ async function syncStep(env, body, work, budget) {
 
 // The step's work: the next slice of the push, or of the prune. report(counts) hands back the counts
 // as they stand (also when an error stops the step partway); through gets the titles GitHub took or
-// already had. Returns what the next step is, or null.
-async function syncWork(env, github, body, work, budget, used, report, failures, through) {
+// already had; finished the big ones noted as under way (noteBigVersion) and done with; delivery:
+// the step's message's attempt and the full backup's id, for the notes. Returns what the next step
+// is, or null.
+async function syncWork(env, github, body, work, budget, used, report, failures, through, finished, delivery) {
   let { done = 0, committed = 0, removed = 0, failed = 0 } = body;
   const counts = () => report({ done, committed, removed, failed });
   if (body.phase === "push") {
@@ -305,15 +312,22 @@ async function syncWork(env, github, body, work, budget, used, report, failures,
         if (item.customMetadata?.layout === FLAT_LAYOUT && !isEphemeralTitle(title)) {
           const obj = await env.WIKI_BUCKET.get(item.key);
           if (obj) {
-            const job = { action: "save", title, revision: revisionOf(obj), content: new Uint8Array(await obj.arrayBuffer()), time: Date.now() };
+            const job = { action: "save", title, revision: revisionOf(obj), time: Date.now() };
+            let noted = await noteBigVersion(env, job, obj.size, delivery);
+            job.content = new Uint8Array(await obj.arrayBuffer());
             try {
               if (await backupJob(env, job, work) === "committed") committed++;
               through.push(title);
             } catch (e) {
+              if (noted) {
+                finished.push(title);   // (done with it, however it went: the note goes with the step's record)
+                noted = false;
+              }
               if (!isRefusal(e)) throw e;
               failed++;
               failures.push(backupFailure(job, e));
             }
+            if (noted) finished.push(title);
           }
         }
         done++;
@@ -375,9 +389,6 @@ async function storedTitles(env) {
   return titles;
 }
 
-// The queue's retry limit, which the worker can't read: Cloudflare's default (README 2.3: leave it)
-const QUEUE_RETRIES = 3;
-
 // How long the queue keeps a message from when it was sent: 24 hours on the free plan (the least)
 const QUEUE_RETENTION = 24 * 3600 * 1000;
 
@@ -404,10 +415,25 @@ async function requeueBackup(env, msg, delaySeconds, countTry, extra) {
   }
 }
 
+// A version over BIG_BACKUP_BYTES, about to be backed up from the queue (delivery: { attempt, sync }):
+// noted in the status file as under way (status.js, noteRunning), before the heavy part — the bytes
+// copied, hashed and encoded, which on the free plan can take a run past its CPU time, after which
+// nothing runs, the queue delivers the message again the same way, three times, then drops it, and
+// this note is all that says why. The run clears it once done with the version (finished). Not for
+// a direct backup (no queue: the save's own request, which answers its error). Returns whether noted.
+async function noteBigVersion(env, job, size, delivery) {
+  if (!delivery || !(size > BIG_BACKUP_BYTES)) return false;
+  await noteRunning(env, { title: job.title, revision: job.revision, size, started: Date.now(), attempt: delivery.attempt, sync: delivery.sync });
+  delivery.noted = true;
+  return true;
+}
+
 // Commits one save or delete. job.content: the version as text (in a queue message) or bytes (a
 // direct backup). work.bytes: adds the size of the versions it handles; work.calls: the GitHub calls.
-// Returns "committed" when it wrote GitHub's file, "same" when GitHub already had these bytes
-export async function backupJob(env, job, work = { bytes: 0, calls: 0 }) {
+// delivery: from the queue, { attempt, sync } (noted set here when the version got a note, see
+// noteBigVersion). Returns "committed" when it wrote GitHub's file, "same" when GitHub already had
+// these bytes
+export async function backupJob(env, job, work = { bytes: 0, calls: 0 }, delivery = null) {
   const github = githubContents(env, work);
   const current = await env.WIKI_BUCKET.head(tiddlerKey(job.title));   // the version in the wiki now
 
@@ -422,6 +448,7 @@ export async function backupJob(env, job, work = { bytes: 0, calls: 0 }) {
   let content = typeof job.content === "string" ? encoder.encode(job.content) : job.content;
   if (content === undefined && job.contentKey) {
     const stored = await env.WIKI_BUCKET.get(job.contentKey);
+    if (stored) await noteBigVersion(env, job, stored.size, delivery);
     content = stored ? new Uint8Array(await stored.arrayBuffer()) : undefined;
   }
   if (content === undefined) return; // Already handled by an earlier delivery of this message
