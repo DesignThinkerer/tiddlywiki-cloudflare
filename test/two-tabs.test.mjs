@@ -60,8 +60,14 @@ async function create(page, title, text, extra = {}) {
 }
 async function startEdit(page, title) {
   await page.evaluate(t => new $tw.Story().navigateTiddler(t), title);
-  await page.locator(`.tc-tiddler-frame[data-tiddler-title="${title}"] button[aria-label="Edit this tiddler"]`).first().click();
-  await page.waitForFunction(t => !!$tw.wiki.findDraft(t), title);
+  const button = page.locator(`.tc-tiddler-frame[data-tiddler-title="${title}"] button[aria-label="Edit this tiddler"]`).first();
+  // (A click lost to a refresh of the story river on a loaded machine: clicked again)
+  for (let attempt = 1; ; attempt++) {
+    await button.click();
+    const edited = await page.waitForFunction(t => !!$tw.wiki.findDraft(t), title, { timeout: 5000 }).then(() => true, () => false);
+    if (edited) return;
+    if (attempt === 6) throw new Error(`no draft of '${title}' after ${attempt} clicks on Edit`);
+  }
 }
 async function finishEdit(page, title, text, newTitle) {
   const draftTitle = await page.evaluate(([t, text, newTitle]) => {

@@ -5,7 +5,7 @@ import fs from "node:fs";
 import path from "node:path";
 import vm from "node:vm";
 import { createRequire } from "node:module";
-import { addTiddler, createChecks, createWatcher, finish, launchBrowser, readWikiFile, settle as settleTab, sleep, startSite } from "./browser-harness.mjs";
+import { addTiddler, createChecks, createWatcher, finish, launchBrowser, readWikiFile, settle as settleTab, sleep, startSite, waitFor } from "./browser-harness.mjs";
 
 const require = createRequire(import.meta.url);
 const ENGINE = readWikiFile();
@@ -310,11 +310,17 @@ const rebuilt = await (await mf.dispatchFetch(BASE + "/")).text();
 check("an older build doesn't overwrite a newer plugin file, and points to it", (await pluginFile(ML)).text === "/* a newer version */" && rebuilt.includes(scriptTag(ML, "9999999999999")));
 const handList = await (await bucket.get("recipes/default/tiddlers.json")).text();
 await bucket.put("recipes/default/tiddlers.json", handList, { httpMetadata: { contentType: "application/json" } });   // replaced by hand
+const beforeSubtitle = requests.length;
 await add({ title: "$:/SiteSubtitle", text: "after a hand-replaced list" });
 await settle();
 check("a tiddler list replaced by hand doesn't stop the page from being rebuilt", (await bakedPage()).includes("after a hand-replaced list"));
 
 // --- 14. Recovery: delete the file in R2, hard reload --------------------------------------------------
+// That save changed the shell (the subtitle is in it), so the tab publishes the page a second later,
+// and a page build writes back any plugin file that's missing: wait for the publish to be answered
+// before deleting the file on purpose. (Seen: the file written back between the delete and the
+// reload, and the wiki starting with the plugin.)
+await waitFor(() => requests.slice(beforeSubtitle).some(r => r.method === "PUT" && r.path === "/page/shell" && r.status));
 await bucket.delete("_plugins/" + ML + ".js");
 await context.close();
 context = await browser.newContext();   // a hard reload: nothing cached
@@ -322,7 +328,9 @@ page = await context.newPage();
 await watch(page, "recovery");
 const errorsBefore = pageErrors.length;
 await load();
-check("recovery: the wiki starts without the plugin", !(await isMarkdownActive()) && pageErrors.length === errorsBefore);
+const activeAfterRecovery = await isMarkdownActive();
+check("recovery: the wiki starts without the plugin", !activeAfterRecovery && pageErrors.length === errorsBefore,
+  `markdown active ${activeAfterRecovery}, page errors ${pageErrors.slice(errorsBefore).join(" | ") || "none"}`);
 await remove(ML);
 await settle();
 check("recovery: deleting the plugin removes its tag", !(await bakedPage()).includes(encodeURIComponent(ML)));

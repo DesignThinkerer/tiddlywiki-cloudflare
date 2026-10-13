@@ -5,6 +5,7 @@ import { Miniflare } from "miniflare";
 import { chromium } from "playwright";
 import fs from "node:fs";
 import http from "node:http";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const WORKER = fileURLToPath(new URL("../worker.js", import.meta.url));
@@ -165,10 +166,50 @@ export async function startSite({ index, publicStatus = false, bindings = {}, ou
 // then on: what a suite watches at the page (the requests, their headers, the 304s) is no longer
 // what reaches the worker. So the suites block it by default and watch the page as before; the
 // cold-start suite, about the service worker, allows it and watches what comes from it.
+// When a check failed, finish() leaves two things to read under test-results/ (TRACE=1 leaves them
+// always): <suite>.requests.log, every request the suite's pages made (createWatcher), in order,
+// with the time, the tab, the method, the path and how it ended; and traces/<suite>/<n>.zip, a
+// Playwright trace of each browser context — the test's actions and the page's console messages
+// in time — written when the context closes, opened with: npx playwright show-trace <file>.
+// (TRACE=full adds screenshots and a DOM snapshot at every action to the traces: a snapshot of a
+// TiddlyWiki page at each of the tests' polls slows the page down enough to upset timing checks.)
+const SUITE = path.basename(process.argv[1] || "suite").replace(/\.test\.mjs$/, "");
+const RESULTS = fileURLToPath(new URL("../test-results", import.meta.url));
+const TRACES = path.join(RESULTS, "traces", SUITE);
+const tracing = { contexts: new Set(), count: 0, files: [] };
+const watchers = [];   // the requests of every createWatcher(), for the log finish() writes
+
+function writeRequestsLog() {
+  const asked = watchers.flat().sort((a, b) => a.at - b.at);
+  if (!asked.length) return "";
+  const file = path.join(RESULTS, `${SUITE}.requests.log`);
+  const ended = r => r.failed ? `failed: ${r.failed}` : r.cached ? "cached" : r.status ?? "(no answer)";
+  const lines = asked.map(r => `${((r.at - asked[0].at) / 1000).toFixed(3).padStart(9)}  ${r.tag.padEnd(8)}  ${r.origin.padEnd(6)}  ${r.method} ${r.path}  ${ended(r)}`);
+  fs.mkdirSync(RESULTS, { recursive: true });
+  fs.writeFileSync(file, `time (s)   tab       origin  request  outcome\n${lines.join("\n")}\n`);
+  return file;
+}
+async function stopTrace(context) {
+  if (!tracing.contexts.has(context)) return;
+  tracing.contexts.delete(context);
+  const file = path.join(TRACES, `${++tracing.count}.zip`);
+  await context.tracing.stop({ path: file }).catch(() => {});
+  tracing.files.push(file);
+}
+
 export function launchBrowser({ serviceWorkers = "block" } = {}) {
   return chromium.launch(process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {}).then(browser => {
     const newContext = browser.newContext.bind(browser);
-    browser.newContext = (options = {}) => newContext({ serviceWorkers, ...options });
+    fs.rmSync(TRACES, { recursive: true, force: true });
+    fs.mkdirSync(TRACES, { recursive: true });
+    browser.newContext = async (options = {}) => {
+      const context = await newContext({ serviceWorkers, ...options });
+      const full = process.env.TRACE === "full";
+      await context.tracing.start({ screenshots: full, snapshots: full }).then(() => tracing.contexts.add(context), () => {});
+      const close = context.close.bind(context);
+      context.close = async (...args) => { await stopTrace(context); return close(...args); };
+      return context;
+    };
     return browser;
   });
 }
@@ -184,11 +225,13 @@ export function createChecks() {
 }
 
 // Records what the pages of a suite do: every request, as { tag, origin: "worker" | "public" |
-// "other", method, url, path (decoded, with the query), headers, cached }, where cached means the
-// browser answered it from its cache (Chromium tells, through its DevTools protocol), so it never
-// reached a server; and every page error.
+// "other", method, url, path (decoded, with the query), headers, cached, status, failed }, where
+// cached means the browser answered it from its cache (Chromium tells, through its DevTools
+// protocol), so it never reached a server, status is the answer's once it has arrived, and failed
+// is set (the reason) when the browser gave up on it; and every page error.
 export function createWatcher(site) {
   const requests = [], pageErrors = [];
+  watchers.push(requests);
   async function watch(page, tag) {
     page.on("pageerror", e => pageErrors.push(`${tag}: ${e.message}`));
     // Two streams that aren't ordered with each other: Playwright's request events (one entry each)
@@ -204,16 +247,21 @@ export function createWatcher(site) {
       const es = entries.get(url), os = outcomes.get(url);
       while (es && es.length && os && os.length) es.shift().cached = os.shift().cached;
     };
+    const byRequest = new WeakMap();
     page.on("request", q => {
       const url = new URL(q.url());
       const origin = url.origin === site.base ? "worker" : url.origin === site.pub ? "public" : "other";
       const entry = { tag, origin, method: q.method(), url: q.url(), path: decodeURIComponent(url.pathname) + url.search, headers: q.headers(), cached: false, at: Date.now() };
       requests.push(entry);
+      byRequest.set(q, entry);
       const os = outcomes.get(entry.url);
       if (os) while (os.length && entry.at - os[0].at > 10000) os.shift();   // (an outcome that never got an entry)
       queue(entries, entry.url).push(entry);
       pair(entry.url);
     });
+    page.on("response", r => { const entry = byRequest.get(r.request()); if (entry) entry.status = r.status(); });
+    // A request the browser gave up on (aborted by the page, refused, no answer): failed says why
+    page.on("requestfailed", q => { const entry = byRequest.get(q); if (entry) entry.failed = (q.failure() || {}).errorText || "failed"; });
     const cdp = await page.context().newCDPSession(page);
     await cdp.send("Network.enable");
     const urls = new Map(), ended = new Set();
@@ -260,9 +308,17 @@ export const addTiddler = (page, fields) => page.evaluate(f => $tw.wiki.addTiddl
 // The last check (no page errors), the summary line and the exit code. cleanup: run before exiting
 export async function finish({ check, results, pageErrors, browser, site, note = "", cleanup }) {
   check("no page errors", pageErrors.length === 0, pageErrors.join(" | "));
+  const passed = results.every(r => r.ok);
   console.log(`\n${results.filter(r => r.ok).length}/${results.length} passed${note}`);
+  for (const context of [...tracing.contexts]) await stopTrace(context);
+  if (passed && !process.env.TRACE) fs.rmSync(TRACES, { recursive: true, force: true });
+  else {
+    const log = writeRequestsLog();
+    if (log) console.log(`requests: ${path.relative(process.cwd(), log)}`);
+    if (tracing.files.length) console.log(`traces: ${tracing.files.map(f => path.relative(process.cwd(), f)).join(", ")} (npx playwright show-trace <file>)`);
+  }
   await browser.close();
   await site.close();
   if (cleanup) cleanup();
-  process.exit(results.every(r => r.ok) ? 0 : 1);
+  process.exit(passed ? 0 : 1);
 }

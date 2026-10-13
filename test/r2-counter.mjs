@@ -77,6 +77,8 @@ function counted(bucket, run) {
   });
 }
 
+let batchInProgress = Promise.resolve();
+
 export default {
   async fetch(request, env, ctx) {
     if (new URL(request.url).pathname === "/__r2fail") {
@@ -106,7 +108,22 @@ export default {
     }
     return worker.fetch(request, { ...env, WIKI_BUCKET: counted(env.WIKI_BUCKET), BACKUP_QUEUE: countedQueue(env.BACKUP_QUEUE) }, ctx);
   },
+  // Batches one at a time, as wrangler.toml's max_concurrency = 1 has it on Cloudflare: Miniflare
+  // has no such setting, and dispatches a second batch while one is in flight once the backlog
+  // fills (a bulk import on a slow machine), which the suite's "commits never overlapped" check
+  // would then blame on the worker.
   async queue(batch, env, ctx) {
+    const previous = batchInProgress;
+    let done;
+    batchInProgress = new Promise(resolve => { done = resolve; });
+    try {
+      await previous;
+      return await this.queueOne(batch, env, ctx);
+    } finally {
+      done();
+    }
+  },
+  async queueOne(batch, env, ctx) {
     const run = [];
     runs.push(run);
     qops.deliveries += batch.messages.length;
