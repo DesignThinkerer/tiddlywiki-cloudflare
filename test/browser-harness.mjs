@@ -170,15 +170,14 @@ export async function startSite({ index, publicStatus = false, bindings = {}, ou
 // the page's own: TiddlyWiki's syncer looks for work every 50 ms rather than 250, saves a tiddler
 // saved less than 50 ms before rather than 1 s, and retries after an error in 1 s rather than 5 —
 // its class's defaults, set as $tw is put together, so a stored $:/config/SyncThrottleInterval
-// still wins, as in production — and the modules' own
-// waits (the publisher's pause, the public read's timeout, the retries while the worker rebuilds
-// the list) are scaled by $:/config/cfworker/TestTimeScale,
-// preloaded into the page the way a plugin file preloads its tiddler: never stored, never listed.
-// newContext({ fast: false }) gives a context the production waits.
+// still wins, as in production — and the modules' own waits (the publisher's pause, the public
+// read's timeout, the retries while the worker rebuilds the list) are scaled by
+// $tw.cfworkerTestTimeScale, which only a script run before boot can set: nothing stored in a wiki
+// does. newContext({ fast: false }) gives a context the production waits.
 export const FAST = { throttle: 50, taskTimer: 50, errorRetry: 1000, scale: 0.2 };
 function fastPage(fast) {
   const tw = globalThis.$tw ??= Object.create(null);
-  tw.preloadTiddlers = (tw.preloadTiddlers ?? []).concat([{ title: "$:/config/cfworker/TestTimeScale", text: String(fast.scale) }]);
+  tw.cfworkerTestTimeScale = fast.scale;
   let Syncer;
   Object.defineProperty(tw, "Syncer", {
     configurable: true, enumerable: true,
