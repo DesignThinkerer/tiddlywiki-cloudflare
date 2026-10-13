@@ -246,6 +246,17 @@ await reload(A);
 const helloFile = `/_plugins/${encodeURIComponent(HELLO)}.js?v=`;
 await waitFor(() => holds(A, helloFile), 10000);
 check("a plugin installed: the next load runs it, and its file is in the cache", await A.evaluate(() => window.__helloRan === true) && (await cached(A)).some(u => u.includes(helloFile)), (await cached(A)).map(u => u.replace(BASE, "")).join(", "));
+// Two requests for a file not in the cache, at once (the page's own script tag and the cache's
+// refill, say): one fetch, shared, and each asker gets a copy it can read
+const helloUrl = (await cached(A)).find(u => u.includes(helloFile));
+const twice = await A.evaluate(async ([name, url]) => {
+  const c = await caches.open(name);
+  await c.delete(url);
+  return Promise.all([fetch(url), fetch(url)].map(p => p.then(r => r.text()).then(t => t.length, e => "failed: " + e.message)));
+}, [CACHE, helloUrl]);
+await waitFor(() => holds(A, helloFile), 10000);
+check("...two requests for the file at once, its copy gone from the cache: both get it (one fetch, shared), and the cache has it again",
+  twice.length === 2 && twice.every(n => typeof n === "number" && n > 0) && await holds(A, helloFile), JSON.stringify(twice));
 await offline(contextA);
 await reload(A, { wait: false });
 await A.waitForFunction(() => window.$tw && $tw.syncer && $tw.wiki.tiddlerExists("$:/core"), null, { timeout: 30000 });
@@ -407,6 +418,7 @@ check("Measure: the tiddlers kept on this device of those the worker lists, with
   `${onlineMeasure.text.slice(0, 200)} — device ${kept}, listed ${listed}`);
 check("...the files the service worker keeps, each with its size", /the page\) \(\d+(\.\d+)? (KB|MB)\)/.test(onlineMeasure.text) && /_plugins\/tiddlywikicore\.js[^)]*\(\d+(\.\d+)? (KB|MB)\)/.test(onlineMeasure.text) && /tiddlers\.json[^)]*\(\d+(\.\d+)? (B|KB|MB)\)/.test(onlineMeasure.text),
   onlineMeasure.text.replace(/^.*?files/, "files").slice(0, 300));
+check("...and not the service worker's own settings entry, which isn't a file", !/__cfworker/.test(onlineMeasure.text), onlineMeasure.text.replace(/^.*?files/, "files").slice(0, 300));
 check("...what the browser says: this site's use of what it allows, and that it hasn't promised to keep it", /uses \d+(\.\d+)? (B|KB|MB|GB) of (the )?\d+(\.\d+)? (KB|MB|GB)/.test(onlineMeasure.text) && /hasn't promised/.test(onlineMeasure.text),
   onlineMeasure.text.replace(/^.*?uses/, "uses").slice(0, 200));
 // A tiddler the page itself carries (the site subtitle, saved on another device: the worker bakes

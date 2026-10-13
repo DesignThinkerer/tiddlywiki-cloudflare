@@ -341,6 +341,17 @@ await settle(X, 90000);
 check("the fetch-ahead setting at 1: a new device's fill fetches one tiddler at a time (several by default)", await allLoaded(X) && overlap.X === 1 && tiddlerGets(mark, "X", "public").length >= expected.size,
   `at most ${overlap.X} in flight, ${tiddlerGets(mark, "X", "public").length} fetched`);
 await X.close();
+// Under 1 ("-1", a slip in the settings tab): counted as 1, not a fill that never starts
+await put("$:/config/cfworker/FetchAhead", { text: "-1" });
+await (await mf.dispatchFetch(`${base}/`)).arrayBuffer();
+const underOne = await browser.newContext();
+mark = requests.length;
+const Y = await open(underOne, `${base}/`, "Y");
+await waitFor(() => allLoaded(Y), 60000);
+await settle(Y, 10000).catch(() => {});
+check("...set under 1 (\"-1\"): counts as 1, and the fill still runs", await allLoaded(Y) && overlap.Y === 1 && tiddlerGets(mark, "Y", "public").length >= expected.size,
+  `at most ${overlap.Y} in flight, ${tiddlerGets(mark, "Y", "public").length} fetched`);
+await Y.close();
 await remove("$:/config/cfworker/FetchAhead");
 
 await finish({ check, results, pageErrors, browser, site });

@@ -19,9 +19,13 @@ that failed, every few seconds, and sends everything once the network is back; t
   leaves those to their tab, which sends them itself.
 - The network's return (the browser's online event) wakes the syncer at once, rather than at its
   next retry.
-- $:/temp/cfworker/outbox says how many changes wait (waiting), since when (since), whether the
-  browser is online (online) and whether the device took them (kept: "no" when a write failed); an item in the dropdown of TiddlyWeb's cloud icon (the "Server
-  status" button, red while something is unsaved) shows that while something waits. TiddlyWiki's
+- A tiddler whose title the worker can't store (list-sync.js keeps it out of syncing and asks to
+  rename it) is kept too, never sent, so a reload doesn't lose it; the browser asks before the tab
+  closes, as for any unsaved change. Renamed, the old title leaves with the delete the rename makes.
+- $:/temp/cfworker/outbox says how many changes wait (waiting), how many of them for a rename
+  (rename), since when (since), whether the browser is online (online) and whether the device took
+  them (kept: "no" when a write failed); an item in the dropdown of TiddlyWeb's cloud icon (the
+  "Server status" button, red while something is unsaved) shows that while something waits. TiddlyWiki's
   own "Network Error" alert isn't shown on the admin site: the icon and the dropdown say it, and
   the alert would be back at every retry (design 2.17). Its other alerts show as they do.
 \*/
@@ -51,6 +55,7 @@ var ITEM_TEXT = [
 	"<$text text={{{ [[" + STATUS + "]get[waiting]] }}}/> <$text text={{{ [[" + STATUS + "]get[waiting]compare:number:eq[1]then[change]else[changes]] }}}/> waiting since <$view tiddler='" + STATUS + "' field='since' format='date' template='0hh:0mm'/><br/>",
 	"<$list filter='[[" + STATUS + "]get[online]match[no]]' variable='off'><$list filter='[[" + STATUS + "]get[kept]!match[no]]' variable='kept'>offline: kept on this device until sent</$list><$list filter='[[" + STATUS + "]get[kept]match[no]]' variable='unkept'>offline, and ''not kept on this device'': the browser refused to store it (no room left, or storage off here). Keep this tab open until the network is back.</$list></$list>",
 	"<$list filter='[[" + STATUS + "]get[online]match[yes]]' variable='on'><$list filter='[[" + STATUS + "]get[kept]!match[no]]' variable='kept'>sending (kept on this device until then)</$list><$list filter='[[" + STATUS + "]get[kept]match[no]]' variable='unkept'>sending — ''not kept on this device'' (the browser refused to store it): keep this tab open until it's sent.</$list></$list>",
+	"<$list filter='[[" + STATUS + "]get[rename]!match[0]]' variable='r'><br/><$text text={{{ [[" + STATUS + "]get[rename]] }}}/> to rename before <$text text={{{ [[" + STATUS + "]get[rename]compare:number:eq[1]then[it]else[they]] }}}/> can be sent (an alert says which).</$list>",
 	"<$list filter='[[" + STATUS + "]get[storage]match[best-effort]]' variable='risk'><br/>''This browser hasn't promised to keep the device's copy'' (it may clear it when short of space): get back online soon, or <$link to='$:/plugins/cfworker/admin/device'>ask it to keep this site's data</$link>.</$list>",
 	"</div>",
 	"<hr/>",
@@ -112,6 +117,26 @@ exports.startup = function() {
 		var s = $tw.syncer;
 		return !!s && s.getSyncedTiddlers([title]).length > 0;
 	}
+	// A title the worker can't store (storableTitle) is kept out of syncing by the list sync, which
+	// asks to rename it; it's kept here all the same, never sent, so a reload doesn't lose it:
+	// TiddlyWiki's own rule says whether it would sync (the syncer's filter, before the exclusions)
+	function isKept(title) {
+		var s = $tw.syncer;
+		if(!s) {
+			return false;
+		}
+		return lib.storableTitle(title) ? isSynced(title) : s.filterFn.call(wiki,[title]).length > 0;
+	}
+	// How many wait for a rename
+	function toRename() {
+		var n = 0;
+		$tw.utils.each(entries,function(entry) {
+			if(entry.kind === "save" && !lib.storableTitle(entry.title)) {
+				n++;
+			}
+		});
+		return n;
+	}
 
 	// --- The status, and the item in the cloud icon's dropdown ---------------------------------------
 
@@ -135,7 +160,7 @@ exports.startup = function() {
 					}
 				}
 			});
-			var fields = {title: STATUS, waiting: String(waiting), online: online ? "yes" : "no", kept: unkept ? "no" : "yes"},
+			var fields = {title: STATUS, waiting: String(waiting), rename: String(toRename()), online: online ? "yes" : "no", kept: unkept ? "no" : "yes"},
 				current = wiki.getTiddler(STATUS);
 			if(since !== null) {
 				fields.since = $tw.utils.stringifyDate(new Date(since));
@@ -143,7 +168,7 @@ exports.startup = function() {
 			if(storage) {
 				fields.storage = storage;
 			}
-			if(!current || current.fields.waiting !== fields.waiting || current.fields.online !== fields.online || current.fields.since !== fields.since || current.fields.storage !== fields.storage || current.fields.kept !== fields.kept) {
+			if(!current || current.fields.waiting !== fields.waiting || current.fields.online !== fields.online || current.fields.since !== fields.since || current.fields.storage !== fields.storage || current.fields.kept !== fields.kept || current.fields.rename !== fields.rename) {
 				wiki.addTiddler(new $tw.Tiddler(fields));
 			}
 		},0);
@@ -187,6 +212,18 @@ exports.startup = function() {
 		});
 	};
 	proto.cfworkerStorageKept(false);
+
+	// A tiddler whose title the worker can't store waits here until it's renamed, never sent, and
+	// the syncer doesn't count it as unsaved (it's out of syncing): the browser asks before closing
+	// or reloading the tab, as TiddlyWiki does for any unsaved change
+	window.addEventListener("beforeunload",function(event) {
+		if(toRename() > 0) {
+			var message = $tw.language.getString("UnsavedChangesWarning");
+			event.preventDefault();
+			event.returnValue = message;
+			return message;
+		}
+	});
 
 	window.addEventListener("online",function() {
 		setOnline(true);
@@ -268,7 +305,7 @@ exports.startup = function() {
 			if(info && count <= info.changeCount) {
 				return;   // the worker's own version, loaded or just saved: nothing waits
 			}
-			if(!isSynced(title)) {
+			if(!isKept(title)) {
 				return;
 			}
 			keep({
@@ -342,7 +379,8 @@ exports.startup = function() {
 	var channel = null,
 		asking = null;
 	try {
-		channel = typeof BroadcastChannel === "function" ? new BroadcastChannel("cfworker-outbox:" + window.location.pathname) : null;
+		// (One channel per site: the page is served at /, /index.html and /baked.html alike)
+		channel = typeof BroadcastChannel === "function" ? new BroadcastChannel("cfworker-outbox") : null;
 	} catch(e) {
 		channel = null;
 	}

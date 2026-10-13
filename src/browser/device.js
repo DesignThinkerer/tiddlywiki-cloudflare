@@ -35,7 +35,8 @@ var MEASURE = "$:/temp/cfworker/device",
 	DO_MEASURE = "tm-cfworker-device-measure",
 	DO_KEEP = "tm-cfworker-device-keep",
 	DO_FORGET = "tm-cfworker-device-forget",
-	FORGET_WAIT = 5000;   // ms at most for the cache to go, before the reload
+	FORGET_WAIT = 5000,   // ms at most for the cache to go, before the reload
+	SETTINGS_PATH = "/__cfworker/settings";   // the service worker's own settings, kept in its cache beside the files
 
 exports.startup = function() {
 	var Adaptor = lib.findAdaptor();
@@ -103,13 +104,24 @@ exports.startup = function() {
 
 	// --- Measure --------------------------------------------------------------------------------------
 
+	function isSettingsEntry(url) {
+		var a;
+		try {
+			a = new URL(url);
+		} catch(e) {
+			return false;
+		}
+		return a.origin === origin && a.pathname === SETTINGS_PATH;
+	}
 	function cacheFiles() {
 		if(typeof caches !== "object") {
 			return Promise.resolve(null);
 		}
 		return caches.open(lib.SW_CACHE).then(function(cache) {
 			return cache.keys().then(function(requests) {
-				return Promise.all(requests.map(function(request) {
+				return Promise.all(requests.filter(function(request) {
+					return !isSettingsEntry(request.url);   // (not a file: the service worker's settings)
+				}).map(function(request) {
 					return cache.match(request).then(function(response) {
 						return response ? response.blob().then(function(blob) {
 							return {name: fileName(request.url), size: blob.size};
@@ -231,7 +243,13 @@ exports.startup = function() {
 		proto.cfworkerOutboxRequest("readonly",function(store) { return store.getAll(); }).then(function(entries) {
 			var line = outboxLine(entries);
 			if(line !== "nothing waiting in the outbox") {
-				say("forget","Not now: " + line + ", and it would go with the copy. A change is sent at the network's return; a draft, save or cancel it. Then forget.");
+				say("forget","Not now: " + line + ", and it would go with the copy. A change is sent at the network's return (one the alert asks to rename, once renamed); a draft, save or cancel it. Then forget.");
+				return;
+			}
+			// (The page reloads once the copy is gone, from the worker: with no network there'd be
+			// nothing to reload from, the copy and the files already gone)
+			if(typeof navigator === "object" && navigator.onLine === false) {
+				say("forget","Not now: this browser is offline, and the page comes back from the worker once the copy is gone. Get back online first, then forget.");
 				return;
 			}
 			say("forget","Forgetting…");
