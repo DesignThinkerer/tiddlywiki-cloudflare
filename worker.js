@@ -554,12 +554,26 @@ async function readStoredFields(env, item) {
 
 
 // Writes bytes as base64 into out (ASCII bytes) from position at; returns where it ends. GitHub takes
-// a file's content in base64, in a request body sent as bytes: written there directly, it's never a
-// string. (Through a string, with String.fromCharCode, btoa, then the body encoded to be sent, a 1.5
-// MB plugin took about 7 ms of CPU, this about 2: a run gets about 10 on the free plan.)
+// a file's content in base64, in a request body sent as bytes: written there directly, never as a
+// string of the whole. (Through one, with String.fromCharCode, btoa, then the body encoded to be
+// sent, a 1.5 MB plugin took about 7 ms of CPU; the loop below about 2: a run gets about 10 on the
+// free plan.) The runtime's own encoder, where it has one (Uint8Array.prototype.toBase64, native in
+// V8 and in Workers; not in Node 22, where test/cpu.test.mjs measures the loop), halves that again,
+// and more on its first run in a fresh isolate, where the loop isn't optimised yet: in slices of 3 MB
+// (a multiple of 3, so no padding inside; a string of 4 MB at most beside the body, where the whole
+// at once would take a 30 MB plugin's run past the isolate's 128 MB), each written into the body as
+// it comes. The same bytes either way (test/cpu.test.mjs checks, in the Workers runtime).
 const BASE64_DIGITS = encoder.encode("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/");
+const BASE64_SLICE = 3e6;
+const nativeBase64 = typeof Uint8Array.prototype.toBase64 === "function";
 
 function writeBase64(bytes, out, at) {
+  if (nativeBase64) {
+    for (let i = 0; i < bytes.length; i += BASE64_SLICE) {
+      at += encoder.encodeInto(bytes.subarray(i, Math.min(i + BASE64_SLICE, bytes.length)).toBase64(), out.subarray(at)).written;
+    }
+    return at;
+  }
   const end = bytes.length - bytes.length % 3;
   let i = 0;
   for (; i < end; i += 3) {
@@ -883,8 +897,8 @@ const QUEUE_MESSAGE_LIMIT = 64000;
 const BACKUP_PER_RUN = 10;
 
 // After this many bytes of versions, the rest of a run goes on to the next one: a megabyte takes a
-// few milliseconds of CPU (its base64 above all), and a run gets about 10 on the free plan. A run
-// always backs up one version, whatever its size.
+// couple of milliseconds of CPU (its git hash, its base64, its copy), and a run gets about 10 on the
+// free plan. A run always backs up one version, whatever its size.
 const BACKUP_BYTES_PER_RUN = 512 * 1024;
 
 // About the size of a message as the queue measures it: V8-serialized, where a string takes one

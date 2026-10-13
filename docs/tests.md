@@ -56,10 +56,12 @@ Backups don't appear here: with the queue bound, as deployed, they run later in 
 
 `test:cpu` loads the built worker's own functions in Node, which runs the same V8 as Workers, and measures the CPU of the two heaviest steps for a 4.8 MB plugin. Each budget is relative to `JSON.parse` of the same bytes on that machine (what the worker avoids), so it holds on a faster or slower one:
 - reading a save in the flat layout: at most 0.25× (it parses only the fields before the text; about 0.12×);
-- its backup from its R2 copy: at most 2.5× (the git hash and base64 worked out on bytes; about 1×, where encoding it through strings took about 4–6×);
+- its backup from its R2 copy: at most 2.5× (the git hash and base64 worked out on bytes; about 1.2× with the JavaScript base64 loop Node 22 falls back to, where encoding it through strings took about 4–6×);
 - a save's list update for a wiki of 2,000 tiddlers (the list, about 540 KB, read, changed and written again compact: README 5 calls it a save's largest cost): at most 3× `JSON.parse` of the list (about 1.5–1.7×, several hundred tiddlers per ms of CPU on a laptop; the figure README 5 gives is for the Workers runtime).
 
 Reading the save in full, or building the backup's request through strings, fails its budget.
+
+Then, in the Cloudflare runtime itself (Miniflare's workerd, where `Uint8Array.prototype.toBase64` exists), timed from outside since workerd's clock doesn't advance during computation: the backup's request body is the same bytes as the JavaScript loop's for 0 to 5 bytes (both paddings), around the 3 MB slice boundaries and for the plugin; and making it takes at most 0.7× the loop's time, the two run in turns in one isolate and the best of five taken, so the machine's speed and load fall out of the ratio (about 0.4–0.5×; the loop itself, 0.95×, fails it).
 
 `test:backup` covers:
 - a 150-tiddler import (one commit each, never two at once, byte-identical content);
