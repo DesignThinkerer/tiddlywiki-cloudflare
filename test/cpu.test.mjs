@@ -1,7 +1,7 @@
 // CPU of the worker's heaviest steps, against a budget. A Worker on the free plan gets about 10 ms of
 // CPU a request: a save of a big plugin must not parse or decode its text, and its backup must not
 // turn it into strings. Measured in Node, which runs the same V8 as Workers, on the built worker's own
-// functions, for a 4.7 MB plugin. Each budget is relative to JSON.parse of the same bytes on this
+// functions, for a 4.8 MB plugin. Each budget is relative to JSON.parse of the same bytes on this
 // machine (what the worker avoids), so it holds on a faster or slower one.
 // Run: npm run test:cpu
 import fs from "node:fs";

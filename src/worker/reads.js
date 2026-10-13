@@ -10,7 +10,7 @@ import { keyTooLong, revisionOf } from "./tiddlers.js";
 // What /status answers on the admin site: TiddlyWeb's status. TiddlyWiki asks for it at every page
 // load, before the tiddler list. It never changes, so the browser keeps it for a week (private: for
 // that browser only): the next loads don't ask the worker, nor wait for its answer. (The public site
-// has its own file, README 2.2.)
+// has its own file, README 2.8.)
 export const ADMIN_STATUS = { username: "admin", read_only: false, anonymous: false, logout_is_available: true, space: { recipe: "default" } };
 
 export const STATUS_CACHE = "private, max-age=604800";

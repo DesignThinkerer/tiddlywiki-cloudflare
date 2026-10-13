@@ -1,5 +1,5 @@
 // TiddlyWiki on Cloudflare: the admin worker. The entry point: the request router, and the queue
-// consumer. See README.md for the whole picture, and 4.1 for the requests answered here.
+// consumer. See README.md for the whole picture, and design 1.1 for the requests answered here.
 //
 // Every request goes: Access check → settings check → the route whose method and path match. The
 // modules, from the bottom up: bytes, tiddlers, storage, settings, access, http (the small shared

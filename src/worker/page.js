@@ -1,4 +1,4 @@
-// Serving the page, and the page the admin wiki publishes (design 1.3, 4.9).
+// Serving the page, and the page the admin wiki publishes (design 1.3, 1.9).
 //
 // The admin wiki renders the page itself, with TiddlyWiki's own $:/core/templates/tiddlywiki5-external-js.html
 // (src/browser/page-publisher.js): the shell, which is everything TiddlyWiki writes in its file (title,
