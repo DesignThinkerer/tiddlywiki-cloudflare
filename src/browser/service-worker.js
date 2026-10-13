@@ -217,31 +217,33 @@ function cacheFirst(event,request) {
 // reload get a 304 the cache can't keep; through the browser's own cache for a file of this site (a
 // fresh copy costs nothing); with CORS, past the browser's copy, for one from the public site (a copy
 // taken before the site allowed CORS has no permission in it, and such a file is kept for a year).
-// One fetch at a time per file, shared by whoever asks meanwhile; the copy is written under the
-// event's waitUntil, so the browser doesn't stop this worker before it's done. Resolves with the
-// answer (its body for the first asker), or null when the file can't be had that way.
-var inFlight = Object.create(null);   // url -> promise, until the copy is written
+// One fetch at a time per file, shared by whoever asks meanwhile, each given a copy of the answer
+// (a body is read once: the one kept and each asker's are clones of one answer, which itself is
+// never read); the copy is written under the first asker's event's waitUntil, so the browser
+// doesn't stop this worker before it's done. Resolves with the copy, or null when the file can't
+// be had that way.
+var inFlight = Object.create(null);   // url -> promise of the answer, until the copy is written
 function fetchFile(cache,url,event) {
-	if(inFlight[url]) {
-		return inFlight[url];
+	if(!inFlight[url]) {
+		var sameSite = new URL(url).origin === self.location.origin,
+			asked = sameSite ? fetch(url) : fetch(new Request(url,{mode: "cors", credentials: "omit", cache: "reload"}));
+		inFlight[url] = asked.then(function(response) {
+			if(response && response.ok) {
+				event.waitUntil(cache.put(url,response.clone()).catch(function() {}).then(function() {
+					delete inFlight[url];
+				}));
+				return response;
+			}
+			delete inFlight[url];
+			return null;
+		},function() {
+			delete inFlight[url];
+			return null;
+		});
 	}
-	var sameSite = new URL(url).origin === self.location.origin,
-		asked = sameSite ? fetch(url) : fetch(new Request(url,{mode: "cors", credentials: "omit", cache: "reload"}));
-	var promise = asked.then(function(response) {
-		if(response && response.ok) {
-			event.waitUntil(cache.put(url,response.clone()).catch(function() {}).then(function() {
-				delete inFlight[url];
-			}));
-			return response;
-		}
-		delete inFlight[url];
-		return null;
-	},function() {
-		delete inFlight[url];
-		return null;
+	return inFlight[url].then(function(response) {
+		return response ? response.clone() : null;
 	});
-	inFlight[url] = promise;
-	return promise;
 }
 
 // A page kept, with the files it refers to: any other core or plugin file in the cache goes, one

@@ -26,7 +26,7 @@ $:/cfworker/conflict-guard.js):
   stores, are not sent to it, and the "put" saver no longer probes the page URL on every load;
   background tabs stop polling for changes and catch up as soon as they are shown again.
 - Titles the worker can't store aren't sent either (each save would fail, and be tried again
-  forever): the tab asks to rename them instead.
+  forever): the tab asks to rename them instead (the outbox keeps them on the device meanwhile).
 \*/
 (function(){
 
@@ -103,7 +103,7 @@ exports.startup = function() {
 		}
 		askedToRename[title] = true;
 		renameLogger.alert(lib.link(title) + " can't be saved: the server doesn't take a tiddler titled \".\" or \"..\", or a title over " +
-			lib.MAX_TITLE_BYTES + " bytes. Rename it to keep it; until then it's only in this tab.");
+			lib.MAX_TITLE_BYTES + " bytes. Rename it to save it; until then it's kept on this device, unsent.");
 	}
 
 	// --- The fill: TiddlyWiki's loads, arranged -------------------------------------------------------
@@ -380,7 +380,11 @@ exports.startup = function() {
 		}
 		return adaptor.host ? {url: adaptor.host + path, sameSite: true} : null;
 	}
-	// A slot for a network fetch (FETCH_AHEAD at a time); urgent: ahead of those waiting for one
+	// The setting, 1 at least: under that nothing would ever start, and the fill would never end
+	function fetchAhead() {
+		return Math.max(1,parseInt(wiki.getTiddlerText("$:/config/cfworker/FetchAhead",""),10) || FETCH_AHEAD);
+	}
+	// A slot for a network fetch (fetchAhead() at a time); urgent: ahead of those waiting for one
 	function withFetchSlot(work,urgent) {
 		return new Promise(function(resolve) {
 			function start() {
@@ -393,7 +397,7 @@ exports.startup = function() {
 					resolve(null);
 				});
 			}
-			if(fetching < (parseInt(wiki.getTiddlerText("$:/config/cfworker/FetchAhead",""),10) || FETCH_AHEAD)) {
+			if(fetching < fetchAhead()) {
 				start();
 			} else if(urgent) {
 				fetchQueue.unshift(start);

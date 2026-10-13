@@ -803,6 +803,31 @@ const dotSends = netSince(mark).filter(x => x.tag === "L" && /^\/recipes\/defaul
 const dotAlerts = (await alerts(L)).filter(t => /rename/i.test(t));
 check("tiddlers titled . or .. aren't sent (a URL can't carry them), and the tab says to rename them",
   dotsSettled && dotSends.length === 0 && dotAlerts.length >= 1, JSON.stringify({ settled: dotsSettled, sent: dotSends.map(x => x.status), alerts: dotAlerts }));
+// Kept on the device all the same (the outbox), so a reload doesn't lose them: the browser asks
+// before a reload or a close, as for any unsaved change, the dropdown says how many are to rename,
+// the two come back with the alert, and renamed, the tiddler is saved and the old title leaves the device
+const outboxTitles = () => L.evaluate(() => new Promise(resolve => {
+  const req = indexedDB.open("cfworker-tiddlers");
+  req.onsuccess = () => { const db = req.result; const get = db.transaction("outbox").objectStore("outbox").getAll(); get.onsuccess = () => { db.close(); resolve(get.result.map(e => e.title)); }; get.onerror = () => { db.close(); resolve(["error"]); }; };
+  req.onerror = () => resolve(["open error"]);
+}));
+const toRename = () => L.evaluate(() => $tw.wiki.getTiddler("$:/temp/cfworker/outbox")?.fields.rename);
+const dotsKept = await waitFor(async () => { const t = await outboxTitles(); return t.includes(".") && t.includes(".."); }, 5000);
+const dotsToRename = await toRename();
+let dotsAsked = false;
+L.once("dialog", d => { dotsAsked = d.type() === "beforeunload"; d.accept().catch(() => {}); });
+await L.reload();
+await L.waitForFunction(() => window.$tw && $tw.syncer && $tw.syncer.timestampLastSyncFromServer);
+const dotsBack = await waitFor(() => L.evaluate(() => $tw.wiki.getTiddlerText(".") === "a dot" && $tw.wiki.getTiddlerText("..") === "two dots"), 10000);
+await quietOrNot(L, 15000);
+const dotsAlertBack = await waitFor(async () => (await alerts(L)).some(t => /rename/i.test(t)), 5000);
+check("...kept on the device meanwhile (the dropdown says 2 to rename), a reload asks first, and after it the two are back, with the alert",
+  dotsKept && dotsToRename === "2" && dotsAsked && dotsBack && dotsAlertBack, JSON.stringify({ kept: dotsKept, toRename: dotsToRename, asked: dotsAsked, back: dotsBack, alert: dotsAlertBack }));
+await L.evaluate(() => { $tw.wiki.addTiddler({ title: "Dot", text: "a dot" }); $tw.wiki.deleteTiddler("."); $tw.wiki.deleteTiddler(".."); });
+await settle(L);
+const dotOutbox = await outboxTitles();
+check("...renamed, the tiddler is saved, and the old titles leave the device", (await server("Dot"))?.text === "a dot" && !dotOutbox.includes(".") && !dotOutbox.includes("..") && (await toRename()) === "0",
+  JSON.stringify({ stored: (await server("Dot"))?.text, outbox: dotOutbox, toRename: await toRename() }));
 await L.close();
 
 // --- 21. Restoring from the backup ---------------------------------------------------------------

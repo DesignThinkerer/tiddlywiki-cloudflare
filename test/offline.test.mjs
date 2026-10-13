@@ -13,12 +13,12 @@ const { requests, pageErrors, watch } = createWatcher(site);
 const STATUS = "$:/temp/cfworker/outbox", ITEM = "$:/temp/cfworker/outbox-status";
 const TIDDLER = "/recipes/default/tiddlers/";
 
-async function open(context, tag) {
+async function open(context, tag, path = "/") {
   const p = await context.newPage();
   await watch(p, tag);
   p.on("console", m => { if (m.type() === "error" && !m.text().startsWith("Failed to load resource")) pageErrors.push(`${tag} console: ${m.text()}`); });
   p.on("dialog", d => d.accept());   // the "unsaved changes" warning on reload or close
-  await p.goto(BASE + "/");
+  await p.goto(BASE + path);
   await ready(p);
   return p;
 }
@@ -213,6 +213,12 @@ check("a tab opened while another tab is typing a draft doesn't adopt it: the dr
   await A4.evaluate(d => !$tw.wiki.tiddlerExists(d), draftTitle) && await A2.evaluate(d => $tw.wiki.getTiddlerText(d) === "still typing in the other tab", draftTitle) && ((await outbox(A4)) || []).some(e => e.title === draftTitle),
   `in the new tab: ${await A4.evaluate(d => $tw.wiki.tiddlerExists(d), draftTitle)}`);
 await A4.close();
+const A4b = await open(contextA, "A4b", "/index.html");   // the same page at another path of the site
+await sleep(800);
+check("...nor does a tab opened at another path of the site (/index.html): the tabs' channel is one per site, not per path",
+  await A4b.evaluate(d => !$tw.wiki.tiddlerExists(d), draftTitle) && await A2.evaluate(d => $tw.wiki.getTiddlerText(d) === "still typing in the other tab", draftTitle),
+  `in the tab at /index.html: ${await A4b.evaluate(d => $tw.wiki.tiddlerExists(d), draftTitle)}`);
+await A4b.close();
 await A2.close({ runBeforeUnload: true });   // the guard asks (the draft holds changes); accepted
 await sleep(500);
 const A5 = await open(contextA, "A5");
@@ -298,5 +304,21 @@ await waitFor(async () => (await status(P2))?.waiting === "0", 5000);
 check("...and nothing waits", (await status(P2))?.waiting === "0" && JSON.stringify(await outbox(P2)) === "[]", JSON.stringify(await outbox(P2)));
 await contextP.close();
 await contextL.close();
+
+// --- 14. Forget this device's copy, offline: refused, saying to get online first -------------------
+// The page reloads once the copy is gone, and with no network there's nothing to reload from: the
+// browser would show its error page, the device copy already gone.
+const contextF = await browser.newContext();
+const F = await open(contextF, "F");
+await contextF.setOffline(true);
+await F.evaluate(() => { window.__stillHere = 1; $tw.rootWidget.dispatchEvent({ type: "tm-cfworker-device-forget" }); });
+const forgetSaid = await waitFor(() => F.evaluate(() => { const t = $tw.wiki.getTiddler("$:/temp/cfworker/device-message"); return !!t && t.fields.about === "forget" && /online/.test(t.fields.text); }).catch(() => false), 5000);
+await sleep(500);   // (a reload, if one came, would come at once)
+const stillHere = await F.evaluate(() => window.__stillHere).catch(() => "gone");
+const dbKept = await F.evaluate(() => indexedDB.databases().then(dbs => dbs.some(d => d.name === "cfworker-tiddlers"))).catch(() => "gone");
+check("Forget this device's copy, offline: refused, saying to get online first; the copy stays and the page doesn't reload",
+  forgetSaid && stillHere === 1 && dbKept === true,
+  `said ${JSON.stringify(await F.evaluate(() => $tw.wiki.getTiddler("$:/temp/cfworker/device-message")?.fields.text).catch(() => null))}; still here ${stillHere}, database ${dbKept}`);
+await contextF.close();
 
 await finish({ check, results, pageErrors, browser, site });
