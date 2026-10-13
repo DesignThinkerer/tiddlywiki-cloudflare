@@ -15,10 +15,17 @@ export default [
   { ignores: ["worker.js", "node_modules/"] },
   js.configs.recommended,
   {
-    // The worker (Cloudflare's runtime: the service worker globals), the build and the tests (Node)
-    files: ["src/worker/**/*.js", "build.mjs", "tools/**/*.mjs", "eslint.config.js"],
+    // The worker: Cloudflare's runtime has the service worker globals, and none of Node's (a Buffer
+    // or a process would be caught here, not at deploy)
+    files: ["src/worker/**/*.js"],
+    languageOptions: { ecmaVersion: 2024, sourceType: "module", globals: { ...globals.serviceworker } },
+    rules: RULES
+  },
+  {
+    // The build and the tools (Node)
+    files: ["build.mjs", "tools/**/*.mjs", "eslint.config.js"],
     ignores: ["tools/screenshot.mjs"],
-    languageOptions: { ecmaVersion: 2024, sourceType: "module", globals: { ...globals.serviceworker, ...globals.node } },
+    languageOptions: { ecmaVersion: 2024, sourceType: "module", globals: { ...globals.node } },
     rules: RULES
   },
   {

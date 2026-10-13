@@ -7,6 +7,11 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    ignore:
+      # The wiki engine is bumped by hand, in a pull request of its own (README 3, "Updating the wiki
+      # engine"): a new TiddlyWiki is checked against the browser modules and the list filter first,
+      # and shipping it is what every user's "Update the engine" button then offers
+      - dependency-name: tiddlywiki
     groups:
       # ESLint, its recommended rules and the globals it reads move together: a version apart, they
       # don't install (@eslint/js 10 with eslint 9) or lint with the wrong rule set

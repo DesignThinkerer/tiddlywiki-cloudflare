@@ -4,3 +4,7 @@ test-results/
 # Wrangler's local secrets and state (wrangler.toml itself is part of the repository: no secret in it)
 .dev.vars
 .wrangler/
+# What a restore leaves behind (README 2.4): the file tools/restore.mjs writes, and the wiki folder
+# TiddlyWiki's --init makes when a single-file wiki is built from it
+restore.json
+wiki/
