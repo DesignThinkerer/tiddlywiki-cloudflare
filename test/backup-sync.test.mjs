@@ -83,6 +83,11 @@ const tab = await A.evaluate(t => { const x = $tw.wiki.getTiddler(t); return x ?
 check("the admin wiki has a Cloudflare tab under the control panel's Saving tab", tab?.caption === "Cloudflare" && (tab.tags || []).includes("$:/tags/ControlPanel/Saving") && tab.listed, JSON.stringify(tab));
 let text = await tabText(A);
 check("...that says backups are on, no full backup yet, with the button", (await field(A, STATUS, "backups")) === "on" && /committed to GitHub as it happens/.test(text) && /No full backup yet/.test(text) && /Back up everything to GitHub/.test(text), text.slice(0, 300));
+// (The section sits in a <$list> widget: without a blank line after its opening tag, TiddlyWiki
+// parses it inline, and the heading showed as "!!! Full backup" in the text)
+const tabHtml = await A.evaluate(t => $tw.wiki.renderTiddler("text/html", t), TAB);
+check("...its Full backup heading rendered as a heading, its sentences as paragraphs", /<h3[^>]*>Full backup<\/h3>/.test(tabHtml) && !/!!!/.test(text) && /<p>A full backup makes GitHub mirror the wiki/.test(tabHtml),
+  (tabHtml.match(/.{0,60}Full backup.{0,60}/) || [])[0]);
 await A.waitForFunction(t => $tw.wiki.tiddlerExists(t), HINT, { timeout: 10000 }).catch(() => {});
 const hint = await A.evaluate(t => { const x = $tw.wiki.getTiddler(t); return x ? { tags: x.fields.tags, text: x.fields.text } : null; }, HINT);
 check("backups on and no full backup ever: an alert says tiddlers saved before aren't on GitHub, and where the button is",
