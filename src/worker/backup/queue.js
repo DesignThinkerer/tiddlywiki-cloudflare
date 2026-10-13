@@ -24,8 +24,8 @@ const QUEUE_MESSAGE_LIMIT = 64000;
 const BACKUP_PER_RUN = 10;
 
 // After this many bytes of versions, the rest of a run goes on to the next one: a megabyte takes a
-// few milliseconds of CPU (its base64 above all), and a run gets about 10 on the free plan. A run
-// always backs up one version, whatever its size.
+// couple of milliseconds of CPU (its git hash, its base64, its copy), and a run gets about 10 on the
+// free plan. A run always backs up one version, whatever its size.
 const BACKUP_BYTES_PER_RUN = 512 * 1024;
 
 // About the size of a message as the queue measures it: V8-serialized, where a string takes one
