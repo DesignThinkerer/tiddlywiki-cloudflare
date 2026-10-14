@@ -16,7 +16,20 @@ A TiddlyWiki anyone hosts on Cloudflare's free plan in about ten minutes, from t
 
 Each step is one pull request, with its tests, its README section, its design entry and its changelog line. "Done when" is written as behaviour, and becomes the list of tests when the step starts.
 
-### 1. The Deploy to Cloudflare button
+### 1. "Log in again", not "offline", when the Access session has expired
+
+**Why now:** Cloudflare Access ends a session after a set time (a day by default, up to a month), and a tab left open past it goes on working: its next save, tiddler load, status request or list poll gets Access's redirect to the login page, on another origin, which the browser blocks, so the request ends with no answer (status 0), exactly as it does with no network. The outbox module takes it for that (design 1.10, 2.17): the cloud icon turns red, the dropdown says "offline: kept on this device until sent", and the tab waits for the browser's online event, which never comes, since the network was never gone. Someone online is told they're offline, with nothing to do about it; a reload would show the login page, but nothing says so (the README's offline paragraph says to reload only for a session that expires while offline). It's the one case where the wiki's own words are wrong, and no test covers it (found on 2026-10-14, looking for one: `test/offline.test.mjs` cuts the network, `test/cold-start.test.mjs` reloads against the worker's own refusal). Small, and before the button because it's what a new user with a tab left open overnight meets first.
+
+**To settle first:** how the tab tells a lost session from a lost network, since both end a request without an answer. A fetch asked not to follow redirects (`redirect: "manual"`) sees the difference: Access's redirect comes back as one (an opaque redirect), no network as a failure. So one probe after a request fails that way, and nothing at a page load or a save; on which address is open: the worker's `/status` (a worker request only when neither is the case, the worker briefly down), or Access's own `/cdn-cgi/access/get-identity`, answered at the edge and never a worker request, if it redirects to the login page on an expired session rather than answering something else (to check against a real Access application). Not the cookie (HttpOnly, the page can't read it), not the session's length (an Access setting the tab doesn't know). And what the dropdown offers: a reload, which shows the login page and comes back to the wiki with the kept changes sent, as a reload after an offline stretch does today; or a login in another tab, after which the tab's own retries go through with no reload.
+
+**Done when:**
+- A tab whose Access session has expired, online: the cloud icon's dropdown says the login has expired and to log in again, the changes kept on this device until then, with the way to do it; not "offline".
+- TiddlyWiki's network alert still not shown; every change still kept on the device the moment it's made (design 1.10); nothing lost at the login, after which the waiting changes reach the worker and the item goes.
+- No network: "offline", as today, `test/offline.test.mjs` unchanged. No new worker request at a page load or a save (`test/budget.test.mjs`); the probe only after a request fails with no answer.
+- A test: a logged-in tab whose tiddler, status and list requests are then answered with a redirect to a login page on another origin, standing in for Access; a change made; the dropdown's words; the redirect lifted, a login done; the change sent and the item gone. The network cut instead: "offline".
+- The README's offline paragraph (its line on a session that expires while offline) and the troubleshooting table say what the dropdown says; design 2 says why a probe, and why not the cookie or the session's length.
+
+### 2. The Deploy to Cloudflare button
 
 **Why last:** the button is the front door, so it goes on once what's behind it is in place: the private wiki, offline editing, cold starts and the setup check (all done), each of which changes what the README's button section has to say. It clones the repository into the user's GitHub account, creates the bucket and the queue from `wrangler.toml`, asks for the secrets and deploys; it needs the repository public.
 
