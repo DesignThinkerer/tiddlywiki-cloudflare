@@ -210,6 +210,16 @@ exports.startup = function() {
 	// The server rejected our write because its copy changed. Keep our version, adopt the server's.
 	// ownEarlier(revision): for a save, called instead if the server's copy is this tab's own earlier
 	// save, one that got an error (an answer lost, say) though the worker stored it
+	// The server's version, adopted here: stored as a load is, and kept on the device at that revision
+	// as a save of this tab's would be (the list sync), so a later load of it costs nothing. Before,
+	// only the wiki got it: the device kept this tab's refused version, and the next page load fetched
+	// the tiddler again.
+	function adoptServer(title,serverFields) {
+		$tw.syncer.storeTiddler(serverFields);
+		if(typeof proto.cfworkerNoteListed === "function" && serverFields.revision !== undefined && serverFields.revision !== null) {
+			proto.cfworkerNoteListed(title,String(serverFields.revision),wiki.getTiddler(title));
+		}
+	}
 	function resolveConflict(adaptor,title,operation,callback,ownEarlier) {
 		$tw.utils.httpRequest({
 			url: adaptor.host + "recipes/" + encodeURIComponent(adaptor.recipe) + "/tiddlers/" + encodeURIComponent(title),
@@ -241,12 +251,12 @@ exports.startup = function() {
 					if(!serverFields) {
 						return callback(null,null); // It has been deleted in the meantime anyway
 					}
-					s.storeTiddler(serverFields);
+					adoptServer(title,serverFields);
 					return callback("Delete conflict: " + lib.link(title) + " was changed in another tab or browser, so it was not deleted. The latest version has been restored.");
 				}
 				if(localTiddler && sameContent(localTiddler,serverFields)) {
 					// Someone else saved exactly what we were saving: nothing to keep
-					s.storeTiddler(serverFields);
+					adoptServer(title,serverFields);
 					callback(null,{bag: serverFields.bag || "default"},serverFields.revision);
 					if(s.tiddlerInfo[title]) {
 						s.tiddlerInfo[title].changeCount = wiki.getChangeCount(title);
@@ -256,7 +266,7 @@ exports.startup = function() {
 				var copyTitle = localTiddler ? makeConflictCopy(localTiddler) : null,
 					kept = copyTitle ? " Your version has been kept as " + lib.link(copyTitle) + "." + inactiveNote(localTiddler,title,!serverFields) : "";
 				if(serverFields) {
-					s.storeTiddler(serverFields);
+					adoptServer(title,serverFields);
 					callback("Edit conflict: " + lib.link(title) + " was changed in another tab or browser before your save reached the server." + kept + " " + lib.link(title) + " now shows the server version.");
 				} else {
 					delete s.tiddlerInfo[title];
@@ -349,6 +359,16 @@ exports.startup = function() {
 	// (If-None-Match: *), as the tab that made the change would have, so a title created elsewhere
 	// meanwhile is a conflict too. (revisionBase takes null for "unknown", which would send the save
 	// unconditionally, over whatever is there.)
+	// A draft's base, as recorded when it was made here (undefined for a draft this tab doesn't know),
+	// and the same told by another tab or the device, before the draft tiddler arrives (the change
+	// listener above then leaves it): the outbox carries it with a draft (design 1.16), since the
+	// draft's own revision field is TiddlyWiki's copy of its tiddler's, stale after this tab's own save
+	proto.cfworkerDraftBase = function(draftTitle) {
+		return draftBases[draftTitle] ? draftBases[draftTitle].base : undefined;
+	};
+	proto.cfworkerDraftBaseFor = function(draftTitle,of,base) {
+		draftBases[draftTitle] = {of: of, base: base};
+	};
 	proto.cfworkerBaseFor = function(title,revision) {
 		var base = revision === null ? null : revisionBase(revision);
 		pendingBases[title] = {base: base};

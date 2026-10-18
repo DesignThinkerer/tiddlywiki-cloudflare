@@ -208,22 +208,24 @@ check("...and goes through once the worker takes it, clearing the dropdown's ite
 await A2.evaluate(([title, draft]) => $tw.wiki.addTiddler(new $tw.Tiddler($tw.wiki.getTiddler(title), { title: draft, "draft.of": title, "draft.title": title, text: "still typing in the other tab" })), ["Note A", draftTitle]);
 await waitFor(async () => ((await outbox(A2)) || []).some(e => e.title === draftTitle && e.text === "still typing in the other tab"), 10000);
 const A4 = await open(contextA, "A4");
-await sleep(800);   // (the outbox is looked at as the tab starts)
-check("a tab opened while another tab is typing a draft doesn't adopt it: the draft stays with its tab, and on the device",
-  await A4.evaluate(d => !$tw.wiki.tiddlerExists(d), draftTitle) && await A2.evaluate(d => $tw.wiki.getTiddlerText(d) === "still typing in the other tab", draftTitle) && ((await outbox(A4)) || []).some(e => e.title === draftTitle),
-  `in the new tab: ${await A4.evaluate(d => $tw.wiki.tiddlerExists(d), draftTitle)}`);
+const sharedInA4 = await waitFor(() => A4.evaluate(d => $tw.wiki.getTiddlerText(d) === "still typing in the other tab", draftTitle), 10000);
+check("a tab opened while another tab is typing a draft shows the draft too: one draft for the browser (design 1.16), still in its tab, and on the device",
+  sharedInA4 && await A2.evaluate(d => $tw.wiki.getTiddlerText(d) === "still typing in the other tab", draftTitle) && ((await outbox(A4)) || []).some(e => e.title === draftTitle),
+  `in the new tab: ${JSON.stringify(await A4.evaluate(d => $tw.wiki.getTiddlerText(d, null), draftTitle))}`);
 await A4.close();
 const A4b = await open(contextA, "A4b", "/index.html");   // the same page at another path of the site
-await sleep(800);
-check("...nor does a tab opened at another path of the site (/index.html): the tabs' channel is one per site, not per path",
-  await A4b.evaluate(d => !$tw.wiki.tiddlerExists(d), draftTitle) && await A2.evaluate(d => $tw.wiki.getTiddlerText(d) === "still typing in the other tab", draftTitle),
-  `in the tab at /index.html: ${await A4b.evaluate(d => $tw.wiki.tiddlerExists(d), draftTitle)}`);
+await waitFor(() => A4b.evaluate(d => $tw.wiki.tiddlerExists(d), draftTitle), 10000);
+await A2.evaluate(d => $tw.wiki.setText(d, "text", null, "still typing, more"), draftTitle);   // (a keystroke in the first tab)
+check("...so does one opened at another path of the site (/index.html), and it follows the typing: the tabs' channel is one per site, not per path",
+  await waitFor(() => A4b.evaluate(d => $tw.wiki.getTiddlerText(d) === "still typing, more", draftTitle), 5000),
+  `in the tab at /index.html: ${JSON.stringify(await A4b.evaluate(d => $tw.wiki.getTiddlerText(d, null), draftTitle))}`);
 await A4b.close();
+await waitFor(async () => ((await outbox(A2)) || []).some(e => e.title === draftTitle && e.text === "still typing, more"), 10000);   // (the device has the last keystroke after the pause)
 await A2.close({ runBeforeUnload: true });   // the guard asks (the draft holds changes); accepted
 await sleep(500);
 const A5 = await open(contextA, "A5");
 await waitFor(() => A5.evaluate(d => $tw.wiki.tiddlerExists(d), draftTitle), 10000);
-check("...and once that tab is gone, the next tab gets the draft back", await A5.evaluate(d => $tw.wiki.getTiddlerText(d) === "still typing in the other tab", draftTitle));
+check("...and once that tab is gone, the next tab gets the draft back", await A5.evaluate(d => $tw.wiki.getTiddlerText(d) === "still typing, more", draftTitle), JSON.stringify(await A5.evaluate(d => $tw.wiki.getTiddlerText(d, null), draftTitle)));
 await A5.evaluate(d => $tw.wiki.deleteTiddler(d), draftTitle);
 await A5.route("**/recipes/default/tiddlers/**", route => route.request().method() === "PUT" ? route.fulfill({ status: 500, body: "boom" }) : route.continue());
 await addTiddler(A5, { title: "Held change", text: "waiting in the first tab" });

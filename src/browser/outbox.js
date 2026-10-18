@@ -29,6 +29,11 @@ that failed, every few seconds, and sends everything once the network is back; t
   while something is unsaved) shows that while something waits, or while the login has expired.
   TiddlyWiki's own "Network Error" alert isn't shown on the admin site: the icon and the dropdown
   say it, and the alert would be back at every retry (design 2.17). Its other alerts show as they do.
+- The tabs of this browser follow each other over the same channel (design 1.16, 2.27): a save or a
+  delete the worker confirmed is handed to the other tabs with its revision, which store it as the
+  list sync does after a save of their own, no request made; a draft is one per tiddler for the
+  browser, sent as its fields at each change, shown live in every tab that has it open, and closed
+  everywhere when one tab saves or cancels it. Nothing of it reaches the worker.
 - An expired Access session is told from a lost network (design 2.26): both end a request with no
   answer (Access redirects to its login page, on another origin, which the browser blocks). After
   such a failure, or a tiddler list the service worker answered from its cache, while the browser
@@ -55,6 +60,8 @@ var STATUS = "$:/temp/cfworker/outbox",
 	KNOWN_WAIT = 100,    // ms between looks for a tiddler the syncer is about to know (a delete put back)
 	KNOWN_TRIES = 100,
 	ASK_WAIT = 300,      // ms a tab waits for the other tabs to say what they hold, before putting back
+	DROPPED_GRACE = 1000,   // ms after a draft is saved or cancelled here during which another tab's copy of it, crossing that, is ignored
+	STORY = "$:/StoryList",
 	IDENTITY = "/cdn-cgi/access/get-identity";   // Access's own path on the admin site: the session's identity, answered at the edge
 
 // In the cloud icon's dropdown ($:/tags/SyncerDropdown), under "You are logged in": what waits, and
@@ -103,6 +110,10 @@ exports.startup = function() {
 		online = typeof navigator !== "object" || navigator.onLine !== false,
 		login = "ok",                    // "expired" once Access says the session is gone, until a request goes through
 		probing = null,                  // the question to Access in flight (its promise), or null
+		received = Object.create(null),  // draft title -> the tiddler last applied from another tab (its own change event is no news)
+		drafts = Object.create(null),    // draft title -> {of, to}: the drafts this tab has, by what they're of and the title they save to
+		dropping = Object.create(null),  // draft titles being deleted here on another tab's word
+		justDropped = Object.create(null),   // draft title -> when it was saved or cancelled here
 		storage = "",                    // "persistent" once the browser has promised to keep this site's storage, "best-effort" if it won't
 		draftTimers = Object.create(null),
 		statusTimer = null;
@@ -348,6 +359,15 @@ exports.startup = function() {
 				existing = entries[title],
 				info = s.tiddlerInfo[title];
 			if(tiddler && tiddler.hasField("draft.of")) {
+				drafts[title] = {of: tiddler.fields["draft.of"], to: tiddler.fields["draft.title"] || tiddler.fields["draft.of"]};
+				delete justDropped[title];
+				// Another tab's typing, applied here (takeDraft): no news for the others, and that tab
+				// keeps it on the device
+				if(received[title] && tiddler.isEqual(received[title])) {
+					return;
+				}
+				delete received[title];
+				tell(withBase({draft: {title: title, fields: tiddler.getFieldStrings()}},title));
 				// A draft, as it is now, a moment after the typing
 				if(draftTimers[title]) {
 					clearTimeout(draftTimers[title]);
@@ -356,7 +376,7 @@ exports.startup = function() {
 					delete draftTimers[title];
 					var draft = wiki.getTiddler(title);
 					if(draft && draft.hasField("draft.of")) {
-						keep({title: title, kind: "draft", fields: draft.getFieldStrings(), time: existing && existing.kind === "draft" ? existing.time : now});
+						keep(withBase({title: title, kind: "draft", fields: draft.getFieldStrings(), time: existing && existing.kind === "draft" ? existing.time : now},title));
 					}
 				},parseInt(wiki.getTiddlerText("$:/config/cfworker/DraftPause",""),10) || DRAFT_PAUSE);
 				return;
@@ -365,6 +385,18 @@ exports.startup = function() {
 				if(draftTimers[title]) {
 					clearTimeout(draftTimers[title]);
 					delete draftTimers[title];
+				}
+				var wasDraft = drafts[title];
+				delete drafts[title];
+				delete received[title];
+				if(dropping[title]) {
+					delete dropping[title];   // (closed here on another tab's word: that tab told the others)
+				} else if(wasDraft) {
+					// Saved (its tiddler, or the one it's renamed to, changed in the same breath) or
+					// cancelled: the other tabs close theirs
+					var saved = !!changes[wasDraft.to] && !changes[wasDraft.to].deleted && wiki.tiddlerExists(wasDraft.to);
+					justDropped[title] = now;
+					tell({dropped: {title: title, of: wasDraft.of, to: saved ? wasDraft.to : null}});
 				}
 				if(info) {
 					// Known to the worker: to delete there, from the version this run of changes
@@ -422,9 +454,16 @@ exports.startup = function() {
 	proto.saveTiddler = function(tiddler,callback,options) {
 		var title = tiddler.fields.title,
 			count = wiki.getChangeCount(title);
-		return originalSaveTiddler.call(this,tiddler,function(err) {
+		return originalSaveTiddler.call(this,tiddler,function(err,adaptorInfo,revision) {
 			noteNetwork(err);
 			settled(title,"save",err,count);
+			// The other tabs get what the worker now has: this tiddler, at the revision it gave it, if
+			// nothing changed it since it was sent (a conflict the guard settled stored the worker's
+			// version here, which counts as a change; the copy it makes travels as a save of its own).
+			// Not a skinny one: the worker kept the stored text, which this tab doesn't have.
+			if(!err && revision !== undefined && revision !== null && wiki.getChangeCount(title) === count && !tiddler.hasField("_is_skinny")) {
+				tell({saved: {title: title, revision: String(revision), fields: tiddler.getFieldStrings()}});
+			}
 			return callback.apply(this,arguments);
 		},options);
 	};
@@ -432,6 +471,9 @@ exports.startup = function() {
 		return originalDeleteTiddler.call(this,title,function(err) {
 			noteNetwork(err);
 			settled(title,"delete",err);
+			if(!err) {
+				tell({deleted: title});
+			}
 			return callback.apply(this,arguments);
 		},options);
 	};
@@ -475,8 +517,100 @@ exports.startup = function() {
 				$tw.utils.each(data.titles,function(title) {
 					asking.held[title] = true;
 				});
+			} else if(data.draft) {
+				takeDraft(data.draft);
+			} else if(data.dropped) {
+				dropDraft(data.dropped);
+			} else if(data.saved) {
+				takeSaved(data.saved);
+			} else if(data.deleted) {
+				takeDeleted(data.deleted);
 			}
 		};
+	}
+	// The revision a draft is based on, as the conflict guard recorded it when the draft was made (a
+	// draft's own revision field is TiddlyWiki's copy of its tiddler's, stale after this tab's own
+	// save): carried with the draft to the other tabs and to the device, so that the tab that saves
+	// it, whichever, sends the right If-Match. null is a base too (a tiddler the worker never had).
+	function withBase(record,draftTitle) {
+		var base = typeof proto.cfworkerDraftBase === "function" ? proto.cfworkerDraftBase(draftTitle) : undefined;
+		if(typeof base !== "undefined") {
+			(record.draft || record).base = {value: base};
+		}
+		return record;
+	}
+	function tellBase(draftTitle,of,base) {
+		if(base && typeof proto.cfworkerDraftBaseFor === "function") {
+			proto.cfworkerDraftBaseFor(draftTitle,of,base.value);
+		}
+	}
+	function tell(message) {
+		if(channel) {
+			try {
+				channel.postMessage(message);
+			} catch(e) {
+				// (a message that can't be sent is lost: the next poll, or the device, say the rest)
+			}
+		}
+	}
+
+	// --- Tabs following each other (design 1.16) --------------------------------------------------------
+
+	// Another tab's draft, as it is now: this tab's copy, for TiddlyWiki's drafts list and for any
+	// editor open on it, which refreshes from the tiddler. Not over a save or cancel of it made here
+	// a moment ago, which that tab is about to hear of.
+	function takeDraft(draft) {
+		var title = draft.title;
+		if(justDropped[title] && Date.now() - justDropped[title] < DROPPED_GRACE) {
+			return;
+		}
+		var tiddler = new $tw.Tiddler(draft.fields);
+		received[title] = tiddler;
+		drafts[title] = {of: tiddler.fields["draft.of"], to: tiddler.fields["draft.title"] || tiddler.fields["draft.of"]};
+		tellBase(title,tiddler.fields["draft.of"],draft.base);
+		wiki.addTiddler(tiddler);
+	}
+	// Another tab saved or cancelled the draft: closed here as TiddlyWiki's cancel closes one, the
+	// story showing in its place the tiddler saved (which arrives with the save) or, cancelled, the
+	// one it was of; the entry goes if there's neither
+	function dropDraft(dropped) {
+		var title = dropped.title,
+			draft = wiki.getTiddler(title);
+		if(!draft || !draft.hasField("draft.of")) {
+			delete received[title];
+			delete drafts[title];
+			return;
+		}
+		var story = wiki.getTiddlerList(STORY),
+			pos = story.indexOf(title),
+			to = dropped.to || dropped.of;
+		// (The change event clears drafts and received, and the flag)
+		if(pos !== -1) {
+			if(to && (dropped.to || wiki.tiddlerExists(to))) {
+				story[pos] = to;
+			} else {
+				story.splice(pos,1);
+			}
+			wiki.addTiddler(new $tw.Tiddler({title: STORY},wiki.getTiddler(STORY),{list: story}));
+		}
+		dropping[title] = true;
+		wiki.deleteTiddler(title);
+	}
+	// A save another tab got confirmed: stored here as a load would be (the list sync)
+	function takeSaved(saved) {
+		var fields = saved.fields || {};
+		fields.revision = saved.revision;
+		fields.bag = fields.bag || "default";
+		fields.recipe = fields.recipe || "default";
+		fields.type = fields.type || "text/vnd.tiddlywiki";
+		if(typeof proto.cfworkerTakeSaved === "function") {
+			proto.cfworkerTakeSaved(fields);
+		}
+	}
+	function takeDeleted(title) {
+		if(typeof proto.cfworkerTakeDeleted === "function") {
+			proto.cfworkerTakeDeleted(title);
+		}
 	}
 	function askOthers(then) {
 		if(!channel) {
@@ -500,7 +634,8 @@ exports.startup = function() {
 		fromDevice = null;
 		askOthers(function(heldElsewhere) {
 			$tw.utils.each(fromOutbox,function(entry) {
-				if(!heldElsewhere[entry.title]) {
+				// (A draft is the browser's, not a tab's: put back whoever holds it, design 1.16)
+				if(entry.kind === "draft" || !heldElsewhere[entry.title]) {
 					putBackEntry(entry,listed);
 				}
 			});
@@ -510,10 +645,15 @@ exports.startup = function() {
 	function putBackEntry(entry,listed) {
 		var title = entry.title;
 		if(entry.kind === "draft") {
-			// (Unless this tab already has a draft of that name: the one being typed wins)
+			// (Unless this tab already has a draft of that name: the one being typed wins. The other
+			// tabs have it too, from the device or their own typing: not news to them.)
 			if(!wiki.tiddlerExists(title)) {
+				var draft = new $tw.Tiddler(entry.fields);
 				entries[title] = entry;
-				wiki.addTiddler(new $tw.Tiddler(entry.fields));
+				received[title] = draft;
+				drafts[title] = {of: draft.fields["draft.of"], to: draft.fields["draft.title"] || draft.fields["draft.of"]};
+				tellBase(title,draft.fields["draft.of"],entry.base);
+				wiki.addTiddler(draft);
 			}
 		} else if(entry.kind === "save") {
 			entries[title] = entry;

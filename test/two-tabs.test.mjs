@@ -1,5 +1,7 @@
-// End-to-end test: the worker in workerd (Miniflare) with R2, a real TiddlyWiki in Chromium, several tabs.
-// Covers edit-conflict protection, baking, public-cache purges, the 304 and the request savings.
+// End-to-end test: the worker in workerd (Miniflare) with R2, a real TiddlyWiki in Chromium, several tabs,
+// and a second browser. Covers edit-conflict protection (between browsers: the tabs of one browser follow
+// each other since design 1.16, so a tab there is never stale), baking, public-cache purges, the 304, the
+// request savings, and the tabs following each other.
 // Run: npm run test:tabs   (WIKI_HTML=path/to/your/index.html to test with your own wiki file)
 import http from "node:http";
 import { createChecks, createWatcher, FAST, finish, launchBrowser, listen, readWikiFile, settle as settleTab, startSite, waitFor } from "./browser-harness.mjs";
@@ -29,10 +31,11 @@ async function server(title) {
 
 const browser = await launchBrowser();
 const context = await browser.newContext();
+const context2 = await browser.newContext();   // another browser, a device of its own: nothing shared with the first, no channel, no device copy
 const net = [];   // saves and deletes, with their answers
 const { requests, pageErrors, watch } = createWatcher(site);
-async function openTab(tag) {
-  const page = await context.newPage();
+async function openTab(tag, ctx = context) {
+  const page = await ctx.newPage();
   await watch(page, tag);
   page.on("response", r => {
     const q = r.request();
@@ -119,7 +122,7 @@ const forgetDevice = page => page.evaluate(() => new Promise(resolve => {
 const home = await (await mf.dispatchFetch(base + "/")).text();
 check("baked page includes the conflict guard module", home.includes("$:/cfworker/conflict-guard.js"));
 const A = await openTab("A");
-const B = await openTab("B");
+const B = await openTab("B", context2);   // the other browser
 check("guard module is active in the browser", await A.evaluate(() => !!$tw.syncadaptor.conflictGuardInstalled));
 
 await create(A, "Alpha", "a1");
@@ -356,6 +359,7 @@ check("changed tiddler list answers 200 with a new ETag", changed.status === 200
 // --- 12. Fewer worker requests ---------------------------------------------------------------
 for (let i = 1; i <= 5; i++) await create(A, `Note ${i}`, `note text ${i}`);
 await settle(A);
+await A.bringToFront(); await sync(A); await settle(A);   // (what the other browser saved last, loaded here and kept on this browser's device)
 let reqMark = requests.length;
 const C = await openTab("C");
 const workerTiddlerGets = rs => rs.filter(r => r.method === "GET" && r.url.startsWith(base + "/recipes/default/tiddlers/"));
@@ -369,8 +373,8 @@ check("page load takes the tiddlers from the device (the tabs that saved them ke
 // /status: asked from the worker by the first page load in this browser (tab A), then kept by the browser
 const reachedWorker = rs => rs.filter(r => r.url.startsWith(base) && !r.cached);
 const statusAsked = requests.filter(r => r.url === base + "/status");
-check("the first page load in a browser asks the worker for /status, once",
-  statusAsked.filter(r => !r.cached).length === 1 && statusAsked.find(r => !r.cached)?.tag === "A",
+check("the first page load in each browser asks the worker for /status, once (A; B in the other browser), the later loads in a browser get it from its cache",
+  JSON.stringify(statusAsked.filter(r => !r.cached).map(r => r.tag).sort()) === '["A","B"]',
   JSON.stringify(statusAsked.map(r => `${r.tag}${r.cached ? " (cache)" : ""}`)));
 check("later page loads make only 2 worker requests (page, tiddler list): /status comes from the browser's cache",
   reachedWorker(cReqs).length === 2 && cReqs.some(r => r.url === base + "/status" && r.cached),
@@ -383,8 +387,8 @@ check("no $:/StoryList or draft writes reach the worker", !net.some(x => x.path.
 // public copy is stale (even past the cache) -> falls back to the worker
 await sync(C);
 staleOverride.set("recipes/default/tiddlers/Note 1", await (await bucket.get("recipes/default/tiddlers/Note 1")).text());
-await editViaUI(A, "Note 1", "note 1 edited"); await settle(A);
-await forgetDevice(C);   // (A's save kept the new version on the device: without that copy)
+await sync(B); await editViaUI(B, "Note 1", "note 1 edited"); await settle(B);   // (saved in the other browser: a save in this one would hand C the new version at once, design 1.16)
+await forgetDevice(C);   // (without this browser's device copy either)
 reqMark = requests.length;
 await sync(C);
 cReqs = requests.slice(reqMark).filter(r => r.tag === "C");
@@ -544,7 +548,7 @@ const markerModule = v => ({ type: "application/javascript", "module-type": "sta
 const valuePlugin = v => ({ "plugin-type": "plugin", type: "application/json", version: "1.0.0",
   text: JSON.stringify({ tiddlers: { [PLUG + "/value"]: { text: v } } }) });
 const putCode = (page, title, fields) => page.evaluate(([title, fields]) => $tw.wiki.addTiddler(new $tw.Tiddler($tw.wiki.getCreationFields(), fields, { title }, $tw.wiki.getModificationFields())), [title, fields]);
-const other = await openTab("H");             // a second tab (B is closed by now)
+const other = await openTab("H", context2);   // a tab in the other browser (B is closed by now)
 await putCode(A, MOD, markerModule("original")); await putCode(A, PLUG, valuePlugin("original")); await settle(A);
 await sync(other);
 await putCode(A, MOD, markerModule("A's edit")); await putCode(A, PLUG, valuePlugin("A's edit")); await settle(A);
@@ -754,7 +758,7 @@ await clearAlerts(A);
 // --- 20. Titles at the edges, and a public site that doesn't answer ----------------------------------
 // (quietOrNot: false rather than a timeout, for a tab whose syncer would keep retrying)
 const quietOrNot = (page, ms = 20000) => settleTab(page, ms).then(() => true, () => false);
-const L = await openTab("L");
+const L = await openTab("L", context2);   // the other browser: a tab that hasn't synced
 // An edit conflict: A saves first, then L, which hasn't synced since
 async function staleEdit(title) {
   await create(A, title, "first"); await settle(A); await sync(L);
@@ -891,6 +895,141 @@ check("imported, it's created again on the server with every field the same, tag
   lost && restoredSettled && !!restored && Object.keys(backupFields).every(sameField) && Object.keys(restored).every(sameField) && restored.revision !== backupFields.revision &&
   restoreSends.length === 1 && restoreSends[0].status === 204 && restoreSends[0].ifNoneMatch === "*" && (await alerts(A)).length === 0,
   JSON.stringify({ lost, settled: restoredSettled, sends: restoreSends.map(x => `${x.status} ${x.ifMatch || x.ifNoneMatch}`), alerts: await alerts(A), backupFields, restored }));
+
+// --- 22. Tabs following each other ------------------------------------------------------------------
+// The tabs of one browser share their work over the outbox's channel (design 1.16, 2.27): a save or a
+// delete the worker confirmed reaches the other tabs at once, with the worker's revision, and they
+// make no request for it; a draft is one per tiddler for the browser, shown live in every tab that
+// opens it, saved or cancelled everywhere at once.
+const P = await openTab("P"), Q = await openTab("Q");
+for (const page of [P, Q]) page.on("dialog", d => d.accept().catch(() => {}));   // "discard changes?", the guard's warning on reload
+const tiddlerGets = (tag, title, from) => requests.slice(from).filter(r => r.tag === tag && r.method === "GET" && decodeURIComponent(r.url).includes("/tiddlers/" + title));
+const draftOf = (page, title) => page.evaluate(t => $tw.wiki.findDraft(t) || null, title);
+const editorFrame = (page, draftTitle) => page.frameLocator(`[data-tiddler-title="${draftTitle}"] iframe.tc-edit-texteditor`).locator("textarea");
+const storyList = page => page.evaluate(() => $tw.wiki.getTiddlerList("$:/StoryList"));
+const draftsListed = page => page.locator(".tc-drafts-list a.tc-tiddlylink").allInnerTexts();
+// A keystroke's effect: the draft's text set as the edit widget sets it
+const typeInto = (page, draftTitle, text) => page.evaluate(([d, text]) => $tw.wiki.setText(d, "text", null, text), [draftTitle, text]);
+const textOf = (page, title) => page.evaluate(t => $tw.wiki.getTiddlerText(t, null), title);
+async function reloadTab(page) {
+  await page.reload();
+  await page.waitForFunction(() => window.$tw && $tw.syncer && $tw.syncer.timestampLastSyncFromServer);
+  await settle(page);
+}
+const sectionStart = net.length;
+
+// a. A save in one tab shows in the other at once, which makes no request for it
+let followReq = requests.length, followMark = net.length, t0 = Date.now();
+await create(P, "Followed note", "written in P");
+const followed = await waitFor(async () => (await textOf(Q, "Followed note")) === "written in P", 5000);
+const followedIn = (Date.now() - t0) / 1000;
+await settle(P);
+check("a tiddler saved in one tab shows in the other within a second, which made no request for it",
+  followed && followedIn < 2 && tiddlerGets("Q", "Followed note", followReq).length === 0, `${followedIn.toFixed(1)} s, ${tiddlerGets("Q", "Followed note", followReq).length} loads by Q`);
+await sync(Q);
+const qRevision = await Q.evaluate(() => ($tw.syncer.tiddlerInfo["Followed note"] || {}).revision);
+check("...and its next poll loads nothing: it holds the worker's revision", tiddlerGets("Q", "Followed note", followReq).length === 0 && String(qRevision) === String((await server("Followed note")).revision),
+  `loads ${tiddlerGets("Q", "Followed note", followReq).length}, revision ${qRevision} vs ${(await server("Followed note")).revision}`);
+
+// b. An edit through the UI: the draft travels, then the save; nothing left behind in the other tab
+await editViaUI(P, "Followed note", "edited in P");
+const editFollowed = await waitFor(async () => (await textOf(Q, "Followed note")) === "edited in P" && (await draftOf(Q, "Followed note")) === null, 5000);
+check("an edit confirmed in one tab shows in the other at once, no draft left behind there, still no request", editFollowed && tiddlerGets("Q", "Followed note", followReq).length === 0,
+  `${await textOf(Q, "Followed note")}, draft ${await draftOf(Q, "Followed note")}, loads ${tiddlerGets("Q", "Followed note", followReq).length}`);
+
+// c. A delete
+await P.evaluate(() => $tw.wiki.deleteTiddler("Followed note"));
+await settle(P);
+const deleteFollowed = await waitFor(() => Q.evaluate(() => !$tw.wiki.tiddlerExists("Followed note")), 5000);
+await sync(Q);
+check("a tiddler deleted in one tab is gone from the other at once, which sent no delete of its own", deleteFollowed && !netSince(followMark).some(x => x.tag === "Q" && x.method === "DELETE") && !(await Q.evaluate(() => $tw.wiki.tiddlerExists("Followed note"))),
+  JSON.stringify(netSince(followMark).filter(x => x.tag === "Q").map(x => x.method + " " + x.path)));
+
+// d. A draft begun in one tab is in the other at once, listed at the top of its page
+await create(P, "Shared draft", "v1"); await settle(P);
+await waitFor(async () => (await textOf(Q, "Shared draft")) === "v1", 5000);
+followMark = net.length;
+await startEdit(P, "Shared draft");
+const sharedDraft = await draftOf(P, "Shared draft");
+const listedInQ = await waitFor(async () => (await draftOf(Q, "Shared draft")) === sharedDraft && (await draftsListed(Q)).some(t => t.includes(sharedDraft)), 5000);
+check("a draft begun in one tab is in the other at once, listed at the top of its page, its story untouched", listedInQ && !(await storyList(Q)).includes(sharedDraft),
+  `draft in Q: ${await draftOf(Q, "Shared draft")}, listed: ${JSON.stringify(await draftsListed(Q))}, story: ${JSON.stringify(await storyList(Q))}`);
+await typeInto(P, sharedDraft, "v2 typed in P");
+check("...and its text follows the typing", await waitFor(async () => (await textOf(Q, sharedDraft)) === "v2 typed in P", 5000), JSON.stringify(await textOf(Q, sharedDraft)));
+
+// e. The other tab opens it: an editor on the same draft, following on
+await Q.bringToFront();
+await Q.evaluate(d => new $tw.Story().navigateTiddler(d), sharedDraft);   // (what the drafts list's link does)
+await editorFrame(Q, sharedDraft).waitFor({ timeout: 10000 });
+check("the other tab opens the draft from its list: an editor on the same draft, with the text as typed", (await editorFrame(Q, sharedDraft).inputValue()) === "v2 typed in P" && (await storyList(Q)).includes(sharedDraft),
+  JSON.stringify(await editorFrame(Q, sharedDraft).inputValue()));
+await typeInto(P, sharedDraft, "v3 typed in P");
+check("...its editor follows the typing in the first tab", await waitFor(async () => (await editorFrame(Q, sharedDraft).inputValue()) === "v3 typed in P", 5000), JSON.stringify(await editorFrame(Q, sharedDraft).inputValue()));
+
+// f. Typed in the other tab, the first follows
+await editorFrame(Q, sharedDraft).fill("v4 typed in Q");
+const firstFollows = await waitFor(async () => (await textOf(P, sharedDraft)) === "v4 typed in Q" && (await editorFrame(P, sharedDraft).inputValue()) === "v4 typed in Q", 5000);
+check("typed in the other tab, the first tab's draft and editor follow", firstFollows, `${JSON.stringify(await textOf(P, sharedDraft))} / editor ${JSON.stringify(await editorFrame(P, sharedDraft).inputValue())}`);
+check("nothing of the draft reached the worker", !netSince(followMark).some(x => x.path.includes("Draft of")), JSON.stringify(netSince(followMark).map(x => x.method + " " + x.path)));
+
+// g. Confirmed in the first tab: one save; the other's editor closes on the saved text
+followMark = net.length;
+await finishEdit(P, "Shared draft", "final text from P");
+const closedInQ = await waitFor(async () => (await draftOf(Q, "Shared draft")) === null && (await textOf(Q, "Shared draft")) === "final text from P", 5000);
+await settle(P); await settle(Q);
+check("confirmed in the first tab: one save at the worker; in the other the editor closes on the saved text, no conflict copy, no alert",
+  closedInQ && netSince(followMark).filter(x => x.method === "PUT" && x.path.endsWith("/Shared draft")).length === 1 && netSince(followMark).every(x => x.tag === "P") &&
+  (await conflictCopies(Q, "Shared draft")).length === 0 && (await alerts(Q)).length === 0 && (await storyList(Q)).includes("Shared draft") && !(await storyList(Q)).includes(sharedDraft),
+  `Q: ${JSON.stringify(await textOf(Q, "Shared draft"))}, draft ${await draftOf(Q, "Shared draft")}, story ${JSON.stringify(await storyList(Q))}, writes ${JSON.stringify(netSince(followMark).map(x => x.tag + " " + x.method + " " + x.path))}`);
+
+// h. Cancelled in the first tab: gone from the other, its editor closed on the tiddler as it was
+followMark = net.length;
+await startEdit(P, "Shared draft");
+await typeInto(P, sharedDraft, "to be discarded");
+await waitFor(async () => (await textOf(Q, sharedDraft)) === "to be discarded", 5000);
+await Q.bringToFront();
+await Q.evaluate(d => new $tw.Story().navigateTiddler(d), sharedDraft);
+await editorFrame(Q, sharedDraft).waitFor({ timeout: 10000 });
+await P.bringToFront();
+for (let attempt = 1; ; attempt++) {   // (a click lost to a refresh of the story river: clicked again, as in startEdit)
+  await P.locator(`.tc-tiddler-frame[data-tiddler-title="${sharedDraft}"] button[aria-label="Discard changes to this tiddler"]`).first().click();
+  if (await P.waitForFunction(d => !$tw.wiki.tiddlerExists(d), sharedDraft, { timeout: 5000 }).then(() => true, () => false)) break;
+  if (attempt === 6) throw new Error("the draft is still there after 6 clicks on Discard");
+}
+const cancelledInQ = await waitFor(async () => (await draftOf(Q, "Shared draft")) === null, 5000);
+check("cancelled in the first tab: the draft is gone from the other too, its editor closed on the tiddler as it was, nothing sent",
+  cancelledInQ && (await textOf(Q, "Shared draft")) === "final text from P" && (await storyList(Q)).includes("Shared draft") && !(await storyList(Q)).includes(sharedDraft) && netSince(followMark).length === 0,
+  `Q: ${JSON.stringify(await textOf(Q, "Shared draft"))}, story ${JSON.stringify(await storyList(Q))}, writes ${netSince(followMark).length}`);
+
+// i. A reload while the other tab holds the draft: it comes back, as typed, and follows on
+await startEdit(Q, "Shared draft");
+await typeInto(Q, sharedDraft, "typed in Q before P reloads");
+await waitFor(async () => (await textOf(P, sharedDraft)) === "typed in Q before P reloads", 5000);
+await reloadTab(P);
+const backAfterReload = await waitFor(async () => (await textOf(P, sharedDraft)) === "typed in Q before P reloads", 10000);
+check("the first tab reloaded while the other holds the draft: it has the draft back, as typed", backAfterReload, JSON.stringify(await textOf(P, sharedDraft)));
+await typeInto(Q, sharedDraft, "typed in Q after P's reload");
+check("...and follows on", await waitFor(async () => (await textOf(P, sharedDraft)) === "typed in Q after P's reload", 5000), JSON.stringify(await textOf(P, sharedDraft)));
+await finishEdit(Q, "Shared draft", "final from Q");
+check("...saved in the other tab, the reloaded one shows the save", await waitFor(async () => (await textOf(P, "Shared draft")) === "final from Q" && (await draftOf(P, "Shared draft")) === null, 5000), JSON.stringify(await textOf(P, "Shared draft")));
+
+// j. A conflict stays a conflict: a tab with its own unsaved change keeps it, and gets its copy at its save
+await create(P, "Raced", "r1"); await settle(P);
+await waitFor(async () => (await textOf(Q, "Raced")) === "r1", 5000);
+await Q.route("**/recipes/default/tiddlers/Raced", async route => { if (route.request().method() === "PUT") await new Promise(r => setTimeout(r, 1500)); await route.continue(); });
+followMark = net.length; await clearAlerts(Q); await clearAlerts(P);
+await create(Q, "Raced", "from Q");                       // Q's save, held 1.5 s on its way
+await new Promise(r => setTimeout(r, 300));
+await create(P, "Raced", "from P"); await settle(P);     // P's lands first; Q is told, but holds its own unsaved change
+const racedSettled = await quietOrNot(Q);
+await Q.unroute("**/recipes/default/tiddlers/Raced");
+const copiesInP = await waitFor(async () => (await conflictCopies(P, "Raced")).length === 1, 5000);
+check("a tab with its own unsaved change to a tiddler another tab saved keeps it, and gets its conflict copy at its save, as today; the copy reaches the first tab too",
+  racedSettled && (await server("Raced"))?.text === "from P" && (await conflictCopies(Q, "Raced")).length === 1 && (await textOf(Q, "Raced")) === "from P" && netSince(followMark).some(x => x.tag === "Q" && x.status === 412) && copiesInP,
+  `server ${JSON.stringify((await server("Raced"))?.text)}, Q ${JSON.stringify(await textOf(Q, "Raced"))}, copies Q ${(await conflictCopies(Q, "Raced")).length} P ${(await conflictCopies(P, "Raced")).length}, Q's answers ${JSON.stringify(netSince(followMark).filter(x => x.tag === "Q").map(x => x.status))}`);
+await clearAlerts(Q); await clearAlerts(P);
+check("no draft or story-list write reached the worker through all of this", !net.slice(sectionStart).some(x => x.path.includes("Draft of") || x.path.includes("$:/StoryList")), JSON.stringify(net.slice(sectionStart).filter(x => x.path.includes("Draft of") || x.path.includes("$:/StoryList")).map(x => x.path)));
+await P.close(); await Q.close();
 
 // --- Summary --------------------------------------------------------------------------------
 // (Leaving out the answers sections 19 and 19b make the tab see on purpose)
