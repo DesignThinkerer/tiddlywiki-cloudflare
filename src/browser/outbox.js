@@ -29,9 +29,10 @@ that failed, every few seconds, and sends everything once the network is back; t
   while something is unsaved) shows that while something waits, or while the login has expired.
   TiddlyWiki's own "Network Error" alert isn't shown on the admin site: the icon and the dropdown
   say it, and the alert would be back at every retry (design 2.17). Its other alerts show as they do.
-- The tabs of this browser follow each other over the same channel (design 1.16, 2.27): a save or a
-  delete the worker confirmed is handed to the other tabs with its revision, which store it as the
-  list sync does after a save of their own, no request made; a draft is one per tiddler for the
+- The tabs of this browser follow each other over the same channel (design 1.16, 2.27): a change is
+  handed to the other tabs the moment it's made, online or not, which show it as the version this tab
+  will save; the worker's revision follows once the save is confirmed, and they store it as the list
+  sync does after a save of their own, no request made; a draft is one per tiddler for the
   browser, sent as its fields at each change, shown live in every tab that has it open, and closed
   everywhere when one tab saves or cancels it. Nothing of it reaches the worker.
 - An expired Access session is told from a lost network (design 2.26): both end a request with no
@@ -262,6 +263,21 @@ exports.startup = function() {
 		}
 		return probe();
 	}
+	// Once a save is answered, the syncer (or, for a refused one, the conflict guard, which stores the
+	// worker's version here) holds what the worker has: that version travels to the other tabs with the
+	// worker's revision, if this tab's copy is that version (nothing changed it since: a change made
+	// meanwhile travels with its own save) and it isn't a skinny one (the worker kept the stored text,
+	// which this tab doesn't have). The others then hold the worker's revision too, or stop showing a
+	// version the worker refused (design 1.16, 2.27).
+	function tellHeld(title) {
+		var s = $tw.syncer,
+			info = s && s.tiddlerInfo[title],
+			held = wiki.getTiddler(title);
+		if(!info || !held || info.revision === undefined || info.revision === null || wiki.getChangeCount(title) !== info.changeCount || held.hasField("_is_skinny")) {
+			return;
+		}
+		tell({saved: {title: title, revision: String(info.revision), fields: held.getFieldStrings()}});
+	}
 	// For another module whose own request ended with no answer (the setup check, control-panel.js):
 	// taken as a failed save is, and resolved with the login state ("ok" or "expired") once Access
 	// has been asked, so the module can say which it was
@@ -403,6 +419,7 @@ exports.startup = function() {
 					// started from (a delete put back from the device keeps its own)
 					var base = existing && existing.kind !== "draft" && typeof existing.base === "string" ? existing.base : String(info.revision);
 					keep({title: title, kind: "delete", base: base, time: existing && existing.kind !== "draft" ? existing.time : now});
+					tell({pending: {title: title, deleted: true}});
 				} else {
 					// A draft saved or cancelled, or a tiddler made and deleted before the worker saw it
 					forget(title);
@@ -425,6 +442,11 @@ exports.startup = function() {
 				base: existing && existing.kind === "save" ? existing.base : (info ? String(info.revision) : null),
 				time: existing && existing.kind !== "draft" ? existing.time : now
 			});
+			// The other tabs show it now, as the version this tab will save (design 1.16); the worker's
+			// revision follows with the save's confirmation. Not a skinny one: no text to show.
+			if(!tiddler.hasField("_is_skinny")) {
+				tell({pending: {title: title, fields: tiddler.getFieldStrings()}});
+			}
 		});
 	});
 
@@ -454,17 +476,14 @@ exports.startup = function() {
 	proto.saveTiddler = function(tiddler,callback,options) {
 		var title = tiddler.fields.title,
 			count = wiki.getChangeCount(title);
-		return originalSaveTiddler.call(this,tiddler,function(err,adaptorInfo,revision) {
+		return originalSaveTiddler.call(this,tiddler,function(err) {
 			noteNetwork(err);
 			settled(title,"save",err,count);
-			// The other tabs get what the worker now has: this tiddler, at the revision it gave it, if
-			// nothing changed it since it was sent (a conflict the guard settled stored the worker's
-			// version here, which counts as a change; the copy it makes travels as a save of its own).
-			// Not a skinny one: the worker kept the stored text, which this tab doesn't have.
-			if(!err && revision !== undefined && revision !== null && wiki.getChangeCount(title) === count && !tiddler.hasField("_is_skinny")) {
-				tell({saved: {title: title, revision: String(revision), fields: tiddler.getFieldStrings()}});
-			}
-			return callback.apply(this,arguments);
+			var result = callback.apply(this,arguments);
+			setTimeout(function() {
+				tellHeld(title);   // (once the syncer and the guard have finished their bookkeeping for this answer)
+			},0);
+			return result;
 		},options);
 	};
 	proto.deleteTiddler = function(title,callback,options) {
@@ -525,6 +544,8 @@ exports.startup = function() {
 				takeSaved(data.saved);
 			} else if(data.deleted) {
 				takeDeleted(data.deleted);
+			} else if(data.pending) {
+				takePending(data.pending);
 			}
 		};
 	}
@@ -660,6 +681,18 @@ exports.startup = function() {
 	function takeDeleted(title) {
 		if(typeof proto.cfworkerTakeDeleted === "function") {
 			proto.cfworkerTakeDeleted(title);
+		}
+	}
+	// A change another tab just made, not yet confirmed by the worker: shown here as the version that
+	// tab will save, at the revision this tab knows (the list sync), so nothing is loaded over it and
+	// nothing of it is sent from here; the confirmation, or the version adopted after a refusal,
+	// follows as a save (takeSaved). A delete the same way.
+	function takePending(pending) {
+		if(pending.deleted) {
+			return takeDeleted(pending.title);
+		}
+		if(typeof proto.cfworkerTakePending === "function") {
+			proto.cfworkerTakePending(pending.fields || {});
 		}
 	}
 	function askOthers(then) {

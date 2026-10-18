@@ -66,6 +66,7 @@ exports.startup = function() {
 		originalLoadTiddler = proto.loadTiddler,
 		originalGetSkinnyTiddlers = proto.getSkinnyTiddlers,
 		publicBase = lib.publicBase(),
+		PENDING_REVISION = "0",                // stands for the revision of a tiddler another tab made and hasn't saved yet (cfworkerTakePending)
 		listedRevisions = Object.create(null), // title -> revision in the worker's latest tiddler list
 		lastListFetch = 0,
 		listRequested = 0,                     // when the request for that list was sent
@@ -825,6 +826,36 @@ exports.startup = function() {
 			return false;
 		}
 		listedRevisions[title] = String(fields.revision);
+		delete ahead[title];
+		delete held[title];
+		delete wanted[title];
+		delete explicit[title];
+		delete s.titlesToBeLoaded[title];
+		s.storeTiddler(fields);
+		return true;
+	};
+	// A change another tab made and hasn't had confirmed yet (the outbox's channel, design 1.16): shown
+	// here as that version, at the revision this tab knows for the tiddler, so that the next list, if it
+	// still says that revision, loads nothing over it, and the syncer, holding it as the worker's, sends
+	// nothing of it; a tiddler this tab has never seen listed gets a stand-in revision ("0", never the
+	// worker's, and no base for the conflict guard), kept in the listed revisions too, so a list the
+	// service worker answers from its cache while offline (completeList) doesn't take it for gone.
+	// The confirmation follows as a save (cfworkerTakeSaved). Not over an unsaved change of this tab's.
+	proto.cfworkerTakePending = function(fields) {
+		var s = $tw.syncer,
+			title = fields.title;
+		if(!s || hasUnsavedChanges(title)) {
+			return false;
+		}
+		var info = s.tiddlerInfo[title],
+			revision = info && info.revision !== undefined && info.revision !== null ? String(info.revision) : (listedRevisions[title] || PENDING_REVISION);
+		fields.revision = revision;
+		fields.bag = fields.bag || "default";
+		fields.recipe = fields.recipe || "default";
+		fields.type = fields.type || "text/vnd.tiddlywiki";
+		if(!listedRevisions[title]) {
+			listedRevisions[title] = revision;   // (a tiddler never listed here: the stand-in, until a list names it)
+		}
 		delete ahead[title];
 		delete held[title];
 		delete wanted[title];

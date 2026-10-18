@@ -1011,6 +1011,9 @@ await startEdit(P, "Shared draft");
 await typeInto(P, sharedDraft, "to be discarded");
 await waitFor(async () => (await textOf(Q, sharedDraft)) === "to be discarded", 5000);
 await Q.bringToFront();
+// (The frame of the draft closed a moment ago leaves the DOM 400 ms after the story, TiddlyWiki's closing
+// animation, on a timer a background tab runs late: gone before the draft is opened here again)
+await waitFor(() => Q.evaluate(d => !document.querySelector(`.tc-tiddler-frame[data-tiddler-title="${d}"]`), sharedDraft), 5000);
 await Q.evaluate(d => new $tw.Story().navigateTiddler(d), sharedDraft);
 await editorFrame(Q, sharedDraft).waitFor({ timeout: 10000 });
 await P.bringToFront();
@@ -1035,6 +1038,29 @@ await typeInto(Q, sharedDraft, "typed in Q after P's reload");
 check("...and follows on", await waitFor(async () => (await textOf(P, sharedDraft)) === "typed in Q after P's reload", 5000), JSON.stringify(await textOf(P, sharedDraft)));
 await finishEdit(Q, "Shared draft", "final from Q");
 check("...saved in the other tab, the reloaded one shows the save", await waitFor(async () => (await textOf(P, "Shared draft")) === "final from Q" && (await draftOf(P, "Shared draft")) === null, 5000), JSON.stringify(await textOf(P, "Shared draft")));
+
+// i2. With no network, a change made in one tab shows in the other at once: a change travels when it's
+// made, as the version its tab will save, and the worker's revision follows when the save is confirmed
+// (design 2.27). Here the browser offline cuts both tabs off (the suite blocks the service worker).
+await context.setOffline(true);
+followMark = net.length;
+const offlineAt = Date.now();
+await create(P, "Offline follow", "typed with no network");
+const offlineFollowed = await waitFor(async () => (await textOf(Q, "Offline follow")) === "typed with no network", 5000);
+const offlineFollowedIn = (Date.now() - offlineAt) / 1000;
+await P.evaluate(() => $tw.wiki.deleteTiddler("Raced"));   // (a delete too: Raced is a tiddler both tabs have)
+const offlineDeleteFollowed = await waitFor(() => Q.evaluate(() => !$tw.wiki.tiddlerExists("Raced")), 5000);
+const qCleanOffline = await Q.evaluate(() => !$tw.syncer.isDirty());
+check("with no network, a tiddler created in one tab shows in the other within a second, and one deleted is gone there, the other tab having nothing of its own to send",
+  offlineFollowed && offlineFollowedIn < 2 && offlineDeleteFollowed && qCleanOffline && netSince(followMark).length === 0,
+  `${offlineFollowedIn.toFixed(1)} s; Q: ${JSON.stringify(await textOf(Q, "Offline follow"))}, Raced ${await Q.evaluate(() => $tw.wiki.tiddlerExists("Raced"))}, clean ${qCleanOffline}; writes ${netSince(followMark).length}`);
+await context.setOffline(false);
+const offlineSent = await waitFor(async () => (await server("Offline follow"))?.text === "typed with no network" && (await server("Raced")) === null, 15000);
+await settle(P);
+const qRevision2 = await waitFor(async () => String(await Q.evaluate(() => ($tw.syncer.tiddlerInfo["Offline follow"] || {}).revision)) === String((await server("Offline follow"))?.revision), 10000);
+check("the network back: the saving tab sends them, and the other tab then holds the worker's revision without a request of its own",
+  offlineSent && qRevision2 && netSince(followMark).every(x => x.tag === "P") && tiddlerGets("Q", "Offline follow", followReq).length === 0,
+  `sent ${offlineSent}, revision in Q ${qRevision2}, writes ${JSON.stringify(netSince(followMark).map(x => x.tag + " " + x.method + " " + x.path))}`);
 
 // j. A conflict stays a conflict: a tab with its own unsaved change keeps it, and gets its copy at its save
 await create(P, "Raced", "r1"); await settle(P);
