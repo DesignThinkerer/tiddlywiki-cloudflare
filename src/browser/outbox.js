@@ -23,11 +23,19 @@ that failed, every few seconds, and sends everything once the network is back; t
   rename it) is kept too, never sent, so a reload doesn't lose it; the browser asks before the tab
   closes, as for any unsaved change. Renamed, the old title leaves with the delete the rename makes.
 - $:/temp/cfworker/outbox says how many changes wait (waiting), how many of them for a rename
-  (rename), since when (since), whether the browser is online (online) and whether the device took
-  them (kept: "no" when a write failed); an item in the dropdown of TiddlyWeb's cloud icon (the
-  "Server status" button, red while something is unsaved) shows that while something waits. TiddlyWiki's
-  own "Network Error" alert isn't shown on the admin site: the icon and the dropdown say it, and
-  the alert would be back at every retry (design 2.17). Its other alerts show as they do.
+  (rename), since when (since), whether the browser is online (online), whether the Access login
+  stands (login: "expired" once it doesn't) and whether the device took them (kept: "no" when a
+  write failed); an item in the dropdown of TiddlyWeb's cloud icon (the "Server status" button, red
+  while something is unsaved) shows that while something waits, or while the login has expired.
+  TiddlyWiki's own "Network Error" alert isn't shown on the admin site: the icon and the dropdown
+  say it, and the alert would be back at every retry (design 2.17). Its other alerts show as they do.
+- An expired Access session is told from a lost network (design 2.26): both end a request with no
+  answer (Access redirects to its login page, on another origin, which the browser blocks). After
+  such a failure, or a tiddler list the service worker answered from its cache, while the browser
+  says it's online, the tab asks Access's own identity path once (answered at the edge, never a
+  worker request): the identity while the session stands, an error once it's gone. The dropdown
+  then says the login has expired and how to log in again, not "offline"; the first request that
+  goes through, or the first real list, clears it.
 \*/
 (function(){
 
@@ -46,17 +54,31 @@ var STATUS = "$:/temp/cfworker/outbox",
 	DRAFT_PAUSE = 300,   // ms of typing before a draft is written to the device ($:/config/cfworker/DraftPause, the plugin's settings)
 	KNOWN_WAIT = 100,    // ms between looks for a tiddler the syncer is about to know (a delete put back)
 	KNOWN_TRIES = 100,
-	ASK_WAIT = 300;      // ms a tab waits for the other tabs to say what they hold, before putting back
+	ASK_WAIT = 300,      // ms a tab waits for the other tabs to say what they hold, before putting back
+	IDENTITY = "/cdn-cgi/access/get-identity";   // Access's own path on the admin site: the session's identity, answered at the edge
 
-// In the cloud icon's dropdown ($:/tags/SyncerDropdown), under "You are logged in": what waits
+// In the cloud icon's dropdown ($:/tags/SyncerDropdown), under "You are logged in": what waits, and
+// the login once it has expired (shown then with nothing waiting too: a tab that only reads is the
+// one that would never learn it's cut off). The link opens the admin site in a new tab, which Access
+// meets with its login page; logged in there, this tab's own retries go through.
+var LOGIN_LINK = "<a class='tc-tiddlylink-external' href='/' target='_blank' rel='noopener noreferrer'>Log in again</a>";
 var ITEM_TEXT = [
-	"<$list filter='[[" + STATUS + "]get[waiting]!match[0]]' variable='n'>",
+	"<$list filter='[[" + STATUS + "]get[waiting]!match[0]] [[" + STATUS + "]get[login]match[expired]] +[limit[1]]' variable='show'>",
 	"<div class='tc-drop-down-info'>",
+	"<$list filter='[[" + STATUS + "]get[waiting]!match[0]]' variable='n'>",
 	"<$text text={{{ [[" + STATUS + "]get[waiting]] }}}/> <$text text={{{ [[" + STATUS + "]get[waiting]compare:number:eq[1]then[change]else[changes]] }}}/> waiting since <$view tiddler='" + STATUS + "' field='since' format='date' template='0hh:0mm'/><br/>",
+	"<$list filter='[[" + STATUS + "]get[login]match[expired]]' variable='expired'><$list filter='[[" + STATUS + "]get[kept]!match[no]]' variable='kept'>''your login has expired'': kept on this device until you log in again</$list><$list filter='[[" + STATUS + "]get[kept]match[no]]' variable='unkept'>''your login has expired'', and ''not kept on this device'': the browser refused to store it (no room left, or storage off here). Keep this tab open and log in again.</$list></$list>",
+	"<$list filter='[[" + STATUS + "]get[login]!match[expired]]' variable='loggedin'>",
 	"<$list filter='[[" + STATUS + "]get[online]match[no]]' variable='off'><$list filter='[[" + STATUS + "]get[kept]!match[no]]' variable='kept'>offline: kept on this device until sent</$list><$list filter='[[" + STATUS + "]get[kept]match[no]]' variable='unkept'>offline, and ''not kept on this device'': the browser refused to store it (no room left, or storage off here). Keep this tab open until the network is back.</$list></$list>",
 	"<$list filter='[[" + STATUS + "]get[online]match[yes]]' variable='on'><$list filter='[[" + STATUS + "]get[kept]!match[no]]' variable='kept'>sending (kept on this device until then)</$list><$list filter='[[" + STATUS + "]get[kept]match[no]]' variable='unkept'>sending — ''not kept on this device'' (the browser refused to store it): keep this tab open until it's sent.</$list></$list>",
+	"</$list>",
 	"<$list filter='[[" + STATUS + "]get[rename]!match[0]]' variable='r'><br/><$text text={{{ [[" + STATUS + "]get[rename]] }}}/> to rename before <$text text={{{ [[" + STATUS + "]get[rename]compare:number:eq[1]then[it]else[they]] }}}/> can be sent (an alert says which).</$list>",
 	"<$list filter='[[" + STATUS + "]get[storage]match[best-effort]]' variable='risk'><br/>''This browser hasn't promised to keep the device's copy'' (it may clear it when short of space): get back online soon, or <$link to='$:/plugins/cfworker/admin/device'>ask it to keep this site's data</$link>.</$list>",
+	"</$list>",
+	"<$list filter='[[" + STATUS + "]get[login]match[expired]]' variable='expired'>",
+	"<$list filter='[[" + STATUS + "]get[waiting]match[0]]' variable='nothing'>''Your login has expired'': changes made on other devices no longer reach this tab, and one made here would wait on this device.</$list>",
+	"<br/>" + LOGIN_LINK + " (a new tab; this one then sends what waits by itself), or reload this page: what waits is kept on this device through it.",
+	"</$list>",
 	"</div>",
 	"<hr/>",
 	"</$list>"
@@ -79,6 +101,8 @@ exports.startup = function() {
 		firstListFromCache = false,      // ...the service worker's copy, the network gone: a title it lacks isn't known gone
 		deferred = [],                   // deletes put back once a real list says whether their tiddler is still there
 		online = typeof navigator !== "object" || navigator.onLine !== false,
+		login = "ok",                    // "expired" once Access says the session is gone, until a request goes through
+		probing = false,                 // a question to Access in flight
 		storage = "",                    // "persistent" once the browser has promised to keep this site's storage, "best-effort" if it won't
 		draftTimers = Object.create(null),
 		statusTimer = null;
@@ -160,7 +184,7 @@ exports.startup = function() {
 					}
 				}
 			});
-			var fields = {title: STATUS, waiting: String(waiting), rename: String(toRename()), online: online ? "yes" : "no", kept: unkept ? "no" : "yes"},
+			var fields = {title: STATUS, waiting: String(waiting), rename: String(toRename()), online: online ? "yes" : "no", login: login, kept: unkept ? "no" : "yes"},
 				current = wiki.getTiddler(STATUS);
 			if(since !== null) {
 				fields.since = $tw.utils.stringifyDate(new Date(since));
@@ -168,7 +192,7 @@ exports.startup = function() {
 			if(storage) {
 				fields.storage = storage;
 			}
-			if(!current || current.fields.waiting !== fields.waiting || current.fields.online !== fields.online || current.fields.since !== fields.since || current.fields.storage !== fields.storage || current.fields.kept !== fields.kept || current.fields.rename !== fields.rename) {
+			if(!current || current.fields.waiting !== fields.waiting || current.fields.online !== fields.online || current.fields.login !== fields.login || current.fields.since !== fields.since || current.fields.storage !== fields.storage || current.fields.kept !== fields.kept || current.fields.rename !== fields.rename) {
 				wiki.addTiddler(new $tw.Tiddler(fields));
 			}
 		},0);
@@ -179,12 +203,56 @@ exports.startup = function() {
 			updateStatus();
 		}
 	}
-	// What a save or delete answered: the network gone, or back
+	function setLogin(value) {
+		if(login !== value) {
+			login = value;
+			updateStatus();
+		}
+	}
+	// Whether Access's answer to its identity path says the session is gone: an error of its own (400
+	// "no app token set" on a real application; 401 and 403 for good measure), or a redirect to its
+	// login page (the fetch doesn't follow it, so it shows as one). The identity itself (ok) says it
+	// stands; anything else (a 404 from a worker with no Access in front, say) says nothing about it.
+	function sessionGone(response) {
+		return response.type === "opaqueredirect" || response.status === 400 || response.status === 401 || response.status === 403;
+	}
+	// A request ended with no answer, or the list came from the service worker's cache, while the
+	// browser says it's online: the network gone, or the session? Access's own path tells (design
+	// 2.26): answered at the edge, never a worker request, and not a path the service worker handles.
+	// Asked once per such stretch, never while the login is known to have expired; the first request
+	// that goes through, or the first real list, clears it.
+	function probe() {
+		if(probing || login === "expired" || typeof fetch !== "function" || (typeof navigator === "object" && navigator.onLine === false)) {
+			return;
+		}
+		probing = true;
+		fetch(IDENTITY,{redirect: "manual", credentials: "same-origin", cache: "no-store"}).then(function(response) {
+			probing = false;
+			if(sessionGone(response)) {
+				setLogin("expired");
+				setOnline(true);   // (the network answered)
+			}
+			// (The session stands: the failure was the worker's or the network's, which "offline" says)
+		},function() {
+			probing = false;
+			setOnline(false);   // nothing answered: the network is gone
+		});
+	}
+	// A request ended with no answer (status 0): offline, as it looks, until Access says otherwise;
+	// nothing new while the login is known to have expired (every retry ends that way)
+	function noteNoAnswer() {
+		if(login !== "expired") {
+			setOnline(false);
+		}
+		probe();
+	}
+	// What a save or delete answered: the network gone, or back, and the login standing
 	function noteNetwork(err) {
 		if(!err) {
 			setOnline(true);
+			setLogin("ok");
 		} else if(err === $tw.language.getString("Error/XMLHttpRequest") + ": 0") {
-			setOnline(false);
+			noteNoAnswer();
 		}
 	}
 	wiki.addTiddler(new $tw.Tiddler({title: ITEM, tags: ["$:/tags/SyncerDropdown"], "list-after": "$:/plugins/tiddlywiki/tiddlyweb/syncer-actions/login-status", text: ITEM_TEXT}));
@@ -241,12 +309,12 @@ exports.startup = function() {
 	// (status 0), so it comes back at every retry, every few seconds, and asks to be closed each time.
 	// On the admin site the red cloud icon and the dropdown's item say the same, and more (what
 	// waits, that it's kept on this device): the alert is logged instead, and the browser marked
-	// offline, a failed load or list included. TiddlyWiki's other alerts (a save refused by the
-	// worker, say) show as they do.
+	// offline, a failed load or list included, or the login expired once Access has been asked
+	// (noteNoAnswer). TiddlyWiki's other alerts (a save refused by the worker, say) show as they do.
 	var originalDisplayError = $tw.Syncer.prototype.displayError;
 	$tw.Syncer.prototype.displayError = function(msg,err) {
 		if(err === $tw.language.getString("Error/XMLHttpRequest") + ": 0") {
-			setOnline(false);
+			noteNoAnswer();
 			this.logger.log(msg + ":",err);
 			return;
 		}
@@ -469,6 +537,13 @@ exports.startup = function() {
 		}
 	}
 	proto.cfworkerOnList(function(listed,previous,tiddlers,fromCache) {
+		// A list the service worker answered from its cache: the network gone, or the session (design
+		// 2.26)? Access is asked, if the browser says it's online. A real one came through Access.
+		if(fromCache) {
+			probe();
+		} else {
+			setLogin("ok");
+		}
 		if(!fromCache && deferred.length) {
 			var waiting = deferred;
 			deferred = [];
