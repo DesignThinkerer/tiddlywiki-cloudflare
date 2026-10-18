@@ -102,7 +102,7 @@ exports.startup = function() {
 		deferred = [],                   // deletes put back once a real list says whether their tiddler is still there
 		online = typeof navigator !== "object" || navigator.onLine !== false,
 		login = "ok",                    // "expired" once Access says the session is gone, until a request goes through
-		probing = false,                 // a question to Access in flight
+		probing = null,                  // the question to Access in flight (its promise), or null
 		storage = "",                    // "persistent" once the browser has promised to keep this site's storage, "best-effort" if it won't
 		draftTimers = Object.create(null),
 		statusTimer = null;
@@ -220,23 +220,28 @@ exports.startup = function() {
 	// browser says it's online: the network gone, or the session? Access's own path tells (design
 	// 2.26): answered at the edge, never a worker request, and not a path the service worker handles.
 	// Asked once per such stretch, never while the login is known to have expired; the first request
-	// that goes through, or the first real list, clears it.
+	// that goes through, or the first real list, clears it. Resolves with the login state once known.
 	function probe() {
-		if(probing || login === "expired" || typeof fetch !== "function" || (typeof navigator === "object" && navigator.onLine === false)) {
-			return;
+		if(probing) {
+			return probing;
 		}
-		probing = true;
-		fetch(IDENTITY,{redirect: "manual", credentials: "same-origin", cache: "no-store"}).then(function(response) {
-			probing = false;
+		if(login === "expired" || typeof fetch !== "function" || (typeof navigator === "object" && navigator.onLine === false)) {
+			return Promise.resolve(login);
+		}
+		probing = fetch(IDENTITY,{redirect: "manual", credentials: "same-origin", cache: "no-store"}).then(function(response) {
+			probing = null;
 			if(sessionGone(response)) {
 				setLogin("expired");
 				setOnline(true);   // (the network answered)
 			}
 			// (The session stands: the failure was the worker's or the network's, which "offline" says)
+			return login;
 		},function() {
-			probing = false;
+			probing = null;
 			setOnline(false);   // nothing answered: the network is gone
+			return login;
 		});
+		return probing;
 	}
 	// A request ended with no answer (status 0): offline, as it looks, until Access says otherwise;
 	// nothing new while the login is known to have expired (every retry ends that way)
@@ -244,8 +249,14 @@ exports.startup = function() {
 		if(login !== "expired") {
 			setOnline(false);
 		}
-		probe();
+		return probe();
 	}
+	// For another module whose own request ended with no answer (the setup check, control-panel.js):
+	// taken as a failed save is, and resolved with the login state ("ok" or "expired") once Access
+	// has been asked, so the module can say which it was
+	proto.cfworkerNoAnswer = function() {
+		return noteNoAnswer();
+	};
 	// What a save or delete answered: the network gone, or back, and the login standing
 	function noteNetwork(err) {
 		if(!err) {

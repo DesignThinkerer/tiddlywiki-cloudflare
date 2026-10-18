@@ -272,15 +272,31 @@ exports.startup = function() {
 				try {
 					body = data ? JSON.parse(data) : null;
 				} catch(e) {}
+				var done = function() {
+					browserLines(function(own) {
+						show(lines.concat(own));
+					});
+				};
 				if(body && Array.isArray(body.checks)) {
 					$tw.utils.each(body.checks,function(item) {
 						lines.push(line(mark(item.ok),String(item.text || ""),item.readme));
 					});
-				} else {
-					lines.push(line("✗",(status ? "The worker answered " + status + ": " : "The worker didn't answer: ") + String(data || err || "").slice(0,300),""));
+					return done();
 				}
-				browserLines(function(own) {
-					show(lines.concat(own));
+				if(status) {
+					lines.push(line("✗","The worker answered " + status + ": " + String(data || err || "").slice(0,300),""));
+					return done();
+				}
+				// No answer at all: no network, or the Access session has expired (its login page, on
+				// another origin, is blocked by the browser). The outbox tells the two apart by asking
+				// Access (design 2.26), and learns it at the same time, for the cloud icon's dropdown
+				var adaptor = $tw.syncadaptor,
+					asked = adaptor && typeof adaptor.cfworkerNoAnswer === "function" ? adaptor.cfworkerNoAnswer() : Promise.resolve(null);
+				asked.then(function(login) {
+					lines.push(login === "expired" ?
+						line("✗","The worker didn't answer: your login has expired, and Cloudflare Access sent the request to its login page instead. Log in again (the cloud icon's dropdown has the link), then check again.","3") :
+						line("✗","The worker didn't answer (no network, or it can't be reached): " + String(err || "").slice(0,300),""));
+					done();
 				});
 			}
 		});
