@@ -760,6 +760,29 @@ check("package.json: test, test:fast, test:browser and test:suite build, then ru
   ["test", "test:fast", "test:browser", "test:suite"].every(s => /^npm run build && node tools\/run-suites\.mjs/.test(scripts[s] || "")) && /node tools\/run-suites\.mjs$/.test(scripts["test:suite"] || ""),
   JSON.stringify({ "test:suite": scripts["test:suite"] }));
 
+// Dependencies of Miniflare pinned above what it declares ("overrides" in package.json, README 6.2):
+// each pin has to be the copy Miniflare resolves, and has to still be needed — the day Miniflare's
+// own declaration reaches the pinned version, the override is a leftover that would hold the
+// package back from then on, so this says to drop it. (Which versions, and why: the changelog.)
+const resolveFrom = (dir, name) => {   // Node's lookup for a bare name from dir: its own node_modules, then each parent's
+  for (let d = dir; ; d = path.dirname(d)) {
+    const candidate = path.join(d, "node_modules", name, "package.json");
+    if (fs.existsSync(candidate)) return JSON.parse(fs.readFileSync(candidate, "utf8")).version;
+    if (d === path.dirname(d) || d === path.dirname(ROOT)) return null;
+  }
+};
+const numbers = v => String(v).replace(/^[^\d]*/, "").split(/[.+-]/).map(Number);   // "^7.29.1" → [7, 29, 1]
+const below = (a, b) => { const x = numbers(a), y = numbers(b); for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) < (y[i] || 0); return false; };
+const miniflareDir = path.join(ROOT, "node_modules", "miniflare");
+const miniflareDeclares = JSON.parse(fs.readFileSync(path.join(miniflareDir, "package.json"), "utf8")).dependencies || {};
+const pins = (JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8")).overrides || {}).miniflare || {};
+for (const [name, pin] of Object.entries(pins)) {
+  const resolved = resolveFrom(miniflareDir, name);
+  check(`${name} is pinned to ${pin} for Miniflare (package.json overrides), and that is the copy Miniflare gets`, resolved === pin, `Miniflare gets ${resolved}`);
+  check(`...and the pin is still needed: Miniflare declares less (drop the override from package.json when its declaration reaches ${pin})`,
+    !!miniflareDeclares[name] && below(miniflareDeclares[name], pin), `Miniflare declares ${miniflareDeclares[name]}`);
+}
+
 // The runner (tools/run-suites.mjs): --parallel <n> runs that many suites at once; what isn't a
 // suite is reported as such, every suite runs, and a failure makes the exit code 1. (Two names that
 // aren't suites: nothing is run, which is the cheapest way to see the arguments read.)
