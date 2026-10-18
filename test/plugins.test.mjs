@@ -430,4 +430,65 @@ check("...and a damaged copy the browser kept is passed over quietly (asked agai
   `${cachedRound.length} requests ` + JSON.stringify(state));
 await tab.close();
 
+// --- 16. Installed in one admin tab, the other admin tab follows (design 1.16) ---------------------------
+// The tabs of one browser hand each other their changes the moment they're made: the other tab gets the
+// plugin tiddler at once and TiddlyWiki treats it there as in the installing tab. A plugin with
+// JavaScript isn't unpacked in a running wiki: TiddlyWiki asks for a reload (RequireReloadDueToPluginChange),
+// and after it the code runs in both tabs. A plugin without code is unpacked on the spot, in both. The
+// markdown plugin was deleted in section 14: installed again here, with another admin tab open.
+await load();   // (section 15 left this tab on about:blank)
+const other = await context.newPage();
+await watch(other, "other admin");
+await other.goto(BASE + "/");
+await settle(other);
+const README_SHADOW = ML + "/readme";
+const otherState = () => other.evaluate(([plugin, shadow]) => ({
+  plugin: $tw.wiki.tiddlerExists(plugin), shadow: $tw.wiki.getShadowSource(shadow) === plugin, reload: $tw.wiki.getTiddlerText("$:/status/RequireReloadDueToPluginChange"),
+  revision: ($tw.syncer.tiddlerInfo[plugin] || {}).revision || null
+}), [ML, README_SHADOW]);
+const otherRequests = from => requests.slice(from).filter(r => r.tag === "other admin");
+let followMark = requests.length;
+const followAt = Date.now();
+await importViaUI(MARKDOWN);
+const followedPlugin = await waitFor(async () => { const s = await otherState(); return s.plugin && s.reload === "yes"; }, 5000);
+const followedIn = (Date.now() - followAt) / 1000;
+const installingTabShadow = await page.evaluate(([plugin, shadow]) => $tw.wiki.getShadowSource(shadow) === plugin, [ML, README_SHADOW]);
+check("installed in one admin tab, the other has the plugin within a second and TiddlyWiki asks for the reload there too (a plugin with JavaScript isn't unpacked in a running wiki, in either tab), with no request for it",
+  followedPlugin && followedIn < 2 && !(await otherState()).shadow && !installingTabShadow && !otherRequests(followMark).some(r => r.method === "GET" && r.path.startsWith("/recipes/default/tiddlers/")),
+  `${followedIn.toFixed(1)} s, other ${JSON.stringify(await otherState())}, installing tab's shadow ${installingTabShadow}, other's requests ${JSON.stringify(otherRequests(followMark).map(r => r.method + " " + r.path.split("?")[0]))}`);
+await settle();
+const installedRevision = (await stored(ML)).meta.revision;
+const revisionFollowed = await waitFor(async () => (await otherState()).revision === installedRevision, 5000);
+check("...and holds the worker's revision once the save is confirmed, still without a request", revisionFollowed && !otherRequests(followMark).some(r => r.method === "GET" && r.path.startsWith("/recipes/default/tiddlers/")),
+  `${JSON.stringify(await otherState())} vs ${installedRevision}`);
+followMark = requests.length;
+await load();
+await other.goto(BASE + "/");
+await settle(other);
+const otherWorkerLoad = otherRequests(followMark).filter(r => r.origin === "worker" && !r.cached).map(r => r.method + " " + r.path.split("?")[0]);
+check("after a reload the plugin runs in both tabs, its shadow tiddlers in place, no reload asked any more, the other tab's load costing the usual worker requests and its code never coming through the worker",
+  await isMarkdownActive() && await isMarkdownActive(other) && (await otherState()).shadow && (await reloadAsked()) === "no" && (await otherState()).reload === "no" &&
+  otherWorkerLoad.length <= 2 && !otherWorkerLoad.some(r => r.includes("_plugins") || r.includes(ML)),
+  `markdown: page ${await isMarkdownActive()}, other ${await isMarkdownActive(other)}, shadow ${(await otherState()).shadow}; other's worker requests ${otherWorkerLoad.join(", ")}`);
+// A plugin without code: unpacked on the spot, in the installing tab and in the other. Deleted, the plugin
+// tiddler goes from the other at once; its shadow tiddlers stay in both until a reload, as TiddlyWiki
+// leaves them (its plugin change handler looks only at tiddlers that still exist)
+const WT = "$:/plugins/test/wikitext-only", WT_SHADOW = WT + "/hello";
+const wikitextPlugin = { title: WT, type: "application/json", "plugin-type": "plugin", version: "1.0.0", text: JSON.stringify({ tiddlers: { [WT_SHADOW]: { title: WT_SHADOW, text: "hello from a plugin without code" } } }) };
+const otherShadow = () => other.evaluate(([plugin, shadow]) => ({ unpacked: $tw.wiki.getShadowSource(shadow) === plugin, text: $tw.wiki.getTiddlerText(shadow, null), reload: $tw.wiki.getTiddlerText("$:/status/RequireReloadDueToPluginChange") }), [WT, WT_SHADOW]);
+followMark = requests.length;
+await importViaUI(wikitextPlugin);
+const unpackedInOther = await waitFor(async () => (await otherShadow()).unpacked, 5000);
+check("a plugin without code installed in one tab is unpacked on the spot in the other: its shadow tiddler readable there, no reload asked, no request",
+  unpackedInOther && (await otherShadow()).text === "hello from a plugin without code" && (await otherShadow()).reload === "no" && !otherRequests(followMark).some(r => r.method === "GET" && r.path.startsWith("/recipes/default/tiddlers/")),
+  JSON.stringify(await otherShadow()) + " requests " + JSON.stringify(otherRequests(followMark).map(r => r.method + " " + r.path.split("?")[0])));
+await settle();
+await remove(WT);
+const goneFromOther = await waitFor(() => other.evaluate(t => !$tw.wiki.tiddlerExists(t), WT), 5000);
+const shadowsStay = await page.evaluate(([plugin, shadow]) => $tw.wiki.getShadowSource(shadow) === plugin, [WT, WT_SHADOW]) && (await otherShadow()).unpacked;
+check("...and deleted in that tab, the plugin tiddler is gone from the other at once; its shadow tiddlers stay in both until a reload, as TiddlyWiki leaves them in the deleting tab too",
+  goneFromOther && shadowsStay, `gone ${goneFromOther}, shadows stay ${shadowsStay}, other ${JSON.stringify(await otherShadow())}`);
+await settle();
+await other.close();
+
 await finish({ check, results, pageErrors, browser, site, cleanup: () => fs.rmSync(r2Dir, { recursive: true, force: true }) });
