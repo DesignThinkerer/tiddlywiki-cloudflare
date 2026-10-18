@@ -814,6 +814,41 @@ exports.startup = function() {
 		forget([title]);
 	};
 
+	// A save another tab of this browser got confirmed (the outbox's channel, design 1.16): the tiddler
+	// as the worker now has it, with its revision, stored as a load would be, so the next list finds
+	// nothing to load; not over an unsaved change of this tab's, which the conflict guard settles at
+	// its save. The saving tab wrote the device copy. Returns whether it was taken.
+	proto.cfworkerTakeSaved = function(fields) {
+		var s = $tw.syncer,
+			title = fields.title;
+		if(!s || hasUnsavedChanges(title)) {
+			return false;
+		}
+		listedRevisions[title] = String(fields.revision);
+		delete ahead[title];
+		delete held[title];
+		delete wanted[title];
+		delete explicit[title];
+		delete s.titlesToBeLoaded[title];
+		s.storeTiddler(fields);
+		return true;
+	};
+	// A delete another tab got confirmed: applied as a list that no longer names the tiddler is
+	// (TiddlyWiki's own order: forgotten by the syncer first, so no delete of this tab's follows)
+	proto.cfworkerTakeDeleted = function(title) {
+		var s = $tw.syncer;
+		if(!s || hasUnsavedChanges(title)) {
+			return false;
+		}
+		delete listedRevisions[title];
+		proto.cfworkerDropLoad(title);
+		delete s.tiddlerInfo[title];
+		if(wiki.tiddlerExists(title)) {
+			wiki.deleteTiddler(title);
+		}
+		return true;
+	};
+
 	// The titles being loaded right now (title -> true): the page publisher waits for the ones its
 	// page needs, not for the fill
 	proto.cfworkerLoading = function() {
