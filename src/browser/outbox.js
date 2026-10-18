@@ -556,9 +556,58 @@ exports.startup = function() {
 
 	// --- Tabs following each other (design 1.16) --------------------------------------------------------
 
+	// Whether this window is the one in use. TiddlyWiki's editors leave their text alone while their
+	// textarea is the active element (the framed and the simple engine's setText), and the editor last
+	// typed in stays the active element of a tab in the background, so it would never follow another
+	// tab's typing, and the next keystroke in it would write its stale text over the draft. The
+	// browser's own events say when this window is left: a tab switched away from, or a window left,
+	// gets blur (and hidden); one come back to gets focus.
+	var inUse = typeof document !== "object" || typeof document.hasFocus !== "function" || document.hasFocus();
+	window.addEventListener("focus",function() {
+		inUse = true;
+	});
+	window.addEventListener("blur",function() {
+		inUse = false;
+	});
+	document.addEventListener("visibilitychange",function() {
+		if(document.hidden) {
+			inUse = false;
+		}
+	});
+	// A draft another tab changed, put into this tab's editor on it where TiddlyWiki won't: only while
+	// this window isn't in use, only the draft's body editor (the framed one, text field), and only its
+	// textarea when it's the active element TiddlyWiki skipped; the caret goes to the end, as after any
+	// outside change. With the window in use the person is typing here, and the editor is left alone,
+	// as TiddlyWiki means it (2.27). Not for an editor a plugin brings (CodeMirror): its own.
+	function followInEditor(draftTitle,text) {
+		if(inUse || typeof document !== "object") {
+			return;
+		}
+		var frames = document.querySelectorAll(".tc-tiddler-frame");
+		for(var i = 0; i < frames.length; i++) {
+			if(frames[i].getAttribute("data-tiddler-title") !== draftTitle) {
+				continue;
+			}
+			var iframes = frames[i].querySelectorAll("iframe.tc-edit-texteditor-body");
+			for(var j = 0; j < iframes.length; j++) {
+				var doc = iframes[j].contentDocument,
+					box = doc && doc.querySelector("textarea");
+				if(box && doc.activeElement === box && box.value !== text) {
+					try {
+						box.value = text;
+						box.setSelectionRange(text.length,text.length);
+					} catch(e) {
+						// (an editor that won't take it keeps what it has)
+					}
+				}
+			}
+		}
+	}
+
 	// Another tab's draft, as it is now: this tab's copy, for TiddlyWiki's drafts list and for any
-	// editor open on it, which refreshes from the tiddler. Not over a save or cancel of it made here
-	// a moment ago, which that tab is about to hear of.
+	// editor open on it, which refreshes from the tiddler (or, the editor typed in last while this tab
+	// is in the background, is given it: followInEditor). Not over a save or cancel of it made here a
+	// moment ago, which that tab is about to hear of.
 	function takeDraft(draft) {
 		var title = draft.title;
 		if(justDropped[title] && Date.now() - justDropped[title] < DROPPED_GRACE) {
@@ -569,6 +618,7 @@ exports.startup = function() {
 		drafts[title] = {of: tiddler.fields["draft.of"], to: tiddler.fields["draft.title"] || tiddler.fields["draft.of"]};
 		tellBase(title,tiddler.fields["draft.of"],draft.base);
 		wiki.addTiddler(tiddler);
+		followInEditor(title,tiddler.fields.text || "");
 	}
 	// Another tab saved or cancelled the draft: closed here as TiddlyWiki's cancel closes one, the
 	// story showing in its place the tiddler saved (which arrives with the save) or, cancelled, the

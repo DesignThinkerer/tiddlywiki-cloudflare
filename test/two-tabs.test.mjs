@@ -972,6 +972,29 @@ const firstFollows = await waitFor(async () => (await textOf(P, sharedDraft)) ==
 check("typed in the other tab, the first tab's draft and editor follow", firstFollows, `${JSON.stringify(await textOf(P, sharedDraft))} / editor ${JSON.stringify(await editorFrame(P, sharedDraft).inputValue())}`);
 check("nothing of the draft reached the worker", !netSince(followMark).some(x => x.path.includes("Draft of")), JSON.stringify(netSince(followMark).map(x => x.method + " " + x.path)));
 
+// f2. Keystrokes in turn, the tabs switched as a person switches them (the tab left gets blur, the one
+// come to gets focus; Playwright's pages all think they have focus, so the events are sent by hand), the
+// editors keeping focus as editors do. TiddlyWiki leaves a focused editor's text alone: the outbox puts
+// another tab's typing into it while the tab isn't in use, so the tab left behind follows in its editor
+// too and nothing typed is lost (design 2.27).
+const leave = page => page.evaluate(() => window.dispatchEvent(new Event("blur")));
+const enter = page => page.evaluate(() => window.dispatchEvent(new Event("focus")));
+async function typeKeys(page, other, draftTitle, text) {
+  await leave(other);
+  await page.bringToFront(); await enter(page);
+  const box = editorFrame(page, draftTitle);
+  await box.click(); await box.press("End"); await box.pressSequentially(text, { delay: 20 });
+}
+await typeKeys(P, Q, sharedDraft, " p5");
+const qFollowsKeys = await waitFor(async () => (await editorFrame(Q, sharedDraft).inputValue()) === "v4 typed in Q p5", 5000);
+await typeKeys(Q, P, sharedDraft, " q6");
+const pFollowsKeys = await waitFor(async () => (await editorFrame(P, sharedDraft).inputValue()) === "v4 typed in Q p5 q6", 5000);
+await typeKeys(P, Q, sharedDraft, " p7");
+const qFollowsAgain = await waitFor(async () => (await editorFrame(Q, sharedDraft).inputValue()) === "v4 typed in Q p5 q6 p7", 5000);
+check("keystrokes in turn, each editor keeping focus: the tab left behind follows in its editor too, and no keystroke is lost",
+  qFollowsKeys && pFollowsKeys && qFollowsAgain && (await textOf(P, sharedDraft)) === "v4 typed in Q p5 q6 p7" && (await textOf(Q, sharedDraft)) === "v4 typed in Q p5 q6 p7",
+  `Q ${JSON.stringify(await editorFrame(Q, sharedDraft).inputValue())} P ${JSON.stringify(await editorFrame(P, sharedDraft).inputValue())} draft ${JSON.stringify(await textOf(P, sharedDraft))}`);
+
 // g. Confirmed in the first tab: one save; the other's editor closes on the saved text
 followMark = net.length;
 await finishEdit(P, "Shared draft", "final text from P");
