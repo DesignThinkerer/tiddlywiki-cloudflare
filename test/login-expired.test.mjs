@@ -14,6 +14,7 @@ const site = await startSite({ index: readWikiFile(), privateWiki: true });
 const { check, results } = createChecks();
 const STATUS = "$:/temp/cfworker/outbox", ITEM = "$:/temp/cfworker/outbox-status";
 const TIDDLER = "recipes/default/tiddlers/";
+const SETUP = "$:/temp/cfworker/setup-check", TAB = "$:/temp/cfworker/ControlPanel";
 
 // --- The stand-in for Access -------------------------------------------------------------------------
 let sessions = 1;
@@ -110,6 +111,13 @@ const outbox = p => p.evaluate(() => new Promise(resolve => {
 }));
 const loginIs = (p, value) => p.evaluate(([t, v]) => { const x = $tw.wiki.getTiddler(t); return !!x && x.fields.login === v; }, [STATUS, value]);
 const since = (list, from) => list.slice(from);
+// The Cloudflare tab's "Check the setup" button, and the lines it then shows
+async function setupCheck(p) {
+  await p.evaluate(t => { $tw.wiki.deleteTiddler(t); $tw.rootWidget.dispatchEvent({ type: "tm-cfworker-setup-check" }); }, SETUP);
+  const done = await waitFor(() => p.evaluate(t => $tw.wiki.tiddlerExists(t) && $tw.wiki.getTiddler(t).fields.checked !== undefined, SETUP), 20000);
+  const tab = done ? await p.evaluate(t => $tw.wiki.renderTiddler("text/plain", t).replace(/\s+/g, " "), TAB) : "";
+  return { done, lines: (tab.match(/[✓✗–] [^✓✗–]+/g) || []).map(l => l.trim()) };
+}
 
 // --- 1. Logged in through Access: the login page, then the wiki; nothing in the dropdown -------------
 const contextA = await browser.newContext();
@@ -124,6 +132,8 @@ await settle(A);
 const s1 = await status(A), l1 = await line(A);
 check("a save goes through; the dropdown says nothing of the outbox; the status says the login stands", (await stored("Note A")) === "saved while logged in" && l1 === "" && s1?.waiting === "0" && s1?.login === "ok", `${JSON.stringify(s1)} ${JSON.stringify(l1)}`);
 check("...the service worker is in place, and Access wasn't asked anything", await A.evaluate(() => !!navigator.serviceWorker.controller) && probes.length === 0, `${probes.length} probes`);
+const setup1 = await setupCheck(A);
+check("\"Check the setup\" runs, through Access: its Access line is fine", setup1.done && setup1.lines.some(l => /^✓ .*Access/.test(l)), setup1.lines.join(" | ") || `done ${setup1.done}`);
 await pollEvery(A, 1000);
 
 // --- 2. The session expires: the list goes on from the cache, one probe, the dropdown's words --------
@@ -174,12 +184,24 @@ check("...and the next list is the worker's, not the cache's", realList, JSON.st
 check("...the second tab left the first tab's change to it (no copy, no conflict)", (await alerts(B)).length === 0 && (await stored("Expired note")) === "typed after the session ended", JSON.stringify(await alerts(B)));
 await B.close();
 
-// --- 5. Expired again, a reload instead: the login page, then the wiki with the change sent -----------
+// --- 5. Expired again, before the tab has noticed: "Check the setup" says why, and tells the tab ------
+await pollEvery(A, 600000);   // (no poll for a while: nothing tells the tab by itself)
+await sleep(1500);
 expire();
-await waitFor(() => loginIs(A, "expired"), 15000);
+await sleep(500);
+probesMark = probes.length;
+check("the session expired, no poll since: the tab still takes the login to stand, nothing in the dropdown", await loginIs(A, "ok") && (await line(A)) === "", `${JSON.stringify(await status(A))} ${JSON.stringify(await line(A))}`);
+const setup5 = await setupCheck(A);
+check("\"Check the setup\" gets no answer (its request sent to the login page): the tab asks Access once and the line says the login has expired, naming the README section, not that the worker is down",
+  setup5.done && setup5.lines.some(l => /^✗ .*login has expired/i.test(l) && /README 3/.test(l)) && !setup5.lines.some(l => /^✗/.test(l) && /no network/i.test(l)) && since(probes, probesMark).length === 1,
+  `${setup5.lines.join(" | ")}; ${since(probes, probesMark).length} probes`);
+check("...and the dropdown says so from then on", await loginIs(A, "expired") && /login has expired/i.test((await line(A)) || ""), JSON.stringify(await line(A)));
+await pollEvery(A, 1000);
+
+// --- A reload instead: the login page, then the wiki with the change sent ------------------------------
 await addTiddler(A, { title: "Reload note", text: "typed before the reload" });
 await waitFor(async () => (await status(A))?.waiting === "1", 10000);
-check("expired again, a change waiting, the dropdown says so", /login has expired/i.test((await line(A)) || ""), JSON.stringify(await line(A)));
+check("a change waiting, the dropdown says so", await waitFor(async () => /login has expired/i.test((await line(A)) || ""), 10000), JSON.stringify(await line(A)));
 await A.reload();
 check("a reload shows the login page: the page is asked from the network first, and the service worker never shows the cached wiki in its place", A.url().startsWith(LOGIN), A.url());
 await login(A);
@@ -196,6 +218,8 @@ await new Promise(resolve => proxy.close(resolve));
 const wentOffline = await waitFor(async () => (await status(A))?.online === "no", 15000);
 const s6 = await status(A);
 check("no network: the probe gets no answer either, the status says offline and the login stands; nothing in the dropdown while nothing waits", wentOffline && s6?.online === "no" && s6?.login === "ok" && (await line(A)) === "", `${JSON.stringify(s6)} ${JSON.stringify(await line(A))}`);
+const setup6 = await setupCheck(A);
+check("...\"Check the setup\" then says the worker didn't answer, no network, and nothing of the login", setup6.done && setup6.lines.some(l => /^✗ .*didn't answer/.test(l) && /no network/i.test(l)) && !setup6.lines.some(l => /login/i.test(l)), setup6.lines.join(" | "));
 await addTiddler(A, { title: "Offline note", text: "typed with the network gone" });
 await waitFor(async () => (await status(A))?.waiting === "1", 10000);
 const l6 = await line(A);
