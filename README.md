@@ -401,7 +401,7 @@ The suites run with the waits shortened (design 2.25). The browser modules' fixe
 | `npm run test:cpu` | CPU of the heaviest steps, a big plugin's save and backup, against a budget. |
 | `npm run test:backup` | Queue backup against an imitation of GitHub's Contents API. |
 | `npm run test:tabs` | Real TiddlyWiki in Chromium with several tabs, and a second browser for the conflicts; the tabs following each other. |
-| `npm run test:plugins` | Real plugins in Chromium, on the admin site and a stand-in for the public site. |
+| `npm run test:plugins` | Real plugins in Chromium, on the admin site and a stand-in for the public site; a second admin tab following an install. |
 | `npm run test:publish` | The page published from a real TiddlyWiki in Chromium. |
 | `npm run test:lazy` | Loading a big wiki in Chromium, on both sites: what's shown first, the device's copy, the fill. |
 | `npm run test:sync` | The full backup started from a real TiddlyWiki in Chromium, GitHub imitated. |
@@ -470,7 +470,7 @@ GitHub runs the same two groups, as two jobs side by side, for every pull reques
 └── test/
     ├── first-visit.test.mjs  a new wiki from an empty bucket, in Chromium; the admin plugin's shadows
     ├── two-tabs.test.mjs     real TiddlyWiki in Chromium, several tabs and a second browser: conflicts between browsers, the tabs of one following each other, a restore
-    ├── plugins.test.mjs      real plugins on the admin and public sites
+    ├── plugins.test.mjs      real plugins on the admin and public sites; a second admin tab following an install
     ├── page-publish.test.mjs the page published from a real TiddlyWiki
     ├── lazy-load.test.mjs    loading a big wiki on both sites: what's shown first, the device's copy, the fill; the fetch-ahead setting
     ├── backup-sync.test.mjs  the full backup from the admin wiki: the Cloudflare tab, the hint, the button, GitHub mirroring the wiki
