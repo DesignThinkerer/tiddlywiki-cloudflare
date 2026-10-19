@@ -23,9 +23,13 @@ A new wiki starts by itself: the first time you open the admin site, the worker 
 
 **What you need:** a Cloudflare account (the free plan is enough) and a GitHub account (the worker is deployed from your copy of this repository; the backup goes to a repository too). For a public site, also a domain on that account (both sites are then hostnames of it).
 
-About ten minutes, in this order. The setup guide, [chapter 2](docs/setup.md), has each step in full, and the wiki's own setup check (the last step) names the section for anything missing.
+About ten minutes, in this order, and the button does half of it. The setup guide, [chapter 2](docs/setup.md), has each step in full, and the wiki's own setup check (the last step) names the section for anything missing.
 
-1. **Make your copy of this repository** — a fork, or a copy from the template ([setup 2.1](docs/setup.md#21-before-you-start)). Nothing in it is edited: the worker is deployed as it is, and your settings go in the dashboard.
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/DesignThinkerer/tiddlywiki-cloudflare)
+
+**With the button,** Cloudflare copies the repository into your GitHub account, creates the bucket and the queue, asks for the two secrets (both optional) and deploys the worker — steps 1, 2, 3 and 5 below — then you set up Access (6) and open the wiki (8). For a public site, the domain (2), the settings (5) and the zone's rules (7) are by hand either way ([setup 2.1](docs/setup.md#21-before-you-start)). The eight steps:
+
+1. **Make your copy of this repository** — a fork, a copy from the template, or the button's copy ([setup 2.1](docs/setup.md#21-before-you-start)). Nothing in it is edited: the worker is deployed as it is, and your settings go in the dashboard.
 2. **The bucket,** `wiki`, in R2; for a public site, its custom domain ([setup 2.2](docs/setup.md#22-the-bucket-and-the-public-site)).
 3. **The queue,** `wiki-backup` ([setup 2.3](docs/setup.md#23-the-backup-queue)).
 4. **A backup repository and a token for it,** if you want every save committed to GitHub ([setup 2.4](docs/setup.md#24-the-backup-repository-optional), optional).

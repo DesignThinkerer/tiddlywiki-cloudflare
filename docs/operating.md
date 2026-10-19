@@ -6,7 +6,7 @@
 
 Your worker is deployed from your copy of this repository, which this one keeps changing.
 
-To take an update: on GitHub, *Sync fork* on your fork (or `git pull` from this repository, added as a remote, for a copy made from the template); Workers Builds redeploys, and the next admin page load rebuilds the page.
+To take an update: on GitHub, *Sync fork* on your fork (or `git pull` from this repository, added as a remote, for a copy made from the template or by the Deploy to Cloudflare button, which is a repository of its own, not a fork); Workers Builds redeploys, and the next admin page load rebuilds the page.
 
 Nothing in the repository holds your values (`wrangler.toml` is deployed as it is, the settings live in the dashboard, [setup 2.5](setup.md#25-the-worker)), so an update never conflicts with them. [CHANGELOG.md](../CHANGELOG.md) lists, for each change, anything to do by hand — a new setting, a new zone rule; unless it says so, nothing is.
 

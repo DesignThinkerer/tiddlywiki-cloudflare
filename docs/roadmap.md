@@ -4,7 +4,7 @@ What this project is for, what comes next and in what order, and what has been p
 
 ## The goal
 
-A TiddlyWiki anyone hosts on Cloudflare's free plan in about ten minutes, from this repository as it is: nothing edited in the fork, the settings in the dashboard, updates by syncing the fork. The wiki runs on Cloudflare only; GitHub keeps the backup (one commit per save) and the code. Behind Cloudflare Access it's private; given a domain, it's also a public site that costs no worker requests to read.
+A TiddlyWiki anyone hosts on Cloudflare's free plan in about ten minutes, a few of them with the Deploy to Cloudflare button, from this repository as it is: nothing edited in the fork, the settings in the dashboard, updates by syncing the fork. The wiki runs on Cloudflare only; GitHub keeps the backup (one commit per save) and the code. Behind Cloudflare Access it's private; given a domain, it's also a public site that costs no worker requests to read.
 
 ## Who it's for
 
@@ -16,16 +16,7 @@ A TiddlyWiki anyone hosts on Cloudflare's free plan in about ten minutes, from t
 
 Each step is one pull request, with its tests, its page in the manual, its design entry and its changelog line. "Done when" is written as behaviour, and becomes the list of tests when the step starts.
 
-### 1. The Deploy to Cloudflare button
-
-**Why last:** the button is the front door, so it goes on once what's behind it is in place: the private wiki, offline editing, cold starts and the setup check (all done), each of which changes what the setup guide's button section has to say. It clones the repository into the user's GitHub account, creates the bucket and the queue from `wrangler.toml`, asks for the secrets and deploys; it needs the repository public.
-
-**Done when:**
-- `.dev.vars.example` names each secret with a line on where it comes from; `package.json` (`cloudflare.bindings`) describes the bucket and the queue, so the button's setup page explains them.
-- A test checks that those files name every setting the worker reads (the `env.` names in `src/worker`: eleven variables and secrets today, and the two bindings, which `wrangler.toml` declares), so a new setting can't be forgotten there. One named exception: `TEST_WAIT_SCALE`, which only the test setups give the worker ([development 6](development.md)), and no user sets.
-- The setup guide (`docs/setup.md`), "With the button": both paths — private (done when the button finishes, plus Access), public (then the domain and the zone rules) — and what the button can't do for you (Access, the rules).
-- Someone with a fresh Cloudflare account gets a working private wiki from the button without editing anything; a public one with the setup guide's rules afterwards.
-- The repository is public.
+Nothing is scheduled. The steps the goal needed are done, the Deploy to Cloudflare button last ([design 2.30](design.md#230-the-deploy-to-cloudflare-button-three-files-the-variables-kept-out-of-them), 2026-10-19, the day the repository went public). What comes next comes from use: an idea goes under Parked with its reason, or to an issue first.
 
 ## Parked
 

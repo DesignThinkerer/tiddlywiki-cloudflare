@@ -1,5 +1,6 @@
 # The worker's bindings and defaults: what Wrangler deploys, from your repository through Workers
-# Builds, or with `npx wrangler deploy` (setup 2.5). Deployed as it is: nothing in this file has
+# Builds, with `npx wrangler deploy`, or from the Deploy to Cloudflare button, which creates the
+# bucket and the queue named here (setup 2.1, 2.5). Deployed as it is: nothing in this file has
 # to be changed for a wiki that uses the default names (setup 2.1). Your own settings (all
 # optional: without any, the worker is a private wiki) live in the dashboard, under the worker's
 # Variables and Secrets, which a deploy keeps (keep_vars); so do the two secrets, GITHUB_TOKEN and

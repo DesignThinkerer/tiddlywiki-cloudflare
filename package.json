@@ -17,6 +17,22 @@
     "node": ">=22"
   },
   "description": "Host your own TiddlyWiki on Cloudflare's free plan: a worker for editing, R2 for storage, a public site served from the cache, and every save backed up to GitHub",
+  "cloudflare": {
+    "bindings": {
+      "WIKI_BUCKET": {
+        "description": "The R2 bucket that holds the wiki: the engine, the page, the tiddler list, one object per tiddler, the plugin files. Created as `wiki` unless you choose another name ([setup 2.2](https://github.com/DesignThinkerer/tiddlywiki-cloudflare/blob/main/docs/setup.md#22-the-bucket-and-the-public-site)); for a public site, give it a custom domain afterwards."
+      },
+      "BACKUP_QUEUE": {
+        "description": "The queue that carries one message per save or delete to the GitHub backup, retried through outages and rate limits; the worker is its producer and its consumer. Created as `wiki-backup` ([setup 2.3](https://github.com/DesignThinkerer/tiddlywiki-cloudflare/blob/main/docs/setup.md#23-the-backup-queue))."
+      },
+      "GITHUB_TOKEN": {
+        "description": "Optional: a fine-grained personal access token limited to your backup repository, with *Contents: read and write* ([setup 2.4](https://github.com/DesignThinkerer/tiddlywiki-cloudflare/blob/main/docs/setup.md#24-the-backup-repository-optional)). Pairs with the `GITHUB_REPO` variable, set in the dashboard afterwards; leave both out for a wiki without backups."
+      },
+      "CF_API_TOKEN": {
+        "description": "Optional, public site only: an API token with *Zone → Cache Purge* on the public site's zone ([setup 2.5](https://github.com/DesignThinkerer/tiddlywiki-cloudflare/blob/main/docs/setup.md#25-the-worker)), for the purges after each save. Pairs with the `CF_ZONE_ID` variable, set in the dashboard afterwards; a private wiki needs neither."
+      }
+    }
+  },
   "scripts": {
     "build": "node build.mjs && node tools/build-wiki.mjs",
     "check:build": "node build.mjs --check",
