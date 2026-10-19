@@ -364,6 +364,14 @@ const nameAt = pkgLines.findIndex(l => /^\s*"name":/.test(l)), versionAt = pkgLi
 check("the lines the button's import rewrites in a copy are where tools/update.mjs expects them: wrangler.toml's name, bucket_name and two queue lines with the default names; package.json's name, not next to its version (bumped at each release: a neighbour's change conflicts in every copy's update)",
   identityLines.name === 1 && identityLines.bucket === 1 && identityLines.queue === 2 && nameAt >= 0 && versionAt >= 0 && Math.abs(nameAt - versionAt) > 1,
   `wrangler.toml: name ${identityLines.name}, bucket_name ${identityLines.bucket}, queue ${identityLines.queue}; package.json: name at line ${nameAt + 1}, version at line ${versionAt + 1}`);
+// package-lock.json's root name and version are package.json's: npm rewrites them at any install
+// otherwise, which dirties every clone, and a button copy's first update (tools/update.mjs refuses a
+// changed tree); the release step bumps both (CONTRIBUTING, "Releases")
+const lockJson = JSON.parse(fs.readFileSync(path.join(ROOT, "package-lock.json"), "utf8"));
+const pkgJson = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8"));
+check("package-lock.json's root name and version are package.json's, at the top and in its own package entry (npm rewrites them at any install otherwise; the release step bumps both)",
+  lockJson.name === pkgJson.name && lockJson.version === pkgJson.version && lockJson.packages?.[""]?.name === pkgJson.name && lockJson.packages?.[""]?.version === pkgJson.version,
+  `lock ${lockJson.name} ${lockJson.version} / ${lockJson.packages?.[""]?.name} ${lockJson.packages?.[""]?.version}; package.json ${pkgJson.name} ${pkgJson.version}`);
 const readmeText = fs.readFileSync(path.join(ROOT, "README.md"), "utf8");
 const DEPLOY_URL = "https://deploy.workers.cloudflare.com/?url=https://github.com/DesignThinkerer/tiddlywiki-cloudflare";
 check("the README carries the Deploy to Cloudflare button (Cloudflare's image, linking to its deploy page with this repository's address), and the setup guide says what the button does (setup 2.1)",
