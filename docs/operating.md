@@ -18,7 +18,7 @@ Control Panel → Saving → Cloudflare, *Back up everything to GitHub*: run it 
 
 It commits only what differs and removes files of tiddlers that are gone, so running it in doubt costs little: a step of about 20 tiddlers every few seconds, 3 queue operations a step, and GitHub calls only for what's missing ([design 1.7](design.md#17-github-backup)).
 
-If the tab says the last one stopped without finishing, start it again.
+If the tab says the last one stopped without finishing, or didn't go through (the queue refused the job), start it again.
 
 ## 3.3 Updating the wiki engine
 
