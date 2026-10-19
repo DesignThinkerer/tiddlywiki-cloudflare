@@ -30,11 +30,13 @@ check("wrangler.toml holds no secret, and every binding the worker needs",
 // days (cooldown). A compromised release is usually pulled within days, and Workers Builds installs
 // the dev dependencies with the credentials that deploy the worker; a security update isn't delayed.
 const dependabot = fs.readFileSync(path.join(ROOT, ".github/dependabot.yml"), "utf8");
+// (The semver-*-days keys exist for npm only: Dependabot refuses the file with one of them under
+// github-actions, whose versions are tags, and says so only in the repository's Insights, after the merge.)
 const ecosystems = dependabot.split(/^ {2}- package-ecosystem: /m).slice(1)
-  .map(block => ({ name: block.split(/\s/)[0], cooldown: /^[ \t]+cooldown:/m.test(block), days: Number((/^[ \t]+default-days:[ \t]*(\d+)/m.exec(block) || [])[1] || 0) }));
-check("dependabot.yml leaves the engine to the hand bump (operating 3.3) and puts a cooldown of three days at least on every ecosystem it updates",
-  /dependency-name: tiddlywiki/.test(dependabot) && ecosystems.length >= 2 && ecosystems.every(e => e.cooldown && e.days >= 3),
-  ecosystems.map(e => `${e.name}: ${e.cooldown ? e.days + " days" : "no cooldown"}`).join(", ") || "no ecosystem found");
+  .map(block => ({ name: block.split(/\s/)[0], cooldown: /^[ \t]+cooldown:/m.test(block), days: Number((/^[ \t]+default-days:[ \t]*(\d+)/m.exec(block) || [])[1] || 0), semver: /^[ \t]+semver-\w+-days:/m.test(block) }));
+check("dependabot.yml leaves the engine to the hand bump (operating 3.3) and puts a cooldown of three days at least on every ecosystem it updates, the Actions' as one number of days",
+  /dependency-name: tiddlywiki/.test(dependabot) && ecosystems.length >= 2 && ecosystems.every(e => e.cooldown && e.days >= 3 && (e.name !== "github-actions" || !e.semver)),
+  ecosystems.map(e => `${e.name}: ${e.cooldown ? e.days + " days" + (e.semver ? ", semver days" : "") : "no cooldown"}`).join(", ") || "no ecosystem found");
 // The empty wiki travels with the worker as a text module, never as a static asset: Workers with
 // static assets run behind a router that doesn't pass ctx.access on, which the Access check needs
 // What Wrangler would upload, from the file as it is (a dry run, no account needed): worker.js and
