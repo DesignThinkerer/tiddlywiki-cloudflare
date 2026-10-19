@@ -2,7 +2,7 @@
   "name": "tiddlywiki-cloudflare",
   "private": true,
   "type": "module",
-  "version": "2026.10.19",
+  "version": "2026.10.20",
   "license": "MIT",
   "author": "Théophile Desmedt (https://github.com/DesignThinkerer)",
   "repository": {
