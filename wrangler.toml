@@ -58,10 +58,13 @@ max_concurrency = 1                  # backups run one at a time, so commits nev
 max_retries = 3                      # Cloudflare's default, which the worker counts on for its waits: don't lower it
 
 # The settings, set in the dashboard (the worker's Settings → Variables and Secrets), as plain
-# variables or as secrets, whichever you prefer; a deploy keeps both (setup 2.5):
+# variables or as secrets, whichever you prefer, the two marked secret as secrets; a deploy keeps
+# both (setup 2.5). The Deploy to Cloudflare button asks for none of them: all are optional.
 #   PUBLIC_WIKI_URL        the public site, https:// and the bucket's custom domain (setup 2.2); none for a private wiki (setup 2.1)
 #   CF_ZONE_ID             the zone of the public site, for cache purges, with the secret CF_API_TOKEN
+#   CF_API_TOKEN           secret: an API token with Zone → Cache Purge on that zone (setup 2.5); without it and CF_ZONE_ID, no purges
 #   GITHUB_REPO            owner/repo of the backup repository (setup 2.4), with the secret GITHUB_TOKEN
+#   GITHUB_TOKEN           secret: a fine-grained token limited to that repository, Contents read and write (setup 2.4); without it and GITHUB_REPO, no backups
 #   GITHUB_BRANCH          its branch (default main)
 #   CONFLICT_GUARD         "off" builds the page without the browser modules (operating 3)
 #   BACKUP_ALERT_MINUTES   how long backups have to keep failing before the admin wiki shows it (default 60)
