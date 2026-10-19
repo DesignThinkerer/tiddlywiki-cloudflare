@@ -26,7 +26,7 @@ The suites run with the waits shortened ([design 2.25](design.md#225-the-tests-r
 | `npm run test:first` | A new wiki from an empty bucket, in Chromium. |
 | `npm run test:bake` | Page serving and rebuilding, the published page, the Access check, the public address, the first visit. |
 | `npm run test:integrity` | The tiddler list under failure: a save whose list update failed, a damaged or missing list rebuilt, a page build that fails, list writes out of order, draft-like titles. |
-| `npm run test:repository` | The repository's guards, without the worker: `.gitignore`, `wrangler.toml`, what a deploy uploads, the scripts, the Miniflare pins, the docs' links and section references, the restore tool, the build's refusals. |
+| `npm run test:repository` | The repository's guards, without the worker: `.gitignore`, `wrangler.toml`, what a deploy uploads, the scripts, the Miniflare pins, the docs' links and section references, the restore tool, the build's refusals; every suite wired into the scripts, the deployed bundle's size against the free plan, the version against the changelog. |
 | `npm run test:r2` | R2 calls per kind of request, against a budget. |
 | `npm run test:cpu` | CPU of the heaviest steps, a big plugin's save and backup, against a budget. |
 | `npm run test:backup` | Queue backup against an imitation of GitHub's Contents API. |
@@ -50,16 +50,19 @@ GitHub runs the same two groups, as two jobs side by side, for every pull reques
 ├── README.md                 the front page: what it is, how it fits together, the quick start, the manual's chapters
 ├── CHANGELOG.md              what shipped, newest first, and what an update asks of you
 ├── CONTRIBUTING.md           how work on the repository happens: the principles, the process, the tests, where writing goes
-├── CLAUDE.md                 points an AI coding agent at CONTRIBUTING.md, with what its environment needs
+├── AGENTS.md                 what an agent's environment adds to CONTRIBUTING.md, for any coding tool
+├── CLAUDE.md                 points Claude Code at CONTRIBUTING.md and AGENTS.md
 ├── SECURITY.md               how to report a vulnerability, what's in scope, what the design counts on
 ├── CODE_OF_CONDUCT.md        the Contributor Covenant
 ├── LICENSE                   MIT
+├── THIRD_PARTY_NOTICES.md    TiddlyWiki's licence, BSD, which the worker ships
 ├── worker.js                 GENERATED: the file you deploy (npm run build)
 ├── seed/empty.html           GENERATED, not committed: an empty TiddlyWiki with TiddlyWeb, what a new wiki starts from (2.8), uploaded with the worker
 ├── tools/build-wiki.mjs      builds it from the tiddlywiki package (npm run build)
 ├── tools/restore.mjs         merges a clone of the backup into one file any TiddlyWiki imports (2.4)
 ├── tools/run-suites.mjs      runs test suites, each to the end, one after the other or several at once (--parallel), with a summary (npm test); their output under test-results/, not committed
 ├── tools/screenshot.mjs      takes the README's screenshot from a wiki run through the test setup (npm run screenshot)
+├── tools/release-notes.mjs   prints a dated block of the changelog, the release's notes (CONTRIBUTING, "Releases")
 ├── docs/
 │   ├── setup.md              the manual, chapter 2: setting up
 │   ├── operating.md          chapter 3: operating it

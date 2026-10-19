@@ -23,7 +23,7 @@ body:
     id: version
     attributes:
       label: Worker version
-      description: Control Panel → Plugins lists "TiddlyWiki on Cloudflare" with the version the worker put in the page.
+      description: Control Panel → Plugins lists "TiddlyWiki on Cloudflare" with the version the worker put in the page: the release's date, then a build hash.
   - type: input
     id: browser
     attributes:

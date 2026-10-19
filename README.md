@@ -38,7 +38,7 @@ About ten minutes, in this order. The setup guide, [chapter 2](docs/setup.md), h
 
 *The admin wiki: TiddlyWiki as it is, with the Cloudflare tab the worker adds, after Check the setup. Taken from the test setup by the screenshot tool, so the addresses are local ones.*
 
-**Status:** 1.0, October 2026, in use for the author's own wiki. Every change goes through the test suites of [chapter 6](docs/development.md), which run a real TiddlyWiki against the real worker and measure what each request costs on the free plan.
+**Status:** in use for the author's own wiki. Versions are dated, the newest at the top of [the changelog](CHANGELOG.md), and the admin wiki shows which one it runs. Every change goes through the test suites of [chapter 6](docs/development.md), which run a real TiddlyWiki against the real worker and measure what each request costs on the free plan.
 
 ---
 
@@ -106,4 +106,4 @@ The names the manual, the admin wiki and the worker's messages use:
 
 ## Contributing, security, licence
 
-Changes follow the process in [CONTRIBUTING.md](CONTRIBUTING.md): plan first, tests first, every suite, the docs in the same pull request. A vulnerability goes through [SECURITY.md](SECURITY.md), never an issue. The code is under the [MIT licence](LICENSE); TiddlyWiki has its own.
+Changes follow the process in [CONTRIBUTING.md](CONTRIBUTING.md): plan first, tests first, every suite, the docs in the same pull request. A vulnerability goes through [SECURITY.md](SECURITY.md), never an issue. The code is under the [MIT licence](LICENSE); TiddlyWiki, which the worker ships, is under the BSD licence ([THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)).
