@@ -716,6 +716,9 @@ await G.evaluate(() => $tw.rootWidget.dispatchEvent({ type: "tm-cfworker-engine-
 await waitFor(() => G.evaluate(t => $tw.wiki.tiddlerExists(t) && !/Replacing/.test($tw.wiki.getTiddlerText(t)), ENGINE_SAID), 20000);
 const engineSaid = await G.evaluate(t => $tw.wiki.renderTiddler("text/plain", t).replace(/\s+/g, " "), ENGINE_SAID);
 check("the update replaces the engine with the shipped one and says so, with both versions", engineSaid.includes("5.0.0") && engineSaid.includes(shipped) && (await (await bucket.get("index.html")).text()) === ENGINE, engineSaid.slice(0, 200));
+const tabReplaced = await tabText(G);
+check("...and until the reload runs it, the tab offers the reload and no longer the update", /Engine replaced/.test(tabReplaced) && /Reload/.test(tabReplaced) && !tabReplaced.includes("Update the engine"),
+  tabReplaced.replace(/^.*?The engine/, "The engine").slice(0, 200));
 mark = requests.length;
 await G.reload();
 await G.waitForFunction(() => window.$tw && $tw.wiki && $tw.rootWidget, null, { timeout: 30000 });
