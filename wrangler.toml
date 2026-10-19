@@ -6,7 +6,9 @@
 # optional: without any, the worker is a private wiki) live in the dashboard, under the worker's
 # Variables and Secrets, which a deploy keeps (keep_vars); so do the two secrets, GITHUB_TOKEN and
 # CF_API_TOKEN. No secret goes in this file. (The section numbers are the manual's: docs/setup.md
-# for 2.x, docs/operating.md for 3.x.)
+# for 2.x, docs/operating.md for 3.x.) The Deploy to Cloudflare button's import writes the project's
+# names into the name, bucket_name and queue lines below; tools/update.mjs keeps them at an update
+# (operating 3.1): leave those lines, and their neighbours, as they are.
 
 name = "wiki-admin"                  # the worker's name: name the worker this when you create it (setup 2.5)
 main = "worker.js"                   # the built file (npm run build): deployed as it is, the one the tests ran on

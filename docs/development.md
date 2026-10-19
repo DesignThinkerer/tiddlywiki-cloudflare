@@ -7,7 +7,7 @@ Requirements: Node.js 22 or newer (Wrangler 4 needs it) and a Chromium for the b
 ```bash
 npm install
 npx playwright install chromium      # or: export CHROMIUM_PATH=/path/to/chrome
-npm test                             # build (worker.js and seed/empty.html), run all eighteen suites
+npm test                             # build (worker.js and seed/empty.html), run all nineteen suites
 ```
 
 `npm test` runs every suite to the end, even after one fails, and ends with a summary naming what failed (`tools/run-suites.mjs`); each suite's output is also in `test-results/<suite>.log`. A suite still running after 15 minutes is stopped and counted as failed (`--timeout <seconds>` changes that), so one that hangs doesn't hold the run. `npm test -- --parallel 2` runs two suites at once (any number; 1, one after the other, is the default and what CI does): every suite takes free ports and its own temporary folder, so what they share is the machine, and a timing check that passes alone can fail with more suites at once than it has CPUs to spare — a failure seen only that way is rerun alone before anything is read into it. With several at once, a suite's output is printed whole when it ends. The suites are listed longest first (`package.json`), so that with enough of them at once the run takes about as long as its longest suite, three minutes or so.
@@ -20,7 +20,7 @@ The suites run with the waits shortened ([design 2.25](design.md#225-the-tests-r
 | `npm run check:build` | Fails, writing nothing, if `worker.js` isn't what the sources build (run it before committing, so `worker.js` is never out of date). |
 | `npm run screenshot` | Writes `docs/admin-wiki.png`, the README's screenshot, from a wiki run through the test setup in Chromium (`tools/screenshot.mjs`): run it when the Cloudflare tab changes. |
 | `npm run lint` | ESLint, with its recommended rules only: a name that doesn't exist (a function moved without its import, say), an unused one, an import assigned to. CI runs it first. |
-| `npm run test:fast` | The seven suites that need no browser (a few minutes). |
+| `npm run test:fast` | The eight suites that need no browser (a few minutes). |
 | `npm run test:browser` | The eleven suites that run a real TiddlyWiki in Chromium. |
 | `npm run test:suite -- <name>…` | Only the suites named, after a build: `npm run test:suite -- page-publish two-tabs`. |
 | `npm run test:first` | A new wiki from an empty bucket, in Chromium. |
@@ -41,6 +41,7 @@ The suites run with the waits shortened ([design 2.25](design.md#225-the-tests-r
 | `npm run test:cold` | Opening the wiki with no network, in Chromium: the service worker. |
 | `npm run test:budget` | What reaches the worker per page load, counted behind a proxy, the service worker in place. |
 | `npm run test:setup` | The setup check, against the public stand-in with Cloudflare's headers, GitHub and Cloudflare's API imitated. |
+| `npm run test:update-copy` | The update of a copy by `tools/update.mjs`, on two temporary git repositories: the button's import, a fork; no worker. |
 
 GitHub runs the same two groups, as two jobs side by side, for every pull request and every push to `main` (`.github/workflows/ci.yml`), after the lint and after checking that `worker.js` is what `src/` builds. One run per commit: a re-run of a commit's run never cancels another commit's, and an older commit's run goes on when a newer one is pushed. A job that fails, or is cancelled by its timeout, keeps its `test-results/` for a week (the run's page → *Artifacts*): the logs, and the request log and traces of each browser suite that failed or was stopped. Dependabot proposes the other packages' updates weekly, and the Actions', each once its release has been out for a few days (an npm package's three for a patch, a week for a minor, a month for a major; an Action's a week: a compromised release is usually found and pulled within days, and Workers Builds installs the dev dependencies with the credentials that deploy the worker; a fix for a known vulnerability isn't delayed); the `tiddlywiki` package it leaves alone ([operating 3.3](operating.md#33-updating-the-wiki-engine)).
 
@@ -60,6 +61,7 @@ GitHub runs the same two groups, as two jobs side by side, for every pull reques
 ├── seed/empty.html           GENERATED, not committed: an empty TiddlyWiki with TiddlyWeb, what a new wiki starts from (setup 2.8), uploaded with the worker
 ├── tools/build-wiki.mjs      builds it from the tiddlywiki package (npm run build)
 ├── tools/restore.mjs         merges a clone of the backup into one file any TiddlyWiki imports (setup 2.4)
+├── tools/update.mjs          updates a copy of this repository, the button's or a fork, keeping the copy's names (operating 3.1)
 ├── tools/run-suites.mjs      runs test suites, each to the end, one after the other or several at once (--parallel), with a summary (npm test); their output under test-results/, not committed
 ├── tools/screenshot.mjs      takes the README's screenshot from a wiki run through the test setup (npm run screenshot)
 ├── tools/release-notes.mjs   prints a dated block of the changelog, the release's notes (CONTRIBUTING, "Releases")
@@ -130,6 +132,7 @@ GitHub runs the same two groups, as two jobs side by side, for every pull reques
     ├── repository.test.mjs   the repository's guards: .gitignore, wrangler.toml, what a deploy uploads, the scripts, the Miniflare pins, the docs' links, the restore tool, the build's refusals
     ├── r2-ops.test.mjs       R2 calls per kind of request, against a budget
     ├── setup-check.test.mjs  the setup check: each piece in place or missing, a failing line ending with what to do, the lines naming the setup guide's sections, with their links
+    ├── update-copy.test.mjs  updating a copy with tools/update.mjs: the button's import, its names kept, a release's conflict resolved, a fork
     ├── cpu.test.mjs          CPU of a big plugin's save and backup, against a budget
     ├── r2-counter.mjs        test-only wrapper that counts the worker's R2 calls
     ├── browser-harness.mjs   the browser suites' shared setup (worker, public site stand-in, Chromium, helpers)
