@@ -23,4 +23,4 @@ Worth knowing before reporting, and before deploying:
 
 ## Supported versions
 
-`main` only. There are no releases: a wiki is updated by syncing its copy of the repository, and the changelog says what each update asks.
+`main` only, which is what *Sync fork* gives a wiki ([operating 3.1](docs/operating.md#31-updating-your-copy)): the newest release — a dated block of [CHANGELOG.md](CHANGELOG.md), tagged on GitHub ([CONTRIBUTING.md](CONTRIBUTING.md), "Releases") — and whatever has merged since, under "Unreleased". A fix lands on `main` and in the next release; the changelog says what each update asks.
