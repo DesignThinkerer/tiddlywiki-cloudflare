@@ -354,6 +354,16 @@ const unread = [...new Set([...bindingsInToml, ...variablesInToml])].filter(n =>
 check(`every setting the worker reads (${workerEnv.size}, TEST_WAIT_SCALE excepted) is declared in one place, a binding or a settings line of wrangler.toml (the two secrets among the lines); and nothing is declared that the worker doesn't read`,
   misplaced.length === 0 && unread.length === 0 && workerEnv.size >= 10,
   (misplaced.length ? "misplaced: " + misplaced.map(n => `${n} (${placeOf(n) || "nowhere"})`).join(", ") : "") + (unread.length ? " unread: " + unread.join(", ") : ""));
+// The button's import rewrites, in a copy, the lines that carry the names: wrangler.toml's worker,
+// bucket and two queue lines, package.json's name. tools/update.mjs keeps them through an update
+// (operating 3.1), and a line next to one of them that this repository changes conflicts in every
+// copy's update: package.json's version, bumped at each release, stays away from its name.
+const identityLines = { name: (toml.match(/^name = "wiki-admin"/gm) || []).length, bucket: (toml.match(/^bucket_name = "wiki"/gm) || []).length, queue: (toml.match(/^queue = "wiki-backup"/gm) || []).length };
+const pkgLines = fs.readFileSync(path.join(ROOT, "package.json"), "utf8").split("\n");
+const nameAt = pkgLines.findIndex(l => /^\s*"name":/.test(l)), versionAt = pkgLines.findIndex(l => /^\s*"version":/.test(l));
+check("the lines the button's import rewrites in a copy are where tools/update.mjs expects them: wrangler.toml's name, bucket_name and two queue lines with the default names; package.json's name, not next to its version (bumped at each release: a neighbour's change conflicts in every copy's update)",
+  identityLines.name === 1 && identityLines.bucket === 1 && identityLines.queue === 2 && nameAt >= 0 && versionAt >= 0 && Math.abs(nameAt - versionAt) > 1,
+  `wrangler.toml: name ${identityLines.name}, bucket_name ${identityLines.bucket}, queue ${identityLines.queue}; package.json: name at line ${nameAt + 1}, version at line ${versionAt + 1}`);
 const readmeText = fs.readFileSync(path.join(ROOT, "README.md"), "utf8");
 const DEPLOY_URL = "https://deploy.workers.cloudflare.com/?url=https://github.com/DesignThinkerer/tiddlywiki-cloudflare";
 check("the README carries the Deploy to Cloudflare button (Cloudflare's image, linking to its deploy page with this repository's address), and the setup guide says what the button does (setup 2.1)",
