@@ -54,7 +54,7 @@ Seven chapters, numbered across the pages: a section number means the same thing
 
 1. [How it fits together](#1-how-it-fits-together): the pieces, and the names used throughout
 2. [Setting up](docs/setup.md): the bucket, the queue, the backup repository, the worker, Access, the zone's rules, the first visit
-3. [Operating it](docs/operating.md): updates, plugins, backups, logs, working offline, conflicts, the app, the settings
+3. [Operating it](docs/operating.md): updates, plugins, backups, logs, working offline, conflicts, the app, the settings, removing the wiki
 4. [Troubleshooting](docs/troubleshooting.md): symptoms, causes and fixes
 5. [Known limits](docs/limits.md): what you can hit, and what to do about it
 6. [Development and tests](docs/development.md): the build, the suites, the repository layout
