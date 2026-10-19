@@ -16,7 +16,7 @@
   "engines": {
     "node": ">=22"
   },
-  "description": "TiddlyWiki served by a Cloudflare Worker from R2, with edit-conflict protection, a public cached copy and queued GitHub backups",
+  "description": "Host your own TiddlyWiki on Cloudflare's free plan: a worker for editing, R2 for storage, a public site served from the cache, and every save backed up to GitHub",
   "scripts": {
     "build": "node build.mjs && node tools/build-wiki.mjs",
     "check:build": "node build.mjs --check",
