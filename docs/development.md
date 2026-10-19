@@ -7,7 +7,7 @@ Requirements: Node.js 22 or newer (Wrangler 4 needs it) and a Chromium for the b
 ```bash
 npm install
 npx playwright install chromium      # or: export CHROMIUM_PATH=/path/to/chrome
-npm test                             # build (worker.js and seed/empty.html), run all seventeen suites
+npm test                             # build (worker.js and seed/empty.html), run all eighteen suites
 ```
 
 `npm test` runs every suite to the end, even after one fails, and ends with a summary naming what failed (`tools/run-suites.mjs`); each suite's output is also in `test-results/<suite>.log`. A suite still running after 15 minutes is stopped and counted as failed (`--timeout <seconds>` changes that), so one that hangs doesn't hold the run. `npm test -- --parallel 2` runs two suites at once (any number; 1, one after the other, is the default and what CI does): every suite takes free ports and its own temporary folder, so what they share is the machine, and a timing check that passes alone can fail with more suites at once than it has CPUs to spare — a failure seen only that way is rerun alone before anything is read into it. With several at once, a suite's output is printed whole when it ends. The suites are listed longest first (`package.json`), so that with enough of them at once the run takes about as long as its longest suite, three minutes or so.
@@ -20,12 +20,13 @@ The suites run with the waits shortened ([design 2.25](design.md#225-the-tests-r
 | `npm run check:build` | Fails, writing nothing, if `worker.js` isn't what the sources build (run it before committing, so `worker.js` is never out of date). |
 | `npm run screenshot` | Writes `docs/admin-wiki.png`, the screenshot at the top of this README, from a wiki run through the test setup in Chromium (`tools/screenshot.mjs`): run it when the Cloudflare tab changes. |
 | `npm run lint` | ESLint, with its recommended rules only: a name that doesn't exist (a function moved without its import, say), an unused one, an import assigned to. CI runs it first. |
-| `npm run test:fast` | The six suites that need no browser (a few minutes). |
+| `npm run test:fast` | The seven suites that need no browser (a few minutes). |
 | `npm run test:browser` | The ten suites that run a real TiddlyWiki in Chromium. |
 | `npm run test:suite -- <name>…` | Only the suites named, after a build: `npm run test:suite -- page-publish two-tabs`. |
 | `npm run test:first` | A new wiki from an empty bucket, in Chromium. |
 | `npm run test:bake` | Page serving and rebuilding, the published page, the Access check, the public address, the first visit. |
-| `npm run test:integrity` | The tiddler list's integrity, the page after a failed build, draft-like titles, `.gitignore`; the docs' links and section references, and the worker's links into them. |
+| `npm run test:integrity` | The tiddler list under failure: a save whose list update failed, a damaged or missing list rebuilt, a page build that fails, list writes out of order, draft-like titles. |
+| `npm run test:repository` | The repository's guards, without the worker: `.gitignore`, `wrangler.toml`, what a deploy uploads, the scripts, the Miniflare pins, the docs' links and section references, the restore tool, the build's refusals. |
 | `npm run test:r2` | R2 calls per kind of request, against a budget. |
 | `npm run test:cpu` | CPU of the heaviest steps, a big plugin's save and backup, against a budget. |
 | `npm run test:backup` | Queue backup against an imitation of GitHub's Contents API. |
@@ -122,7 +123,8 @@ GitHub runs the same two groups, as two jobs side by side, for every pull reques
     ├── cold-start.test.mjs   opening the wiki with no network: the service worker, what it keeps and what it never keeps; the setup check from the tab; the network wait setting
     ├── budget.test.mjs       what reaches the worker per page load, behind a counting proxy, the service worker in place; the app's manifest as the browser fetches it
     ├── queue-backup.test.mjs queue backup against an imitation of GitHub, the full backup's steps
-    ├── integrity.test.mjs    the tiddler list's integrity, a failed page build, draft-like titles, awkward titles, .gitignore, what a deploy uploads, the restore tool
+    ├── integrity.test.mjs    the tiddler list's integrity: a failed list update, a rebuild, a failed page build, draft-like and awkward titles
+    ├── repository.test.mjs   the repository's guards: .gitignore, wrangler.toml, what a deploy uploads, the scripts, the Miniflare pins, the docs' links, the restore tool, the build's refusals
     ├── r2-ops.test.mjs       R2 calls per kind of request, against a budget
     ├── setup-check.test.mjs  the setup check: each piece in place or missing, the lines naming the setup guide's sections, with their links
     ├── cpu.test.mjs          CPU of a big plugin's save and backup, against a budget

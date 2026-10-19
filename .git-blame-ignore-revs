@@ -1,3 +1,5 @@
 # Commits that only moved code: `git blame` looks through them (GitHub does; locally: git config blame.ignoreRevsFile .git-blame-ignore-revs)
 # Split the worker into modules: moves only
 fa4f95d0bb542f0e078bac2f69b2513925cc6638
+# The repository's guards moved out of the integrity suite into test/repository.test.mjs: moves only
+3e3031d4d75e0e29b546213d33587528bea36a65
