@@ -22,8 +22,9 @@ By request:
 - /favicon.ico: the browser asks for it at a navigation when the page has no icon link (TiddlyWiki
   sets its icon once started): answered here, empty, rather than by the worker.
 - Anything else (a tiddler's contents, a save, a delete, the page published): the network only.
-The page tells this worker its one setting at each load, the network wait ($:/config/cfworker/NetworkWait,
-the admin plugin's settings tab), which it keeps in its cache; asked, it answers with it.
+The page tells this worker its one setting at each load, the network wait
+($:/config/cfworker/NetworkWait, the admin plugin's settings tab), which it keeps in its cache; asked,
+it answers with it.
 Whenever a page is cached, the files it refers to are kept with it (one missing is fetched) and the
 plugin files it no longer refers to leave the cache. Once in place (the first visit registers it, the
 page and the files already loaded past it), the worker takes the page, its files, the status file and
