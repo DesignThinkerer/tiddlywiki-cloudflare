@@ -112,8 +112,7 @@ GitHub runs the same two groups, as two jobs side by side, for every pull reques
 ├── build.mjs                 inlines the modules into worker.js, in dependency order, with the browser modules embedded
 ├── eslint.config.js          the lint rules (npm run lint): names that don't exist, unused ones, an import assigned to
 ├── wrangler.toml             the worker's name, bindings and defaults: what Wrangler deploys, as it is; the settings are in the dashboard (setup 2.5)
-├── .dev.vars.example         the two secrets, named with no value: what the Deploy to Cloudflare button asks for, and a local run's template (setup 2.1)
-├── package.json              build, lint and test scripts; the button's descriptions of the bindings and the secrets (cloudflare.bindings)
+├── package.json              build, lint and test scripts; the Deploy to Cloudflare button's descriptions of the bucket and the queue (cloudflare.bindings)
 └── test/
     ├── first-visit.test.mjs  a new wiki from an empty bucket, in Chromium; the admin plugin's shadows
     ├── two-tabs.test.mjs     real TiddlyWiki in Chromium, several tabs and a second browser: conflicts between browsers, the tabs of one following each other, a restore
