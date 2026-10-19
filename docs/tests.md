@@ -71,6 +71,7 @@ Reading the save in full, or building the backup's request through strings, fail
 Then, in the Cloudflare runtime itself (Miniflare's workerd, where `Uint8Array.prototype.toBase64` exists), timed from outside since workerd's clock doesn't advance during computation: the backup's request body is the same bytes as the JavaScript loop's for 0 to 5 bytes (both paddings), around the 3 MB slice boundaries and for the plugin; and making it takes at most 0.7× the loop's time, the two run in turns in one isolate and the best of five taken, so the machine's speed and load fall out of the ratio (about 0.4–0.5×; the loop itself, 0.95×, fails it).
 
 `test:backup` covers:
+- a save answered while GitHub's imitation still sits on its commit (2 s): the save doesn't wait for the backup, and the repository has nothing of the tiddler when the answer comes;
 - a 150-tiddler import (one commit each, never two at once, byte-identical content);
 - quick successive edits;
 - a rate limit and an outage;

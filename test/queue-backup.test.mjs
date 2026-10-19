@@ -138,11 +138,15 @@ async function until(cond, ms = 60000) {
   return false;
 }
 
-// 1. Saves don't wait for GitHub
-latencyMs = 400;
+// 1. Saves don't wait for GitHub: the save answers while GitHub's imitation still sits on the commit
+// (2 s here), so the repository has nothing of the tiddler when the answer comes. (Not a clock on the
+// save alone: a 300 ms bound failed on a cold CI runner at 337 ms, the save's own time there, where it
+// is about 100 ms warm; a save that waited for GitHub would take the 2 s.)
+latencyMs = 2000;
 let t0 = Date.now();
 const r = await put("Fast", "x");
-check("save returns without waiting for GitHub", r.status === 204 && Date.now() - t0 < 300, `${Date.now() - t0} ms`);
+const elapsed = Date.now() - t0, committedAtAnswer = repoText("Fast") !== undefined;
+check("save returns without waiting for GitHub (the commit lands after the answer)", r.status === 204 && !committedAtAnswer && elapsed < latencyMs, `${elapsed} ms; on GitHub when the save answered: ${committedAtAnswer}`);
 await until(async () => repoText("Fast") === await r2Text("Fast"));
 latencyMs = 30;
 
