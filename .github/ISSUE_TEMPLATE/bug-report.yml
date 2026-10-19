@@ -1,0 +1,44 @@
+name: Bug report
+description: Something the wiki or the worker does wrong
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before filing: the README's troubleshooting section (4) and known limits (5), and *Check the setup* in the admin wiki (Control Panel → Saving → Cloudflare), which names the README section for anything missing. Never paste a token or a secret here.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: setup-check
+    attributes:
+      label: What "Check the setup" says
+      description: Its lines, pasted. Replace your addresses if you'd rather not show them.
+      render: text
+  - type: input
+    id: version
+    attributes:
+      label: Worker version
+      description: Control Panel → Plugins lists "TiddlyWiki on Cloudflare" with the version the worker put in the page.
+  - type: input
+    id: browser
+    attributes:
+      label: Browser and device
+      placeholder: Chrome 131 on Android, Safari 18 on an iPad, …
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Wiki
+      options:
+        - Private (no public site)
+        - Public (a public site at the bucket's domain)
+  - type: textarea
+    id: logs
+    attributes:
+      label: The browser console, or the worker's logs
+      description: What the console printed (F12), or lines from Workers Logs (README 3), with addresses replaced if you like.
+      render: text
