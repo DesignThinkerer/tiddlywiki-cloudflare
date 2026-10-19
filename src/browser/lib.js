@@ -84,10 +84,11 @@ exports.SW_CACHE = "cfworker-wiki-v1";
 // docs cite it ("setup 2.4"). The headings are the pages' own, and the link's anchor is made from
 // them the way GitHub makes it; the repository suite checks each against its page, and the address
 // against the worker's (src/worker/docs.js).
+exports.REPO_URL = "https://github.com/DesignThinkerer/tiddlywiki-cloudflare";   // this repository, whose releases the Cloudflare tab asks about (release-check.js)
 exports.DOCS_URL = "https://github.com/DesignThinkerer/tiddlywiki-cloudflare/blob/main/docs";
 var GUIDE = {
 	setup: { page: "setup.md", headings: { "2.4": "The backup repository (optional)", "2.7": "The zone's rules (public site only)" } },
-	operating: { page: "operating.md", headings: { "3.4": "Plugins", "3.13": "Opening the wiki offline", "3.14": "When your login expires" } },
+	operating: { page: "operating.md", headings: { "3.1": "Updating your copy", "3.4": "Plugins", "3.13": "Opening the wiki offline", "3.14": "When your login expires" } },
 	limits: { page: "limits.md", headings: { "5": "Known limits" } }
 };
 function slug(text) {

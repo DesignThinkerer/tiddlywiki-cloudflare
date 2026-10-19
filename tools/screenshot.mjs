@@ -1,5 +1,6 @@
 // Takes the README's screenshot, docs/admin-wiki.png: the admin wiki with the Control Panel open on
-// Saving → Cloudflare after "Check the setup", every line fine. A public wiki with backups, from the
+// Saving → Cloudflare after "Check the setup", every line fine, and the worker's version with the newest
+// release (the harness answers this repository's own). A public wiki with backups, from the
 // test setup (test/browser-harness.mjs: the worker in Miniflare, the stand-in for the public site,
 // GitHub and Cloudflare's API imitated), so the addresses in the picture are local ones. Run it
 // when the tab changes: npm run screenshot (after npm run build; CHROMIUM_PATH as for the tests).
@@ -9,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import { launchBrowser, readWikiFile, settle, startSite, waitFor } from "../test/browser-harness.mjs";
 
 const OUT = fileURLToPath(new URL("../docs/admin-wiki.png", import.meta.url));
-const VIEWPORT = { width: 1280, height: 884 };   // the tab down to its "Checked at" line
+const VIEWPORT = { width: 1280, height: 960 };   // the tab down to "The worker" line, under the check
 const SCALE = 1.5;                                // crisp when the README shows it smaller
 
 // GitHub and Cloudflare's API as the setup check asks them: the repository and its branch there,

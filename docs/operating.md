@@ -6,6 +6,8 @@
 
 Your worker is deployed from your copy of this repository, which this one keeps changing.
 
+**Whether a newer release is out:** Control Panel → Saving → Cloudflare, *The worker*, shows the worker's version (the release's date, then a build hash) and, when the tab is shown, asks GitHub's releases API for this repository's newest release, from your browser, at most once a day: a newer one is announced with its date, linked to its notes, and the way to take it is this section; otherwise the line says this is the newest release, or newer than it (a copy synced past it), and when it was checked. Nothing is asked at page load, nothing goes through the worker, and no token is involved: the repository is public. When GitHub can't be asked (no network, its rate limit), the line says so and why, and the tab asks again the next time it's shown; the [releases page](https://github.com/DesignThinkerer/tiddlywiki-cloudflare/releases) has the answer meanwhile. [Design 1.17](design.md#117-the-release-check), [2.32](design.md#232-the-update-available-line-github-asked-from-the-browser-when-the-tab-is-shown-no-button-no-setting).
+
 To take an update: on GitHub, *Sync fork* on your fork; Workers Builds redeploys, and the next admin page load rebuilds the page.
 
 **The button's copy** has no *Sync fork*: it isn't a fork but an import, one commit by Cloudflare's bot with the files as they were that day, the CI workflow left out and your project's names written into `wrangler.toml` and `package.json`, so a plain `git pull` refuses to merge it with this repository ([design 2.30](design.md#230-the-deploy-to-cloudflare-button-three-files-the-variables-kept-out-of-them)). The update is one command, in a clone of your copy on your machine, with git and Node 22 installed:

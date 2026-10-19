@@ -228,13 +228,42 @@ async function stopTrace(context) {
   tracing.files.push(file);
 }
 
+// GitHub's releases API, which the Cloudflare tab asks for the newest release when it's shown (design
+// 1.17): a stand-in of this harness, started with the browser, answering with this repository's own
+// version; every page is pointed at it before boot ($tw.cfworkerReleasesApi, which only a script run
+// before boot can set, as the waits are), so no suite, and not the screenshot tool, touches the
+// network. Not a Playwright route: a route turns the browser's cache off for its whole context, and
+// the request counts depend on the cache. A suite changes the answer (releases.answer(req, res), null
+// for the default) and reads what was asked (releases.asked: { method, path, headers }, in order).
+export const releases = { url: "", asked: [], answer: null, server: null };
+const VERSION = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
+export const RELEASES_PATH = "/repos/DesignThinkerer/tiddlywiki-cloudflare/releases/latest";
+function releasesDefault(req, res) {
+  res.writeHead(200, { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" });
+  res.end(JSON.stringify({ tag_name: `v${VERSION}`, name: VERSION, html_url: `https://github.com/DesignThinkerer/tiddlywiki-cloudflare/releases/tag/v${VERSION}` }));
+}
+async function startReleases() {
+  if (!releases.url) {
+    releases.server = http.createServer((req, res) => {
+      releases.asked.push({ method: req.method, path: req.url, headers: req.headers });
+      (releases.answer || releasesDefault)(req, res);
+    });
+    releases.url = await listen(releases.server);
+  }
+  return releases.url;
+}
+function releasesPage(api) {
+  (globalThis.$tw ??= Object.create(null)).cfworkerReleasesApi = api;
+}
+
 export function launchBrowser({ serviceWorkers = "block" } = {}) {
-  return chromium.launch(process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {}).then(browser => {
+  return Promise.all([chromium.launch(process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {}), startReleases()]).then(([browser, api]) => {
     const newContext = browser.newContext.bind(browser);
     fs.rmSync(TRACES, { recursive: true, force: true });
     fs.mkdirSync(TRACES, { recursive: true });
     browser.newContext = async ({ fast = true, ...options } = {}) => {
       const context = await newContext({ serviceWorkers, ...options });
+      await context.addInitScript(releasesPage, api + RELEASES_PATH);   // (every context, the production waits' too)
       if (fast) await context.addInitScript(fastPage, FAST);
       const full = process.env.TRACE === "full";
       await context.tracing.start({ screenshots: full, snapshots: full }).then(() => tracing.contexts.add(context), () => {});
@@ -354,6 +383,7 @@ export async function finish({ check, results, pageErrors, browser, site, note =
   } else await leaveEvidence();
   await browser.close();
   await site.close();
+  if (releases.server) releases.server.close();
   if (cleanup) cleanup();
   process.exit(passed ? 0 : 1);
 }
