@@ -1,0 +1,11 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Setting up, operating, troubleshooting
+    url: https://github.com/DesignThinkerer/tiddlywiki-cloudflare#readme
+    about: The README has the setup step by step, how to operate the wiki, troubleshooting (4) and the known limits (5).
+  - name: An idea for the project
+    url: https://github.com/DesignThinkerer/tiddlywiki-cloudflare/blob/main/docs/roadmap.md
+    about: The roadmap says what's ahead and what's parked, and why. An idea that isn't there is welcome as a plain issue.
+  - name: A security problem
+    url: https://github.com/DesignThinkerer/tiddlywiki-cloudflare/security/advisories/new
+    about: Report it privately, never as an issue (SECURITY.md).
