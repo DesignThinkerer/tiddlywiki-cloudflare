@@ -443,7 +443,7 @@ await until(async () => repoText("Odd path") !== undefined && await backupStatus
 // a few GitHub calls in all, not a few each. Cleared once they go through, and the pause with them
 const queueOps = async () => (await mf.dispatchFetch(`${base}/__qops`)).json();
 // 15b. A backup GitHub takes is 3 queue operations: the message sent, delivered once, acknowledged
-// (the budget CLAUDE.md and README 5 state): no retry, no second delivery
+// (the budget CONTRIBUTING.md and README 5 state): no retry, no second delivery
 await queueOps();                                          // (starts a new count)
 const opsTitles = Array.from({ length: 5 }, (_, i) => `Ops ${i + 1}`);
 for (const t of opsTitles) await put(t, `ops ${t}`);

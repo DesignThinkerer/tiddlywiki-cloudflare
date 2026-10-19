@@ -1,4 +1,4 @@
-// What reaches the worker per page load, measured at the worker (CLAUDE.md, the first principle):
+// What reaches the worker per page load, measured at the worker (CONTRIBUTING.md, the first principle):
 // a counting proxy in front of it, a real TiddlyWiki in Chromium with the service worker allowed.
 // The page's own requests are counted elsewhere (first-visit, lazy-load); this counts what the page
 // can't see: the browser checking the service worker's script on the registration's behalf, which
