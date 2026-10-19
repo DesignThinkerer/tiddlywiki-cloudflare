@@ -5,7 +5,7 @@
 // Run: npm run test:private
 import fs from "node:fs";
 import path from "node:path";
-import { addTiddler, createChecks, createWatcher, finish, launchBrowser, settle, sleep, startSite, waitFor } from "./browser-harness.mjs";
+import { addTiddler, createChecks, createWatcher, finish, launchBrowser, releases, settle, sleep, startSite, waitFor } from "./browser-harness.mjs";
 
 const r2Dir = fs.mkdtempSync(path.join(fs.realpathSync(process.env.TMPDIR || "/tmp"), "wiki-private-"));
 const outbound = [];
@@ -25,7 +25,9 @@ const { requests, pageErrors, watch } = createWatcher(site);
 const purges = () => outbound.filter(o => o.url.includes("purge_cache"));
 // Requests from a tab that reached the worker (not answered from the browser's cache), from a mark on
 const workerRequests = (tag, from = 0) => requests.slice(from).filter(r => r.tag === tag && r.origin === "worker" && !r.cached);
-const elsewhere = (tag, from = 0) => requests.slice(from).filter(r => r.tag === tag && r.origin !== "worker");
+// (The one request a shown Cloudflare tab makes that isn't the worker's goes to the harness's stand-in
+// for GitHub's releases API, design 1.17: not "elsewhere")
+const elsewhere = (tag, from = 0) => requests.slice(from).filter(r => r.tag === tag && r.origin !== "worker" && !r.url.startsWith(releases.url + "/"));
 const text = async key => { const obj = await bucket.get(key); return obj ? obj.text() : ""; };
 const SHELL = "_page/shell.html", CORE = "_plugins/tiddlywikicore.js", TAB = "$:/temp/cfworker/ControlPanel";
 async function open(context, tag, url = BASE + "/") {
@@ -110,7 +112,7 @@ const tab = await A.evaluate(t => $tw.wiki.tiddlerExists(t) ? $tw.wiki.renderTid
 check("the Control Panel has the Cloudflare tab, and it says backups aren't set up", !!tab && tab.includes("Backups are off"), (tab || "no tab").slice(0, 80));
 
 // --- 6. Nothing reached any other site, nothing was purged -----------------------------------------
-check("every request the tab made went to the worker: none to a public site, none anywhere else",
+check("every request the tab made went to the worker: none to a public site, none anywhere else (but the stand-in for GitHub's releases API, asked when the tab was shown)",
   elsewhere("A").length === 0 && publicRequests.length === 0, elsewhere("A").map(r => r.url).concat(publicRequests).join(", "));
 await sleep(500);
 check("no purge was sent, though CF_ZONE_ID and CF_API_TOKEN are set: there's no public site to purge", purges().length === 0, purges().map(p => p.body).join(" "));

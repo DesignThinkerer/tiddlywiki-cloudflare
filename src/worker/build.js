@@ -18,8 +18,9 @@ import { isStartupTiddler, needsPluginFile, tiddlerKey } from "./tiddlers.js";
 // The browser modules (src/browser/, operating 3), baked into the page as TiddlyWiki modules: the
 // library the others require, the conflict guard, the list sync, the backup alert, the page
 // publisher (see "The page" below), the restore import (the backup's files dropped onto the wiki),
-// the control panel's Cloudflare tab, the outbox (changes kept on the device until the worker has
-// them), the cold start (the service worker registered) and the device tab (what this browser
+// the control panel's Cloudflare tab and the release check it renders (a widget: GitHub asked for
+// the newest release when the tab is shown), the outbox (changes kept on the device until the worker
+// has them), the cold start (the service worker registered) and the device tab (what this browser
 // keeps). Each source is a placeholder here, which build.mjs replaces with the file's text (the
 // first with src/browser/lib.js, and so on).
 const BROWSER_MODULES = [
@@ -30,6 +31,7 @@ const BROWSER_MODULES = [
   { title: "$:/cfworker/page-publisher.js", type: "startup", source: "__PAGE_PUBLISHER_SOURCE__" },
   { title: "$:/cfworker/restore-import.js", type: "startup", source: "__RESTORE_IMPORT_SOURCE__" },
   { title: "$:/cfworker/control-panel.js", type: "startup", source: "__CONTROL_PANEL_SOURCE__" },
+  { title: "$:/cfworker/release-check.js", type: "widget", source: "__RELEASE_CHECK_SOURCE__" },
   { title: "$:/cfworker/outbox.js", type: "startup", source: "__OUTBOX_SOURCE__" },
   { title: "$:/cfworker/cold-start.js", type: "startup", source: "__COLD_START_SOURCE__" },
   { title: "$:/cfworker/device.js", type: "startup", source: "__DEVICE_SOURCE__" }

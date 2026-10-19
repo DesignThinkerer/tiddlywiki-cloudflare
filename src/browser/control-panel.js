@@ -6,7 +6,9 @@ module-type: startup
 On the admin site, a "Cloudflare" tab in the control panel's Saving tab ($:/temp/cfworker/ControlPanel):
 the setup check (GET /setup/check, design 1.13: each piece of the setup looked at by the worker, this
 browser's service worker and its copy of the core file added here, the lines kept in
-$:/temp/cfworker/setup-check); the engine (design 1.15: the TiddlyWiki version the page was built
+$:/temp/cfworker/setup-check); the worker's release (design 1.17: the version and build written in
+$:/temp/cfworker/release here, the rest by $:/cfworker/release-check.js, the widget the tab renders,
+which asks GitHub for the newest release when the tab is shown); the engine (design 1.15: the TiddlyWiki version the page was built
 from and the one the worker ships, both in $:/cfworker/page-source, kept in $:/temp/cfworker/engine;
 when they differ, the button that has the worker replace index.html with the shipped one, POST
 /engine/update, after a second ask in the tab); how backups go (from $:/temp/cfworker/backup-status,
@@ -36,6 +38,8 @@ var TAB = "$:/temp/cfworker/ControlPanel",
 	ENGINE = "$:/temp/cfworker/engine",
 	ENGINE_MESSAGE = "$:/temp/cfworker/engine-message",
 	PAGE_SOURCE = "$:/cfworker/page-source",
+	RELEASE = "$:/temp/cfworker/release",
+	ADMIN_PLUGIN = "$:/plugins/cfworker/admin",
 	UPDATE = "tm-cfworker-engine-update",
 	RELOAD = "tm-cfworker-engine-reload",
 	CACHE = lib.SW_CACHE;   // the service worker's cache
@@ -50,6 +54,10 @@ var TAB_TEXT = [
 	"<$list filter='[[" + SETUP + "]has[text]]' variable='checked'>",
 	"{{" + SETUP + "}}",
 	"</$list>",
+	"",
+	"!! The worker",
+	"",
+	"<$cfworker-release/>Version {{" + RELEASE + "!!version}} (build {{" + RELEASE + "!!build}}). <$transclude tiddler='" + RELEASE + "' mode='inline'/>",
 	"",
 	"!! The engine",
 	"",
@@ -134,6 +142,11 @@ exports.startup = function() {
 		tags: ["$:/tags/ControlPanel/Saving"],
 		text: TAB_TEXT
 	}));
+
+	// The worker's version for the tab's "The worker" line: the plugin's, package.json's date before the
+	// "+", the build hash after; the release check module fills in the rest when the tab is shown
+	var full = String((wiki.getTiddler(ADMIN_PLUGIN) || {fields: {}}).fields.version || ""), plus = full.indexOf("+");
+	wiki.addTiddler(new $tw.Tiddler({title: RELEASE, version: plus >= 0 ? full.slice(0,plus) : full, build: plus >= 0 ? full.slice(plus + 1) : ""}));
 
 	function say(text) {
 		if(text) {
