@@ -20,7 +20,7 @@ const check = (name, ok, detail = "") => { results.push(ok); console.log(`${ok ?
 // set as secrets); Wrangler's local files aren't
 const ignored = fs.readFileSync(path.join(ROOT, ".gitignore"), "utf8").split(/\r?\n/).map(l => l.trim());
 const missing = [".dev.vars", ".wrangler/", "restore.json", "wiki/"].filter(p => !ignored.includes(p));
-check(".gitignore covers .dev.vars and .wrangler/, restore.json and wiki/ (what a restore leaves, setup 2.4), and not wrangler.toml nor .dev.vars.example", missing.length === 0 && !ignored.includes("wrangler.toml") && !ignored.includes(".dev.vars.example") && fs.existsSync(path.join(ROOT, "wrangler.toml")),
+check(".gitignore covers .dev.vars and .wrangler/, restore.json and wiki/ (what a restore leaves, setup 2.4), and not wrangler.toml", missing.length === 0 && !ignored.includes("wrangler.toml") && fs.existsSync(path.join(ROOT, "wrangler.toml")),
   missing.length ? "missing: " + missing.join(", ") : ignored.includes("wrangler.toml") ? "wrangler.toml is ignored" : fs.existsSync(path.join(ROOT, "wrangler.toml")) ? "" : "no wrangler.toml");
 const toml = fs.existsSync(path.join(ROOT, "wrangler.toml")) ? fs.readFileSync(path.join(ROOT, "wrangler.toml"), "utf8") : "";
 const tomlActive = toml.split(/\r?\n/).filter(l => !l.trim().startsWith("#")).join("\n");   // (what Wrangler reads: comments aside)
@@ -326,37 +326,32 @@ const printedNotes = (() => { try { return execFileSync(process.execPath, [path.
 check("tools/release-notes.mjs prints that block, the release's notes, without its heading", !!newestDated && printedNotes === expectedNotes, printedNotes.slice(0, 80).replace(/\n/g, "⏎"));
 
 // --- 12. The Deploy to Cloudflare button's files (setup 2.1) --------------------------------------
-// The button clones the repository, creates the bucket and the queue named in wrangler.toml, asks for
-// the secrets named in .dev.vars.example, and shows each binding and secret with the description
-// package.json's cloudflare.bindings gives it. The variables stay out of the file: a [vars] entry would
-// put its value back over the dashboard's at every deploy (design 2.30), so they're named in
-// wrangler.toml's settings comment, where a user finds them. Every setting the worker reads
-// (env.NAME in src/worker) is declared in exactly one of those three places; TEST_WAIT_SCALE, which
-// only the test setups give the worker, is the named exception.
+// The button clones the repository, creates the bucket and the queue named in wrangler.toml and
+// deploys; package.json's cloudflare.bindings describes the two for its form. No .dev.vars.example:
+// the form makes every secret such a file names mandatory, and both of the worker's are optional
+// (design 2.30), so they go in the dashboard afterwards, as the variables do: a [vars] entry would put
+// its value back over the dashboard's at every deploy. Variables and secrets are named in
+// wrangler.toml's settings comment, where a user finds them. Every setting the worker reads (env.NAME
+// in src/worker) is declared in exactly one place, a binding or a settings line of that file;
+// TEST_WAIT_SCALE, which only the test setups give the worker, is the named exception.
 const workerEnv = new Set(walkFiles(path.join(ROOT, "src/worker")).flatMap(f => [...fs.readFileSync(f, "utf8").matchAll(/\benv\.([A-Z][A-Z0-9_]*)\b/g)].map(m => m[1])));
 workerEnv.delete("TEST_WAIT_SCALE");
 const bindingsInToml = new Set([...tomlActive.matchAll(/^binding = "([A-Z_]+)"/gm)].map(m => m[1]));
 const variablesInToml = new Set([...toml.matchAll(/^# {3}([A-Z][A-Z0-9_]*) /gm)].map(m => m[1]));
-const examplePath = path.join(ROOT, ".dev.vars.example");
-const example = fs.existsSync(examplePath) ? fs.readFileSync(examplePath, "utf8") : "";
-const exampleLines = example.split(/\r?\n/);
-const secretsInExample = new Set(exampleLines.map(l => /^([A-Z][A-Z0-9_]*)=/.exec(l)?.[1]).filter(Boolean));
-const exampleValues = exampleLines.map(l => /^[A-Z][A-Z0-9_]*=(.*)$/.exec(l)?.[1]).filter(v => v !== undefined && v.trim() !== "");
-const commented = [...secretsInExample].filter(s => { const i = exampleLines.findIndex(l => l.startsWith(s + "=")); return i > 0 && exampleLines[i - 1].startsWith("#"); });
-check(".dev.vars.example names the two secrets and nothing else, each without a value and with a comment above saying where it comes from",
-  example !== "" && [...secretsInExample].sort().join(",") === "CF_API_TOKEN,GITHUB_TOKEN" && exampleValues.length === 0 && commented.length === secretsInExample.size,
-  example === "" ? "no .dev.vars.example" : `secrets: ${[...secretsInExample].join(", ") || "none"}; values: ${exampleValues.length}; commented: ${commented.length}`);
+const exampleFiles = [".dev.vars.example", ".env.example"].filter(f => fs.existsSync(path.join(ROOT, f)));
+check("no .dev.vars.example or .env.example in the repository: the button's form makes every secret such a file names mandatory, and both of the worker's are optional (they go in the dashboard, setup 2.5)",
+  exampleFiles.length === 0, exampleFiles.join(", "));
 const pkgCloudflare = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8")).cloudflare;
 const described = pkgCloudflare?.bindings || {};
 const describedNames = Object.keys(described).sort();
-const toDescribe = [...bindingsInToml, ...secretsInExample].sort();
-check("package.json's cloudflare.bindings describes each binding of wrangler.toml and each secret of .dev.vars.example, with a sentence, and nothing else",
-  toDescribe.length === 4 && describedNames.join(",") === toDescribe.join(",") && describedNames.every(n => typeof described[n]?.description === "string" && described[n].description.length > 20),
+const toDescribe = [...bindingsInToml].sort();
+check("package.json's cloudflare.bindings describes each binding of wrangler.toml, the bucket and the queue, with a sentence, and nothing else (no secret: none is asked for)",
+  toDescribe.length === 2 && describedNames.join(",") === toDescribe.join(",") && describedNames.every(n => typeof described[n]?.description === "string" && described[n].description.length > 20),
   `described: ${describedNames.join(", ") || "none"}; to describe: ${toDescribe.join(", ")}`);
-const placeOf = n => (bindingsInToml.has(n) ? "binding" : "") + (secretsInExample.has(n) ? "secret" : "") + (variablesInToml.has(n) ? "variable" : "");
-const misplaced = [...workerEnv].filter(n => !["binding", "secret", "variable"].includes(placeOf(n)));
-const unread = [...new Set([...bindingsInToml, ...secretsInExample, ...variablesInToml])].filter(n => !workerEnv.has(n));
-check(`every setting the worker reads (${workerEnv.size}, TEST_WAIT_SCALE excepted) is declared in one place: a binding or a settings line of wrangler.toml, or a secret of .dev.vars.example; and nothing is declared that the worker doesn't read`,
+const placeOf = n => (bindingsInToml.has(n) ? "binding" : "") + (variablesInToml.has(n) ? "settings line" : "");
+const misplaced = [...workerEnv].filter(n => !["binding", "settings line"].includes(placeOf(n)));
+const unread = [...new Set([...bindingsInToml, ...variablesInToml])].filter(n => !workerEnv.has(n));
+check(`every setting the worker reads (${workerEnv.size}, TEST_WAIT_SCALE excepted) is declared in one place, a binding or a settings line of wrangler.toml (the two secrets among the lines); and nothing is declared that the worker doesn't read`,
   misplaced.length === 0 && unread.length === 0 && workerEnv.size >= 10,
   (misplaced.length ? "misplaced: " + misplaced.map(n => `${n} (${placeOf(n) || "nowhere"})`).join(", ") : "") + (unread.length ? " unread: " + unread.join(", ") : ""));
 const readmeText = fs.readFileSync(path.join(ROOT, "README.md"), "utf8");
