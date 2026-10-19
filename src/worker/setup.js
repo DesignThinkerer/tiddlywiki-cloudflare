@@ -22,6 +22,15 @@ import { CORE_KEY, LIST_KEY, PAGE_KEY, STATUS_KEY } from "./storage.js";
 
 const SECTION = { private: "2.1", site: "2.2", queue: "2.3", backups: "2.4", worker: "2.5", access: "2.6", rules: "2.7" };
 const PUBLIC_IDS = ["public", "rewrite", "cors-reads", "cors-files", "cache"];
+// A private wiki's five public-site lines, one per piece as on a public wiki, each naming the piece it
+// stands for: one sentence five times read as a loop gone wrong
+const PRIVATE_LINES = {
+  "public": "The public site: a private wiki has none, nothing to check.",
+  "rewrite": "The rewrite rule: no public site, nothing to check.",
+  "cors-reads": "The CORS rule, tiddler reads: no public site, nothing to check.",
+  "cors-files": "The CORS rule, files: no public site, nothing to check.",
+  "cache": "The cache rules: no public site, nothing to check."
+};
 // What Cloudflare's cache answered for a path a cache rule covers (DYNAMIC: none does)
 const CACHED = ["HIT", "MISS", "EXPIRED", "STALE", "UPDATING", "REVALIDATED"];
 
@@ -38,7 +47,7 @@ export async function setupCheck(request, env, ctx, corsHeaders) {
   if (site) {
     await checkPublicSite(env, site, origin, add);
   } else {
-    for (const id of PUBLIC_IDS) add(id, null, "A private wiki, without a public site: nothing to check.", SECTION.private);
+    for (const id of PUBLIC_IDS) add(id, null, PRIVATE_LINES[id], SECTION.private);
   }
   await checkBackups(env, add);
   add("queue", !!env.BACKUP_QUEUE, env.BACKUP_QUEUE
