@@ -6,7 +6,17 @@
 
 Your worker is deployed from your copy of this repository, which this one keeps changing.
 
-To take an update: on GitHub, *Sync fork* on your fork (or `git pull` from this repository, added as a remote, for a copy made from the template or by the Deploy to Cloudflare button, which is a repository of its own, not a fork); Workers Builds redeploys, and the next admin page load rebuilds the page.
+To take an update: on GitHub, *Sync fork* on your fork; Workers Builds redeploys, and the next admin page load rebuilds the page.
+
+**A copy that isn't a fork** — the Deploy to Cloudflare button's, or one made from the template — has no *Sync fork*, and no history in common with this repository either: the button's copy is one commit, "source repo import", the files as they were that day (without the CI workflow), with your names written into `wrangler.toml`. So a plain `git pull` refuses ("refusing to merge unrelated histories"). The first update joins the two histories, in a clone of your copy on your machine:
+
+```bash
+git remote add upstream https://github.com/DesignThinkerer/tiddlywiki-cloudflare
+git fetch upstream
+git merge --allow-unrelated-histories -X theirs upstream/main
+```
+
+Then, **before pushing, put your names back in `wrangler.toml`:** the merge takes this repository's file, which names the worker `wiki-admin`, the bucket `wiki` and the queue `wiki-backup`, and pushed as it is, Workers Builds would deploy your copy onto a worker and a bucket of those names — your real wiki's, if you have one. Set `name`, `bucket_name` and the two `queue` lines to the names the import wrote (the project's name for the worker and the bucket, the project's name and `-backup` for the queue), then `git commit -a --amend --no-edit` and `git push`. The merge also brings back the CI workflow, `.github/workflows/ci.yml`, which the import left out: delete it first if you'd rather GitHub didn't run the test suites on your copy. From then on an update is `git pull --no-rebase upstream main`, and your names stay (checked on 2026-10-19 on a copy the button made).
 
 Nothing in the repository holds your values (`wrangler.toml` is deployed as it is, the settings live in the dashboard, [setup 2.5](setup.md#25-the-worker)), so an update never conflicts with them. [CHANGELOG.md](../CHANGELOG.md) lists, for each change, anything to do by hand — a new setting, a new zone rule; unless it says so, nothing is.
 
