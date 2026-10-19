@@ -106,6 +106,8 @@ check("...the copy's own commit survives (its README note), with upstream's chan
 check("...the CI workflow the import left out stays out, and the script says so", !exists(COPY, ".github/workflows/ci.yml") && /ci\.yml/.test(r.out), r.out.slice(0, 300).replace(/\n/g, "⏎"));
 check("...nothing is pushed (origin's main unchanged), the script says to push, and names what it kept",
   git(WORK, "-C", BARE, "rev-parse", "main") === importCommit && /git push/.test(r.out) && /wiki-test-backup/.test(r.out), r.out.slice(0, 400).replace(/\n/g, "⏎"));
+check("...and the first line says what the copy was updated to (upstream's commit) and what changed (the files), with no count of commits, which a copy with no history in common would get wrong",
+  r.out.split("\n")[0] === `Updated from tiddlywiki-cloudflare to ${U3.slice(0, 7)}: 5 files changed, 5 insertions(+), 5 deletions(-).` && !/commits? merged/.test(r.out), r.out.split("\n")[0]);
 check("...the replacement ref the merge used is gone, upstream is a remote of the copy, the merge commit names the source",
   replacements(COPY) === "" && safe(() => git(COPY, "remote", "get-url", "upstream")) === UP && /tiddlywiki-cloudflare/.test(git(COPY, "log", "-1", "--format=%s")), `replace: "${replacements(COPY)}"; subject: ${git(COPY, "log", "-1", "--format=%s")}`);
 
