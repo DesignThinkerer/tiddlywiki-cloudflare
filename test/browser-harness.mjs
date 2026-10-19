@@ -33,7 +33,7 @@ export async function listen(server) {
   return `http://127.0.0.1:${server.address().port}`;
 }
 
-// The public site's TiddlyWeb status, the file uploaded once (README 2.8)
+// The public site's TiddlyWeb status, the file uploaded once (setup 2.8)
 export const PUBLIC_STATUS = { username: "GUEST", read_only: true, anonymous: true, logout_is_available: false, space: { recipe: "default" } };
 
 // Starts the site: a stand-in for the public site, then the worker, which points at it.
@@ -46,7 +46,7 @@ export const PUBLIC_STATUS = { username: "GUEST", read_only: true, anonymous: tr
 //   outbound(request): answers the worker's own requests (Cloudflare's API, GitHub); {"success":true} by default
 //   r2Persist: a folder to keep R2 in
 //   queue: bind the backup queue, with its consumer, as deployed (backups then run in it)
-//   privateWiki: no PUBLIC_WIKI_URL: a private wiki (README 2.1); the stand-in still runs, so a
+//   privateWiki: no PUBLIC_WIKI_URL: a private wiki (setup 2.1); the stand-in still runs, so a
 //     request that reaches it shows up in publicRequests
 //   publicSite: hooks for the stand-in: cors(url) returns false to leave the CORS header out,
 //     cacheStatus(url) returns the CF-Cache-Status to send (HIT by default; DYNAMIC is Cloudflare's
@@ -69,7 +69,7 @@ export async function startSite({ index, publicStatus = false, bindings = {}, ou
   const publicServer = http.createServer(async (req, res) => {
     const url = new URL(req.url, "http://public");
     publicRequests.push(decodeURIComponent(url.pathname) + url.search);
-    // The CORS header as the zone's rule sends it (README 2.7): under /recipes/ and /_plugins/ only
+    // The CORS header as the zone's rule sends it (setup 2.7): under /recipes/ and /_plugins/ only
     const corsPath = url.pathname.startsWith("/recipes/") || url.pathname.startsWith("/_plugins/");
     const headers = corsPath && !(publicSite.cors && !publicSite.cors(url)) ? { "Access-Control-Allow-Origin": "*" } : {};
     // As Cloudflare's edge sends them: whether the cache answered, and the object's ETag

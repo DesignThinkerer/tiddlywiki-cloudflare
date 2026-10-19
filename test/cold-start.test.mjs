@@ -11,7 +11,7 @@ import { addTiddler, createChecks, createWatcher, finish, launchBrowser, readWik
 // R2 on disk: "no network" here is the worker and the public stand-in taken down (the browser's
 // offline mode doesn't cut a service worker's own requests), then brought back with the same data
 const r2Dir = fs.mkdtempSync(path.join(fs.realpathSync(process.env.TMPDIR || "/tmp"), "wiki-cold-"));
-let corsOn = true;   // the zone's CORS rule on the public stand-in (README 2.7), or not
+let corsOn = true;   // the zone's CORS rule on the public stand-in (setup 2.7), or not
 const site = await startSite({ index: readWikiFile(), publicStatus: true, privateWiki: true, r2Persist: r2Dir, publicSite: { cors: () => corsOn } });
 const { base: BASE, pub: PUB } = site;
 const { check, results } = createChecks();
@@ -333,10 +333,10 @@ check("the setup check on a public wiki: the public site answering with the page
   setupPublic.lines.join(" | ") || `done ${setupPublic.done}`);
 corsOn = false;
 const setupNoCors = await setupCheck(A);
-check("...without the CORS header: the files line fails naming /_plugins/ and README 2.7 (what nothing said before)", setupNoCors.done && setupNoCors.lines.some(l => /^✗ .*\/_plugins\/.*2\.7/.test(l)),
+check("...without the CORS header: the files line fails naming /_plugins/ and setup 2.7 (what nothing said before)", setupNoCors.done && setupNoCors.lines.some(l => /^✗ .*\/_plugins\/.*2\.7/.test(l)),
   setupNoCors.lines.filter(l => /_plugins|recipes/.test(l)).join(" | ") || `done ${setupNoCors.done}`);
 corsOn = true;
-// Without the CORS header (the rule of README 2.7 missing): a new file (a second plugin) loads and runs
+// Without the CORS header (the rule of setup 2.7 missing): a new file (a second plugin) loads and runs
 // as a plain script, and isn't kept. (A new file, because a file the browser already holds in memory
 // is served from there, a year's cache, without asking the service worker.)
 const HELLO2 = "$:/plugins/test/hello2";

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Merges the backup (README 2.4: tiddlers/<title>.json, each tiddler as the worker stores it) into
+// Merges the backup (setup 2.4: tiddlers/<title>.json, each tiddler as the worker stores it) into
 // one file any TiddlyWiki imports: restore.json, an array of tiddlers with every field as text.
 //
 // The admin wiki imports the backup's files as they are (src/browser/restore-import.js does the
@@ -9,7 +9,7 @@
 // new one. And a whole clone is better dragged as one file than as a thousand.
 //
 // Usage: node tools/restore.mjs <a clone of the backup, or one of its files> [restore.json]
-// Then drag restore.json onto the admin wiki (README 2.4), or build a single-file wiki from it:
+// Then drag restore.json onto the admin wiki (setup 2.4), or build a single-file wiki from it:
 //   npx tiddlywiki@5.4.1 wiki --init empty && npx tiddlywiki@5.4.1 wiki --load restore.json --build index
 
 import fs from "node:fs";
@@ -92,5 +92,5 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   const tiddlers = collect(target, problems);
   fs.writeFileSync(out, JSON.stringify(tiddlers, null, 1));
   for (const problem of problems) console.error("Left out: " + problem);
-  console.log(`${out}: ${tiddlers.length} tiddlers, ready to drag onto the admin wiki (README 2.4)`);
+  console.log(`${out}: ${tiddlers.length} tiddlers, ready to drag onto the admin wiki (setup 2.4)`);
 }

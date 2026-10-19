@@ -74,7 +74,7 @@ globalThis.fetch = realFetch;
 check(`backing up a ${size} plugin from its R2 copy: at most 2.5× JSON.parse of it`,
   sentBytes > stored.length && backupCpu <= 2.5 * reference, `${ratio(backupCpu)}, request ${(sentBytes / 1e6).toFixed(1)} MB`);
 
-// 3. A save's list update: the whole tiddler list read, changed and written again (README 5 calls it
+// 3. A save's list update: the whole tiddler list read, changed and written again (limits 5 calls it
 // a save's largest cost, about 1 ms per 400–500 tiddlers), for a wiki of 2,000 tiddlers
 const LIST_KEY = "recipes/default/tiddlers.json";
 const entries = Array.from({ length: 2000 }, (_, i) => ({

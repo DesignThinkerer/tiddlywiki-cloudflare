@@ -9,7 +9,7 @@
 // --parallel <n> runs n suites at once (1 by default: one after the other, as CI runs them). Every
 // suite takes free ports and its own temporary folder, and writes its own files under test-results/,
 // so they can share a machine; what they share is its CPU, and a timing check that passes alone can
-// fail with too many at once (README 6). With several at once, a suite's output is printed whole
+// fail with too many at once (development 6). With several at once, a suite's output is printed whole
 // when it ends, so the outputs don't interleave; its log is written as it goes.
 // A browser suite that fails leaves the requests its pages made and a Playwright trace of each
 // browser context under test-results/ too (test/browser-harness.mjs). On GitHub, a failed job

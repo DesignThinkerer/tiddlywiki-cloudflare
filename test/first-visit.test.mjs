@@ -23,7 +23,7 @@ await settle(admin);
 check("the first admin visit serves a page that boots TiddlyWiki, with the browser module", first.status() === 200 && await admin.evaluate(() => $tw.syncadaptor.conflictGuardInstalled === true));
 check("...the engine and the public status file are now in the bucket, and the page built", !!(await bucket.head("index.html")) && !!(await bucket.head("status")) && !!(await bucket.head("baked.html")));
 const published = await waitFor(async () => !!(await bucket.head("_page/shell.html")) && !!(await bucket.head("_plugins/tiddlywikicore.js")), 30000);
-check("...and that load publishes the core file and the page for the public site (README 2.8)", published);
+check("...and that load publishes the core file and the page for the public site (setup 2.8)", published);
 check("...TiddlyWiki loaded the browser modules: the library, and the nine startup modules, the backup alert after the list sync",
   await admin.evaluate(() => {
     const startup = $tw.modules.types.startup || {}, library = $tw.modules.types.library || {};
@@ -88,7 +88,7 @@ check("...and a tiddler of that name stored in the wiki changes nothing: the sca
   await slow.evaluate(() => $tw.wiki.getTiddlerText("$:/config/cfworker/TestTimeScale") === "0.5") && storedScale.scale === 1 && storedScale.wait === 1000, JSON.stringify(storedScale));
 
 // 5. Logout, in the cloud icon's dropdown: the session is Cloudflare Access's, ended at its own
-// address (README 2.6), not at a /logout route the worker doesn't have
+// address (setup 2.6), not at a /logout route the worker doesn't have
 const loggedOut = admin.waitForURL("**/cdn-cgi/access/logout", { timeout: 10000 }).then(() => true, () => false);
 await admin.evaluate(() => $tw.rootWidget.dispatchEvent({ type: "tm-logout" }));
 check("Logout (the cloud icon's dropdown) goes to Cloudflare Access's logout page, which ends the session; nothing posted to a /logout of the worker",

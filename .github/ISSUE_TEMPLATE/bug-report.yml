@@ -5,7 +5,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Before filing: the README's troubleshooting section (4) and known limits (5), and *Check the setup* in the admin wiki (Control Panel → Saving → Cloudflare), which names the README section for anything missing. Never paste a token or a secret here.
+        Before filing: the troubleshooting page (docs/troubleshooting.md) and the known limits (docs/limits.md), and *Check the setup* in the admin wiki (Control Panel → Saving → Cloudflare), which names the setup guide's section for anything missing. Never paste a token or a secret here.
   - type: textarea
     id: what
     attributes:
@@ -40,5 +40,5 @@ body:
     id: logs
     attributes:
       label: The browser console, or the worker's logs
-      description: What the console printed (F12), or lines from Workers Logs (README 3), with addresses replaced if you like.
+      description: What the console printed (F12), or lines from Workers Logs (operating 3.8), with addresses replaced if you like.
       render: text
