@@ -4,7 +4,7 @@ These are the design notes behind [design.md 1.8](design.md#18-plugins-and-javas
 
 The tests are in `test/plugins.test.mjs`, which runs real plugins shipped with TiddlyWiki, markdown and KaTeX, on the admin site and on a stand-in for the public site (docs/tests.md).
 
-"The external-plugins plugin" below is `$:/plugins/theophile.dev/external-plugins`, which exports plugins as standalone `.js` files for single-file wikis. The plugin files here use the same format as its export template.
+"The external-plugins plugin" below is `$:/plugins/someone/external-plugins`, which exports plugins as standalone `.js` files for single-file wikis. The plugin files here use the same format as its export template.
 
 ## Contents
 
