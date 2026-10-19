@@ -1,4 +1,4 @@
-What this browser keeps of the wiki, for opening and editing offline (README 3): the device copy (the tiddlers loaded here), the outbox (the changes not yet sent) and the service worker's files. Nothing here asks the worker anything.
+What this browser keeps of the wiki, for opening and editing offline ([[operating 3.13|https://github.com/DesignThinkerer/tiddlywiki-cloudflare/blob/main/docs/operating.md#313-opening-the-wiki-offline]]): the device copy (the tiddlers loaded here), the outbox (the changes not yet sent) and the service worker's files. Nothing here asks the worker anything.
 
 <$button message="tm-cfworker-device-measure">Measure</$button>
 

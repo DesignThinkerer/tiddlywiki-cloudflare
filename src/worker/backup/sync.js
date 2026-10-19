@@ -3,6 +3,7 @@
 // For tiddlers that predate the backup (imported before the repository and the token were set), a
 // restore, a tiddler put in R2 by hand, or any doubt. Idempotent: run again, it commits nothing.
 
+import { guideText } from "../docs.js";
 import { refusal } from "../http.js";
 import { failureResponse, readableList } from "../list.js";
 import { github } from "../settings.js";
@@ -17,8 +18,8 @@ function jsonResponse(sync, status, corsHeaders) {
 // POST /backup/sync: 202 with the new full backup's status; 409 with the running one's if there is
 // one; 400 without backups, or without the queue the job runs in
 export async function startBackupSync(request, env, ctx, corsHeaders) {
-  if (!github(env)) return refusal("Backups aren't set up: the worker has no GITHUB_REPO and GITHUB_TOKEN (README 2.4).", corsHeaders);
-  if (!env.BACKUP_QUEUE) return refusal("A full backup runs in the backup queue, which this worker doesn't have (README 2.3).", corsHeaders);
+  if (!github(env)) return refusal("Backups aren't set up: the worker has no GITHUB_REPO and GITHUB_TOKEN (" + guideText("setup", "2.4") + ").", corsHeaders);
+  if (!env.BACKUP_QUEUE) return refusal("A full backup runs in the backup queue, which this worker doesn't have (" + guideText("setup", "2.3") + ").", corsHeaders);
   try {
     const status = await readBackupStatus(env, true);
     if (syncRunning(status.sync)) return jsonResponse(status.sync, 409, corsHeaders);

@@ -87,7 +87,7 @@ exports.startup = function() {
 		deliveryTimer = null;
 
 	// TiddlyWeb's Logout (the cloud icon's dropdown) posts to a /logout route the worker doesn't
-	// have: the session is Cloudflare Access's, ended at its own address (README 2.6), which then
+	// have: the session is Cloudflare Access's, ended at its own address (setup 2.6), which then
 	// shows its login page. On the admin site only: the public site has no session, and no button.
 	if(lib.onAdminSite(window.location.origin + "/")) {
 		proto.logout = function() {

@@ -23,7 +23,7 @@ import { backupRetryDelay, isRateLimit } from "./github.js";
 // at least every 6 hours: BACKUP_MAX_DELAY), and is dropped
 const BACKUP_STATUS_STALE = 24 * 3600 * 1000;
 
-// The queue's retry limit, which the worker can't read: Cloudflare's default (README 2.3: leave it)
+// The queue's retry limit, which the worker can't read: Cloudflare's default (setup 2.3: leave it)
 export const QUEUE_RETRIES = 3;
 
 // A version this big gets a note before its backup's heavy part (queue.js, backupJob)

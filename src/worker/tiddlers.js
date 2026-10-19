@@ -44,7 +44,7 @@ const STARTUP_TITLES = ["$:/DefaultTiddlers", "$:/SiteTitle", "$:/SiteSubtitle",
 
 const DISABLED_PLUGIN_PREFIX = "$:/config/Plugins/Disabled/";
 
-// The browser modules' own settings ($:/config/cfworker/LoadAll, README 3), read when the page boots
+// The browser modules' own settings ($:/config/cfworker/LoadAll, operating 3), read when the page boots
 const MODULE_SETTINGS_PREFIX = "$:/config/cfworker/";
 
 const PLUGIN_FILE_TYPES = ["plugin", "theme", "language"];

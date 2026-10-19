@@ -160,7 +160,7 @@ exports.startup = function() {
 			component: "GitHub backup",
 			modified: new Date(),
 			text: "The backup of " + lib.link(stuck.title) + " (" + sizeText(stuck.size) + ") was cut short " + stuck.attempts + " times and dropped" +
-				(stuck.count > 1 ? ", and " + (stuck.count - 1) + " more like it" : "") + ": most likely the free plan's CPU time ran out on a tiddler this size (README 5). " +
+				(stuck.count > 1 ? ", and " + (stuck.count - 1) + " more like it" : "") + ": most likely the free plan's CPU time ran out on a tiddler this size (" + lib.guide("limits","5") + "). " +
 				"GitHub keeps the last version of it that went through; the wiki keeps this one. It's tried again at the next save of it: split it, or move the worker to a paid plan."
 		}));
 	}

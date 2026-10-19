@@ -9,6 +9,7 @@
 // _plugins/tiddlywikicore.js, served by the public site as ?v=<TiddlyWiki version>-<format> and
 // cached for a year, like plugin files.
 
+import { guideText } from "./docs.js";
 import { EXTERNAL_SCRIPTS_MARKER, PAGE_ETAG_SUFFIX, bakeVersion, charStart, coreFileUrl, engineVersion, pageDecoder, rebakeHtml } from "./build.js";
 import { parseEtagList, refusal, untilDone } from "./http.js";
 import { waitMs } from "./settings.js";
@@ -72,8 +73,8 @@ export async function serveWiki(request, env, ctx, corsHeaders) {
 const PUBLIC_STATUS = { username: "GUEST", read_only: true, anonymous: true, logout_is_available: false, space: { recipe: "default" } };
 
 const NO_WIKI = "There's no wiki yet: the bucket has no index.html, and this worker was deployed without the empty wiki that would " +
-  "go there by itself (a deploy through Wrangler or Workers Builds ships it, README 2.8). Upload an index.html, a TiddlyWiki " +
-  "with the TiddlyWeb plugin, and the status file (README 2.8), then open this page again.";
+  "go there by itself (a deploy through Wrangler or Workers Builds ships it, " + guideText("setup", "2.8") + "). Upload an index.html, a TiddlyWiki " +
+  "with the TiddlyWeb plugin, and the status file (setup 2.8), then open this page again.";
 
 // The empty wiki module, or null without it (logged)
 async function loadSeed() {
@@ -111,7 +112,7 @@ async function seedWiki(env) {
 // the engine's head, for the version it replaces, and the write. Asked for with the header every
 // request of the browser modules carries, so a form on another site can't send it.
 export async function updateEngine(request, env, corsHeaders) {
-  if (request.headers.get("X-Requested-With") !== "TiddlyWiki") return refusal("The engine is updated from the admin wiki's Cloudflare tab (README 3).", corsHeaders);
+  if (request.headers.get("X-Requested-With") !== "TiddlyWiki") return refusal("The engine is updated from the admin wiki's Cloudflare tab (" + guideText("operating", "3.3") + ").", corsHeaders);
   const html = await loadSeed();
   if (!html) return refusal(NO_SEED, corsHeaders, 404);
   const current = await env.WIKI_BUCKET.get(INDEX_KEY, { range: { offset: 0, length: 65536 } });
@@ -123,7 +124,7 @@ export async function updateEngine(request, env, corsHeaders) {
 }
 
 const NO_SEED = "This worker was deployed without the empty wiki that would replace the engine (a deploy through Wrangler or " +
-  "Workers Builds ships it, README 2.8): nothing to put in place of index.html.";
+  "Workers Builds ships it, " + guideText("setup", "2.8") + "): nothing to put in place of index.html.";
 
 // Rebuilds the page after a save or delete. If that fails (an R2 error), the change itself is
 // stored: the page is marked outdated instead, so the next page load builds it (and writes any

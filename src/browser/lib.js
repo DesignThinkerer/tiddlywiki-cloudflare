@@ -71,6 +71,33 @@ exports.link = function(title) {
 // module of the wiki), read by the setup check and the device tab
 exports.SW_CACHE = "cfworker-wiki-v1";
 
+// Where the manual lives (design 2.28), for the texts the modules show: a link to a section, as the
+// docs cite it ("setup 2.4"). The headings are the pages' own, and the link's anchor is made from
+// them the way GitHub makes it; the integrity suite checks each against its page, and the address
+// against the worker's (src/worker/docs.js).
+exports.DOCS_URL = "https://github.com/DesignThinkerer/tiddlywiki-cloudflare/blob/main/docs";
+var GUIDE = {
+	setup: { page: "setup.md", headings: { "2.4": "The backup repository (optional)" } },
+	operating: { page: "operating.md", headings: { "3.4": "Plugins", "3.14": "When your login expires" } },
+	limits: { page: "limits.md", headings: { "5": "Known limits" } }
+};
+function slug(text) {
+	return text.toLowerCase().replace(/[^\w\s-]/g,"").trim().replace(/\s+/g,"-");
+}
+// A section's link: { section, text: "setup 2.4", url }
+exports.guideLink = function(chapter,section) {
+	var entry = GUIDE[chapter];
+	if(!entry || !entry.headings[section]) {
+		throw new Error("No guide section " + chapter + " " + section);
+	}
+	return { section: section, text: chapter + " " + section, url: exports.DOCS_URL + "/" + entry.page + "#" + slug(section + " " + entry.headings[section]) };
+};
+// The same as a wikitext link, [[setup 2.4|https://…]]
+exports.guide = function(chapter,section) {
+	var link = exports.guideLink(chapter,section);
+	return "[[" + link.text + "|" + link.url + "]]";
+};
+
 // The longest title the worker stores: an R2 key holds 1024 bytes, 25 of them before the title
 exports.MAX_TITLE_BYTES = 999;
 

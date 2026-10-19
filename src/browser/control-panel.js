@@ -43,7 +43,7 @@ var TAB = "$:/temp/cfworker/ControlPanel",
 var TAB_TEXT = [
 	"!! The setup",
 	"",
-	"What's set up by hand, looked at: Cloudflare Access; the public site, its rewrite rule, its CORS rule (both paths) and its cache rules; backups and the queue; purges; and this browser's copy for opening offline. A missing piece names the README section that fixes it. It runs only when asked (the worker makes a few requests of its own, and purges the public site's status file to test the purge token).",
+	"What's set up by hand, looked at: Cloudflare Access; the public site, its rewrite rule, its CORS rule (both paths) and its cache rules; backups and the queue; purges; and this browser's copy for opening offline. A missing piece names the section of the setup guide that fixes it, with a link. It runs only when asked (the worker makes a few requests of its own, and purges the public site's status file to test the purge token).",
 	"",
 	"<$button message='" + CHECK + "'>Check the setup</$button>",
 	"",
@@ -58,7 +58,7 @@ var TAB_TEXT = [
 	"",
 	"<$reveal state='" + ENGINE + "!!ask' type='match' text='yes'>",
 	"",
-	"The worker replaces the engine (`index.html`) with the one it ships, TiddlyWiki {{" + ENGINE + "!!shipped}}; the next page load runs it, publishes it and purges the public copy. Your tiddlers, the plugins you installed and the published page stay. What goes: a plugin that came with the current engine and wasn't installed from the wiki (an engine you uploaded yourself, say). A plugin you updated from the library keeps your version (README 3, \"Plugins\").",
+	"The worker replaces the engine (`index.html`) with the one it ships, TiddlyWiki {{" + ENGINE + "!!shipped}}; the next page load runs it, publishes it and purges the public copy. Your tiddlers, the plugins you installed and the published page stay. What goes: a plugin that came with the current engine and wasn't installed from the wiki (an engine you uploaded yourself, say). A plugin you updated from the library keeps your version (" + lib.guide("operating","3.4") + ").",
 	"",
 	"<$button message='" + UPDATE + "'>Replace it</$button> <$button set='" + ENGINE + "!!ask' setTo='no'>Not now</$button>",
 	"",
@@ -72,11 +72,11 @@ var TAB_TEXT = [
 	"!! Backups to GitHub",
 	"",
 	"<$list filter='[[" + STATUS + "]get[backups]match[off]]' variable='off'>",
-	"Backups are off: the worker has no `GITHUB_REPO` and `GITHUB_TOKEN` (README 2.4). Set them, and every save is committed to GitHub.",
+	"Backups are off: the worker has no `GITHUB_REPO` and `GITHUB_TOKEN` (" + lib.guide("setup","2.4") + "). Set them, and every save is committed to GitHub.",
 	"</$list>",
 	"<$list filter='[[" + STATUS + "]get[backups]match[on]]' variable='on'>",
 	"",
-	"Every save is committed to GitHub as it happens (README 2.4).",
+	"Every save is committed to GitHub as it happens (" + lib.guide("setup","2.4") + ").",
 	"",
 	"!!! Full backup",
 	"",
@@ -217,9 +217,10 @@ exports.startup = function() {
 	// --- The setup check ------------------------------------------------------------------------------
 
 	// One line per piece: a mark (✓ fine, ✗ missing or wrong, – nothing to check or optional), the
-	// worker's text, the README section. Shown as text, whatever it contains (addresses, quotes).
-	function line(mark,text,readme) {
-		return "<li><$text text=\"\"\"" + mark + " " + text + (readme ? " (README " + readme + ")" : "") + "\"\"\"/></li>";
+	// worker's text, shown as text whatever it contains (addresses, quotes), and the section of the
+	// manual that fixes it as a link ({ text, url }, the worker's or lib.guideLink's)
+	function line(mark,text,guide) {
+		return "<li><$text text=\"\"\"" + mark + " " + text + "\"\"\"/>" + (guide ? " ([[" + guide.text + "|" + guide.url + "]])" : "") + "</li>";
 	}
 	function mark(ok) {
 		return ok === true ? "✓" : ok === false ? "✗" : "–";
@@ -279,7 +280,7 @@ exports.startup = function() {
 				};
 				if(body && Array.isArray(body.checks)) {
 					$tw.utils.each(body.checks,function(item) {
-						lines.push(line(mark(item.ok),String(item.text || ""),item.readme));
+						lines.push(line(mark(item.ok),String(item.text || ""),item.guide));
 					});
 					return done();
 				}
@@ -294,7 +295,7 @@ exports.startup = function() {
 					asked = adaptor && typeof adaptor.cfworkerNoAnswer === "function" ? adaptor.cfworkerNoAnswer() : Promise.resolve(null);
 				asked.then(function(login) {
 					lines.push(login === "expired" ?
-						line("✗","The worker didn't answer: your login has expired, and Cloudflare Access sent the request to its login page instead. Log in again (the cloud icon's dropdown has the link), then check again.","3") :
+						line("✗","The worker didn't answer: your login has expired, and Cloudflare Access sent the request to its login page instead. Log in again (the cloud icon's dropdown has the link), then check again.",lib.guideLink("operating","3.14")) :
 						line("✗","The worker didn't answer (no network, or it can't be reached): " + String(err || "").slice(0,300),""));
 					done();
 				});
