@@ -2,8 +2,6 @@
 // list rebuilt, a page build that fails, list writes out of order, and titles that only look like drafts.
 // Run: npm run test:integrity
 import { Miniflare } from "miniflare";
-import fs from "node:fs";
-import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
