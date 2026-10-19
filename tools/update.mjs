@@ -162,8 +162,9 @@ if (!hadWorkflows) {
 git(["commit", "--quiet", "--no-edit"]);
 
 // --- What came in --------------------------------------------------------------------------------
-const commits = Number(git(["rev-list", "--count", `${head}..${upstream}`]).out);
-console.log(`Updated from tiddlywiki-cloudflare (${upstream.slice(0, 7)}): ${commits} commit${commits === 1 ? "" : "s"} merged, ${git(["diff", "--shortstat", head, "HEAD"]).out || "no file changed"}.`);
+// (What it was updated to, and the files that changed: no count of commits, which a copy with no history
+// in common would get as this repository's whole history)
+console.log(`Updated from tiddlywiki-cloudflare to ${upstream.slice(0, 7)}: ${git(["diff", "--shortstat", head, "HEAD"]).out || "no file changed"}.`);
 const kept = Object.keys(identity).flatMap(file => {
   const theirs = valuesOf(git(["show", `${upstream}:${file}`]).raw, IDENTITY[file]);
   return identity[file].filter((v, i) => !theirs[i] || theirs[i].value !== v.value).map(v => `${file} ${v.key.replace(/"/g, "")} ${v.value}`);
