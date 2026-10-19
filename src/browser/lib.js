@@ -77,8 +77,8 @@ exports.SW_CACHE = "cfworker-wiki-v1";
 // against the worker's (src/worker/docs.js).
 exports.DOCS_URL = "https://github.com/DesignThinkerer/tiddlywiki-cloudflare/blob/main/docs";
 var GUIDE = {
-	setup: { page: "setup.md", headings: { "2.4": "The backup repository (optional)" } },
-	operating: { page: "operating.md", headings: { "3.4": "Plugins", "3.14": "When your login expires" } },
+	setup: { page: "setup.md", headings: { "2.4": "The backup repository (optional)", "2.7": "The zone's rules (public site only)" } },
+	operating: { page: "operating.md", headings: { "3.4": "Plugins", "3.13": "Opening the wiki offline", "3.14": "When your login expires" } },
 	limits: { page: "limits.md", headings: { "5": "Known limits" } }
 };
 function slug(text) {
