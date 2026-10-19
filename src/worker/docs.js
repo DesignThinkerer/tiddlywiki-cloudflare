@@ -1,7 +1,7 @@
 // Where the manual lives, for the worker's own messages (design 2.28): a refusal, an error page or a
 // setup check line names the section that fixes what it found, as the docs cite it ("setup 2.6"),
 // with its link. The headings here are the pages' own, and the link's anchor is made from them the
-// way GitHub makes it; the integrity suite checks each against its page, so a heading can't be
+// way GitHub makes it; the repository suite checks each against its page, so a heading can't be
 // renamed or moved without this map following.
 export const DOCS_URL = "https://github.com/DesignThinkerer/tiddlywiki-cloudflare/blob/main/docs";
 const GUIDE = {

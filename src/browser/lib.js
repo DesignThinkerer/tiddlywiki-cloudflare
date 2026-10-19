@@ -82,7 +82,7 @@ exports.SW_CACHE = "cfworker-wiki-v1";
 
 // Where the manual lives (design 2.28), for the texts the modules show: a link to a section, as the
 // docs cite it ("setup 2.4"). The headings are the pages' own, and the link's anchor is made from
-// them the way GitHub makes it; the integrity suite checks each against its page, and the address
+// them the way GitHub makes it; the repository suite checks each against its page, and the address
 // against the worker's (src/worker/docs.js).
 exports.DOCS_URL = "https://github.com/DesignThinkerer/tiddlywiki-cloudflare/blob/main/docs";
 var GUIDE = {

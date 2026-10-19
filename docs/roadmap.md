@@ -9,7 +9,7 @@ A TiddlyWiki anyone hosts on Cloudflare's free plan in about ten minutes, from t
 ## Who it's for
 
 1. **A public wiki** — a blog, documentation, notes you share — edited on a private admin site. What the project does today; its setup by hand checked from the wiki (done: [operating 3.15](operating.md#315-checking-the-setup)).
-2. **A private notebook** — the admin site only, behind Access, no domain to own, edited offline, opened offline, installed as an app (done: [setup 2.1](setup.md#21-before-you-start) and 3).
+2. **A private notebook** — the admin site only, behind Access, no domain to own, edited offline, opened offline, installed as an app (done: [setup 2.1](setup.md#21-before-you-start), [operating 3.11](operating.md#311-editing-offline), [3.13](operating.md#313-opening-the-wiki-offline) and [3.16](operating.md#316-installing-the-wiki-as-an-app)).
 3. **Both at once, or one then the other:** a private wiki that later gets a public site, by adding one setting, with nothing to migrate (done, [design 2.15](design.md#215-a-private-wiki-is-the-same-worker-without-a-public-address)).
 
 ## Next, in order
