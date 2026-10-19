@@ -412,6 +412,15 @@ check("the plugin deleted: the next load no longer refers to its file, which lea
 // Chromium never promises, and what's tested is what the page does with either answer.
 const DEVICE = "$:/plugins/cfworker/admin/device", MEASURE = "$:/temp/cfworker/device", DEVICE_SAID = "$:/temp/cfworker/device-message", ITEM = "$:/temp/cfworker/outbox-status";
 const DEVICE_DB = "cfworker-tiddlers";
+// The device's outbox table refusing a write (a full quota, say), when the test says: the change then
+// lives in the tab only, which the outbox's status says (kept: no)
+await contextA.addInitScript(() => {
+  const put = IDBObjectStore.prototype.put;
+  IDBObjectStore.prototype.put = function(...args) {
+    if (window.__refuseOutbox && this.name === "outbox") throw new Error("the device refused the write (test)");
+    return put.apply(this, args);
+  };
+});
 await contextA.addInitScript(() => {
   if (!navigator.storage || typeof navigator.storage.persist !== "function") return;
   const persist = navigator.storage.persist.bind(navigator.storage), persisted = navigator.storage.persisted.bind(navigator.storage);
@@ -498,6 +507,46 @@ check("Forget this device's copy, with a change waiting: refused, saying how man
 await online(contextA);
 await waitFor(async () => (await status(A))?.waiting === "0", 15000);
 await settle(A);
+// Forget, refused while a change the device refused to keep waits: it lives in this tab only, the
+// outbox's table hasn't got it, and the reload would lose it
+const keptSaid = () => A.evaluate(() => $tw.wiki.getTiddler("$:/temp/cfworker/outbox")?.fields.kept).catch(() => null);
+const saidOrNot = () => said(A).catch(() => "");
+const statusOrNot = () => status(A).catch(() => null);   // (a page without a wiki, had the Forget gone through to a worker that was down)
+await A.evaluate(() => { window.__refuseOutbox = true; });
+await offline(contextA);
+await addTiddler(A, { title: "Unkept note", text: "the device refused to keep it" });
+await addTiddler(A, { title: "Draft of 'Unkept note'", "draft.of": "Unkept note", "draft.title": "Unkept note", text: "typing, the device refusing the draft too" });
+const unkeptWaits = await waitFor(async () => (await status(A))?.waiting === "1" && (await keptSaid()) === "no", 10000);
+const unkeptRows = await deviceCount(A, "outbox");
+await A.evaluate(() => { window.__stillHere = 1; $tw.rootWidget.dispatchEvent({ type: "tm-cfworker-device-forget" }); });
+await waitFor(async () => /waiting/.test(await saidOrNot()), 10000);
+await sleep(500);
+check("Forget, with a change and a draft the device refused to keep (in this tab only, the outbox's table without them): refused all the same, saying both wait, in this tab; nothing removed, no reload",
+  unkeptWaits && unkeptRows === 0 && /1 change and 1 draft waiting.*lives in this tab/.test(await saidOrNot()) && (await A.evaluate(() => window.__stillHere).catch(() => undefined)) === 1 && (await deviceCount(A)) > 0 && (await cached(A)).length === keysBefore.length,
+  `waits ${unkeptWaits}, outbox rows ${unkeptRows}, kept ${await keptSaid()}: ${await saidOrNot()}`);
+await A.evaluate(() => { window.__refuseOutbox = false; $tw.wiki.deleteTiddler("Draft of 'Unkept note'"); }).catch(() => {});
+await online(contextA);
+await waitFor(async () => (await status(A))?.waiting === "0", 15000);
+await settle(A);
+// Forget, refused while the worker doesn't answer, which the outbox's status knows though the browser
+// says it's online: the page would come back from nowhere, the copy and the files gone
+await site.stop(); await site.stopPublic();
+await A.evaluate(() => $tw.syncer.syncFromServer());
+const workerGone = await waitFor(async () => (await status(A))?.online === "no", 15000);
+const browserSaysOnline = await A.evaluate(() => navigator.onLine);
+await A.evaluate(() => { window.__stillHere = 1; $tw.rootWidget.dispatchEvent({ type: "tm-cfworker-device-forget" }); });
+await waitFor(async () => /offline|isn't answering/i.test(await saidOrNot()), 10000);
+await sleep(500);
+check("Forget, with the worker not answering while the browser still says it's online: refused, nothing removed, no reload",
+  workerGone && browserSaysOnline && /isn't answering|offline/i.test(await saidOrNot()) && (await A.evaluate(() => window.__stillHere).catch(() => undefined)) === 1 && (await deviceCount(A)) > 0 && (await cached(A)).length === keysBefore.length,
+  `status ${JSON.stringify(await statusOrNot())}, navigator.onLine ${browserSaysOnline}: ${await saidOrNot()}`);
+await site.start(); await site.startPublic();
+if (!(await A.evaluate(() => !!(window.$tw && $tw.syncer)).catch(() => false))) await reload(A);   // (a Forget that went through reloaded, to a worker that was down)
+await A.evaluate(() => { $tw.syncer.processTaskQueue(); $tw.syncer.syncFromServer(); });
+const backOnline = await waitFor(async () => (await status(A))?.online === "yes", 15000);
+check("the worker back, nothing to send: the outbox's status says it answers again at its first real list (not only at the next change sent)",
+  backOnline, `status ${JSON.stringify(await statusOrNot())}`);
+await settle(A);
 // Forget, with nothing waiting: the copy and the files go, the page reloads, and both are fetched again
 const publicMark = site.publicRequests.length;
 await A.evaluate(() => { window.__stillHere = 1; $tw.rootWidget.dispatchEvent({ type: "tm-cfworker-device-forget" }); });
@@ -507,7 +556,7 @@ await waitFor(async () => (await deviceCount(A)) >= (await listedCount()) - 1 &&
 const fetchedAgain = site.publicRequests.slice(publicMark);
 check("...with nothing waiting: the device copy, the outbox and the service worker's files are gone, the page reloads, and the copy and the files are fetched again",
   reloaded && fetchedAgain.some(u => u.includes("/_plugins/tiddlywikicore.js")) && fetchedAgain.some(u => u.startsWith("/recipes/default/tiddlers/")) && (await deviceCount(A)) > 0,
-  `reloaded ${reloaded}; fetched again: ${fetchedAgain.map(u => u.split("?")[0]).join(", ").slice(0, 300)}`);
+  `reloaded ${reloaded}${reloaded ? "" : ` (the tab said: ${await saidOrNot()}; status ${JSON.stringify(await statusOrNot())})`}; fetched again: ${fetchedAgain.map(u => u.split("?")[0]).join(", ").slice(0, 300)}`);
 
 // --- 9b. Offline, the cached list's answer about backups isn't taken for a new one -------------------
 // The admin wiki asks how backups go with a tiddler list request: at a load, then hourly, and at
