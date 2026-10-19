@@ -82,12 +82,12 @@ async function changeList(env, ctx, mutator, list = null, attempts = 5) {
 
     if (written !== null) return { object: written, text, entries: changed };
 
-    console.warn(`[Manifest] Write conflict detected, retrying (${attempt}/${attempts})...`);
+    console.warn(`[Tiddler list] Write conflict detected, retrying (${attempt}/${attempts})...`);
     // A short, growing, slightly random pause, so saves that collided don't collide again
     await new Promise(resolve => setTimeout(resolve, 25 * attempt + Math.random() * 25));
   }
 
-  throw new Error("Manifest update failed: too many concurrent write conflicts");
+  throw new Error(`The tiddler list couldn't be updated: ${attempts} saves in a row got to it first. Try again.`);
 }
 
 // A tiddler's entry in the list: every field but the text. title: the title it's stored under

@@ -1,7 +1,8 @@
 // The setup check (design 1.13): GET /setup/check, from the control panel's Cloudflare tab, looks at
 // each piece of the setup that's done by hand and says what it found, a missing or wrong one naming
-// the section of the setup guide that fixes it, with its link (docs.js). Nothing says these things otherwise: the page's own requests
-// work without the CORS header, and a missing rewrite rule shows only to visitors. On demand only.
+// the section of the setup guide that fixes it, with its link (docs.js). Nothing says these things
+// otherwise: the page's own requests work without the CORS header, and a missing rewrite rule shows
+// only to visitors. On demand only.
 //
 // From here: Access (this request came through it); the public site as the worker sees it from its
 // own requests — the page at / (the rewrite rule, checked by ETag against the stored page: one R2

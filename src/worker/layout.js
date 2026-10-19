@@ -2,12 +2,13 @@
 //
 // Every tiddler is stored "flat": every field at the top level, compact JSON, "text" last, then the
 // worker's revision, bag and recipe; customMetadata { revision, layout: "flat" }. The conflict guard
-// (src/browser/conflict-guard.js) sends exactly that, without revision, bag or recipe (header X-Tiddler-Layout: flat): the worker
-// parses only the fields before "text" and appends its own, working on the raw bytes, so the text
-// itself (a whole plugin, an image...) is never decoded, parsed or re-encoded. Anything else, such
-// as TiddlyWeb JSON (custom fields under "fields", the text anywhere) from a tab without the module,
-// is parsed and turned into the flat layout first. Reading a stored object back uses the same
-// layout: its fields come before "text", so usually only the start of the object is read.
+// (src/browser/conflict-guard.js) sends exactly that, without revision, bag or recipe (header
+// X-Tiddler-Layout: flat): the worker parses only the fields before "text" and appends its own,
+// working on the raw bytes, so the text itself (a whole plugin, an image...) is never decoded, parsed
+// or re-encoded. Anything else, such as TiddlyWeb JSON (custom fields under "fields", the text
+// anywhere) from a tab without the module, is parsed and turned into the flat layout first. Reading
+// a stored object back uses the same layout: its fields come before "text", so usually only the
+// start of the object is read.
 
 import { concatBytes, decoder, encoder } from "./bytes.js";
 import { revisionOf } from "./tiddlers.js";
