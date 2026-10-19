@@ -54,7 +54,7 @@ var TAB_TEXT = [
 	"!! The engine",
 	"",
 	"<$list filter='[[" + ENGINE + "]get[same]match[yes]]' variable='same'>TiddlyWiki {{" + ENGINE + "!!engine}}, the version the worker ships.</$list>",
-	"<$list filter='[[" + ENGINE + "]get[same]match[no]]' variable='differs'>TiddlyWiki <$list filter='[[" + ENGINE + "]has[engine]]' variable='known' emptyMessage='of an unknown version (the engine has no version tag)'>{{" + ENGINE + "!!engine}}</$list> — the worker ships {{" + ENGINE + "!!shipped}}. <$button set='" + ENGINE + "!!ask' setTo='yes'>Update the engine</$button>",
+	"<$list filter='[[" + ENGINE + "]get[same]match[no]]' variable='differs'>TiddlyWiki <$list filter='[[" + ENGINE + "]has[engine]]' variable='known' emptyMessage='of an unknown version (the engine has no version tag)'>{{" + ENGINE + "!!engine}}</$list> — the worker ships {{" + ENGINE + "!!shipped}}. <$list filter='[[" + ENGINE + "]!field:replaced[yes]]' variable='pending'><$button set='" + ENGINE + "!!ask' setTo='yes'>Update the engine</$button></$list>",
 	"",
 	"<$reveal state='" + ENGINE + "!!ask' type='match' text='yes'>",
 	"",
@@ -71,6 +71,9 @@ var TAB_TEXT = [
 	"",
 	"!! Backups to GitHub",
 	"",
+	"<$list filter='[[" + STATUS + "]!has[backups]]' variable='unknown'>",
+	"Not known yet: the worker hasn't said whether backups are on. It's asked with the page's first tiddler list request; with no network, the answer waits for it.",
+	"</$list>",
 	"<$list filter='[[" + STATUS + "]get[backups]match[off]]' variable='off'>",
 	"Backups are off: the worker has no `GITHUB_REPO` and `GITHUB_TOKEN` (" + lib.guide("setup","2.4") + "). Set them, and every save is committed to GitHub.",
 	"</$list>",
@@ -86,14 +89,17 @@ var TAB_TEXT = [
 	"<$list filter='[[" + STATUS + "]get[sync-running]match[yes]]' variable='running'>",
 	"Running: {{" + STATUS + "!!sync-done}} of {{" + STATUS + "!!sync-total}} tiddlers walked, {{" + STATUS + "!!sync-committed}} committed, {{" + STATUS + "!!sync-removed}} removed, {{" + STATUS + "!!sync-failed}} refused by GitHub (as of <$view tiddler='" + STATUS + "' field='sync-updated' format='date' template='0hh:0mm:0ss'/>).",
 	"</$list>",
-	"<$list filter='[[" + STATUS + "]get[sync-running]match[no]] :filter[[" + STATUS + "]has[sync-finished]]' variable='over'>",
+	"<$list filter='[[" + STATUS + "]get[sync-running]match[no]] :filter[[" + STATUS + "]has[sync-finished]] :filter[[" + STATUS + "]!has[sync-error]]' variable='over'>",
 	"Last full backup: <$view tiddler='" + STATUS + "' field='sync-finished' format='date' template='DDth MMM YYYY 0hh:0mm'/>, {{" + STATUS + "!!sync-done}} tiddlers walked, {{" + STATUS + "!!sync-committed}} committed, {{" + STATUS + "!!sync-removed}} removed, {{" + STATUS + "!!sync-failed}} refused by GitHub.",
 	"</$list>",
+	"<$list filter='[[" + STATUS + "]get[sync-running]match[no]] :filter[[" + STATUS + "]has[sync-finished]] :filter[[" + STATUS + "]has[sync-error]]' variable='refused'>",
+	"The last full backup didn't go through: <code><$text text={{" + STATUS + "!!sync-error}}/></code> (<$view tiddler='" + STATUS + "' field='sync-finished' format='date' template='DDth MMM YYYY 0hh:0mm'/>). Start it again.",
+	"</$list>",
 	"<$list filter='[[" + STATUS + "]get[sync-running]match[no]] :filter[[" + STATUS + "]!has[sync-finished]]' variable='lost'>",
-	"The last full backup stopped without finishing (its steps were lost): start it again.",
+	"The last full backup stopped without finishing (its steps were lost<$list filter='[[" + STATUS + "]has[sync-error]]' variable='problem'>; its last step's error: <code><$text text={{" + STATUS + "!!sync-error}}/></code></$list>): start it again.",
 	"</$list>",
 	"</$list>",
-	"<$list filter='[[" + STATUS + "]has[sync-error]]' variable='problem'>",
+	"<$list filter='[[" + STATUS + "]get[sync-running]match[yes]] :filter[[" + STATUS + "]has[sync-error]]' variable='problem'>",
 	"",
 	"Its last step didn't go through: <code><$text text={{" + STATUS + "!!sync-error}}/></code>. It's tried again by itself.",
 	"</$list>",
@@ -136,6 +142,11 @@ exports.startup = function() {
 			wiki.deleteTiddler(MESSAGE);
 		}
 	}
+	// A worker answer in a message: the worker's own words as they are (plain text, with a link to
+	// the manual in them), and anything else (an error page from the edge: HTML) as text, not markup
+	function shown(answer) {
+		return String(answer || "").slice(0,300).replace(/</g,"&lt;");
+	}
 
 	// POST or GET /backup/sync: a JSON status (202 started, 409 one is running, 200 the last one),
 	// or a text saying what's missing (400) or what failed
@@ -160,7 +171,7 @@ exports.startup = function() {
 					say("No full backup yet.");
 					return;
 				}
-				say((status ? "The worker answered " + status + ": " : "The worker didn't answer: ") + String(data || err || "").slice(0,300));
+				say((status ? "The worker answered " + status + ": " : "The worker didn't answer: ") + shown(data || err));
 			}
 		});
 	}
@@ -197,10 +208,11 @@ exports.startup = function() {
 					body = data ? JSON.parse(data) : null;
 				} catch(e) {}
 				if(status === 200 && body && body.to) {
+					wiki.setText(ENGINE,"replaced",null,"yes");   // (the Update button goes: the reload runs the new engine)
 					engineSay("Engine replaced: TiddlyWiki " + (body.from || "(unknown)") + " → " + body.to + ". <$button message='" + RELOAD + "'>Reload</$button> to run it: that load builds the page from it and publishes it.");
 					return;
 				}
-				engineSay("The engine wasn't replaced. " + (status ? "The worker answered " + status + ": " : "The worker didn't answer: ") + String(data || err || "").slice(0,300));
+				engineSay("The engine wasn't replaced. " + (status ? "The worker answered " + status + ": " : "The worker didn't answer: ") + shown(data || err));
 			}
 		});
 		return false;
