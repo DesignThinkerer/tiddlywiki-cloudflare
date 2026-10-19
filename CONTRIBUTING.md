@@ -37,7 +37,7 @@ A browser suite that fails leaves `test-results/<suite>.requests.log` (every req
 
 ## Releases
 
-A release is a dated block of `CHANGELOG.md`. Entries collect under "Unreleased" as they merge; the pull request that dates the block also sets `package.json`'s version to that date (`2026-10-19` is `2026.10.19`, valid semver, and the repository suite checks the two agree), which the admin wiki's plugin then shows, followed by a build hash. Once that's merged, the tag and the GitHub release, with the block as its notes, are one command:
+A release is a dated block of `CHANGELOG.md`. Entries collect under "Unreleased" as they merge; the pull request that dates the block also sets `package.json`'s version to that date (`2026-10-19` is `2026.10.19`, valid semver) and `package-lock.json`'s with it (`npm install --package-lock-only`; the repository suite checks the three agree), which the admin wiki's plugin then shows, followed by a build hash. Once that's merged, the tag and the GitHub release, with the block as its notes, are one command:
 
 ```bash
 node tools/release-notes.mjs | gh release create "v$(node -p "require('./package.json').version")" --target main --title "$(node -p "require('./package.json').version")" --notes-file -
