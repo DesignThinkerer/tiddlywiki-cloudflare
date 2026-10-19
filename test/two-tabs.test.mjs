@@ -1047,6 +1047,14 @@ check("cancelled in the first tab: the draft is gone from the other too, its edi
 await startEdit(Q, "Shared draft");
 await typeInto(Q, sharedDraft, "typed in Q before P reloads");
 await waitFor(async () => (await textOf(P, sharedDraft)) === "typed in Q before P reloads", 5000);
+// (P showed the keystroke over the channel at once; Q writes the draft to the device 300 ms after it,
+// and a reload of P can only get the draft back from there: waited for, or P comes back without it)
+const draftOnDevice = (page, text) => page.evaluate(x => new Promise(resolve => {
+  const req = indexedDB.open("cfworker-tiddlers");
+  req.onsuccess = () => { const db = req.result; const get = db.transaction("outbox").objectStore("outbox").getAll(); get.onsuccess = () => { db.close(); resolve(get.result.some(e => e.fields && e.fields.text === x)); }; get.onerror = () => { db.close(); resolve(false); }; };
+  req.onerror = () => resolve(false);
+}), text);
+await waitFor(() => draftOnDevice(Q, "typed in Q before P reloads"), 5000);
 await reloadTab(P);
 const backAfterReload = await waitFor(async () => (await textOf(P, sharedDraft)) === "typed in Q before P reloads", 10000);
 check("the first tab reloaded while the other holds the draft: it has the draft back, as typed", backAfterReload, JSON.stringify(await textOf(P, sharedDraft)));
@@ -1054,6 +1062,11 @@ await typeInto(Q, sharedDraft, "typed in Q after P's reload");
 check("...and follows on", await waitFor(async () => (await textOf(P, sharedDraft)) === "typed in Q after P's reload", 5000), JSON.stringify(await textOf(P, sharedDraft)));
 await finishEdit(Q, "Shared draft", "final from Q");
 check("...saved in the other tab, the reloaded one shows the save", await waitFor(async () => (await textOf(P, "Shared draft")) === "final from Q" && (await draftOf(P, "Shared draft")) === null, 5000), JSON.stringify(await textOf(P, "Shared draft")));
+
+// (Q's save of "Shared draft" goes out on the syncer's next tick, after P showed it over the channel:
+// waited for here, or it goes out after the network is cut and counts as Q's own write below)
+await settle(Q);
+await waitFor(async () => (await server("Shared draft"))?.text === "final from Q", 5000);
 
 // i2. With no network, a change made in one tab shows in the other at once: a change travels when it's
 // made, as the version its tab will save, and the worker's revision follows when the save is confirmed
