@@ -4,6 +4,7 @@ What changed, and what an update asks of you, newest first. Your worker is deplo
 
 ## Unreleased
 
+- Tests: the repository's guards (`.gitignore`, `wrangler.toml`, what a deploy uploads, the scripts, the Miniflare pins, the docs' links and references, the restore tool, the build's refusals) are a suite of their own, `repository` (`npm run test:repository`, a few seconds, no worker); `integrity` is the tiddler list under failure again. Nothing to do.
 - **The manual as pages** (README, "The manual"): chapters 2 to 7 of the README — setting up, operating, troubleshooting, known limits, development, reference — are pages under `docs/`, each section a heading, and the README is a front page: what it is, how it fits together, the names used throughout, the quick start. The chapter numbers stay, so "2.6" is still Cloudflare Access, cited as "setup 2.6" wherever it's cited. The setup check's lines, the worker's error pages and the plugin's tabs link to the section they name ([design 2.28](docs/design.md#228-the-manual-as-pages-and-the-workers-messages-linking-to-them)), and the integrity suite checks every link and every section reference in the docs, the code and the tests. Nothing to do.
 
 ## 2026-10-19
