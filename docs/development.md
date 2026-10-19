@@ -42,7 +42,7 @@ The suites run with the waits shortened ([design 2.25](design.md#225-the-tests-r
 | `npm run test:budget` | What reaches the worker per page load, counted behind a proxy, the service worker in place. |
 | `npm run test:setup` | The setup check, against the public stand-in with Cloudflare's headers, GitHub and Cloudflare's API imitated. |
 
-GitHub runs the same two groups, as two jobs side by side, for every pull request and every push to `main` (`.github/workflows/ci.yml`), after the lint and after checking that `worker.js` is what `src/` builds. One run per commit: a re-run of a commit's run never cancels another commit's, and an older commit's run goes on when a newer one is pushed. A job that fails, or is cancelled by its timeout, keeps its `test-results/` for a week (the run's page → *Artifacts*): the logs, and the request log and traces of each browser suite that failed or was stopped. Dependabot proposes the other packages' updates weekly, and the Actions'; the `tiddlywiki` package it leaves alone ([operating 3.3](operating.md#33-updating-the-wiki-engine)).
+GitHub runs the same two groups, as two jobs side by side, for every pull request and every push to `main` (`.github/workflows/ci.yml`), after the lint and after checking that `worker.js` is what `src/` builds. One run per commit: a re-run of a commit's run never cancels another commit's, and an older commit's run goes on when a newer one is pushed. A job that fails, or is cancelled by its timeout, keeps its `test-results/` for a week (the run's page → *Artifacts*): the logs, and the request log and traces of each browser suite that failed or was stopped. Dependabot proposes the other packages' updates weekly, and the Actions', each once its release has been out for a few days (three for a patch, a week for a minor, a month for a major: a compromised release is usually found and pulled within days, and Workers Builds installs the dev dependencies with the credentials that deploy the worker; a fix for a known vulnerability isn't delayed); the `tiddlywiki` package it leaves alone ([operating 3.3](operating.md#33-updating-the-wiki-engine)).
 
 ## 6.1 Repository layout
 
@@ -77,7 +77,7 @@ GitHub runs the same two groups, as two jobs side by side, for every pull reques
 │   └── admin-wiki.png        GENERATED: the README's screenshot (npm run screenshot)
 ├── .github/
 │   ├── workflows/ci.yml      runs the tests on GitHub for every pull request and push to main, keeping a failed job's test-results/
-│   ├── dependabot.yml        dependency updates as weekly pull requests, the wiki engine excepted (operating 3.3)
+│   ├── dependabot.yml        dependency updates as weekly pull requests, each a few days after its release, the wiki engine excepted (operating 3.3)
 │   ├── ISSUE_TEMPLATE/       the bug report form, and where questions and ideas go
 │   └── PULL_REQUEST_TEMPLATE.md  the process as a checklist
 ├── src/
