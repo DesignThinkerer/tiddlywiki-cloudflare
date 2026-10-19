@@ -156,7 +156,7 @@ The plugin's *settings* tab holds the wiki's own settings (tiddlers under `$:/co
 - the pause before a draft is written to the device (300 ms; lower is more writes, higher is more typing lost if the tab crashes);
 - how many tiddlers the fill fetches at once (6; more is a faster fill with more requests in flight — on a private wiki they're worker requests either way, the same number);
 - the pause after a save before the page is published (1 s; a burst of saves is published once);
-- how often the worker is asked how backups go (60 minutes, with a list request; one R2 read each, and the alert when backups fail comes that much later);
+- how often the worker is asked how backups go (60 minutes, a minute at least, with a list request; one R2 read each, and the alert when backups fail comes that much later);
 - how long the service worker waits for the network before answering with the page it kept (8 s; longer suits a slow connection, shorter a dead one; the page tells the service worker at each load, so that one applies at the next).
 
 The defaults fit the free plan and are what the tests run; an empty field is the default. The worker's own settings stay in the dashboard ([setup 2.5](setup.md#25-the-worker)). [Design 2.21](design.md#221-the-modules-as-a-plugin-the-settings-in-its-tab-the-advanced-ones-under-a-warning).

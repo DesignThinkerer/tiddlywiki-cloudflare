@@ -41,15 +41,23 @@ exports.startup = function() {
 	var proto = Adaptor.prototype,
 		wiki = $tw.wiki,
 		backupAsked = 0,          // when the worker last answered
-		backupProblem = null,     // the problem the alert was about, so a dismissed one stays dismissed
-		backupStuck = null,       // the same for the backup cut short
-		syncRunning = false;      // a full backup is going: asked at each list request meanwhile
+		problemKey = null,        // the problem the alert is about (since + error): unchanged, nothing to redo, and a dismissed one stays dismissed
+		stuckKey = null,          // the same for the backup cut short (title + started)
+		syncRunning = false,      // a full backup is going: asked at each list request meanwhile
+		removingHint = false;     // the hint being deleted by this module, not closed by the user
 	proto.cfworkerBackupAlert = true;
 
-	// Only the admin site asks (a public tab reads the list from the public site, which has no answer)
+	// Only the admin site asks (a public tab reads the list from the public site, which has no answer):
+	// at the first request, at every request while an alert shows or a full backup runs, else once
+	// the interval has passed (the setting, a minute at least: a nonsense value doesn't make every
+	// request ask, which is an R2 read each)
 	function askBackupStatus(adaptor) {
-		return lib.onAdminSite(adaptor.host) &&
-			(!backupAsked || syncRunning || wiki.tiddlerExists(BACKUP_ALERT) || wiki.tiddlerExists(BACKUP_STUCK) || Date.now() - backupAsked >= (parseInt(wiki.getTiddlerText("$:/config/cfworker/BackupCheckMinutes",""),10) || BACKUP_CHECK_MINUTES) * 60 * 1000);
+		if(!lib.onAdminSite(adaptor.host)) {
+			return false;
+		}
+		var alertShown = wiki.tiddlerExists(BACKUP_ALERT) || wiki.tiddlerExists(BACKUP_STUCK),
+			minutes = Math.max(1,parseInt(wiki.getTiddlerText("$:/config/cfworker/BackupCheckMinutes",""),10) || BACKUP_CHECK_MINUTES);
+		return !backupAsked || syncRunning || alertShown || Date.now() - backupAsked >= minutes * 60 * 1000;
 	}
 
 	// The worker's answer, parsed: "off" (no backups), "ok", or encoded JSON with what there is to
@@ -112,17 +120,20 @@ exports.startup = function() {
 	// The alert while backups keep failing. problem: {count, title, since, error, status} of the oldest
 	function showProblem(problem) {
 		if(!problem) {
-			backupProblem = null;
+			problemKey = null;
 			if(wiki.tiddlerExists(BACKUP_ALERT)) {
 				wiki.deleteTiddler(BACKUP_ALERT);
 			}
 			return;
 		}
+		// The same problem as the alert is about: shown, it stays as it is (every list request asks
+		// meanwhile, and rewriting it at each answer would change its date and refresh it for nothing);
+		// dismissed, it stays dismissed
 		var key = problem.since + " " + problem.error;
-		if(key === backupProblem && !wiki.tiddlerExists(BACKUP_ALERT)) {
+		if(key === problemKey) {
 			return;
 		}
-		backupProblem = key;
+		problemKey = key;
 		var hint = problem.status === 401 ? "The token in the worker's GITHUB_TOKEN secret is wrong or has expired: make a new one and put it in the secret." :
 			problem.status === 403 || problem.status === 404 ? "The token may not be allowed to write to the repository in GITHUB_REPO, or the repository or its branch doesn't exist." :
 			problem.status === 409 || problem.status === 422 ? "GitHub refuses that file." :
@@ -134,7 +145,7 @@ exports.startup = function() {
 			modified: new Date(),
 			text: "Backups to GitHub have been failing since " + $tw.utils.formatDateString(new Date(problem.since),"DDth MMM YYYY 0hh:0mm") + ": " +
 				(problem.count > 1 ? problem.count + " tiddlers, " + lib.link(problem.title) + " the oldest, aren't" : lib.link(problem.title) + " isn't") +
-				" backed up yet. GitHub answered: ``" + String(problem.error).replace(/`/g,"'") + "``. " + hint +
+				" backed up yet. GitHub answered: ``" + String(problem.error).replace(/`/g,"'").replace(/[\r\n]+/g," ") + "``. " + hint +
 				" They're retried by themselves, and the wiki keeps everything meanwhile."
 		}));
 	}
@@ -143,17 +154,17 @@ exports.startup = function() {
 	// of the oldest. Nothing retries it (the queue dropped it): the next save of the tiddler does.
 	function showStuck(stuck) {
 		if(!stuck) {
-			backupStuck = null;
+			stuckKey = null;
 			if(wiki.tiddlerExists(BACKUP_STUCK)) {
 				wiki.deleteTiddler(BACKUP_STUCK);
 			}
 			return;
 		}
 		var key = stuck.title + " " + stuck.started;
-		if(key === backupStuck && !wiki.tiddlerExists(BACKUP_STUCK)) {
+		if(key === stuckKey) {
 			return;
 		}
-		backupStuck = key;
+		stuckKey = key;
 		wiki.addTiddler(new $tw.Tiddler({
 			title: BACKUP_STUCK,
 			tags: ["$:/tags/Alert"],
@@ -178,6 +189,7 @@ exports.startup = function() {
 	function showHint(status) {
 		if(status.backups !== "on" || status.sync) {
 			if(wiki.tiddlerExists(BACKUP_HINT)) {
+				removingHint = true;
 				wiki.deleteTiddler(BACKUP_HINT);
 			}
 			return;
@@ -195,9 +207,14 @@ exports.startup = function() {
 		}));
 	}
 
-	// The hint's close button deletes it: remembered
+	// The hint's close button deletes it: remembered. Not a deletion of this module's own (backups
+	// reported off, or a full backup run): on again with none run, the hint is due again
 	wiki.addEventListener("change",function(changes) {
 		if(changes[BACKUP_HINT] && changes[BACKUP_HINT].deleted) {
+			if(removingHint) {
+				removingHint = false;
+				return;
+			}
 			try {
 				window.localStorage.setItem(HINT_DISMISSED_KEY,"yes");
 			} catch(e) {}
@@ -227,7 +244,15 @@ exports.startup = function() {
 			return askBackupStatus(adaptor) ? {"X-Backup-Status": "ask"} : null;
 		},
 		answer: function(xhr) {
-			var answer = xhr && xhr.getResponseHeader ? xhr.getResponseHeader("X-Backup-Status") : null;
+			if(!xhr || !xhr.getResponseHeader) {
+				return;
+			}
+			// A list the service worker answered from its cache (the network gone, design 1.11) carries
+			// the answer it was cached with, already noted when it came: not the worker answering now
+			if(xhr.getResponseHeader("X-Served-From") === "cache") {
+				return;
+			}
+			var answer = xhr.getResponseHeader("X-Backup-Status");
 			if(answer) {
 				backupAsked = Date.now();
 				proto.cfworkerNoteBackupStatus(answer);
