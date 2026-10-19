@@ -444,7 +444,7 @@ check("...not on a deployed hostname", decide("https://admin.example.com/", {}, 
 check("...and nothing else does (not ACCESS = no), even locally", decide("http://127.0.0.1:8787/", {}, { ACCESS: "no" }) === true && decide("http://127.0.0.1:8787/", {}, { ACCESS: "" }) === true);
 
 // --- The public site's address --------------------------------------------------------------------
-// PUBLIC_WIKI_URL is optional. Without it the worker is a private wiki (README 2.1): the page, the
+// PUBLIC_WIKI_URL is optional. Without it the worker is a private wiki (setup 2.1): the page, the
 // core file and the plugin files are served by the worker itself, at root-relative URLs, the page
 // carries an empty public address, and nothing is purged. Set, it must be a site's address: the page
 // loads its plugin files and TiddlyWiki's core from it, so a wiki must never fall back to someone
@@ -538,7 +538,7 @@ check("...and so are no scheme, another scheme, a path, a query", ["wiki.example
 // A new bucket is empty. The build makes seed/empty.html (an empty TiddlyWiki with the TiddlyWeb
 // plugin), uploaded with the worker as a text module: on the first page request the worker puts it
 // in the bucket as index.html, with the public site's status file, and the wiki starts. Nothing to
-// upload (README 2.8). (Not a static asset: those put a router in front of the worker that doesn't
+// upload (setup 2.8). (Not a static asset: those put a router in front of the worker that doesn't
 // pass ctx.access on, which the Access check needs.)
 const emptyWiki = fs.readFileSync(fileURLToPath(new URL("../seed/empty.html", import.meta.url)));
 function withAssets(extra = {}) {

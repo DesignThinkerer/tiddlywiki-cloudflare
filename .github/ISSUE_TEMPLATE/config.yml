@@ -1,8 +1,11 @@
 blank_issues_enabled: true
 contact_links:
-  - name: Setting up, operating, troubleshooting
-    url: https://github.com/DesignThinkerer/tiddlywiki-cloudflare#readme
-    about: The README has the setup step by step, how to operate the wiki, troubleshooting (4) and the known limits (5).
+  - name: Setting up and operating the wiki
+    url: https://github.com/DesignThinkerer/tiddlywiki-cloudflare#the-manual
+    about: The manual, chapter by chapter: the setup step by step, operating the wiki, the development guide.
+  - name: Troubleshooting and known limits
+    url: https://github.com/DesignThinkerer/tiddlywiki-cloudflare/blob/main/docs/troubleshooting.md
+    about: Symptoms, causes and fixes; and the limits you can hit, each with what to do about it.
   - name: An idea for the project
     url: https://github.com/DesignThinkerer/tiddlywiki-cloudflare/blob/main/docs/roadmap.md
     about: The roadmap says what's ahead and what's parked, and why. An idea that isn't there is welcome as a plain issue.

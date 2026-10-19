@@ -634,8 +634,8 @@ await bucket.put("_backup/status.json", JSON.stringify({ failing: {}, running: {
 const K2 = await openTab("K2");
 await K2.waitForFunction(t => $tw.wiki.tiddlerExists(t), BACKUP_STUCK, { timeout: 10000 }).catch(() => {});
 const stuckAlert = await K2.evaluate(t => { const a = $tw.wiki.getTiddler(t); return a ? { tags: a.fields.tags, text: a.fields.text } : null; }, BACKUP_STUCK);
-check("a backup cut short four times on a big version shows as an alert: the tiddler, its size, how many times, what it most likely is (README 5) and what to do",
-  !!stuckAlert && (stuckAlert.tags || []).includes("$:/tags/Alert") && stuckAlert.text.includes('<$link to="Gamma">') && /4\.[0-9] MB/.test(stuckAlert.text) && /4 times/.test(stuckAlert.text) && /CPU/.test(stuckAlert.text) && /README 5|\(5\)/.test(stuckAlert.text),
+check("a backup cut short four times on a big version shows as an alert: the tiddler, its size, how many times, what it most likely is (limits 5) and what to do",
+  !!stuckAlert && (stuckAlert.tags || []).includes("$:/tags/Alert") && stuckAlert.text.includes('<$link to="Gamma">') && /4\.[0-9] MB/.test(stuckAlert.text) && /4 times/.test(stuckAlert.text) && /CPU/.test(stuckAlert.text) && /limits 5|\(5\)/.test(stuckAlert.text),
   JSON.stringify(stuckAlert));
 await bucket.delete("_backup/status.json");
 await sync(K2);

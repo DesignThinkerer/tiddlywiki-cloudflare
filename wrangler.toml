@@ -1,20 +1,21 @@
 # The worker's bindings and defaults: what Wrangler deploys, from your repository through Workers
-# Builds, or with `npx wrangler deploy` (README 2.5). Deployed as it is: nothing in this file has
-# to be changed for a wiki that uses the default names (README 2.1). Your own settings (all
+# Builds, or with `npx wrangler deploy` (setup 2.5). Deployed as it is: nothing in this file has
+# to be changed for a wiki that uses the default names (setup 2.1). Your own settings (all
 # optional: without any, the worker is a private wiki) live in the dashboard, under the worker's
 # Variables and Secrets, which a deploy keeps (keep_vars); so do the two secrets, GITHUB_TOKEN and
-# CF_API_TOKEN. No secret goes in this file.
+# CF_API_TOKEN. No secret goes in this file. (The section numbers are the manual's: docs/setup.md
+# for 2.x, docs/operating.md for 3.x.)
 
-name = "wiki-admin"                  # the worker's name: name the worker this when you create it (README 2.5)
+name = "wiki-admin"                  # the worker's name: name the worker this when you create it (setup 2.5)
 main = "worker.js"                   # the built file (npm run build): deployed as it is, the one the tests ran on
 no_bundle = true
 find_additional_modules = true       # the empty wiki module (the rules below), nothing else
 compatibility_date = "2024-09-23"
 keep_vars = true                     # a deploy keeps the variables set in the dashboard: that's where the settings are
-workers_dev = true                   # the admin site: https://wiki-admin.<your subdomain>.workers.dev, behind Access (README 2.6)
+workers_dev = true                   # the admin site: https://wiki-admin.<your subdomain>.workers.dev, behind Access (setup 2.6)
 preview_urls = false                 # no preview URLs: a preview would use the real bucket and queue
 
-# A custom domain for the admin site instead (README 2.5): add it in the dashboard, under the
+# A custom domain for the admin site instead (setup 2.5): add it in the dashboard, under the
 # worker's Domains & Routes, or here:
 # routes = [
 #   { pattern = "admin.wiki.example.com", custom_domain = true }
@@ -22,12 +23,12 @@ preview_urls = false                 # no preview URLs: a preview would use the 
 
 [[r2_buckets]]
 binding = "WIKI_BUCKET"
-bucket_name = "wiki"                 # the bucket you created (README 2.2); must exist: a missing name would make Wrangler create one
+bucket_name = "wiki"                 # the bucket you created (setup 2.2); must exist: a missing name would make Wrangler create one
 
 # The empty wiki a new bucket starts from (seed/empty.html, made by npm run build), uploaded with
-# the worker as a text module, which it reads on the first visit (README 2.8). Not a static asset:
+# the worker as a text module, which it reads on the first visit (setup 2.8). Not a static asset:
 # a worker with static assets runs behind a router that doesn't pass Cloudflare Access's mark
-# (ctx.access) on to it, and the worker refuses requests without that mark (README 2.6).
+# (ctx.access) on to it, and the worker refuses requests without that mark (setup 2.6).
 [[rules]]
 type = "Text"
 globs = ["seed/*.html"]
@@ -43,7 +44,7 @@ type = "Data"
 globs = []
 fallthrough = false
 
-# The backup queue (README 2.3): the worker sends to it and consumes it, one batch at a time
+# The backup queue (setup 2.3): the worker sends to it and consumes it, one batch at a time
 [[queues.producers]]
 binding = "BACKUP_QUEUE"
 queue = "wiki-backup"
@@ -56,18 +57,18 @@ max_concurrency = 1                  # backups run one at a time, so commits nev
 max_retries = 3                      # Cloudflare's default, which the worker counts on for its waits: don't lower it
 
 # The settings, set in the dashboard (the worker's Settings → Variables and Secrets), as plain
-# variables or as secrets, whichever you prefer; a deploy keeps both (README 2.5):
-#   PUBLIC_WIKI_URL        the public site, https:// and the bucket's custom domain (README 2.2); none for a private wiki (README 2.1)
+# variables or as secrets, whichever you prefer; a deploy keeps both (setup 2.5):
+#   PUBLIC_WIKI_URL        the public site, https:// and the bucket's custom domain (setup 2.2); none for a private wiki (setup 2.1)
 #   CF_ZONE_ID             the zone of the public site, for cache purges, with the secret CF_API_TOKEN
-#   GITHUB_REPO            owner/repo of the backup repository (README 2.4), with the secret GITHUB_TOKEN
+#   GITHUB_REPO            owner/repo of the backup repository (setup 2.4), with the secret GITHUB_TOKEN
 #   GITHUB_BRANCH          its branch (default main)
-#   CONFLICT_GUARD         "off" builds the page without the browser modules (README 3)
+#   CONFLICT_GUARD         "off" builds the page without the browser modules (operating 3)
 #   BACKUP_ALERT_MINUTES   how long backups have to keep failing before the admin wiki shows it (default 60)
 #   BACKUP_RETRY_SECONDS   the first wait before a failed backup is tried again (default 60)
 #   ACCESS                 "off" lets requests through without Cloudflare Access, only to a local address: for tests and local runs (nothing on a deployed worker)
 # A [vars] section here would do too, but a variable set in the file replaces the dashboard's at
 # each deploy, and the file is part of the repository.
 
-# Workers Logs (README 3): what the worker prints, kept 3 days on the free plan
+# Workers Logs (operating 3): what the worker prints, kept 3 days on the free plan
 [observability]
 enabled = true

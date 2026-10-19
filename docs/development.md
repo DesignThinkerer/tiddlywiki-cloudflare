@@ -1,5 +1,7 @@
 # 6. Development and tests
 
+*Chapter 6 of the [manual](../README.md#the-manual). The process for a change is in [CONTRIBUTING.md](../CONTRIBUTING.md).*
+
 Requirements: Node.js 22 or newer (Wrangler 4 needs it) and a Chromium for the browser tests. (`npm run build` also makes `seed/empty.html`, the empty wiki the browser tests start from.)
 
 ```bash
@@ -10,7 +12,7 @@ npm test                             # build (worker.js and seed/empty.html), ru
 
 `npm test` runs every suite to the end, even after one fails, and ends with a summary naming what failed (`tools/run-suites.mjs`); each suite's output is also in `test-results/<suite>.log`. A suite still running after 15 minutes is stopped and counted as failed (`--timeout <seconds>` changes that), so one that hangs doesn't hold the run. `npm test -- --parallel 2` runs two suites at once (any number; 1, one after the other, is the default and what CI does): every suite takes free ports and its own temporary folder, so what they share is the machine, and a timing check that passes alone can fail with more suites at once than it has CPUs to spare — a failure seen only that way is rerun alone before anything is read into it. With several at once, a suite's output is printed whole when it ends. The suites are listed longest first (`package.json`), so that with enough of them at once the run takes about as long as its longest suite, three minutes or so.
 
-The suites run with the waits shortened (design 2.25). The browser modules' fixed waits — the publisher's pause after a save, the time given to a public read before the worker is asked instead, the retries while the list is rebuilt — are multiplied by `$tw.cfworkerTestTimeScale`, which the test harness sets to 0.2 before each test page boots; nothing stored in a wiki can set it, so a deployed wiki has the waits as the modules say. The worker's fixed waits — the second purge after a list rebuild, the outdated mark's retry, a direct backup's retries — are multiplied by the `TEST_WAIT_SCALE` binding, which only the test setups give it. TiddlyWiki's own syncer, in the test pages, looks for work every 50 ms rather than 250 and retries an error after a second rather than five (`test/browser-harness.mjs`). The queue's delays are whole seconds in Cloudflare's API and aren't scaled; `BACKUP_RETRY_SECONDS` is 1 in the tests. A browser suite that fails leaves two more things there: `test-results/<suite>.requests.log`, every request its pages made, in order, with the time, the tab, the path and how it ended (answered, from the browser's cache, or given up on), and `test-results/traces/<suite>/<n>.zip`, a Playwright trace of each browser context — the test's actions and the page's console messages in time — opened with `npx playwright show-trace <file>`. `TRACE=1` keeps both for a passing suite too; `TRACE=full` adds screenshots and DOM snapshots to the traces (they slow the page down, so a timing check can fail with them). A passing suite removes the request log a failed run of it left, so what's in `test-results/` is the last run's.
+The suites run with the waits shortened ([design 2.25](design.md#225-the-tests-run-with-the-waits-shortened-the-code-with-the-waits-it-has)). The browser modules' fixed waits — the publisher's pause after a save, the time given to a public read before the worker is asked instead, the retries while the list is rebuilt — are multiplied by `$tw.cfworkerTestTimeScale`, which the test harness sets to 0.2 before each test page boots; nothing stored in a wiki can set it, so a deployed wiki has the waits as the modules say. The worker's fixed waits — the second purge after a list rebuild, the outdated mark's retry, a direct backup's retries — are multiplied by the `TEST_WAIT_SCALE` binding, which only the test setups give it. TiddlyWiki's own syncer, in the test pages, looks for work every 50 ms rather than 250 and retries an error after a second rather than five (`test/browser-harness.mjs`). The queue's delays are whole seconds in Cloudflare's API and aren't scaled; `BACKUP_RETRY_SECONDS` is 1 in the tests. A browser suite that fails leaves two more things there: `test-results/<suite>.requests.log`, every request its pages made, in order, with the time, the tab, the path and how it ended (answered, from the browser's cache, or given up on), and `test-results/traces/<suite>/<n>.zip`, a Playwright trace of each browser context — the test's actions and the page's console messages in time — opened with `npx playwright show-trace <file>`. `TRACE=1` keeps both for a passing suite too; `TRACE=full` adds screenshots and DOM snapshots to the traces (they slow the page down, so a timing check can fail with them). A passing suite removes the request log a failed run of it left, so what's in `test-results/` is the last run's.
 
 | Command | What it runs |
 |---|---|
@@ -23,7 +25,7 @@ The suites run with the waits shortened (design 2.25). The browser modules' fixe
 | `npm run test:suite -- <name>…` | Only the suites named, after a build: `npm run test:suite -- page-publish two-tabs`. |
 | `npm run test:first` | A new wiki from an empty bucket, in Chromium. |
 | `npm run test:bake` | Page serving and rebuilding, the published page, the Access check, the public address, the first visit. |
-| `npm run test:integrity` | The tiddler list's integrity, the page after a failed build, draft-like titles and `.gitignore`. |
+| `npm run test:integrity` | The tiddler list's integrity, the page after a failed build, draft-like titles, `.gitignore`; the docs' links and section references, and the worker's links into them. |
 | `npm run test:r2` | R2 calls per kind of request, against a budget. |
 | `npm run test:cpu` | CPU of the heaviest steps, a big plugin's save and backup, against a budget. |
 | `npm run test:backup` | Queue backup against an imitation of GitHub's Contents API. |
@@ -39,12 +41,12 @@ The suites run with the waits shortened (design 2.25). The browser modules' fixe
 | `npm run test:budget` | What reaches the worker per page load, counted behind a proxy, the service worker in place. |
 | `npm run test:setup` | The setup check, against the public stand-in with Cloudflare's headers, GitHub and Cloudflare's API imitated. |
 
-GitHub runs the same two groups, as two jobs side by side, for every pull request and every push to `main` (`.github/workflows/ci.yml`), after the lint and after checking that `worker.js` is what `src/` builds. One run per commit: a re-run of a commit's run never cancels another commit's, and an older commit's run goes on when a newer one is pushed. A job that fails, or is cancelled by its timeout, keeps its `test-results/` for a week (the run's page → *Artifacts*): the logs, and the request log and traces of each browser suite that failed or was stopped. Dependabot proposes the other packages' updates weekly, and the Actions'; the `tiddlywiki` package it leaves alone (3, "Updating the wiki engine").
+GitHub runs the same two groups, as two jobs side by side, for every pull request and every push to `main` (`.github/workflows/ci.yml`), after the lint and after checking that `worker.js` is what `src/` builds. One run per commit: a re-run of a commit's run never cancels another commit's, and an older commit's run goes on when a newer one is pushed. A job that fails, or is cancelled by its timeout, keeps its `test-results/` for a week (the run's page → *Artifacts*): the logs, and the request log and traces of each browser suite that failed or was stopped. Dependabot proposes the other packages' updates weekly, and the Actions'; the `tiddlywiki` package it leaves alone ([operating [operating 3.3](operating.md#33-updating-the-wiki-engine)](operating.md#33-updating-the-wiki-engine)).
 
 ## 6.1 Repository layout
 
 ```
-├── README.md                 this document
+├── README.md                 the front page: what it is, how it fits together, the quick start, the manual's chapters
 ├── CHANGELOG.md              what shipped, newest first, and what an update asks of you
 ├── CONTRIBUTING.md           how work on the repository happens: the principles, the process, the tests, where writing goes
 ├── CLAUDE.md                 points an AI coding agent at CONTRIBUTING.md, with what its environment needs
@@ -58,6 +60,12 @@ GitHub runs the same two groups, as two jobs side by side, for every pull reques
 ├── tools/run-suites.mjs      runs test suites, each to the end, one after the other or several at once (--parallel), with a summary (npm test); their output under test-results/, not committed
 ├── tools/screenshot.mjs      takes the README's screenshot from a wiki run through the test setup (npm run screenshot)
 ├── docs/
+│   ├── setup.md              the manual, chapter 2: setting up
+│   ├── operating.md          chapter 3: operating it
+│   ├── troubleshooting.md    chapter 4: symptoms, causes, fixes
+│   ├── limits.md             chapter 5: known limits
+│   ├── development.md        chapter 6: this page
+│   ├── reference.md          chapter 7: the documents the design relies on
 │   ├── design.md             how the worker works, and why it's built this way
 │   ├── roadmap.md            what's ahead, in order, and what's parked and why
 │   ├── tests.md              what each test suite covers, the R2 calls per kind of request, the CPU budgets
@@ -83,7 +91,7 @@ GitHub runs the same two groups, as two jobs side by side, for every pull reques
 │   │   ├── setup.js          the setup check: each piece looked at from the worker (design 1.13)
 │   │   ├── reads.js, saves.js  the handlers: status, list and objects; saves and deletes (design 1.4)
 │   │   └── backup/           the GitHub backup: queue.js (the consumer, and the full backup's steps), github.js (the API), status.js (how backups go), sync.js (the full backup's requests)
-│   └── browser/              the browser modules, embedded into worker.js by the build (3)
+│   ├── browser/              the browser modules, embedded into worker.js by the build (3)
 │       ├── lib.js            what they share: the sync adaptor, the public site's address, whether this is the admin site, titles in alerts (a TiddlyWiki library module)
 │       ├── conflict-guard.js saves and deletes: the revision each is based on, conflicts, the flat layout
 │       ├── list-sync.js      the tiddler list, loading (what's shown first, the device's copy, the fill), what isn't sent
@@ -116,7 +124,7 @@ GitHub runs the same two groups, as two jobs side by side, for every pull reques
     ├── queue-backup.test.mjs queue backup against an imitation of GitHub, the full backup's steps
     ├── integrity.test.mjs    the tiddler list's integrity, a failed page build, draft-like titles, awkward titles, .gitignore, what a deploy uploads, the restore tool
     ├── r2-ops.test.mjs       R2 calls per kind of request, against a budget
-    ├── setup-check.test.mjs  the setup check: each piece in place or missing, the lines naming the README sections
+    ├── setup-check.test.mjs  the setup check: each piece in place or missing, the lines naming the setup guide's sections, with their links
     ├── cpu.test.mjs          CPU of a big plugin's save and backup, against a budget
     ├── r2-counter.mjs        test-only wrapper that counts the worker's R2 calls
     ├── browser-harness.mjs   the browser suites' shared setup (worker, public site stand-in, Chromium, helpers)
@@ -132,5 +140,10 @@ The browser modules live in their own files so they can be read and edited as no
 
 The tests run the real worker in Cloudflare's local runtime (workerd, through Miniflare) with a local R2 bucket and queue. Outgoing calls to GitHub and Cloudflare's API are answered by imitations, so nothing touches your accounts. Every suite takes free local ports, so they can run at the same time (`npm test` runs them one after the other, as CI does: ten Chromium suites at once overload a machine, and a timing check that passes in sequence fails there — rerun such a suite alone before reading anything into it). The ten browser suites share their setup, `test/browser-harness.mjs`: the worker, the stand-in for the public site, Chromium, and the helpers that wait for TiddlyWiki or record each tab's requests (marking the ones the browser answered from its cache, which never reached a server, and the ones it gave up on). Miniflare has no `max_concurrency` for a queue, and starts a second batch while one runs once messages pile up; `test/r2-counter.mjs` runs the batches one at a time, as Cloudflare does with the setting in `wrangler.toml`, so the backup suite's "never overlapped" check holds on a busy machine too. Two of Miniflare's own dependencies, `undici` and `sharp`, are pinned above the versions it declares (`overrides` in `package.json`; the changelog says why): the integrity suite checks that the pins are what Miniflare gets, and says when to drop them — the day Miniflare's own declaration catches up.
 
-What each suite covers, check by check — and the R2 calls each kind of request makes, the CPU budgets of the heaviest steps — is in [docs/tests.md](docs/tests.md). To run the browser tests against your own wiki file, download `index.html` from the bucket and run `WIKI_HTML=/path/to/index.html npm run test:tabs` (or `test:plugins`).
+What each suite covers, check by check — and the R2 calls each kind of request makes, the CPU budgets of the heaviest steps — is in [docs/tests.md](tests.md). To run the browser tests against your own wiki file, download `index.html` from the bucket and run `WIKI_HTML=/path/to/index.html npm run test:tabs` (or `test:plugins`).
 
+## 6.3 Deploying a change
+
+Edit `src/`, run `npm run build`, `npm run lint` and `npm test`, and push to `main` (through a pull request, so CI runs the tests too): Workers Builds deploys it ([setup 2.5](setup.md#25-the-worker)). Without it, `npx wrangler deploy`, or paste `worker.js` into the dashboard's editor. If anything in the plugin changed — a browser module, the service worker, a tab's text, a field, `package.json`'s version — the next admin page load rebuilds `baked.html`; a change to the worker's own code doesn't. If you changed how the page itself is built, also bump the number in front of `bakeVersion` (now `9-`), or existing pages keep the old format until something else rebuilds them; plugin files are only rewritten when their plugin changes, so after changing their format, delete `_plugins/` and open the admin wiki.
+
+When bumping the engine (`package.json`'s `tiddlywiki`): if the new TiddlyWiki changes the filter in `tiddlers.json?filter=…`, add the new filter to `SKINNY_LIST_FILTERS`, or the public tiddler list won't be purged after saves (the tests show it).

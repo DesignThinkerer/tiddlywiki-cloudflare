@@ -97,7 +97,7 @@ sequenceDiagram
 10. **The plugin is something the page needs at boot, so it rebuilds `baked.html` before answering.** The page build:
     - reads `index.html`, the tiddler list and the startup tiddlers, as before;
     - checks each plugin's file with a `HEAD`. This one is missing or has an older revision, so it reads the stored tiddler and writes `_plugins/$:/plugins/tiddlywiki/markdown.js`: the opening of the template, the stored bytes, the closing;
-    - inserts the preload script and one `<script src>` per plugin after `<head>`, working on the bytes of `index.html` (since the admin wiki publishes the page, design 1.9, usually the published shell instead, where the plugin tags go right before the core file's `<script>`);
+    - inserts the preload script and one `<script src>` per plugin after `<head>`, working on the bytes of `index.html` (since the admin wiki publishes the page, [design 1.9](design.md#19-the-page-published-from-the-admin-wiki), usually the published shell instead, where the plugin tags go right before the core file's `<script>`);
     - saves `baked.html` and purges `/` and `/baked.html` on the public site.
 11. **It answers `204`** with the new revision in the `ETag`.
 
@@ -112,7 +112,7 @@ The import report is a second, small save that goes through steps 5–9 and 11.
 14. **It runs before TiddlyWiki boots** and adds the plugin to `$tw.preloadTiddlers`. TiddlyWiki registers it and defines its modules.
 15. **No reload loop.** The sync gets the tiddler list and finds the same revision for the plugin as the one in the file, so it doesn't download it again.
 
-The worker sees two requests on that load: the page and the tiddler list. (Three when this change was made; since then the browser keeps `/status` for a week, design 1.5.) The public site serves the same `baked.html`, so visitors get the plugin too.
+The worker sees two requests on that load: the page and the tiddler list. (Three when this change was made; since then the browser keeps `/status` for a week, [design 1.5](design.md#15-keeping-worker-requests-down).) The public site serves the same `baked.html`, so visitors get the plugin too.
 
 ---
 
@@ -196,7 +196,7 @@ With the theme plugin present at boot, `$:/theme` has to be there too. Otherwise
 
 ### 3.10 No switch in the worker
 
-A plugin that breaks the page is fixed by deleting its file (README 3). TiddlyWiki's safe mode isn't an option: it also turns off the TiddlyWeb plugin, so nothing could be saved back, and TiddlyWiki warns against it in client-server setups.
+A plugin that breaks the page is fixed by deleting its file ([operating 3](operating.md)). TiddlyWiki's safe mode isn't an option: it also turns off the TiddlyWeb plugin, so nothing could be saved back, and TiddlyWiki warns against it in client-server setups.
 
 ### 3.11 The TiddlyWeb plugin is treated like any other
 
@@ -216,12 +216,12 @@ If it were excluded, updating it from the plugin library would store the new ver
 
 These figures come from the same test machine as in section 3, so read them as proportions. The worker's metrics in the Cloudflare dashboard show its real CPU time per request.
 
-**The backup queue consumer** spends about 1 ms of CPU on a 254 KB plugin, measured on the test machine (git's blob hash, and the base64 written straight into the request's bytes; GitHub's copy of the previous version isn't decoded, which took about 14 ms more). Queue consumers share the Workers per-invocation CPU limits ([Queues limits](https://developers.cloudflare.com/queues/platform/limits/)), so on the Free plan count on 10 ms, with some tolerance for occasional overruns. A run stops taking versions once it has handled 512 KB, so a batch of several plugin updates is spread over several runs (design 1.7). The fallback without a queue runs inside the save request, so keep the queue bound.
+**The backup queue consumer** spends about 1 ms of CPU on a 254 KB plugin, measured on the test machine (git's blob hash, and the base64 written straight into the request's bytes; GitHub's copy of the previous version isn't decoded, which took about 14 ms more). Queue consumers share the Workers per-invocation CPU limits ([Queues limits](https://developers.cloudflare.com/queues/platform/limits/)), so on the Free plan count on 10 ms, with some tolerance for occasional overruns. A run stops taking versions once it has handled 512 KB, so a batch of several plugin updates is spread over several runs ([design 1.7](design.md#17-github-backup)). The fallback without a queue runs inside the save request, so keep the queue bound.
 
-**Worker requests:** unchanged by this change: plugin files never reach the worker. (A page load was three requests, and is two since the browser keeps `/status` for a week, design 1.5.)
+**Worker requests:** unchanged by this change: plugin files never reach the worker. (A page load was three requests, and is two since the browser keeps `/status` for a week, [design 1.5](design.md#15-keeping-worker-requests-down).)
 
 **Per plugin save:**
-- **R2 writes (Class A):** the tiddler, the tiddler list, the plugin file, `baked.html`, plus the backup copy for a version too big for a queue message (about 64 KB of text, design 1.7).
+- **R2 writes (Class A):** the tiddler, the tiddler list, the plugin file, `baked.html`, plus the backup copy for a version too big for a queue message (about 64 KB of text, [design 1.7](design.md#17-github-backup)).
 - **R2 reads (Class B):** nine with a published shell (ten before the first publish, when the page is built from `index.html`), plus one `HEAD` per other plugin and one read per listed startup tiddler for the page build.
 - **Subrequests:** all of the above, plus the queue message, count against the Free plan's 1,000 calls to Cloudflare services per request; only the purges count against its 50 external ones.
 - **Purges:** the tiddler's URLs and the two page URLs, as for any page change. Never plugin files.
@@ -236,18 +236,18 @@ These figures come from the same test machine as in section 3, so read them as p
 
 - **The code:** `src/worker/plugins.js` (the files), `src/worker/build.js` (the page build, which writes them and puts the `<script>` tags in), `src/worker/layout.js` (the flat layout a save arrives in and is stored in), `src/worker/saves.js` (a plugin's save or delete rebuilding the page), and in `src/browser/conflict-guard.js` the part that sends saves in the flat layout.
 - **The tests:** `test/plugins.test.mjs`, and the plugin cases of `test/integrity.test.mjs` and `test/r2-ops.test.mjs` (docs/tests.md).
-- **The cache rule for plugin files:** README 2.7.
-- **A plugin that breaks the page:** README 3.
+- **The cache rule for plugin files:** [setup 2.7](setup.md#27-the-zones-rules-public-site-only).
+- **A plugin that breaks the page:** [operating 3](operating.md).
 
 ## 6. Edge cases and limits
 
 - **A plugin also built into `index.html`:** the file wins, because preloaded tiddlers are added after the HTML's own. So updating such a plugin from the library works. The other way round, after uploading an `index.html` with a newer version, the stored copy still wins; delete it in the wiki to use the one in `index.html`.
-- **Updating the TiddlyWeb plugin from the library:** the conflict guard modifies some of its functions (saving, loading, deleting, the tiddler list). After an update, download `index.html`, add the new plugin to a copy and run `WIKI_HTML=… npm run test:tabs`, or simply watch for conflict alerts working as before. (Since the page is published from the admin wiki, design 1.9, an installed TiddlyWeb also stops publishing: the worker refuses a page without TiddlyWeb, and says what to do. Upgrading TiddlyWiki with a new `index.html` brings a matching TiddlyWeb instead.)
+- **Updating the TiddlyWeb plugin from the library:** the conflict guard modifies some of its functions (saving, loading, deleting, the tiddler list). After an update, download `index.html`, add the new plugin to a copy and run `WIKI_HTML=… npm run test:tabs`, or simply watch for conflict alerts working as before. (Since the page is published from the admin wiki, [design 1.9](design.md#19-the-page-published-from-the-admin-wiki), an installed TiddlyWeb also stops publishing: the worker refuses a page without TiddlyWeb, and says what to do. Upgrading TiddlyWiki with a new `index.html` brings a matching TiddlyWeb instead.)
 - **`$:/core`** never gets a file: it isn't synced. Upgrade TiddlyWiki by uploading a new `index.html`.
 - **An old page loading new code:** a page cached somewhere with an old `?v=` could fetch a file that has since been overwritten, once that old URL has left Cloudflare's cache. It then simply runs the new version, which matches the tiddler list.
 - **Leftover files:** a file can outlive its plugin if two builds overlap at the moment the plugin is turned into an ordinary tiddler. Nothing loads it; delete it in R2 if you notice it.
 - **Browsers:** the file uses `??=` and `??`, like the external-plugins template, so it needs a browser from 2020 or later.
-- **`$:/tags/RawMarkup…` tiddlers inside an installed plugin:** the admin wiki renders the page (design 1.9) with that plugin in it as well as in its file, so its markup is there; for a plugin with JavaScript, from the first admin load after installing it.
+- **`$:/tags/RawMarkup…` tiddlers inside an installed plugin:** the admin wiki renders the page ([design 1.9](design.md#19-the-page-published-from-the-admin-wiki)) with that plugin in it as well as in its file, so its markup is there; for a plugin with JavaScript, from the first admin load after installing it.
 - **Plugin files are public,** like everything in the bucket. A deleted plugin's file is removed from R2 but not purged, so its old `?v=` URL stays reachable in Cloudflare's cache until it expires; nothing loads it.
 - **Very large plugins:** a save holds a few copies of the body in memory, well within the 128 MB a worker has, and well under the 100 MB request size limit.
 - **The tiddler list** is still read and rewritten on every save. It's now the largest CPU cost of a save: about 1 ms per 400–500 tiddlers.

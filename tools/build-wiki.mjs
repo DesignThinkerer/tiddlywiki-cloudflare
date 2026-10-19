@@ -1,6 +1,6 @@
 // Builds seed/empty.html: an empty TiddlyWiki with the TiddlyWeb plugin (the server edition of the
 // installed tiddlywiki package). Uploaded with the worker as a text module (wrangler.toml), it's what
-// the worker puts in a new bucket on the first visit (README 2.8); the browser tests start from it too.
+// the worker puts in a new bucket on the first visit (setup 2.8); the browser tests start from it too.
 // Run: npm run build   (or node tools/build-wiki.mjs; add --force to rebuild an existing file).
 // An existing file is kept when it's from the installed version of TiddlyWiki, and rebuilt otherwise.
 import { execFileSync } from "node:child_process";

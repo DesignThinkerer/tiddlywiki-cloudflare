@@ -23,36 +23,38 @@ A new wiki starts by itself: the first time you open the admin site, the worker 
 
 **What you need:** a Cloudflare account (the free plan is enough) and a GitHub account (the worker is deployed from your copy of this repository; the backup goes to a repository too). For a public site, also a domain on that account (both sites are then hostnames of it).
 
-About ten minutes, in this order. Section 2 has each step in full, and the wiki's own setup check (the last step) names the section for anything missing.
+About ten minutes, in this order. The setup guide, [chapter 2](docs/setup.md), has each step in full, and the wiki's own setup check (the last step) names the section for anything missing.
 
-1. **Make your copy of this repository** — a fork, or a copy from the template (2.1). Nothing in it is edited: the worker is deployed as it is, and your settings go in the dashboard.
-2. **The bucket,** `wiki`, in R2; for a public site, its custom domain (2.2).
-3. **The queue,** `wiki-backup` (2.3).
-4. **A backup repository and a token for it,** if you want every save committed to GitHub (2.4, optional).
-5. **The worker,** `wiki-admin`, built from your copy by Workers Builds, with the settings and the two secrets in its dashboard (2.5).
-6. **Cloudflare Access** in front of it (2.6).
-7. **The zone's rules** — the rewrite, the cache rules, the CORS header — for a public site only (2.7).
-8. **Open the admin site:** the wiki starts by itself, and *Check the setup* in its Cloudflare tab tells you what's missing (2.8).
+1. **Make your copy of this repository** — a fork, or a copy from the template ([setup 2.1](docs/setup.md#21-before-you-start)). Nothing in it is edited: the worker is deployed as it is, and your settings go in the dashboard.
+2. **The bucket,** `wiki`, in R2; for a public site, its custom domain ([setup 2.2](docs/setup.md#22-the-bucket-and-the-public-site)).
+3. **The queue,** `wiki-backup` ([setup 2.3](docs/setup.md#23-the-backup-queue)).
+4. **A backup repository and a token for it,** if you want every save committed to GitHub ([setup 2.4](docs/setup.md#24-the-backup-repository-optional), optional).
+5. **The worker,** `wiki-admin`, built from your copy by Workers Builds, with the settings and the two secrets in its dashboard ([setup 2.5](docs/setup.md#25-the-worker)).
+6. **Cloudflare Access** in front of it ([setup 2.6](docs/setup.md#26-cloudflare-access)).
+7. **The zone's rules** — the rewrite, the cache rules, the CORS header — for a public site only ([setup 2.7](docs/setup.md#27-the-zones-rules-public-site-only)).
+8. **Open the admin site:** the wiki starts by itself, and *Check the setup* in its Cloudflare tab tells you what's missing ([setup 2.8](docs/setup.md#28-the-first-visit)).
 
 ![The admin wiki: the Control Panel's Cloudflare tab after "Check the setup", every line fine](docs/admin-wiki.png)
 
-*The admin wiki: TiddlyWiki as it is, with the Cloudflare tab the worker adds, after* Check the setup. *(Taken from the test setup by* `npm run screenshot`*, so the addresses are local ones.)*
+*The admin wiki: TiddlyWiki as it is, with the Cloudflare tab the worker adds, after Check the setup. Taken from the test setup by the screenshot tool, so the addresses are local ones.*
 
-This README covers the setup, operating the wiki, troubleshooting, the limits and the tests. How the worker works, and why it's built this way, are in [docs/design.md](docs/design.md); what each test suite covers, in [docs/tests.md](docs/tests.md).
+**Status:** 1.0, October 2026, in use for the author's own wiki. Every change goes through the test suites of [chapter 6](docs/development.md), which run a real TiddlyWiki against the real worker and measure what each request costs on the free plan.
 
 ---
 
-## Contents
+## The manual
 
-[Quick start](#quick-start), above.
+Seven chapters, numbered across the pages: a section number means the same thing wherever it's cited, in these pages, in the worker's own messages and in the code. Chapter 1 is below; the rest are pages under `docs/`.
 
-1. [How it fits together](#1-how-it-fits-together), below
-2. [Setting up](docs/setup.md)
-3. [Operating it](docs/operating.md)
-4. [Troubleshooting](docs/troubleshooting.md)
-5. [Known limits](docs/limits.md)
-6. [Development and tests](docs/development.md)
-7. [Reference](docs/reference.md)
+1. [How it fits together](#1-how-it-fits-together): the pieces, and the names used throughout
+2. [Setting up](docs/setup.md): the bucket, the queue, the backup repository, the worker, Access, the zone's rules, the first visit
+3. [Operating it](docs/operating.md): updates, plugins, backups, logs, working offline, the app, the settings
+4. [Troubleshooting](docs/troubleshooting.md): symptoms, causes and fixes
+5. [Known limits](docs/limits.md): what you can hit, and what to do about it
+6. [Development and tests](docs/development.md): the build, the suites, the repository layout
+7. [Reference](docs/reference.md): the Cloudflare, GitHub and TiddlyWiki documents the design relies on
+
+How the worker works, and why it's built this way: [docs/design.md](docs/design.md). What each test suite covers: [docs/tests.md](docs/tests.md). Where it's going: [docs/roadmap.md](docs/roadmap.md).
 
 ---
 
@@ -84,3 +86,24 @@ flowchart LR
 | **Queue** `wiki-backup` | Holds one message per save or delete until it has been committed to GitHub. |
 | **GitHub repository** | Version history: one commit per save, in `tiddlers/<title>.json`. |
 
+The names the manual, the admin wiki and the worker's messages use:
+
+| Name | What it is |
+|---|---|
+| **The admin site**, the admin wiki | The worker's address, behind Cloudflare Access: TiddlyWiki as you edit it. |
+| **The public site** | The bucket's custom domain, served through Cloudflare's cache: read-only, and no worker. A private wiki has none. |
+| **The engine** | `index.html` in the bucket: an empty TiddlyWiki with the TiddlyWeb plugin, which the page is built from. Your content isn't in it. |
+| **The page** | `baked.html`: what both sites serve. Built from the shell, or from the engine, plus the tiddlers needed at startup. |
+| **The shell** | `_page/shell.html`: the page as the admin wiki renders and publishes it, without the core. |
+| **The core file** | `_plugins/tiddlywikicore.js`: TiddlyWiki's core, published by the admin wiki, cached for a year. |
+| **Plugin files** | `_plugins/<title>.js`: one script per installed plugin, loaded before TiddlyWiki starts. |
+| **The tiddler list** | `recipes/default/tiddlers.json`: every tiddler's fields but the text, with its revision. |
+| **The device copy** | The tiddlers this browser has loaded, kept in its IndexedDB, so a reload fetches only what changed. |
+| **The outbox** | The changes made in this browser that the worker hasn't confirmed yet, kept on the device. |
+| **The plugin** | `$:/plugins/cfworker/admin`: the browser modules, put in every page by the worker, with a settings tab and a device tab. |
+
+---
+
+## Contributing, security, licence
+
+Changes follow the process in [CONTRIBUTING.md](CONTRIBUTING.md): plan first, tests first, every suite, the docs in the same pull request. A vulnerability goes through [SECURITY.md](SECURITY.md), never an issue. The code is under the [MIT licence](LICENSE); TiddlyWiki has its own.

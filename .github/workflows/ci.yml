@@ -3,7 +3,7 @@
 # Every suite runs to the end (tools/run-suites.mjs), and a job that fails, or is cancelled by its
 # timeout, uploads test-results/ — each suite's log and, for a browser suite that failed, the
 # requests its pages made and a Playwright trace of each browser context — so a failure on the
-# runner can be read rather than guessed at (README 6, design 2.24).
+# runner can be read rather than guessed at (development 6, design 2.24).
 name: CI
 
 on:

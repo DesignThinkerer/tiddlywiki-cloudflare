@@ -1,5 +1,7 @@
 # 7. Reference
 
+*Chapter 7 of the [manual](../README.md#the-manual).*
+
 Limits and behaviours this design relies on (checked October 2026):
 
 - **Workers:** [platform limits](https://developers.cloudflare.com/workers/platform/limits/) (requests per day, CPU and its flexibility for occasional overruns, subrequests); [how the cache works with Workers](https://developers.cloudflare.com/workers/reference/how-the-cache-works/) (worker-generated responses aren't cached).

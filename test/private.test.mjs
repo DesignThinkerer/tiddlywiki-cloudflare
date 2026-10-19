@@ -1,4 +1,4 @@
-// A private wiki: the worker with no public address (README 2.1), a real TiddlyWiki in Chromium.
+// A private wiki: the worker with no public address (setup 2.1), a real TiddlyWiki in Chromium.
 // Everything the page needs is served by the worker itself and nothing reaches any other site; no
 // purge is sent; the page is published with root-relative URLs; the Cloudflare tab is there; a second
 // browser reads from the worker; and a public site added afterwards takes over with nothing to migrate.

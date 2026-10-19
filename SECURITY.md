@@ -4,7 +4,7 @@
 
 Report it privately, through GitHub: [*Report a vulnerability*](https://github.com/DesignThinkerer/tiddlywiki-cloudflare/security/advisories/new) on the repository's Security tab. Not as an issue: an issue is public, and would tell everyone before the wikis running from this repository can take the fix. You'll get a first answer within a week.
 
-A fix ships as a pull request here, with its entry in [CHANGELOG.md](CHANGELOG.md); every wiki takes it by syncing its copy of the repository (README 3, "Updating your copy"), and an advisory is published once that's possible.
+A fix ships as a pull request here, with its entry in [CHANGELOG.md](CHANGELOG.md); every wiki takes it by syncing its copy of the repository ([operating 3.1](docs/operating.md#31-updating-your-copy)), and an advisory is published once that's possible.
 
 ## What's in scope
 
@@ -16,8 +16,8 @@ Not in scope, with where to report instead: TiddlyWiki itself, at [its own repos
 
 Worth knowing before reporting, and before deploying:
 
-- **Cloudflare Access in front of the admin site.** The worker refuses every request that didn't come through Access (README 2.6); `ACCESS = off` is only honoured on a local address, for tests and local runs.
-- **Secrets are worker secrets.** The GitHub token and the Cloudflare API token are entered in the worker's dashboard, never in `wrangler.toml`, which is deployed as it is (README 2.5). The GitHub token is a fine-grained one, limited to the backup repository (README 2.4).
+- **Cloudflare Access in front of the admin site.** The worker refuses every request that didn't come through Access ([setup 2.6](docs/setup.md#26-cloudflare-access)); `ACCESS = off` is only honoured on a local address, for tests and local runs.
+- **Secrets are worker secrets.** The GitHub token and the Cloudflare API token are entered in the worker's dashboard, never in `wrangler.toml`, which is deployed as it is ([setup 2.5](docs/setup.md#25-the-worker)). The GitHub token is a fine-grained one, limited to the backup repository ([setup 2.4](docs/setup.md#24-the-backup-repository-optional)).
 - **A public site is public by design.** With a public site set up, everything saved in the bucket is readable by anyone at the bucket's custom domain the moment it's saved, drafts excepted (README, "Private, or public"). Without one, nothing in the bucket is reachable by anyone else.
 - **A plugin is code.** A plugin installed in the admin wiki runs as JavaScript in every visitor's browser, on both sites: install what you trust.
 

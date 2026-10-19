@@ -510,7 +510,7 @@ check("...and a tab that had the page's version, then loaded the update, doesn't
 await contextW.close();
 await A.evaluate(() => $tw.syncer.syncFromServer());   // (A takes W's subtitle, which it changes again later)
 await settle(A);
-// To get index.html's version back (README 3): delete the published shell and the page in R2, then open
+// To get index.html's version back (operating 3): delete the published shell and the page in R2, then open
 // the admin wiki. The page is built from index.html, with the plugin, and that tab publishes it again.
 await bucket.delete("_page/shell.html");
 await bucket.delete("baked.html");
