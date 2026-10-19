@@ -23,7 +23,8 @@ that failed, every few seconds, and sends everything once the network is back; t
   rename it) is kept too, never sent, so a reload doesn't lose it; the browser asks before the tab
   closes, as for any unsaved change. Renamed, the old title leaves with the delete the rename makes.
 - $:/temp/cfworker/outbox says how many changes wait (waiting), how many of them for a rename
-  (rename), since when (since), whether the browser is online (online), whether the Access login
+  (rename), since when (since), whether the worker answers (online: the browser's events, a save
+  answered or not, a list from the worker or from the service worker's cache), whether the Access login
   stands (login: "expired" once it doesn't) and whether the device took them (kept: "no" when a
   write failed); an item in the dropdown of TiddlyWeb's cloud icon (the "Server status" button, red
   while something is unsaved) shows that while something waits, or while the login has expired.
@@ -777,6 +778,7 @@ exports.startup = function() {
 			probe();
 		} else {
 			setLogin("ok");
+			setOnline(true);   // (the worker answered: the first word of its return when nothing waited to be sent)
 		}
 		if(!fromCache && deferred.length) {
 			var waiting = deferred;
