@@ -18,10 +18,10 @@ The suites run with the waits shortened ([design 2.25](design.md#225-the-tests-r
 |---|---|
 | `npm run build` | Writes `worker.js`, and `seed/empty.html`, an empty TiddlyWiki with the TiddlyWeb plugin, from the installed `tiddlywiki` package (kept when it's already of that version; `node tools/build-wiki.mjs --force` rebuilds it). |
 | `npm run check:build` | Fails, writing nothing, if `worker.js` isn't what the sources build (run it before committing, so `worker.js` is never out of date). |
-| `npm run screenshot` | Writes `docs/admin-wiki.png`, the screenshot at the top of this README, from a wiki run through the test setup in Chromium (`tools/screenshot.mjs`): run it when the Cloudflare tab changes. |
+| `npm run screenshot` | Writes `docs/admin-wiki.png`, the README's screenshot, from a wiki run through the test setup in Chromium (`tools/screenshot.mjs`): run it when the Cloudflare tab changes. |
 | `npm run lint` | ESLint, with its recommended rules only: a name that doesn't exist (a function moved without its import, say), an unused one, an import assigned to. CI runs it first. |
 | `npm run test:fast` | The seven suites that need no browser (a few minutes). |
-| `npm run test:browser` | The ten suites that run a real TiddlyWiki in Chromium. |
+| `npm run test:browser` | The eleven suites that run a real TiddlyWiki in Chromium. |
 | `npm run test:suite -- <name>…` | Only the suites named, after a build: `npm run test:suite -- page-publish two-tabs`. |
 | `npm run test:first` | A new wiki from an empty bucket, in Chromium. |
 | `npm run test:bake` | Page serving and rebuilding, the published page, the Access check, the public address, the first visit. |
@@ -42,7 +42,7 @@ The suites run with the waits shortened ([design 2.25](design.md#225-the-tests-r
 | `npm run test:budget` | What reaches the worker per page load, counted behind a proxy, the service worker in place. |
 | `npm run test:setup` | The setup check, against the public stand-in with Cloudflare's headers, GitHub and Cloudflare's API imitated. |
 
-GitHub runs the same two groups, as two jobs side by side, for every pull request and every push to `main` (`.github/workflows/ci.yml`), after the lint and after checking that `worker.js` is what `src/` builds. One run per commit: a re-run of a commit's run never cancels another commit's, and an older commit's run goes on when a newer one is pushed. A job that fails, or is cancelled by its timeout, keeps its `test-results/` for a week (the run's page → *Artifacts*): the logs, and the request log and traces of each browser suite that failed or was stopped. Dependabot proposes the other packages' updates weekly, and the Actions'; the `tiddlywiki` package it leaves alone ([operating [operating 3.3](operating.md#33-updating-the-wiki-engine)](operating.md#33-updating-the-wiki-engine)).
+GitHub runs the same two groups, as two jobs side by side, for every pull request and every push to `main` (`.github/workflows/ci.yml`), after the lint and after checking that `worker.js` is what `src/` builds. One run per commit: a re-run of a commit's run never cancels another commit's, and an older commit's run goes on when a newer one is pushed. A job that fails, or is cancelled by its timeout, keeps its `test-results/` for a week (the run's page → *Artifacts*): the logs, and the request log and traces of each browser suite that failed or was stopped. Dependabot proposes the other packages' updates weekly, and the Actions'; the `tiddlywiki` package it leaves alone ([operating 3.3](operating.md#33-updating-the-wiki-engine)).
 
 ## 6.1 Repository layout
 
@@ -57,9 +57,9 @@ GitHub runs the same two groups, as two jobs side by side, for every pull reques
 ├── LICENSE                   MIT
 ├── THIRD_PARTY_NOTICES.md    TiddlyWiki's licence, BSD, which the worker ships
 ├── worker.js                 GENERATED: the file you deploy (npm run build)
-├── seed/empty.html           GENERATED, not committed: an empty TiddlyWiki with TiddlyWeb, what a new wiki starts from (2.8), uploaded with the worker
+├── seed/empty.html           GENERATED, not committed: an empty TiddlyWiki with TiddlyWeb, what a new wiki starts from (setup 2.8), uploaded with the worker
 ├── tools/build-wiki.mjs      builds it from the tiddlywiki package (npm run build)
-├── tools/restore.mjs         merges a clone of the backup into one file any TiddlyWiki imports (2.4)
+├── tools/restore.mjs         merges a clone of the backup into one file any TiddlyWiki imports (setup 2.4)
 ├── tools/run-suites.mjs      runs test suites, each to the end, one after the other or several at once (--parallel), with a summary (npm test); their output under test-results/, not committed
 ├── tools/screenshot.mjs      takes the README's screenshot from a wiki run through the test setup (npm run screenshot)
 ├── tools/release-notes.mjs   prints a dated block of the changelog, the release's notes (CONTRIBUTING, "Releases")
@@ -74,10 +74,10 @@ GitHub runs the same two groups, as two jobs side by side, for every pull reques
 │   ├── roadmap.md            what's ahead, in order, and what's parked and why
 │   ├── tests.md              what each test suite covers, the R2 calls per kind of request, the CPU budgets
 │   ├── external-plugins.md   design notes for plugin files (design 1.8)
-│   └── admin-wiki.png        GENERATED: the screenshot at the top of this README (npm run screenshot)
+│   └── admin-wiki.png        GENERATED: the README's screenshot (npm run screenshot)
 ├── .github/
 │   ├── workflows/ci.yml      runs the tests on GitHub for every pull request and push to main, keeping a failed job's test-results/
-│   ├── dependabot.yml        dependency updates as weekly pull requests, the wiki engine excepted (3)
+│   ├── dependabot.yml        dependency updates as weekly pull requests, the wiki engine excepted (operating 3.3)
 │   ├── ISSUE_TEMPLATE/       the bug report form, and where questions and ideas go
 │   └── PULL_REQUEST_TEMPLATE.md  the process as a checklist
 ├── src/
@@ -95,23 +95,23 @@ GitHub runs the same two groups, as two jobs side by side, for every pull reques
 │   │   ├── setup.js          the setup check: each piece looked at from the worker (design 1.13)
 │   │   ├── reads.js, saves.js  the handlers: status, list and objects; saves and deletes (design 1.4)
 │   │   └── backup/           the GitHub backup: queue.js (the consumer, and the full backup's steps), github.js (the API), status.js (how backups go), sync.js (the full backup's requests)
-│   ├── browser/              the browser modules, embedded into worker.js by the build (3)
+│   ├── browser/              the browser modules, embedded into worker.js by the build (operating 3.17)
 │       ├── lib.js            what they share: the sync adaptor, the public site's address, whether this is the admin site, titles in alerts (a TiddlyWiki library module)
 │       ├── conflict-guard.js saves and deletes: the revision each is based on, conflicts, the flat layout
 │       ├── list-sync.js      the tiddler list, loading (what's shown first, the device's copy, the fill), what isn't sent
 │       ├── backup-alert.js   the alert while backups to GitHub keep failing (design 1.7)
 │       ├── page-publisher.js the page published from the admin wiki (design 1.9)
-│       ├── restore-import.js the backup's files dropped onto the wiki, imported with their tags (2.4)
-│       ├── control-panel.js  the control panel's Cloudflare tab: the setup check (3), how backups go, the full backup (2.4)
-│       ├── outbox.js         every change kept on the device until the worker has it: editing offline (3)
-│       ├── cold-start.js     registers the service worker on the admin site (3)
-│       ├── device.js         the plugin's device tab: what this browser keeps, measured, kept or forgotten (3, "This device")
-│       ├── service-worker.js the service worker itself, served at /sw.js: the page, the core and plugin files, the status file and the last list kept for opening offline (3)
-│       └── plugin-readme.txt, plugin-settings.txt, plugin-device.txt  the admin plugin's three tabs, wikitext (3, "The plugin and its settings", "This device")
-│   └── app/                  the app's default icons (PNG), embedded by the build (3, "Installing the wiki as an app")
+│       ├── restore-import.js the backup's files dropped onto the wiki, imported with their tags (setup 2.4)
+│       ├── control-panel.js  the control panel's Cloudflare tab: the setup check (operating 3.15), how backups go, the full backup (setup 2.4)
+│       ├── outbox.js         every change kept on the device until the worker has it: editing offline (operating 3.11)
+│       ├── cold-start.js     registers the service worker on the admin site (operating 3.13)
+│       ├── device.js         the plugin's device tab: what this browser keeps, measured, kept or forgotten (operating 3.18)
+│       ├── service-worker.js the service worker itself, served at /sw.js: the page, the core and plugin files, the status file and the last list kept for opening offline (operating 3.13)
+│       └── plugin-readme.txt, plugin-settings.txt, plugin-device.txt  the admin plugin's three tabs, wikitext (operating 3.17, 3.18)
+│   └── app/                  the app's default icons (PNG), embedded by the build (operating 3.16)
 ├── build.mjs                 inlines the modules into worker.js, in dependency order, with the browser modules embedded
 ├── eslint.config.js          the lint rules (npm run lint): names that don't exist, unused ones, an import assigned to
-├── wrangler.toml             the worker's name, bindings and defaults: what Wrangler deploys, as it is; the settings are in the dashboard (2.5)
+├── wrangler.toml             the worker's name, bindings and defaults: what Wrangler deploys, as it is; the settings are in the dashboard (setup 2.5)
 ├── package.json              build, lint and test scripts
 └── test/
     ├── first-visit.test.mjs  a new wiki from an empty bucket, in Chromium; the admin plugin's shadows
@@ -143,7 +143,7 @@ The browser modules live in their own files so they can be read and edited as no
 
 ## 6.2 The tests
 
-The tests run the real worker in Cloudflare's local runtime (workerd, through Miniflare) with a local R2 bucket and queue. Outgoing calls to GitHub and Cloudflare's API are answered by imitations, so nothing touches your accounts. Every suite takes free local ports, so they can run at the same time (`npm test` runs them one after the other, as CI does: ten Chromium suites at once overload a machine, and a timing check that passes in sequence fails there — rerun such a suite alone before reading anything into it). The ten browser suites share their setup, `test/browser-harness.mjs`: the worker, the stand-in for the public site, Chromium, and the helpers that wait for TiddlyWiki or record each tab's requests (marking the ones the browser answered from its cache, which never reached a server, and the ones it gave up on). Miniflare has no `max_concurrency` for a queue, and starts a second batch while one runs once messages pile up; `test/r2-counter.mjs` runs the batches one at a time, as Cloudflare does with the setting in `wrangler.toml`, so the backup suite's "never overlapped" check holds on a busy machine too. Two of Miniflare's own dependencies, `undici` and `sharp`, are pinned above the versions it declares (`overrides` in `package.json`; the changelog says why): the integrity suite checks that the pins are what Miniflare gets, and says when to drop them — the day Miniflare's own declaration catches up.
+The tests run the real worker in Cloudflare's local runtime (workerd, through Miniflare) with a local R2 bucket and queue. Outgoing calls to GitHub and Cloudflare's API are answered by imitations, so nothing touches your accounts. Every suite takes free local ports, so they can run at the same time (`npm test` runs them one after the other, as CI does: eleven Chromium suites at once overload a small machine, and a timing check that passes in sequence can fail there — rerun such a suite alone before reading anything into it). The eleven browser suites share their setup, `test/browser-harness.mjs`: the worker, the stand-in for the public site, Chromium, and the helpers that wait for TiddlyWiki or record each tab's requests (marking the ones the browser answered from its cache, which never reached a server, and the ones it gave up on). Miniflare has no `max_concurrency` for a queue, and starts a second batch while one runs once messages pile up; `test/r2-counter.mjs` runs the batches one at a time, as Cloudflare does with the setting in `wrangler.toml`, so the backup suite's "never overlapped" check holds on a busy machine too. Two of Miniflare's own dependencies, `undici` and `sharp`, are pinned above the versions it declares (`overrides` in `package.json`; the changelog says why): the repository suite checks that the pins are what Miniflare gets, and says when to drop them — the day Miniflare's own declaration catches up.
 
 What each suite covers, check by check — and the R2 calls each kind of request makes, the CPU budgets of the heaviest steps — is in [docs/tests.md](tests.md). To run the browser tests against your own wiki file, download `index.html` from the bucket and run `WIKI_HTML=/path/to/index.html npm run test:tabs` (or `test:plugins`).
 

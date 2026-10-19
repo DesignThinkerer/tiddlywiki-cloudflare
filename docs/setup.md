@@ -2,7 +2,7 @@
 
 *Chapter 2 of the [manual](../README.md#the-manual). Each step names what the next ones need.*
 
-About ten minutes, in this order. Each step names what the next ones need.
+About ten minutes, in this order.
 
 ## 2.1 Before you start
 
@@ -39,7 +39,7 @@ Create the queue before the worker's first deploy ([2.5](#25-the-worker)): Wrang
 ## 2.4 The backup repository (optional)
 
 - **A repository of its own** for the backup, one per wiki, private if you like. Files go in `tiddlers/`. Never use the repository the worker is deployed from: its token would let anyone who got it change the worker's code.
-- **A fine-grained personal access token** limited to that repository, with *Contents: read and write*. [This link](https://github.com/settings/personal-access-tokens/new?name=wiki+backup&description=One+commit+per+save+into+the+backup+repository+%28tiddlywiki-cloudflare%2C+README+2.4%29&expires_in=366&contents=write) opens GitHub's form with the name, the permission and the longest expiry the form allows (a year) filled in; what's left is *Repository access → Only select repositories* → the backup repository, then *Generate token*. You'll store it as the `GITHUB_TOKEN` secret ([2.5](#25-the-worker)). When it expires, the admin wiki shows the backup alert (`Bad credentials`): make a new one the same way and replace the secret.
+- **A fine-grained personal access token** limited to that repository, with *Contents: read and write*. [This link](https://github.com/settings/personal-access-tokens/new?name=wiki+backup&description=One+commit+per+save+into+the+backup+repository+%28tiddlywiki-cloudflare%2C+setup+2.4%29&expires_in=366&contents=write) opens GitHub's form with the name, the permission and the longest expiry the form allows (a year) filled in; what's left is *Repository access → Only select repositories* → the backup repository, then *Generate token*. You'll store it as the `GITHUB_TOKEN` secret ([2.5](#25-the-worker)). When it expires, the admin wiki shows the backup alert (`Bad credentials`): make a new one the same way and replace the secret.
 
 Without a repository and a token, the worker skips backups.
 
@@ -79,7 +79,7 @@ The worker is deployed from your repository by Cloudflare's **Workers Builds**: 
    | `CF_API_TOKEN` | *(public site only) secret:* an API token (**My Profile → API Tokens**) with *Zone → Cache Purge* on that zone. Without it and `CF_ZONE_ID`, no purges. |
    | `GITHUB_REPO`, `GITHUB_BRANCH` | `owner/repo` of the backup repository ([2.4](#24-the-backup-repository-optional)), and its branch (default `main`) |
    | `GITHUB_TOKEN` | *secret:* the token of 2.4. Without it and `GITHUB_REPO`, no backups. |
-   | `CONFLICT_GUARD` | `off` builds the page without the browser modules ([operating 3](operating.md)). (The wiki's own settings for those modules live in the plugin's settings tab, 3.) |
+   | `CONFLICT_GUARD` | `off` builds the page without the browser modules ([operating 3.19](operating.md#319-the-browser-modules-off-and-checking-theyre-on)). (The wiki's own settings for those modules live in the plugin's settings tab, [operating 3.17](operating.md#317-the-plugin-and-its-settings).) |
    | `BACKUP_RETRY_SECONDS` | the first wait before a failed backup is tried again (default 60). |
    | `BACKUP_ALERT_MINUTES` | how long backups have to keep failing before the admin wiki shows it (default 60, [design 1.7](design.md#17-github-backup)). |
    | `ACCESS` | `off` lets requests through that didn't come through Cloudflare Access ([2.6](#26-cloudflare-access)), for the tests and local runs: only requests to a local address (`localhost`, `127.0.0.1`), so on a deployed worker it changes nothing. |
@@ -101,7 +101,7 @@ So if the Access application is missing, or covers another hostname than the one
 
 **Logging out:** *Logout* in the cloud icon's dropdown (the "Server status" button in the sidebar) goes to Access's own logout page, `/cdn-cgi/access/logout` on the admin site, which ends the session and shows the login page again; the worker has no session of its own to end.
 
-**The session's length** is the application's *Session duration* (a day by default, up to a month). A tab left open past it is told, in the cloud icon's dropdown, that the login has expired and how to log in again, with every change kept on the device meanwhile ([operating [operating 3.14](operating.md#314-when-your-login-expires)](operating.md#314-when-your-login-expires)).
+**The session's length** is the application's *Session duration* (a day by default, up to a month). A tab left open past it is told, in the cloud icon's dropdown, that the login has expired and how to log in again, with every change kept on the device meanwhile ([operating 3.14](operating.md#314-when-your-login-expires)).
 
 ## 2.7 The zone's rules *(public site only)*
 
@@ -140,13 +140,13 @@ Public tabs ask for `/status` at every page load, before the tiddler list. With 
 - **When:** `http.host eq "wiki.example.com" and (starts_with(http.request.uri.path, "/recipes/") or starts_with(http.request.uri.path, "/_plugins/"))`
 - **Then:** set the static header `Access-Control-Allow-Origin` to the admin site's origin, `https://wiki-admin.<your subdomain>.workers.dev` (or `https://admin.wiki.example.com` with a custom domain; no trailing slash)
 
-This lets the admin wiki read tiddler contents from the public site ([design 1.5](design.md#15-keeping-worker-requests-down), [2.9](#29-a-second-wiki)), and keep the core and plugin files for opening offline (section 3). Without it everything still works online, but every tiddler is fetched through the worker, and the files aren't kept: a rule set before the `/_plugins/` path was part of it needs that path added.
+This lets the admin wiki read tiddler contents from the public site ([design 1.5](design.md#15-keeping-worker-requests-down), [2.9](#29-a-second-wiki)), and keep the core and plugin files for opening offline ([operating 3.13](operating.md#313-opening-the-wiki-offline)). Without it everything still works online, but every tiddler is fetched through the worker, and the files aren't kept: a rule set before the `/_plugins/` path was part of it needs that path added.
 
 A "Bypass cache" rule for the admin hostname is optional: Cloudflare never caches responses a worker generates itself.
 
 ## 2.8 The first visit
 
-Open the admin site (`https://wiki-admin.<your subdomain>.workers.dev`, or your custom domain). Access asks you to log in, then the worker puts an empty TiddlyWiki in the bucket as `index.html` (the engine; your content lives in the tiddler files) with the public site's `status` file (written for a private wiki too, for the day it gets a public site), builds the page, and the wiki opens. That first load also publishes TiddlyWiki's core file and the page, for both sites. With a public site, open `https://wiki.example.com` to see it. Then Control Panel → Saving → Cloudflare → *Check the setup* looks at each piece (Access, the public site's rules, backups, the queue, purges) and names the section of this guide for one that's missing ([operating [operating 3.15](operating.md#315-checking-the-setup)](operating.md#315-checking-the-setup)).
+Open the admin site (`https://wiki-admin.<your subdomain>.workers.dev`, or your custom domain). Access asks you to log in, then the worker puts an empty TiddlyWiki in the bucket as `index.html` (the engine; your content lives in the tiddler files) with the public site's `status` file (written for a private wiki too, for the day it gets a public site), builds the page, and the wiki opens. That first load also publishes TiddlyWiki's core file and the page, for both sites. With a public site, open `https://wiki.example.com` to see it. Then Control Panel → Saving → Cloudflare → *Check the setup* looks at each piece (Access, the public site's rules, backups, the queue, purges) and names the section of this guide for one that's missing ([operating 3.15](operating.md#315-checking-the-setup)).
 
 **An existing wiki:** drag its `.html` file onto the admin wiki. TiddlyWiki's import saves every tiddler, plugins included, and each goes to R2 and to the backup. Don't upload your wiki as `index.html` instead: TiddlyWiki deletes, at the first sync, every tiddler the page came with that the server doesn't list, so the content would vanish from view, and the file itself would be public.
 
