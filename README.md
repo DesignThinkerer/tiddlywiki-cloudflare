@@ -1,5 +1,7 @@
 # TiddlyWiki on Cloudflare
 
+[![CI](https://github.com/DesignThinkerer/tiddlywiki-cloudflare/actions/workflows/ci.yml/badge.svg)](https://github.com/DesignThinkerer/tiddlywiki-cloudflare/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 Host your own [TiddlyWiki](https://tiddlywiki.com) on Cloudflare's free plan: a worker for editing, R2 for storage, a public read-only site served from the cache if you want one, and every save backed up to GitHub as its own commit.
 
 - **The admin wiki,** at the worker's own address (`https://wiki-admin.<your subdomain>.workers.dev`, or a custom domain such as `admin.wiki.example.com`), is yours to edit, behind Cloudflare Access. A Cloudflare Worker speaks TiddlyWiki's own sync protocol (TiddlyWeb) and stores every tiddler in an R2 bucket.
@@ -419,7 +421,10 @@ GitHub runs the same two groups, as two jobs side by side, for every pull reques
 ```
 ├── README.md                 this document
 ├── CHANGELOG.md              what shipped, newest first, and what an update asks of you
-├── CLAUDE.md                 how work on the repository happens: the principles, the process, where writing goes
+├── CONTRIBUTING.md           how work on the repository happens: the principles, the process, the tests, where writing goes
+├── CLAUDE.md                 points an AI coding agent at CONTRIBUTING.md, with what its environment needs
+├── SECURITY.md               how to report a vulnerability, what's in scope, what the design counts on
+├── CODE_OF_CONDUCT.md        the Contributor Covenant
 ├── LICENSE                   MIT
 ├── worker.js                 GENERATED: the file you deploy (npm run build)
 ├── seed/empty.html           GENERATED, not committed: an empty TiddlyWiki with TiddlyWeb, what a new wiki starts from (2.8), uploaded with the worker
@@ -433,7 +438,11 @@ GitHub runs the same two groups, as two jobs side by side, for every pull reques
 │   ├── tests.md              what each test suite covers, the R2 calls per kind of request, the CPU budgets
 │   ├── external-plugins.md   design notes for plugin files (design 1.8)
 │   └── admin-wiki.png        GENERATED: the screenshot at the top of this README (npm run screenshot)
-├── .github/workflows/ci.yml  runs the tests on GitHub for every pull request and push to main, keeping a failed job's test-results/
+├── .github/
+│   ├── workflows/ci.yml      runs the tests on GitHub for every pull request and push to main, keeping a failed job's test-results/
+│   ├── dependabot.yml        dependency updates as weekly pull requests, the wiki engine excepted (3)
+│   ├── ISSUE_TEMPLATE/       the bug report form, and where questions and ideas go
+│   └── PULL_REQUEST_TEMPLATE.md  the process as a checklist
 ├── src/
 │   ├── worker/               the worker's source, one module per concern (below)
 │   │   ├── index.js          the entry point: the Access and settings checks, the route table, the queue consumer
