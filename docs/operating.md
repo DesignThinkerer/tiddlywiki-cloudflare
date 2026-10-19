@@ -72,7 +72,7 @@ The worker's logs are under its Logs tab in the dashboard. What the lines mean:
 | `[Backup] Could not queue '<title>', backing up directly` | The queue was unavailable, so the backup ran directly. |
 | `[Backup] '<title>' could not be backed up` | A direct backup (no queue bound, or the queue unavailable) failed 3 times. That version isn't on GitHub. |
 | `Cache purge failed (<status>)` | The purge API refused; check the `CF_API_TOKEN` permission. |
-| `[Manifest] Write conflict detected, retrying` | Two saves updated the tiddler list at once. This is normal and retried automatically. |
+| `[Tiddler list] Write conflict detected, retrying` | Two saves updated the tiddler list at once. This is normal and retried automatically; a save that loses five such races in a row is answered "The tiddler list couldn't be updated", and TiddlyWiki sends it again by itself. |
 | `The tiddler list can't be read: rebuilding it from the stored tiddlers` | The list was damaged, and the worker is rebuilding it ([design 1.2](design.md#12-storage-revisions-and-etags)). The damaged copy is in `_repair/`. |
 | `Tiddler list rebuilt: <n> tiddlers` | The rebuild is complete. |
 | `Rebuilding the tiddler list: <key> is not a readable tiddler, left out` | That object in R2 isn't valid JSON. It was already unreadable for the wiki. |

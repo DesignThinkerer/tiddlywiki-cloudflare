@@ -18,9 +18,10 @@ import { isStartupTiddler, needsPluginFile, tiddlerKey } from "./tiddlers.js";
 // The browser modules (src/browser/, operating 3), baked into the page as TiddlyWiki modules: the
 // library the others require, the conflict guard, the list sync, the backup alert, the page
 // publisher (see "The page" below), the restore import (the backup's files dropped onto the wiki),
-// the control panel's Cloudflare tab, the outbox (changes kept on the device until the worker
-// has them) and the cold start (the service worker registered). Each source is a placeholder here, which build.mjs
-// replaces with the file's text (the first with src/browser/lib.js, and so on).
+// the control panel's Cloudflare tab, the outbox (changes kept on the device until the worker has
+// them), the cold start (the service worker registered) and the device tab (what this browser
+// keeps). Each source is a placeholder here, which build.mjs replaces with the file's text (the
+// first with src/browser/lib.js, and so on).
 const BROWSER_MODULES = [
   { title: "$:/cfworker/lib.js", type: "library", source: "__LIB_SOURCE__" },
   { title: "$:/cfworker/conflict-guard.js", type: "startup", source: "__CONFLICT_GUARD_SOURCE__" },

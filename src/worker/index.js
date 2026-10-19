@@ -3,10 +3,10 @@
 //
 // Every request goes: Access check → settings check → the route whose method and path match. The
 // modules, from the bottom up: docs (where the manual is, for messages), bytes, tiddlers, storage,
-// settings, access, http (the small shared helpers); layout (reading and storing a tiddler), cache (public site purges), list (the tiddler
-// list and its rebuild), plugins (plugin files), build (building the page), page (serving and
-// publishing it); reads and saves (the handlers); backup/ (the GitHub backup through the queue);
-// setup (the setup check).
+// settings, access, http (the small shared helpers); layout (reading and storing a tiddler), cache
+// (public site purges), list (the tiddler list and its rebuild), plugins (plugin files), app (the
+// app's manifest and icons), build (building the page), page (serving and publishing it); reads and
+// saves (the handlers); backup/ (the GitHub backup through the queue); setup (the setup check).
 // Each imports only from the ones before it (build.mjs refuses a cycle).
 //
 // worker.js is built from these by `npm run build` (build.mjs), with the browser modules of
