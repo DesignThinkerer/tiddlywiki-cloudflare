@@ -8,15 +8,14 @@ Your worker is deployed from your copy of this repository, which this one keeps 
 
 To take an update: on GitHub, *Sync fork* on your fork; Workers Builds redeploys, and the next admin page load rebuilds the page.
 
-**A copy that isn't a fork** — the Deploy to Cloudflare button's, or one made from the template — has no *Sync fork*, and no history in common with this repository either: the button's copy is one commit, "source repo import", the files as they were that day (without the CI workflow), with your names written into `wrangler.toml`. So a plain `git pull` refuses ("refusing to merge unrelated histories"). The first update joins the two histories, in a clone of your copy on your machine:
+**The button's copy** has no *Sync fork*: it isn't a fork but an import, one commit by Cloudflare's bot with the files as they were that day, the CI workflow left out and your project's names written into `wrangler.toml` and `package.json`, so a plain `git pull` refuses to merge it with this repository ([design 2.30](design.md#230-the-deploy-to-cloudflare-button-three-files-the-variables-kept-out-of-them)). The update is one command, in a clone of your copy on your machine, with git and Node 22 installed:
 
 ```bash
-git remote add upstream https://github.com/DesignThinkerer/tiddlywiki-cloudflare
-git fetch upstream
-git merge --allow-unrelated-histories -X theirs upstream/main
+node tools/update.mjs
+git push
 ```
 
-Then, **before pushing, put your names back in `wrangler.toml`:** the merge takes this repository's file, which names the worker `wiki-admin`, the bucket `wiki` and the queue `wiki-backup`, and pushed as it is, Workers Builds would deploy your copy onto a worker and a bucket of those names — your real wiki's, if you have one. Set `name`, `bucket_name` and the two `queue` lines to the names the import wrote (the project's name for the worker and the bucket, the project's name and `-backup` for the queue), then `git commit -a --amend --no-edit` and `git push`. The merge also brings back the CI workflow, `.github/workflows/ci.yml`, which the import left out: delete it first if you'd rather GitHub didn't run the test suites on your copy. From then on an update is `git pull --no-rebase upstream main`, and your names stay (checked on 2026-10-19 on a copy the button made).
+The script fetches this repository and merges its `main` into your copy: the first time by finding the commit your copy was taken from, so that the merge is an ordinary one, then as plain merges. Your names stay in `wrangler.toml` and `package.json`, which matters: this repository's file names the worker `wiki-admin`, the bucket `wiki` and the queue `wiki-backup`, and Workers Builds would bind your copy to a bucket and a queue of those names (the worker's name it corrects by itself). The CI workflow stays out, as the import left it. A change you made to a file this repository also changed is merged like any other, and a real conflict is left to you, the script saying which file and how to finish or undo the merge. Nothing is pushed: the `git push` is the deploy. A copy made before the script existed fetches it once, `git fetch https://github.com/DesignThinkerer/tiddlywiki-cloudflare main && git checkout FETCH_HEAD -- tools/update.mjs`, then runs the command above.
 
 Nothing in the repository holds your values (`wrangler.toml` is deployed as it is, the settings live in the dashboard, [setup 2.5](setup.md#25-the-worker)), so an update never conflicts with them. [CHANGELOG.md](../CHANGELOG.md) lists, for each change, anything to do by hand — a new setting, a new zone rule; unless it says so, nothing is.
 
