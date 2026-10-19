@@ -3,7 +3,7 @@
 // ending up with every tiddler; a real TiddlyWiki in Chromium, the worker with its queue, GitHub imitated.
 // Run: npm run test:sync
 import crypto from "node:crypto";
-import { createChecks, createWatcher, finish, launchBrowser, readWikiFile, settle, startSite, waitFor } from "./browser-harness.mjs";
+import { createChecks, createWatcher, finish, launchBrowser, readWikiFile, settle, sleep, startSite, waitFor } from "./browser-harness.mjs";
 
 // ---- GitHub, imitated: the Contents API and the tree ------------------------------------------------
 const blobSha = buf => crypto.createHash("sha1").update(Buffer.concat([Buffer.from(`blob ${buf.length}\0`), buf])).digest("hex");
@@ -93,6 +93,15 @@ const hint = await A.evaluate(t => { const x = $tw.wiki.getTiddler(t); return x 
 check("backups on and no full backup ever: an alert says tiddlers saved before aren't on GitHub, and where the button is",
   !!hint && (hint.tags || []).includes("$:/tags/Alert") && /full backup/.test(hint.text) && /Cloudflare/.test(hint.text), JSON.stringify(hint));
 // Closing the alert is remembered on the device: a reload doesn't bring it back
+// The module's own removal of the hint (backups reported off) isn't the user closing it: on again,
+// with no full backup still, the hint is back
+await A.evaluate(() => $tw.syncadaptor.cfworkerNoteBackupStatus({ backups: "off", problem: null, stuck: null, sync: null }));
+await sleep(200);
+const goneWhenOff = !(await exists(A, HINT));
+await A.evaluate(() => $tw.syncadaptor.cfworkerNoteBackupStatus({ backups: "on", problem: null, stuck: null, sync: null }));
+await sleep(200);
+check("...the hint goes when backups are reported off, and is back when they're on again: the module's own removal isn't a closing",
+  goneWhenOff && (await exists(A, HINT)), `gone when off ${goneWhenOff}, back ${await exists(A, HINT)}`);
 await A.evaluate(t => $tw.wiki.deleteTiddler(t), HINT);
 await A.reload();
 await A.waitForFunction(() => window.$tw && $tw.syncer && $tw.syncer.timestampLastSyncFromServer);

@@ -470,6 +470,36 @@ check("...with nothing waiting: the device copy, the outbox and the service work
   reloaded && fetchedAgain.some(u => u.includes("/_plugins/tiddlywikicore.js")) && fetchedAgain.some(u => u.startsWith("/recipes/default/tiddlers/")) && (await deviceCount(A)) > 0,
   `reloaded ${reloaded}; fetched again: ${fetchedAgain.map(u => u.split("?")[0]).join(", ").slice(0, 300)}`);
 
+// --- 9b. Offline, the cached list's answer about backups isn't taken for a new one -------------------
+// The admin wiki asks how backups go with a tiddler list request: at a load, then hourly, and at
+// every request while an alert shows. The service worker keeps the list with the answer it came with.
+// Offline, a poll that asks gets that list from the cache (X-Served-From: cache): the answer in it is
+// the one noted when it came, not the worker answering now, so the time the worker was asked stays.
+const BACKUP_STATUS_T = "$:/temp/cfworker/backup-status", BACKUP_ALERT_T = "$:/temp/cfworker/backup-alert";
+const askedAt = p => p.evaluate(t => { const s = $tw.wiki.getTiddler(t); return s ? s.fields.asked : null; }, BACKUP_STATUS_T);
+await site.bucket.put("_backup/status.json", JSON.stringify({ failing: { "Old note": { since: Date.now() - 2 * 3600 * 1000, last: Date.now(), error: "Bad credentials", status: 401 } } }));
+await reload(A);
+await waitFor(() => A.evaluate(t => $tw.wiki.tiddlerExists(t), BACKUP_ALERT_T), 10000);
+const askedOnLoad = await askedAt(A);
+check("(a load asks how backups go with its first tiddler list request and notes when; failing backups show as an alert, so every request asks while it shows)",
+  !!askedOnLoad && await A.evaluate(t => $tw.wiki.tiddlerExists(t), BACKUP_ALERT_T), `asked ${askedOnLoad}, alert ${await A.evaluate(t => $tw.wiki.tiddlerExists(t), BACKUP_ALERT_T)}`);
+await offline(contextA);
+for (let i = 0; i < 2; i++) {
+  const before = await A.evaluate(() => String($tw.syncer.timestampLastSyncFromServer));
+  await A.evaluate(() => $tw.syncer.syncFromServer());
+  await waitFor(() => A.evaluate(t => String($tw.syncer.timestampLastSyncFromServer) !== t, before), 10000);   // answered from the cache
+}
+await sleep(300);
+check("offline, two polls answered from the cache, each asking: the answer cached with the list isn't noted as a new one, the time the worker was asked is unchanged",
+  (await askedAt(A)) === askedOnLoad, `${askedOnLoad} → ${await askedAt(A)}`);
+await site.start();
+await site.startPublic();
+await site.bucket.delete("_backup/status.json");   // (the site's bucket handle is the running site's: after the start)
+await contextA.setOffline(false);
+await A.evaluate(() => { $tw.syncer.processTaskQueue(); $tw.syncer.syncFromServer(); });
+await settle(A);
+check("...and at the network's return, the worker's real answer takes the alert away", await waitFor(() => A.evaluate(t => !$tw.wiki.tiddlerExists(t), BACKUP_ALERT_T), 10000));
+
 // --- 8. The public site registers nothing --------------------------------------------------------------
 const visitors = await browser.newContext();
 const { p: V } = await open(visitors, "V", PUB + "/", { wait: false });

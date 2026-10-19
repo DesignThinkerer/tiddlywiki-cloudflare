@@ -616,6 +616,11 @@ check("a page load asks how backups go with its first tiddler list request", fir
 check("...and failing backups show as an alert: since when, how many, the oldest, GitHub's answer, what to do",
   !!backupAlert && (backupAlert.tags || []).includes("$:/tags/Alert") && /2 tiddlers/.test(backupAlert.text) && backupAlert.text.includes('<$link to="Alpha">') &&
   backupAlert.text.includes("Bad credentials") && backupAlert.text.includes("GITHUB_TOKEN"), JSON.stringify(backupAlert));
+const alertStamp = () => K.evaluate(t => { const a = $tw.wiki.getTiddler(t); return a ? $tw.utils.stringifyDate(a.fields.modified) : null; }, BACKUP_ALERT);
+const stampShown = await alertStamp();
+await sync(K);
+await sync(K);
+check("...and while the problem is the same, the alert isn't rewritten at each answer: its date stays", stampShown !== null && (await alertStamp()) === stampShown, `${stampShown} → ${await alertStamp()}`);
 reqMark16 = requests.length;
 await bucket.delete("_backup/status.json");
 await sync(K);
@@ -626,6 +631,14 @@ reqMark16 = requests.length;
 await sync(K);
 check("...after that, the next requests don't ask (once an hour)", !requests.slice(reqMark16).some(r => r.tag === "K" && r.headers["x-backup-status"]),
   JSON.stringify(requests.slice(reqMark16).filter(r => r.tag === "K").map(r => r.url)));
+await K.evaluate(() => $tw.wiki.addTiddler({ title: "$:/config/cfworker/BackupCheckMinutes", text: "-5" }));
+await sync(K);
+reqMark16 = requests.length;
+await sync(K);
+check("...and a nonsense interval setting (-5 minutes) doesn't make every request ask: a minute at least", !requests.slice(reqMark16).some(r => r.tag === "K" && r.headers["x-backup-status"]),
+  JSON.stringify(requests.slice(reqMark16).filter(r => r.tag === "K" && r.headers["x-backup-status"]).map(r => r.url)));
+await K.evaluate(() => $tw.wiki.deleteTiddler("$:/config/cfworker/BackupCheckMinutes"));
+await sync(K);
 await K.close();
 // A backup the runtime cut short (a version of several MB, over the free plan's CPU time: the queue
 // tried it four times, nothing recorded why): the note the worker left before trying, reported
