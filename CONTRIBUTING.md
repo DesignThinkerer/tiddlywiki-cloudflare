@@ -25,11 +25,25 @@ Each with its reason and what enforces it. A change that crosses one needs the r
 
 A commit message says what changed, in plain words, after a conventional prefix (`feat`, `fix`, `docs`, `test`, `chore`, `refactor`), and why in its body. The pull request template is this process as a checklist.
 
+## AI-assisted contributions
+
+Welcome, and used on this repository too, as the commit trailers say. Two conditions: you have read and understood what you submit, and can answer for every line of it; and the pull request says what was verified and how. A plan that reads as implementation detail, a test never seen failing, a doc left as it was: an assistant produces all three readily, and the process above is the check against them.
+
 ## Running the tests
 
 The browser suites need Playwright's Chromium: `npx playwright install chromium` once, or `CHROMIUM_PATH` naming a Chrome of your own. While iterating, run only the suites the change touches: `npm run test:suite -- page-publish two-tabs` builds, then runs the named suites (`tools/run-suites.mjs`: each to the end, its output in `test-results/<suite>.log`, a summary, exit 1 if any failed). Run the full `npm test` once at the end, or leave it to CI on the pull request. `npm test -- --parallel <n>` runs that many suites at once: they are listed longest first, so a machine with CPUs to spare runs them all together in about the length of the longest, three minutes, while a machine with two CPUs bears two.
 
 A browser suite that fails leaves `test-results/<suite>.requests.log` (every request its pages made, in order, how each ended) and `test-results/traces/<suite>/<n>.zip` (the test's actions and the page's console, in time: `npx playwright show-trace`); read those before guessing. Suites take free ports, so they can run together, but several Chromium suites at once overload a small machine, and timing checks fail that pass in sequence: rerun a failed suite alone before reading anything into it. The browser suites share `test/browser-harness.mjs`; the GitHub and Cloudflare APIs are imitations, so nothing touches an account. What each suite covers is in [docs/tests.md](docs/tests.md); the commands are in [development 6](docs/development.md).
+
+## Releases
+
+A release is a dated block of `CHANGELOG.md`. Entries collect under "Unreleased" as they merge; the pull request that dates the block also sets `package.json`'s version to that date (`2026-10-19` is `2026.10.19`, valid semver, and the repository suite checks the two agree), which the admin wiki's plugin then shows, followed by a build hash. Once that's merged, the tag and the GitHub release, with the block as its notes, are one command:
+
+```bash
+node tools/release-notes.mjs | gh release create "v$(node -p "require('./package.json').version")" --target main --title "$(node -p "require('./package.json').version")" --notes-file -
+```
+
+Nothing is built or uploaded: a wiki takes the release by syncing its copy of the repository (operating 3.1), as before.
 
 ## Where writing goes
 
