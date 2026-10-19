@@ -907,11 +907,12 @@ exports.startup = function() {
 	};
 	// The device database removed (the device tab's Forget, which reloads the page after): this tab's
 	// connection closed first and nothing opened again meanwhile, the other tabs' closed by their
-	// versionchange handler (above). Resolves once it's gone — or after a few seconds if a connection
-	// hasn't closed: the removal then goes through when it does, before the reloaded page's open.
+	// versionchange handler (above). Resolves true once it's gone — or after a few seconds if a
+	// connection hasn't closed: the removal then goes through when it does, before the reloaded page's
+	// own open; null when there's no database to remove; false when the browser refuses.
 	proto.cfworkerForgetDevice = function() {
 		if(storeOff) {
-			return Promise.resolve(false);
+			return Promise.resolve(null);
 		}
 		return storeDb().then(function(db) {
 			if(db) {

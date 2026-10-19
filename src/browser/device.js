@@ -32,6 +32,7 @@ var lib = require("$:/cfworker/lib.js");
 
 var MEASURE = "$:/temp/cfworker/device",
 	MESSAGE = "$:/temp/cfworker/device-message",
+	OUTBOX_STATUS = "$:/temp/cfworker/outbox",   // the outbox's status: what it holds in this tab, whether the worker answers
 	DO_MEASURE = "tm-cfworker-device-measure",
 	DO_KEEP = "tm-cfworker-device-keep",
 	DO_FORGET = "tm-cfworker-device-forget",
@@ -41,7 +42,7 @@ var MEASURE = "$:/temp/cfworker/device",
 exports.startup = function() {
 	var Adaptor = lib.findAdaptor();
 	if(!Adaptor || Adaptor.prototype.cfworkerDevice || typeof window === "undefined" ||
-		typeof Adaptor.prototype.cfworkerDeviceRequest !== "function" || typeof Adaptor.prototype.cfworkerListedTitles !== "function" || typeof Adaptor.prototype.cfworkerOutboxRequest !== "function" || typeof Adaptor.prototype.cfworkerStorageKept !== "function") {
+		typeof Adaptor.prototype.cfworkerDeviceRequest !== "function" || typeof Adaptor.prototype.cfworkerListedTitles !== "function" || typeof Adaptor.prototype.cfworkerOutboxRequest !== "function" || typeof Adaptor.prototype.cfworkerStorageKept !== "function" || typeof Adaptor.prototype.cfworkerForgetDevice !== "function") {
 		return;
 	}
 	if(!lib.onAdminSite(window.location.origin + "/")) {
@@ -87,19 +88,29 @@ exports.startup = function() {
 		}
 		return name;
 	}
-	function outboxLine(entries) {
-		var waiting = 0, drafts = 0;
+	// What waits to be sent: the outbox's table (what the device kept, this tab's and the other
+	// tabs'), what the outbox module holds in this tab (its status counts a change the device refused
+	// to keep, which is in the tab only, design 1.10) and the wiki's drafts (one the device refused
+	// the same): the larger count of each, since the table and the tab overlap
+	function waitingCounts(entries) {
+		var changes = 0, drafts = 0, status = wiki.getTiddler(OUTBOX_STATUS);
 		$tw.utils.each(entries || [],function(entry) {
 			if(entry.kind === "draft") {
 				drafts++;
 			} else {
-				waiting++;
+				changes++;
 			}
 		});
-		if(!waiting && !drafts) {
+		changes = Math.max(changes,status ? parseInt(status.fields.waiting,10) || 0 : 0);
+		drafts = Math.max(drafts,wiki.filterTiddlers("[is[draft]]").length);
+		return {changes: changes, drafts: drafts, unkept: !!status && status.fields.kept === "no"};
+	}
+	function outboxLine(counts) {
+		if(!counts.changes && !counts.drafts) {
 			return "nothing waiting in the outbox";
 		}
-		return (waiting ? count(waiting,"change") : "") + (waiting && drafts ? " and " : "") + (drafts ? count(drafts,"draft") : "") + " waiting in the outbox";
+		return (counts.changes ? count(counts.changes,"change") : "") + (counts.changes && counts.drafts ? " and " : "") + (counts.drafts ? count(counts.drafts,"draft") : "") + " waiting in the outbox" +
+			(counts.unkept ? " (some of it the device refused to keep: it lives in this tab until it's sent)" : "");
 	}
 
 	// --- Measure --------------------------------------------------------------------------------------
@@ -174,7 +185,7 @@ exports.startup = function() {
 				});
 				lines.push("''This device:'' " + copy.length + " of " + listed.length + " tiddlers kept (" + size(lib.utf8Length(JSON.stringify(copy))) + ")" +
 					(inPage || notYet ? " — " + [inPage ? count(inPage,"tiddler") + " in the page itself" : "", notYet ? count(notYet,"tiddler") + " not loaded yet" : ""].filter(Boolean).join(", ") : "") +
-					"; " + outboxLine(outbox) + ".");
+					"; " + outboxLine(waitingCounts(outbox)) + ".");
 			} else {
 				lines.push("''This device:'' no device copy (the browser gave no database: nothing is kept here, and a change made offline isn't either).");
 			}
@@ -205,6 +216,9 @@ exports.startup = function() {
 				"it doesn't say how much this site uses or may use") + "; it " + (browser.kept === true ? "has promised to keep it." : browser.kept === false ? "hasn't promised to keep it (ask it below)." : "doesn't say whether it will keep it."));
 			lines.push("", "Measured at <$view tiddler='" + MEASURE + "' field='measured' format='date' template='0hh:0mm:0ss'/>.");
 			wiki.addTiddler(new $tw.Tiddler({title: MEASURE, text: lines.join("\n"), measured: $tw.utils.stringifyDate(new Date())}));
+		}).catch(function(e) {
+			// (Each source answers null when it fails; this is for anything else, rather than "Measuring…" for good)
+			wiki.addTiddler(new $tw.Tiddler({title: MEASURE, text: "Couldn't measure: <$text text=\"\"\"" + String(e && e.message || e).replace(/"""/g,"'") + "\"\"\"/>", measured: $tw.utils.stringifyDate(new Date())}));
 		});
 	}
 	$tw.rootWidget.addEventListener(DO_MEASURE,function() {
@@ -241,22 +255,32 @@ exports.startup = function() {
 	}
 	$tw.rootWidget.addEventListener(DO_FORGET,function() {
 		proto.cfworkerOutboxRequest("readonly",function(store) { return store.getAll(); }).then(function(entries) {
-			var line = outboxLine(entries);
-			if(line !== "nothing waiting in the outbox") {
-				say("forget","Not now: " + line + ", and it would go with the copy. A change is sent at the network's return (one the alert asks to rename, once renamed); a draft, save or cancel it. Then forget.");
+			var counts = waitingCounts(entries);
+			if(counts.changes || counts.drafts) {
+				say("forget","Not now: " + outboxLine(counts) + ", and it would go with the copy. A change is sent at the network's return (one the alert asks to rename, once renamed); a draft, save or cancel it. Then forget.");
 				return;
 			}
 			// (The page reloads once the copy is gone, from the worker: with no network there'd be
-			// nothing to reload from, the copy and the files already gone)
-			if(typeof navigator === "object" && navigator.onLine === false) {
-				say("forget","Not now: this browser is offline, and the page comes back from the worker once the copy is gone. Get back online first, then forget.");
+			// nothing to reload from, the copy and the files already gone. The browser's own flag says
+			// online whenever an interface is up; the outbox's status knows a request that got no answer)
+			var outboxStatus = wiki.getTiddler(OUTBOX_STATUS),
+				browserOffline = typeof navigator === "object" && navigator.onLine === false,
+				workerSilent = !!outboxStatus && outboxStatus.fields.online === "no";
+			if(browserOffline || workerSilent) {
+				say("forget","Not now: " + (browserOffline ? "this browser is offline" : "the worker isn't answering (no network, or it can't be reached)") + ", and the page comes back from the worker once the copy is gone. Get back online first, then forget.");
 				return;
 			}
 			say("forget","Forgetting…");
-			return proto.cfworkerForgetDevice().then(function() {
-				return deleteCaches();
-			}).then(function() {
-				window.location.reload();
+			return proto.cfworkerForgetDevice().then(function(removed) {
+				// (true: gone, or going as the last connection closes; null: there was no database; false:
+				// the browser refused to remove it, so nothing is removed and the page stays)
+				if(removed === false) {
+					say("forget","Not done: the browser refused to remove the device copy's database. Nothing was removed; try again, or clear this site's data from the browser's settings.");
+					return;
+				}
+				return deleteCaches().then(function() {
+					window.location.reload();
+				});
 			});
 		});
 		return false;
