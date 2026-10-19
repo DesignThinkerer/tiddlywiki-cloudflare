@@ -129,7 +129,7 @@ GitHub runs the same two groups, as two jobs side by side, for every pull reques
     ├── integrity.test.mjs    the tiddler list's integrity: a failed list update, a rebuild, a failed page build, draft-like and awkward titles
     ├── repository.test.mjs   the repository's guards: .gitignore, wrangler.toml, what a deploy uploads, the scripts, the Miniflare pins, the docs' links, the restore tool, the build's refusals
     ├── r2-ops.test.mjs       R2 calls per kind of request, against a budget
-    ├── setup-check.test.mjs  the setup check: each piece in place or missing, the lines naming the setup guide's sections, with their links
+    ├── setup-check.test.mjs  the setup check: each piece in place or missing, a failing line ending with what to do, the lines naming the setup guide's sections, with their links
     ├── cpu.test.mjs          CPU of a big plugin's save and backup, against a budget
     ├── r2-counter.mjs        test-only wrapper that counts the worker's R2 calls
     ├── browser-harness.mjs   the browser suites' shared setup (worker, public site stand-in, Chromium, helpers)

@@ -23,7 +23,7 @@ A new wiki starts by itself: the first time you open the admin site, the worker 
 
 **What you need:** a Cloudflare account (the free plan is enough) and a GitHub account (the worker is deployed from your copy of this repository; the backup goes to a repository too). For a public site, also a domain on that account (both sites are then hostnames of it).
 
-About ten minutes, in this order, and the button does half of it. The setup guide, [chapter 2](docs/setup.md), has each step in full, and the wiki's own setup check (the last step) names the section for anything missing.
+About ten minutes, in this order, and the button does half of it. The setup guide, [chapter 2](docs/setup.md), has each step in full, and the wiki's own setup check (the last step) says what to do about anything missing, with the section that has the full steps.
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/DesignThinkerer/tiddlywiki-cloudflare)
 

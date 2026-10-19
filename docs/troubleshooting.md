@@ -1,6 +1,6 @@
 # 4. Troubleshooting
 
-*Chapter 4 of the [manual](../README.md#the-manual). The admin wiki's own check, [operating 3.15](operating.md#315-checking-the-setup), finds most setup problems and names the section that fixes them.*
+*Chapter 4 of the [manual](../README.md#the-manual). The admin wiki's own check, [operating 3.15](operating.md#315-checking-the-setup), finds most setup problems, says what to do and names the section with the full steps.*
 
 | Symptom | Likely cause | What to do |
 |---|---|---|
