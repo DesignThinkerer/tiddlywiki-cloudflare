@@ -790,13 +790,14 @@ const alertLinks = page => page.evaluate(() => {
   return [...div.querySelectorAll("a[href^='#']")].map(a => decodeURIComponent(a.getAttribute("href").slice(1)));
 });
 
-// The alert's links work whatever the title: one ending in "]", one holding "]]" and "|"
-const BRACKETED = "Todo [x]", ODD_TITLE = "Odd ]] title | with <<version>>";
-await staleEdit(BRACKETED);
-await staleEdit(ODD_TITLE);
+// The alert's links work whatever the title: one ending in "]", one holding "]]" and "|", and
+// quotes: one kind, both kinds, and both with a final quote (which no quoted attribute can hold)
+const EDGE_TITLES = ["Todo [x]", "Odd ]] title | with <<version>>", 'Say "hi"', 'Bob\'s "hi" there', 'Bob\'s "hi"'];
+for (const title of EDGE_TITLES) await staleEdit(title);
 const linked = await alertLinks(L);
-check("alert links point to the tiddler whatever its title (ending in ], or holding ]] and |)",
-  linked.includes(BRACKETED) && linked.includes(ODD_TITLE), JSON.stringify(linked));
+const notLinked = EDGE_TITLES.filter(t => !linked.includes(t));
+check("alert links point to the tiddler whatever its title (ending in ], holding ]] and |, a quote, both kinds, both with a final quote)",
+  notLinked.length === 0, `not linked: ${JSON.stringify(notLinked)}; linked: ${JSON.stringify(linked)}`);
 await clearAlerts(L);
 
 // A public site that doesn't answer (rather than failing) doesn't hold up loading: after a short wait
