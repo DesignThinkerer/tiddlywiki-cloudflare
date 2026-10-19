@@ -48,7 +48,7 @@ const { pageErrors, watch } = createWatcher(site);
 const browser = await launchBrowser();
 const context = await browser.newContext();
 
-const TAB = "$:/temp/cfworker/ControlPanel", STATUS = "$:/temp/cfworker/backup-status", HINT = "$:/temp/cfworker/backup-hint";
+const TAB = "$:/temp/cfworker/ControlPanel", STATUS = "$:/temp/cfworker/backup-status", HINT = "$:/temp/cfworker/backup-hint", MESSAGE = "$:/temp/cfworker/backup-sync-message";
 const field = (page, title, name) => page.evaluate(([t, n]) => { const x = $tw.wiki.getTiddler(t); return x ? x.fields[n] : undefined; }, [title, name]);
 const exists = (page, title) => page.evaluate(t => $tw.wiki.tiddlerExists(t), title);
 const tabText = page => page.evaluate(t => $tw.wiki.renderTiddler("text/plain", t), TAB);
@@ -131,11 +131,56 @@ await A.evaluate(() => $tw.wiki.addTiddler(new $tw.Tiddler($tw.wiki.getCreationF
 await settle(A);
 check("a save after that is committed by its own backup message", await waitFor(async () => files.has("tiddlers/Saved after.json"), 20000));
 
-// A step's error, as the worker reports it in the status, is shown in the tab as text
-await A.evaluate(t => { const x = $tw.wiki.getTiddler(t); $tw.wiki.addTiddler(new $tw.Tiddler(x, { "sync-error": "GitHub answered 502: <bad gateway> {{not wikitext}}" })); }, STATUS);
+// A step's error while a full backup runs, as the worker reports it in the status, is shown in the
+// tab as text, the step tried again by itself
+await A.evaluate(t => { const x = $tw.wiki.getTiddler(t); $tw.wiki.addTiddler(new $tw.Tiddler(x, { "sync-running": "yes", "sync-error": "GitHub answered 502: <bad gateway> {{not wikitext}}" })); }, STATUS);
 text = await tabText(A);
-check("a full backup step's error is shown in the tab, as text", /didn't go through/.test(text) && text.includes("GitHub answered 502: <bad gateway> {{not wikitext}}"), text.replace(/\s+/g, " ").slice(text.indexOf("didn't go through") - 20, text.indexOf("didn't go through") + 160));
-await A.evaluate(t => { const x = $tw.wiki.getTiddler(t); const f = { ...x.fields }; delete f["sync-error"]; $tw.wiki.addTiddler(new $tw.Tiddler(f)); }, STATUS);
+check("a step's error while a full backup runs is shown in the tab, as text, the step tried again by itself",
+  /Running:/.test(text) && /didn't go through/.test(text) && /tried again by itself/.test(text) && text.includes("GitHub answered 502: <bad gateway> {{not wikitext}}"),
+  text.replace(/\s+/g, " ").slice(text.indexOf("didn't go through") - 20, text.indexOf("didn't go through") + 160));
+await A.evaluate(t => { const x = $tw.wiki.getTiddler(t); const f = { ...x.fields, "sync-running": "no" }; delete f["sync-error"]; $tw.wiki.addTiddler(new $tw.Tiddler(f)); }, STATUS);
+// The states the worker records that aren't a run: a full backup the queue refused (finished at once,
+// with the error), one whose steps were lost (no progress for 8 hours, unfinished), and one running
+// when the button is pressed again (409). Each written to the status file as the worker writes it,
+// and read by Refresh (GET) or by the button (POST).
+const STATUS_KEY = "_backup/status.json";
+const statusBefore = await (await bucket.get(STATUS_KEY))?.text();
+const putSync = sync => bucket.put(STATUS_KEY, JSON.stringify({ failing: {}, sync }), { httpMetadata: { contentType: "application/json" } });
+const refreshed = async id => { await press(A, "tm-cfworker-backup-status"); return waitFor(async () => (await field(A, STATUS, "sync-id")) === id, 10000); };
+const message = () => A.evaluate(t => $tw.wiki.getTiddlerText(t, ""), MESSAGE);
+const fromFullBackup = t => t.replace(/\s+/g, " ").replace(/^.*?Full backup/, "Full backup").slice(0, 400);
+const now = Date.now();
+await putSync({ id: "refused-1", startedAt: now, updatedAt: now, finished: now, phase: "push", total: 12, done: 0, committed: 0, removed: 0, failed: 0, steps: 0, error: "The queue didn't take the job: boom" });
+const refusedSeen = await refreshed("refused-1");
+text = await tabText(A);
+check("a full backup the queue refused (recorded finished at once, with the error): the tab says it didn't go through and to start it again, not that it ran or is tried again",
+  refusedSeen && /didn't go through: The queue didn't take the job: boom/.test(text) && /[Ss]tart it again/.test(text) && !/Last full backup:/.test(text) && !/tried again by itself/.test(text) && !/Running:/.test(text),
+  fromFullBackup(text));
+await putSync({ id: "lost-1", startedAt: now - 9 * 3600 * 1000, updatedAt: now - 9 * 3600 * 1000, phase: "push", total: 12, done: 3, committed: 2, removed: 0, failed: 0, steps: 1, error: "GitHub answered 502" });
+const lostSeen = await refreshed("lost-1");
+text = await tabText(A);
+check("...one whose steps were lost (no progress for 8 hours): stopped without finishing, its last error shown, to start again, not tried again",
+  lostSeen && /stopped without finishing/.test(text) && /GitHub answered 502/.test(text) && /[Ss]tart it again/.test(text) && !/tried again by itself/.test(text) && !/Last full backup:/.test(text),
+  fromFullBackup(text));
+await putSync({ id: "running-1", startedAt: now, updatedAt: now, phase: "push", total: 12, done: 1, committed: 1, removed: 0, failed: 0, steps: 1 });
+await press(A, "tm-cfworker-backup-sync");
+const saidRunning = await waitFor(async () => /already running/.test(await message()), 10000);
+text = await tabText(A);
+check("...the button pressed while one runs: the worker refuses (409), the tab says one is already running and shows it running",
+  saidRunning && (await field(A, STATUS, "sync-id")) === "running-1" && (await field(A, STATUS, "sync-running")) === "yes" && /Running:/.test(text), `${JSON.stringify(await message())}: ${fromFullBackup(text).slice(0, 200)}`);
+// An answer that isn't the worker's own text (an error page from the edge, say) shows as text, not as markup
+await A.route(/\/backup\/sync$/, route => route.request().method() === "POST" ? route.fulfill({ status: 500, contentType: "text/html", body: "<b>an error page</b>" }) : route.continue());
+await press(A, "tm-cfworker-backup-sync");
+const saidError = await waitFor(async () => /500/.test(await message()), 10000);
+await A.unroute(/\/backup\/sync$/);
+text = await tabText(A);
+check("an answer that isn't the worker's own text (an error page) shows as text in the tab's message, not as markup",
+  saidError && text.includes("The worker answered 500: <b>an error page</b>"), text.replace(/\s+/g, " ").replace(/^.*?The worker answered/, "The worker answered").slice(0, 120));
+// The status file as the real runs left it
+if (statusBefore) {
+  await bucket.put(STATUS_KEY, statusBefore, { httpMetadata: { contentType: "application/json" } });
+  await refreshed((JSON.parse(statusBefore).sync || {}).id);
+}
 
 // 3. The public site has no tab (read-only, no worker behind it)
 const P = await openTab(PUB + "/", "P");

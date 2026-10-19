@@ -124,6 +124,13 @@ check("...the core file, the status file and the tiddler list from the cache too
   got("A", mark, r => r.url.includes("/recipes/default/tiddlers.json") && r.fromSW && r.status === 200).length >= 1 &&
   await A.evaluate(() => $tw.wiki.getTiddlerText("First note") === "written online" && $tw.wiki.getTiddlerText("$:/status/IsLoggedIn") === "yes" && $tw.wiki.getTiddlerText("$:/status/IsReadOnly") === "no"),
   got("A", mark, r => r.fromSW).map(r => `${r.status} ${r.url.replace(BASE, "").split("?")[0]}`).join(", "));
+// The Cloudflare tab's backups section needs the worker's answer, which comes with a tiddler list
+// request the worker answered; a list from the cache doesn't say
+const CONTROL_TAB = "$:/temp/cfworker/ControlPanel";
+const controlTab = p => p.evaluate(t => $tw.wiki.renderTiddler("text/plain", t).replace(/\s+/g, " "), CONTROL_TAB);
+const tabOffline = await controlTab(A);
+check("...the Cloudflare tab says whether backups are on isn't known yet: the worker hasn't answered", /Not known yet/.test(tabOffline) && !/Backups are off/.test(tabOffline),
+  tabOffline.replace(/^.*?Backups to GitHub/, "Backups to GitHub").slice(0, 200));
 
 // --- 3. A change made then waits in the outbox, and reaches the worker at the network's return ------
 await addTiddler(A, { title: "Offline note", text: "written with no network" });
@@ -132,6 +139,11 @@ check("a change made offline waits in the outbox", (await status(A))?.waiting ==
 await online(contextA);
 check("...and reaches the worker at the network's return", await waitFor(async () => (await stored("Offline note")) === "written with no network", 15000));
 await settle(A);
+await A.evaluate(() => $tw.syncer.syncFromServer());   // (a list request the worker answers: asked about backups with it)
+const backupsKnown = await waitFor(() => A.evaluate(() => $tw.wiki.tiddlerExists("$:/temp/cfworker/backup-status")), 15000);
+const tabOnline = await controlTab(A);
+check("...and once the worker has answered a list request, the tab says backups are off (this worker has none)", backupsKnown && /Backups are off/.test(tabOnline) && !/Not known yet/.test(tabOnline),
+  tabOnline.replace(/^.*?Backups to GitHub/, "Backups to GitHub").slice(0, 200));
 
 // --- 4. A tiddler never loaded on this device, opened offline: empty, no alert, no crash -------------
 const contextC = await browser.newContext();
