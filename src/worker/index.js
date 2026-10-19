@@ -2,8 +2,8 @@
 // consumer. See README.md for the whole picture, and design 1.1 for the requests answered here.
 //
 // Every request goes: Access check → settings check → the route whose method and path match. The
-// modules, from the bottom up: bytes, tiddlers, storage, settings, access, http (the small shared
-// helpers); layout (reading and storing a tiddler), cache (public site purges), list (the tiddler
+// modules, from the bottom up: docs (where the manual is, for messages), bytes, tiddlers, storage,
+// settings, access, http (the small shared helpers); layout (reading and storing a tiddler), cache (public site purges), list (the tiddler
 // list and its rebuild), plugins (plugin files), build (building the page), page (serving and
 // publishing it); reads and saves (the handlers); backup/ (the GitHub backup through the queue);
 // setup (the setup check).
@@ -26,7 +26,7 @@ import { setupCheck } from "./setup.js";
 import { LIST_KEY } from "./storage.js";
 
 // The admin wiki is served by this worker and talks to it from its own origin (its reads of the
-// public site are allowed there, by the zone's CORS rule, README 2.7); these headers let a page from
+// public site are allowed there, by the zone's CORS rule, setup 2.7); these headers let a page from
 // elsewhere talk to it too. "*" gives nothing away: Access answers before the worker, and a browser
 // shows a page from another site no response it asked for with credentials when the origin allowed
 // is "*" (credentials need a named one), so such a page gets either a refusal or nothing. TiddlyWiki

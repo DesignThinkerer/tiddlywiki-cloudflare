@@ -2,4 +2,4 @@ The admin wiki's side of [[TiddlyWiki on Cloudflare|https://github.com/DesignThi
 
 The worker puts it in every page it builds: it always matches the worker, whose version is above, and isn't stored in the wiki. A part edited here is an override, as with any plugin, and stays until deleted.
 
-Settings: the //settings// tab. The worker's own (the public site, backups, purges): the Cloudflare dashboard, README 2.5.
+Settings: the //settings// tab. The worker's own (the public site, backups, purges): the Cloudflare dashboard, [[setup 2.5|https://github.com/DesignThinkerer/tiddlywiki-cloudflare/blob/main/docs/setup.md#25-the-worker]].

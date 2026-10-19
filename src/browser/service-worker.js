@@ -10,7 +10,7 @@ By request:
   it is and never kept. Online, nothing changes.
 - The core file and the plugin files (_plugins/<name>.js?v=<version>, on this site or the public
   one): the cache first; their address carries their version, so a copy is never stale. One from the
-  public site is asked for with CORS (the zone's rule allows the admin site, README 2.7): a real
+  public site is asked for with CORS (the zone's rule allows the admin site, setup 2.7): a real
   answer, kept at its real size. Never an "opaque" one (a plain <script> load from another site):
   the browser charges those several megabytes each against the site's storage, whatever their size,
   and storage under pressure is evicted whole, the outbox with it. Without the CORS header the file

@@ -3,7 +3,7 @@ title: $:/cfworker/restore-import.js
 type: application/javascript
 module-type: startup
 
-Imports the backup's files (README 2.4). On GitHub, tiddlers/<title>.json is the tiddler as the
+Imports the backup's files (setup 2.4). On GitHub, tiddlers/<title>.json is the tiddler as the
 worker stores it: TiddlyWeb's layout, with the tags as a list, a custom field called "fields"
 nested, and the revision, bag and recipe of the wiki it came from. TiddlyWiki's JSON import keeps
 only the fields whose value is text, so such a file dropped onto the wiki would lose every tag.

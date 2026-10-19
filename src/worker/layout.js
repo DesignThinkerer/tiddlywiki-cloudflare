@@ -151,7 +151,7 @@ function storedSuffix(revision) {
 // marked _is_skinny. Changed before its text arrives (a checkbox clicked during the first sync, say),
 // it's saved without the text: the stored text is kept, as TiddlyWiki's own server does, rather than
 // stored as nothing, and the mark isn't stored. A text sent with the mark was typed into the empty
-// editor of such a tiddler (opened offline, say, README 5: TiddlyWiki's draft copies the mark, and
+// editor of such a tiddler (opened offline, say, limits 5: TiddlyWiki's draft copies the mark, and
 // the editor starts empty): it's what was meant, and is stored as sent; only a save without a text,
 // or with an empty one, keeps the stored text. current: the stored object, read with its body.
 export async function keepStoredText(save, current) {

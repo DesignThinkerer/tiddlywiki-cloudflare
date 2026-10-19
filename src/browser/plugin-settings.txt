@@ -1,4 +1,4 @@
-Settings are saved in the wiki (`$:/config/…`), so they apply on every device. For what each one trades, see README 3, "The plugin and its settings".
+Settings are saved in the wiki (`$:/config/…`), so they apply on every device. For what each one trades, see [[operating 3.17|https://github.com/DesignThinkerer/tiddlywiki-cloudflare/blob/main/docs/operating.md#317-the-plugin-and-its-settings]].
 
 ! Settings
 

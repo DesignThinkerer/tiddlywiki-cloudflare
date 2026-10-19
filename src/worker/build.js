@@ -15,7 +15,7 @@ import { conflictGuardEnabled, publicSite, publicUrl } from "./settings.js";
 import { CORE_KEY, INDEX_KEY, PAGE_KEY, SHELL_KEY } from "./storage.js";
 import { isStartupTiddler, needsPluginFile, tiddlerKey } from "./tiddlers.js";
 
-// The browser modules (src/browser/, README 3), baked into the page as TiddlyWiki modules: the
+// The browser modules (src/browser/, operating 3), baked into the page as TiddlyWiki modules: the
 // library the others require, the conflict guard, the list sync, the backup alert, the page
 // publisher (see "The page" below), the restore import (the backup's files dropped onto the wiki),
 // the control panel's Cloudflare tab, the outbox (changes kept on the device until the worker
@@ -67,7 +67,7 @@ function hashText(text) {
 
 // Their settings. The public site's address: the admin wiki loads tiddler contents from there (no
 // worker request) and only asks the worker when that copy isn't current. Empty for a private wiki
-// (README 2.1): the modules then know this site is the admin site, and read from the worker.
+// (setup 2.1): the modules then know this site is the admin site, and read from the worker.
 const PUBLIC_URL_TITLE = "$:/cfworker/public-url";
 
 // What the page carries as the public address: the site with a trailing slash, or ""
