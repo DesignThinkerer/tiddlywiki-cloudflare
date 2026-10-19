@@ -1,6 +1,7 @@
 # The worker's bindings and defaults: what Wrangler deploys, from your repository through Workers
-# Builds, with `npx wrangler deploy`, or from the Deploy to Cloudflare button, which creates the
-# bucket and the queue named here (setup 2.1, 2.5). Deployed as it is: nothing in this file has
+# Builds, with `npx wrangler deploy`, or from the Deploy to Cloudflare button, which names the
+# worker, the bucket and the queue after the project name you give it and writes them here
+# (setup 2.1). Deployed as it is: nothing in this file has
 # to be changed for a wiki that uses the default names (setup 2.1). Your own settings (all
 # optional: without any, the worker is a private wiki) live in the dashboard, under the worker's
 # Variables and Secrets, which a deploy keeps (keep_vars); so do the two secrets, GITHUB_TOKEN and
@@ -13,7 +14,7 @@ no_bundle = true
 find_additional_modules = true       # the empty wiki module (the rules below), nothing else
 compatibility_date = "2024-09-23"
 keep_vars = true                     # a deploy keeps the variables set in the dashboard: that's where the settings are
-workers_dev = true                   # the admin site: https://wiki-admin.<your subdomain>.workers.dev, behind Access (setup 2.6)
+workers_dev = true                   # the admin site: https://wiki-admin.<your subdomain>.workers.dev, behind Access (setup 2.6); from the button, enabled by hand after the deploy
 preview_urls = false                 # no preview URLs: a preview would use the real bucket and queue
 
 # A custom domain for the admin site instead (setup 2.5): add it in the dashboard, under the

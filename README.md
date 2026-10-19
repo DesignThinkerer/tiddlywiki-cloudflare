@@ -27,7 +27,7 @@ About ten minutes, in this order, and the button does half of it. The setup guid
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/DesignThinkerer/tiddlywiki-cloudflare)
 
-**With the button,** Cloudflare copies the repository into your GitHub account, creates the bucket and the queue, and builds and deploys the worker — steps 1, 2, 3 and 5 below, with a switch for Access (6) to check afterwards — then you open the wiki (8). The settings and the two secrets, all optional, go in the dashboard afterwards (5); for a public site, the domain (2) and the zone's rules (7) are by hand either way ([setup 2.1](docs/setup.md#21-before-you-start)). The eight steps:
+**With the button,** Cloudflare copies the repository into your GitHub account, creates the bucket and the queue, builds and deploys the worker and, with a switch, puts Access in front of it — steps 1, 2, 3, 5 and 6 below — then you enable the worker's address and open the wiki (8). The settings and the two secrets, all optional, go in the dashboard afterwards (5); for a public site, the domain (2) and the zone's rules (7) are by hand either way ([setup 2.1](docs/setup.md#21-before-you-start)). The eight steps:
 
 1. **Make your copy of this repository** — a fork, a copy from the template, or the button's copy ([setup 2.1](docs/setup.md#21-before-you-start)). Nothing in it is edited: the worker is deployed as it is, and your settings go in the dashboard.
 2. **The bucket,** `wiki`, in R2; for a public site, its custom domain ([setup 2.2](docs/setup.md#22-the-bucket-and-the-public-site)).
