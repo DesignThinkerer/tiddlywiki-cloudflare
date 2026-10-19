@@ -280,8 +280,10 @@ exports.startup = function() {
 	}
 
 	// Drafts are never saved to the server (the list sync keeps them out of syncing), so TiddlyWiki's
-	// syncer doesn't count an open editor as unsaved: closing or reloading the tab would lose what's
-	// being typed without its usual warning. The browser asks here instead, if an editor holds changes.
+	// syncer doesn't count an open editor as unsaved, and wouldn't warn before the tab closes or
+	// reloads. The browser asks here instead, if an editor holds changes. The outbox keeps the draft
+	// on the device meanwhile (design 1.10), a moment behind the typing and only if the device takes
+	// it: the dialog is the belt over those two cases (design 2.7).
 	window.addEventListener("beforeunload",function(event) {
 		var typing = wiki.filterTiddlers("[is[draft]]").some(function(title) {
 			return wiki.isDraftModified(title);
