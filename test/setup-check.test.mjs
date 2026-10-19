@@ -178,6 +178,13 @@ await (await fetch(priv.base + "/")).arrayBuffer();
   check("a private wiki: the public site's lines say there's nothing to check (setup 2.1), Access fine, purges nothing to purge",
     ["public", "rewrite", "cors-reads", "cors-files", "cache", "purges"].every(id => items[id] && items[id].ok === null) && /private/i.test(text(items, "public")) && ok(items, "access") === true,
     ["public", "rewrite", "cors-reads", "cors-files", "cache", "purges"].map(id => `${id}: ${line(items, id)}`).join(" | "));
+  // (Five slots, one per piece, as on a public wiki; each names the piece it stands for, so the list
+  // doesn't read as one sentence five times)
+  const PIECES = { public: /^The public site:/, rewrite: /^The rewrite rule:/, "cors-reads": /^The CORS rule, tiddler reads:/, "cors-files": /^The CORS rule, files:/, cache: /^The cache rules:/ };
+  const privateTexts = Object.keys(PIECES).map(id => text(items, id));
+  check("...and each of the five public-site lines names its piece (the site, the rewrite rule, the CORS rule's two paths, the cache rules), five different lines rather than one sentence five times, each with setup 2.1",
+    Object.entries(PIECES).every(([id, re]) => re.test(text(items, id)) && /nothing to check/.test(text(items, id)) && guide(items, id) === "2.1") && new Set(privateTexts).size === 5,
+    privateTexts.join(" | "));
 }
 await priv.close();
 
