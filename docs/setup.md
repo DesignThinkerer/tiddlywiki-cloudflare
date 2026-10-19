@@ -8,6 +8,10 @@ About ten minutes, in this order.
 
 **A private wiki, or a public one.** A private wiki skips the public site: in [2.2](#22-the-bucket-and-the-public-site) only the bucket, no custom domain; no zone rules ([2.7](#27-the-zones-rules-public-site-only)); in [2.5](#25-the-worker) no `PUBLIC_WIKI_URL`, `CF_ZONE_ID` or `CF_API_TOKEN`. About five minutes. The steps marked *(public site only)* don't apply. Its first load on a new device reads every tiddler from the worker ([limits 5](limits.md)); after that, only what changed. To make it public later, do those steps then: the next page load takes the setting, and nothing moves.
 
+**With the button, or by hand.** The *Deploy to Cloudflare* button on the README (`https://deploy.workers.cloudflare.com/?url=https://github.com/DesignThinkerer/tiddlywiki-cloudflare`) does half of this chapter in one form. Cloudflare copies this repository into your GitHub account (a repository of its own, not a fork), creates the bucket and the queue with the names `wrangler.toml` gives them ([2.2](#22-the-bucket-and-the-public-site), [2.3](#23-the-backup-queue)), asks for the two secrets, `GITHUB_TOKEN` and `CF_API_TOKEN` (both optional: leave them empty for a wiki without backups or without a public site; each can be set in the dashboard later, [2.5](#25-the-worker)), and deploys the worker from your copy with Workers Builds ([2.5](#25-the-worker)). Then two settings of the worker's Builds, as 2.5 says: builds for non-production branches off, and the watch paths.
+
+What the button can't do: Cloudflare Access in front of the worker ([2.6](#26-cloudflare-access)), without which the worker refuses every request, so that comes next, then the first visit ([2.8](#28-the-first-visit)); that's a private wiki. For a public site, the bucket's custom domain ([2.2](#22-the-bucket-and-the-public-site)), the settings in the dashboard ([2.5](#25-the-worker): `PUBLIC_WIKI_URL`, and `CF_ZONE_ID` beside the token) and the zone's rules ([2.7](#27-the-zones-rules-public-site-only)) are the same by hand. An update of the button's copy is a `git pull` from this repository, not *Sync fork*, since it isn't a fork ([operating 3.1](operating.md#31-updating-your-copy)).
+
 The names, and where each goes. With the defaults, nothing in the repository needs editing: the worker is deployed as it is, and your settings are entered in the dashboard ([2.5](#25-the-worker)).
 
 | Name | Default or example | Where it goes |
@@ -18,7 +22,7 @@ The names, and where each goes. With the defaults, nothing in the repository nee
 | the queue | `wiki-backup` | [2.3](#23-the-backup-queue); `wrangler.toml` if you name it otherwise |
 | the worker | `wiki-admin` | the name you give it in [2.5](#25-the-worker); `wrangler.toml` if you name it otherwise |
 
-Make your own copy of this repository (a fork, or a copy from the template): Cloudflare deploys the worker from its `main` branch ([2.5](#25-the-worker)). `wrangler.toml` holds the bindings and the defaults above; its comments say what each is for. No secret goes in it, ever: the two secrets are entered in [2.5](#25-the-worker), with the settings.
+Make your own copy of this repository (a fork, a copy from the template, or the button's copy): Cloudflare deploys the worker from its `main` branch ([2.5](#25-the-worker)). `wrangler.toml` holds the bindings and the defaults above; its comments say what each is for. No secret goes in it, ever: the two secrets are entered in [2.5](#25-the-worker), with the settings.
 
 ## 2.2 The bucket and the public site
 
