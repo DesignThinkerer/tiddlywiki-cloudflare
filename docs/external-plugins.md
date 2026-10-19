@@ -196,7 +196,7 @@ With the theme plugin present at boot, `$:/theme` has to be there too. Otherwise
 
 ### 3.10 No switch in the worker
 
-A plugin that breaks the page is fixed by deleting its file ([operating 3](operating.md)). TiddlyWiki's safe mode isn't an option: it also turns off the TiddlyWeb plugin, so nothing could be saved back, and TiddlyWiki warns against it in client-server setups.
+A plugin that breaks the page is fixed by deleting its file ([operating 3.6](operating.md#36-if-a-plugin-breaks-the-page)). TiddlyWiki's safe mode isn't an option: it also turns off the TiddlyWeb plugin, so nothing could be saved back, and TiddlyWiki warns against it in client-server setups.
 
 ### 3.11 The TiddlyWeb plugin is treated like any other
 
@@ -237,7 +237,7 @@ These figures come from the same test machine as in section 3, so read them as p
 - **The code:** `src/worker/plugins.js` (the files), `src/worker/build.js` (the page build, which writes them and puts the `<script>` tags in), `src/worker/layout.js` (the flat layout a save arrives in and is stored in), `src/worker/saves.js` (a plugin's save or delete rebuilding the page), and in `src/browser/conflict-guard.js` the part that sends saves in the flat layout.
 - **The tests:** `test/plugins.test.mjs`, and the plugin cases of `test/integrity.test.mjs` and `test/r2-ops.test.mjs` (docs/tests.md).
 - **The cache rule for plugin files:** [setup 2.7](setup.md#27-the-zones-rules-public-site-only).
-- **A plugin that breaks the page:** [operating 3](operating.md).
+- **A plugin that breaks the page:** [operating 3.6](operating.md#36-if-a-plugin-breaks-the-page).
 
 ## 6. Edge cases and limits
 
