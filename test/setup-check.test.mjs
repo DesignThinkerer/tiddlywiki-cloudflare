@@ -1,8 +1,9 @@
 // The setup check (design 1.13): GET /setup/check looks at each piece of the setup from the worker
-// and reports it, a missing or wrong one naming the README section that fixes it. The worker runs
+// and reports it, a missing or wrong one naming the setup guide's section that fixes it, with its link. The worker runs
 // behind the public stand-in (the rewrite rule, the CORS rule's two paths and the cache rules as
 // Cloudflare's edge applies them) with GitHub and Cloudflare's API imitated. No browser.
 // Run: npm run test:setup
+import fs from "node:fs";
 import { createChecks, readWikiFile, startSite } from "./browser-harness.mjs";
 
 const { check, results } = createChecks();
@@ -55,13 +56,21 @@ async function run() {
 const line = (items, id) => items[id] ? `${items[id].ok} "${items[id].text}"` : "missing";
 const ok = (items, id) => items[id] ? items[id].ok : "missing";
 const text = (items, id) => items[id] ? items[id].text : "";
-const readme = (items, id) => items[id] ? items[id].readme : "";
+const guide = (items, id) => items[id] && items[id].guide ? items[id].guide.section : "";
 
 // --- 1. Everything in place -------------------------------------------------------------------------
 let { status, body, items } = await run();
 const IDS = ["access", "public", "rewrite", "cors-reads", "cors-files", "cache", "backups", "queue", "purges"];
-check("GET /setup/check answers the list of pieces, each with ok, a line of text and the README section", status === 200 && !!body && IDS.every(id => items[id] && "ok" in items[id] && typeof items[id].text === "string" && typeof items[id].readme === "string"),
-  `${status}: ${IDS.map(id => `${id}=${items[id] ? items[id].ok : "missing"}`).join(" ")}`);
+check("GET /setup/check answers the list of pieces, each with ok, a line of text and the section of the setup guide that fixes it, with its link", status === 200 && !!body && IDS.every(id => items[id] && "ok" in items[id] && typeof items[id].text === "string" && items[id].guide && typeof items[id].guide.section === "string" && items[id].guide.text === `setup ${items[id].guide.section}` && /^https:\/\/.+\/docs\/setup\.md#/.test(items[id].guide.url)),
+  `${status}: ${IDS.map(id => `${id}=${items[id] ? JSON.stringify(items[id].guide) : "missing"}`).join(" ")}`);
+// The link's anchor is a heading of docs/setup.md, the one the section number names (GitHub's slug:
+// lower case, punctuation dropped, spaces to hyphens), so the link can't go stale without this failing
+const setupHeadings = new Set([...fs.readFileSync(new URL("../docs/setup.md", import.meta.url), "utf8").matchAll(/^#{1,6} (.+)$/gm)]
+  .map(m => m[1].toLowerCase().replace(/[`*_]/g, "").replace(/[^\p{L}\p{N} -]/gu, "").trim().replace(/ /g, "-")));
+check("each line's link points at the heading of docs/setup.md its section number names", IDS.every(id => {
+  const g = items[id] && items[id].guide, a = g && /\/docs\/setup\.md#([a-z0-9-]+)$/.exec(g.url);
+  return !!a && setupHeadings.has(a[1]) && a[1].startsWith(g.section.replace(".", "") + "-");
+}), IDS.map(id => `${id}: ${items[id] && items[id].guide ? items[id].guide.url : "none"}`).join(" "));
 check("everything in place: every piece fine, the lines saying so", IDS.every(id => items[id] && items[id].ok === true),
   IDS.filter(id => !items[id] || items[id].ok !== true).map(id => `${id}: ${line(items, id)}`).join(" | "));
 check("...the public site asked for the page, the tiddler list, the core file and the status file, with the admin site as Origin",
@@ -76,8 +85,8 @@ check("...the purges line says the status file's copy was purged, the backups li
 // --- 2. The public site's rules, one missing at a time --------------------------------------------
 rewriteOff = true;
 ({ items } = await run());
-check("the rewrite rule missing (the public site's / isn't the page): named, with README 2.7; the other lines fine",
-  ok(items, "rewrite") === false && /rewrite/i.test(text(items, "rewrite")) && readme(items, "rewrite") === "2.7" && ok(items, "public") === true && ok(items, "cors-reads") === true && ok(items, "cors-files") === true,
+check("the rewrite rule missing (the public site's / isn't the page): named, with setup 2.7; the other lines fine",
+  ok(items, "rewrite") === false && /rewrite/i.test(text(items, "rewrite")) && guide(items, "rewrite") === "2.7" && ok(items, "public") === true && ok(items, "cors-reads") === true && ok(items, "cors-files") === true,
   `${line(items, "rewrite")} | public ${ok(items, "public")}`);
 rewriteOff = false;
 // Cloudflare removes an HTML answer's ETag when a feature of the zone rewrites the page (Email Address
@@ -108,8 +117,8 @@ check("...with no ETag and an older Last-Modified: the same", ok(items, "rewrite
 earlierBuild = null;
 corsOff = ["/_plugins/"];
 ({ items } = await run());
-check("the CORS header missing under /_plugins/ only: the files line fails naming that path and README 2.7, the reads line passes",
-  ok(items, "cors-files") === false && /_plugins/.test(text(items, "cors-files")) && readme(items, "cors-files") === "2.7" && ok(items, "cors-reads") === true,
+check("the CORS header missing under /_plugins/ only: the files line fails naming that path and setup 2.7, the reads line passes",
+  ok(items, "cors-files") === false && /_plugins/.test(text(items, "cors-files")) && guide(items, "cors-files") === "2.7" && ok(items, "cors-reads") === true,
   `${line(items, "cors-files")} | ${line(items, "cors-reads")}`);
 corsOff = ["/recipes/", "/_plugins/"];
 ({ items } = await run());
@@ -118,20 +127,20 @@ check("...missing on both paths: both lines fail, the reads one naming /recipes/
 corsOff = [];
 cacheStatus = "DYNAMIC";
 ({ items } = await run());
-check("no cache rule on the public site (DYNAMIC): reported with what was found, not a failure", ok(items, "cache") === null && /DYNAMIC/.test(text(items, "cache")) && readme(items, "cache") === "2.7", line(items, "cache"));
+check("no cache rule on the public site (DYNAMIC): reported with what was found, not a failure", ok(items, "cache") === null && /DYNAMIC/.test(text(items, "cache")) && guide(items, "cache") === "2.7", line(items, "cache"));
 cacheStatus = "HIT";
 ({ items } = await run());
 check("...cached: the line says so", ok(items, "cache") === true && /HIT/.test(text(items, "cache")), line(items, "cache"));
 await site.stopPublic();
 ({ items } = await run());
-check("the public site not answering: its line says so with README 2.2, the rule lines left unchecked", ok(items, "public") === false && readme(items, "public") === "2.2" && ok(items, "rewrite") === null && ok(items, "cors-reads") === null && ok(items, "cors-files") === null,
+check("the public site not answering: its line says so with setup 2.2, the rule lines left unchecked", ok(items, "public") === false && guide(items, "public") === "2.2" && ok(items, "rewrite") === null && ok(items, "cors-reads") === null && ok(items, "cors-files") === null,
   `${line(items, "public")} | rewrite ${ok(items, "rewrite")}`);
 await site.startPublic();
 
 // --- 3. Backups, the queue, purges ------------------------------------------------------------------
 api.repo = 401;
 ({ items } = await run());
-check("GitHub refusing the token (401): the backups line says so, with README 2.4", ok(items, "backups") === false && /401|token/.test(text(items, "backups")) && readme(items, "backups") === "2.4", line(items, "backups"));
+check("GitHub refusing the token (401): the backups line says so, with setup 2.4", ok(items, "backups") === false && /401|token/.test(text(items, "backups")) && guide(items, "backups") === "2.4", line(items, "backups"));
 api.repo = 404;
 ({ items } = await run());
 check("GitHub not finding the repository with the token (404): named", ok(items, "backups") === false && /404|find/.test(text(items, "backups")), line(items, "backups"));
@@ -142,12 +151,12 @@ check("the branch missing: named", ok(items, "backups") === false && /branch/.te
 api.branch = 200;
 api.purge = { status: 403, body: { success: false, errors: [{ code: 10000, message: "Authentication error" }] } };
 ({ items } = await run());
-check("Cloudflare refusing the purge: the purges line says so, with the token's section", ok(items, "purges") === false && /Authentication error|403/.test(text(items, "purges")) && readme(items, "purges") === "2.5", line(items, "purges"));
+check("Cloudflare refusing the purge: the purges line says so, with the token's section", ok(items, "purges") === false && /Authentication error|403/.test(text(items, "purges")) && guide(items, "purges") === "2.5", line(items, "purges"));
 api.purge = { status: 200, body: { success: true } };
 await site.setBindings({ GITHUB_REPO: "", GITHUB_TOKEN: "", CF_ZONE_ID: "", CF_API_TOKEN: "" });
 ({ items } = await run());
-check("backups not set up: the line says so with README 2.4; no purge token: an optional piece, not a failure",
-  ok(items, "backups") === false && readme(items, "backups") === "2.4" && /GITHUB_REPO/.test(text(items, "backups")) && ok(items, "purges") === null && /CF_ZONE_ID/.test(text(items, "purges")),
+check("backups not set up: the line says so with setup 2.4; no purge token: an optional piece, not a failure",
+  ok(items, "backups") === false && guide(items, "backups") === "2.4" && /GITHUB_REPO/.test(text(items, "backups")) && ok(items, "purges") === null && /CF_ZONE_ID/.test(text(items, "purges")),
   `${line(items, "backups")} | ${line(items, "purges")}`);
 check("(the queue is bound here)", ok(items, "queue") === true, line(items, "queue"));
 await site.close();
@@ -158,7 +167,7 @@ await (await fetch(noQueue.base + "/")).arrayBuffer();
 {
   const res = await fetch(noQueue.base + "/setup/check");
   const items = Object.fromEntries(((await res.json()).checks || []).map(c => [c.id, c]));
-  check("the queue not bound: its line says so, with README 2.3", items.queue && ok(items, "queue") === false && readme(items, "queue") === "2.3", line(items, "queue"));
+  check("the queue not bound: its line says so, with setup 2.3", items.queue && ok(items, "queue") === false && guide(items, "queue") === "2.3", line(items, "queue"));
 }
 await noQueue.close();
 const priv = await startSite({ index: readWikiFile(), publicStatus: true, privateWiki: true, outbound });
@@ -166,7 +175,7 @@ await (await fetch(priv.base + "/")).arrayBuffer();
 {
   const res = await fetch(priv.base + "/setup/check");
   const items = Object.fromEntries(((await res.json()).checks || []).map(c => [c.id, c]));
-  check("a private wiki: the public site's lines say there's nothing to check (README 2.1), Access fine, purges nothing to purge",
+  check("a private wiki: the public site's lines say there's nothing to check (setup 2.1), Access fine, purges nothing to purge",
     ["public", "rewrite", "cors-reads", "cors-files", "cache", "purges"].every(id => items[id] && items[id].ok === null) && /private/i.test(text(items, "public")) && ok(items, "access") === true,
     ["public", "rewrite", "cors-reads", "cors-files", "cache", "purges"].map(id => `${id}: ${line(items, id)}`).join(" | "));
 }

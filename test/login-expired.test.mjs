@@ -192,8 +192,8 @@ await sleep(500);
 probesMark = probes.length;
 check("the session expired, no poll since: the tab still takes the login to stand, nothing in the dropdown", await loginIs(A, "ok") && (await line(A)) === "", `${JSON.stringify(await status(A))} ${JSON.stringify(await line(A))}`);
 const setup5 = await setupCheck(A);
-check("\"Check the setup\" gets no answer (its request sent to the login page): the tab asks Access once and the line says the login has expired, naming the README section, not that the worker is down",
-  setup5.done && setup5.lines.some(l => /^✗ .*login has expired/i.test(l) && /README 3/.test(l)) && !setup5.lines.some(l => /^✗/.test(l) && /no network/i.test(l)) && since(probes, probesMark).length === 1,
+check("\"Check the setup\" gets no answer (its request sent to the login page): the tab asks Access once and the line says the login has expired, naming the operating guide's section, not that the worker is down",
+  setup5.done && setup5.lines.some(l => /^✗ .*login has expired/i.test(l) && /operating 3\.14/.test(l)) && !setup5.lines.some(l => /^✗/.test(l) && /no network/i.test(l)) && since(probes, probesMark).length === 1,
   `${setup5.lines.join(" | ")}; ${since(probes, probesMark).length} probes`);
 check("...and the dropdown says so from then on", await loginIs(A, "expired") && /login has expired/i.test((await line(A)) || ""), JSON.stringify(await line(A)));
 await pollEvery(A, 1000);

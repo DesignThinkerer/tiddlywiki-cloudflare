@@ -644,7 +644,7 @@ const notStored = JSON.parse(await (await bucket.get("recipes/default/tiddlers/S
 check("...and one the worker doesn't have is stored without text, without the mark", res.status === 204 && !("text" in notStored) && !("_is_skinny" in notStored),
   JSON.stringify(notStored));
 // A text sent with the mark was typed into the empty editor of a tiddler whose text hadn't loaded
-// (opened offline, say: README 5): it's what was meant, and is stored as sent. Only a save without a
+// (opened offline, say: limits 5): it's what was meant, and is stored as sent. Only a save without a
 // text, or with an empty one (that editor starts empty), keeps the stored text
 res = await save("Skinny", { tags: ["todo", "done", "again"], _is_skinny: "", text: "typed into the empty editor" });
 skinnyStored = JSON.parse(await (await bucket.get("recipes/default/tiddlers/Skinny")).text());
@@ -722,7 +722,7 @@ check("awkward titles (comma, %, #, &, +, accents, emoji, spaces, quotes, slashe
 // set as secrets); Wrangler's local files aren't
 const ignored = fs.readFileSync(path.join(ROOT, ".gitignore"), "utf8").split(/\r?\n/).map(l => l.trim());
 const missing = [".dev.vars", ".wrangler/", "restore.json", "wiki/"].filter(p => !ignored.includes(p));
-check(".gitignore covers .dev.vars and .wrangler/, restore.json and wiki/ (what a restore leaves, README 2.4), and not wrangler.toml", missing.length === 0 && !ignored.includes("wrangler.toml") && fs.existsSync(path.join(ROOT, "wrangler.toml")),
+check(".gitignore covers .dev.vars and .wrangler/, restore.json and wiki/ (what a restore leaves, setup 2.4), and not wrangler.toml", missing.length === 0 && !ignored.includes("wrangler.toml") && fs.existsSync(path.join(ROOT, "wrangler.toml")),
   missing.length ? "missing: " + missing.join(", ") : ignored.includes("wrangler.toml") ? "wrangler.toml is ignored" : fs.existsSync(path.join(ROOT, "wrangler.toml")) ? "" : "no wrangler.toml");
 const toml = fs.existsSync(path.join(ROOT, "wrangler.toml")) ? fs.readFileSync(path.join(ROOT, "wrangler.toml"), "utf8") : "";
 const tomlActive = toml.split(/\r?\n/).filter(l => !l.trim().startsWith("#")).join("\n");   // (what Wrangler reads: comments aside)
@@ -760,7 +760,7 @@ check("package.json: test, test:fast, test:browser and test:suite build, then ru
   ["test", "test:fast", "test:browser", "test:suite"].every(s => /^npm run build && node tools\/run-suites\.mjs/.test(scripts[s] || "")) && /node tools\/run-suites\.mjs$/.test(scripts["test:suite"] || ""),
   JSON.stringify({ "test:suite": scripts["test:suite"] }));
 
-// Dependencies of Miniflare pinned above what it declares ("overrides" in package.json, README 6.2):
+// Dependencies of Miniflare pinned above what it declares ("overrides" in package.json, development 6.2):
 // each pin has to be the copy Miniflare resolves, and has to still be needed — the day Miniflare's
 // own declaration reaches the pinned version, the override is a leftover that would hold the
 // package back from then on, so this says to drop it. (Which versions, and why: the changelog.)
@@ -782,6 +782,93 @@ for (const [name, pin] of Object.entries(pins)) {
   check(`...and the pin is still needed: Miniflare declares less (drop the override from package.json when its declaration reaches ${pin})`,
     !!miniflareDeclares[name] && below(miniflareDeclares[name], pin), `Miniflare declares ${miniflareDeclares[name]}`);
 }
+
+// The documentation holds together: every relative link in a markdown file names a file that exists
+// and, with an anchor, a heading of that file (GitHub's slug: lower case, punctuation dropped, spaces to
+// hyphens); and every reference by chapter number — "setup 2.6", "operating 3.4", "design 1.7", in the
+// docs, the code and the tests alike — names a heading of the page the chapter lives in. The chapters
+// are numbered across the pages (readme 1, then docs/setup.md 2, operating 3, troubleshooting 4, limits
+// 5, development 6, reference 7), so a number means the same thing wherever it's cited.
+const DOC_PAGES = { readme: "README.md", setup: "docs/setup.md", operating: "docs/operating.md", troubleshooting: "docs/troubleshooting.md", limits: "docs/limits.md", development: "docs/development.md", reference: "docs/reference.md", design: "docs/design.md" };
+const markdownFiles = [
+  ...fs.readdirSync(ROOT).filter(f => f.endsWith(".md")),
+  ...fs.readdirSync(path.join(ROOT, "docs")).filter(f => f.endsWith(".md")).map(f => "docs/" + f),
+  ".github/PULL_REQUEST_TEMPLATE.md",
+].filter(f => fs.existsSync(path.join(ROOT, f)));
+const slugOf = h => h.toLowerCase().replace(/[`*_]/g, "").replace(/[^\p{L}\p{N} -]/gu, "").trim().replace(/ /g, "-");
+const docHeadings = {};   // file -> { slugs: Set, numbers: Set }
+for (const f of markdownFiles) {
+  const seen = {}, slugs = new Set(), numbers = new Set();
+  let inCode = false;
+  for (const line of fs.readFileSync(path.join(ROOT, f), "utf8").split("\n")) {
+    if (/^```/.test(line)) { inCode = !inCode; continue; }
+    const m = !inCode && /^#{1,6} (.+)$/.exec(line);
+    if (!m) continue;
+    let slug = slugOf(m[1]);
+    if (seen[slug] !== undefined) { seen[slug]++; slug += "-" + seen[slug]; } else seen[slug] = 0;
+    slugs.add(slug);
+    const n = /^(\d+(?:\.\d+)?)\b/.exec(m[1]);
+    if (n) numbers.add(n[1]);
+  }
+  docHeadings[f] = { slugs, numbers };
+}
+const brokenLinks = [];
+for (const f of markdownFiles) {
+  const text = fs.readFileSync(path.join(ROOT, f), "utf8").replace(/```[\s\S]*?```/g, "");
+  for (const m of text.matchAll(/\[[^\]]*\]\(([^)\s]+)\)/g)) {
+    const target = m[1];
+    if (/^(https?:|mailto:)/.test(target)) continue;
+    const [file, hash] = target.split("#");
+    const resolved = file ? path.normalize(path.join(path.dirname(f), file)) : f;
+    if (file && !fs.existsSync(path.join(ROOT, resolved))) { brokenLinks.push(`${f}: ${target} (no such file)`); continue; }
+    if (hash && docHeadings[resolved] && !docHeadings[resolved].slugs.has(hash)) brokenLinks.push(`${f}: ${target} (no such heading)`);
+  }
+}
+check("the docs' relative links all name a file that exists and, with an anchor, one of its headings", brokenLinks.length === 0, brokenLinks.join(" | "));
+const citedFrom = [...markdownFiles, ...["src", "test", "tools"].flatMap(dir => walkFiles(path.join(ROOT, dir)).map(f => path.relative(ROOT, f)))];
+const brokenRefs = [];
+let refs = 0;
+for (const f of citedFrom) {
+  const text = fs.readFileSync(path.join(ROOT, f), "utf8");
+  for (const m of text.matchAll(/\b(README|setup(?: guide)?|operating|troubleshooting|limits|development|reference|design) (\d+(?:\.\d+)?)\b/g)) {
+    refs++;
+    const page = DOC_PAGES[m[1].toLowerCase().replace(" guide", "")];
+    if (!docHeadings[page] || !docHeadings[page].numbers.has(m[2])) brokenRefs.push(`${f}: "${m[0]}"`);
+  }
+}
+check(`every chapter reference ("setup 2.6", "design 1.7") in the docs, the code and the tests names a heading of its page (${refs} checked)`, refs > 100 && brokenRefs.length === 0, brokenRefs.slice(0, 12).join(" | "));
+
+// The worker's and the modules' own links into the manual (src/worker/docs.js, src/browser/lib.js, the
+// plugin's tabs): the same address in both; every heading in their maps the page's own, since the
+// anchor a link carries is made from it; and every literal link into the docs, in any source file,
+// a page and a heading that exist.
+const DOCS_URL = "https://github.com/DesignThinkerer/tiddlywiki-cloudflare/blob/main/docs";
+const guideSources = ["src/worker/docs.js", "src/browser/lib.js"].map(f => ({ f, text: fs.existsSync(path.join(ROOT, f)) ? fs.readFileSync(path.join(ROOT, f), "utf8") : "" }));
+check("the worker and the browser library name the same documentation address", guideSources.every(({ text }) => text.includes(`"${DOCS_URL}"`)), guideSources.map(({ f, text }) => `${f}: ${text.includes(DOCS_URL) ? "has it" : "doesn't"}`).join(", "));
+const mapSlug = text => text.toLowerCase().replace(/[^\w\s-]/g, "").trim().replace(/\s+/g, "-");
+const badMapped = [];
+let mapped = 0;
+for (const { f, text } of guideSources) {
+  for (const chapter of text.matchAll(/(setup|operating|limits): \{ page: "([a-z]+\.md)", headings: \{([^}]*)\} \}/g)) {
+    const page = docHeadings["docs/" + chapter[2]];
+    for (const entry of chapter[3].matchAll(/"([\d.]+)": "([^"]+)"/g)) {
+      mapped++;
+      if (!page || !page.numbers.has(entry[1]) || !page.slugs.has(mapSlug(`${entry[1]} ${entry[2]}`))) badMapped.push(`${f}: ${chapter[1]} ${entry[1]} "${entry[2]}"`);
+    }
+  }
+}
+check(`the headings the worker and the browser library map (${mapped}) are the pages' own, number and title`, mapped >= 10 && badMapped.length === 0, badMapped.join(" | "));
+const badLiteral = [];
+let literal = 0;
+for (const f of walkFiles(path.join(ROOT, "src"))) {
+  for (const m of fs.readFileSync(f, "utf8").matchAll(new RegExp(DOCS_URL.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&") + "/([a-z-]+\\.md)(?:#([a-z0-9-]+))?", "g"))) {
+    literal++;
+    const page = docHeadings["docs/" + m[1]];
+    if (!page || (m[2] && !page.slugs.has(m[2]))) badLiteral.push(`${path.relative(ROOT, f)}: ${m[0]}`);
+  }
+}
+check(`every literal link into the docs in the sources (${literal}) names a page and a heading that exist`, literal >= 3 && badLiteral.length === 0, badLiteral.join(" | "));
+function walkFiles(dir) { return fs.readdirSync(dir, { withFileTypes: true }).flatMap(e => e.isDirectory() ? walkFiles(path.join(dir, e.name)) : /\.(js|mjs|txt|md|yml)$/.test(e.name) ? [path.join(dir, e.name)] : []); }
 
 // The runner (tools/run-suites.mjs): --parallel <n> runs that many suites at once; what isn't a
 // suite is reported as such, every suite runs, and a failure makes the exit code 1. (Two names that
