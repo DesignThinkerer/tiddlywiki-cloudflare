@@ -1,6 +1,7 @@
 // The full backup from the admin wiki (design 1.7): the control panel's Cloudflare tab, the hint when
 // backups are on and none has run, the button that starts one, the progress the tab shows, GitHub
-// ending up with every tiddler; a real TiddlyWiki in Chromium, the worker with its queue, GitHub imitated.
+// ending up with every tiddler; and the tab asking GitHub for the newest release when shown (design
+// 1.17); a real TiddlyWiki in Chromium, the worker with its queue, GitHub imitated.
 // Run: npm run test:sync
 import crypto from "node:crypto";
 import { createChecks, createWatcher, finish, launchBrowser, readWikiFile, settle, sleep, startSite, waitFor } from "./browser-harness.mjs";
@@ -44,7 +45,7 @@ const site = await startSite({
 });
 const { base, pub: PUB, bucket } = site;
 const { check, results } = createChecks();
-const { pageErrors, watch } = createWatcher(site);
+const { requests, pageErrors, watch } = createWatcher(site);
 const browser = await launchBrowser();
 const context = await browser.newContext();
 
@@ -201,6 +202,104 @@ check("a worker without GITHUB_REPO and GITHUB_TOKEN: the tab says backups are o
   (await field(B, STATUS, "backups")) === "off" && /Backups are off/.test(text) && /GITHUB_REPO/.test(text) && !/Back up everything/.test(text) && !(await exists(B, HINT)), text.slice(0, 200));
 await B.close();
 await off.close();
+
+// 5. The worker's release (design 1.17): when the tab is shown, the browser asks GitHub's releases API
+// for this repository's newest release, at most once a day per browser, and the tab says whether a
+// newer one is out, with the link to its notes and to operating 3.1. GitHub answered by a route of
+// the context's own (the harness answers every context with this repository's version; a route added
+// here wins), a fresh context per scenario: nothing remembered from the one before.
+const RELEASE = "$:/temp/cfworker/release", RELEASES_API = "https://api.github.com/repos/DesignThinkerer/tiddlywiki-cloudflare/releases/latest";
+const pluginVersion = await A.evaluate(() => { const p = $tw.wiki.getTiddler("$:/plugins/cfworker/admin"); return p ? p.fields.version : ""; });
+const [WORKER_VERSION, BUILD] = String(pluginVersion).split("+");
+const release = tag => ({ tag_name: tag, name: tag.slice(1), html_url: `https://github.com/DesignThinkerer/tiddlywiki-cloudflare/releases/tag/${tag}` });
+const answering = tag => route => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(release(tag)) });
+async function releaseContext(name, answer) {
+  const ctx = await browser.newContext();
+  const asked = [], state = { answer };
+  await ctx.route("https://api.github.com/**", route => { asked.push(route.request()); return state.answer(route); });
+  const page = await ctx.newPage();
+  await watch(page, name);
+  await page.goto(base + "/");
+  await page.waitForFunction(() => window.$tw && $tw.syncer && $tw.syncer.timestampLastSyncFromServer);
+  await settle(page);
+  return { ctx, page, asked, state };
+}
+const showTab = page => page.evaluate(t => $tw.wiki.renderTiddler("text/plain", t).replace(/\s+/g, " "), TAB);   // (rendering the tab is showing it)
+const tabAsHtml = page => page.evaluate(t => $tw.wiki.renderTiddler("text/html", t), TAB);
+const stateOf = page => field(page, RELEASE, "state");
+// The line alone, rendered without the tab: showing the tab after a failure asks GitHub again at once
+const lineText = page => page.evaluate(t => $tw.wiki.renderTiddler("text/plain", t).replace(/\s+/g, " "), RELEASE);
+const workerSection = t => t.replace(/^.*?The worker/, "The worker").replace(/The engine.*$/, "").slice(0, 400);
+
+// 5a. A newer release, the tab opened as a reader opens it
+const newer = await releaseContext("newer", answering("v2026.12.01"));
+check("nothing is asked of GitHub at page load: the newest release is asked for when the tab is shown", newer.asked.length === 0 && (await stateOf(newer.page)) === undefined, `${newer.asked.length} requests, state ${await stateOf(newer.page)}`);
+await newer.page.evaluate(() => new $tw.Story().navigateTiddler("$:/ControlPanel"));
+await newer.page.locator('button[role="tab"][data-tab-title="$:/core/ui/ControlPanel/Saving"]').first().click();
+await newer.page.locator('button[role="tab"]', { hasText: /^Cloudflare$/ }).first().click();
+const announced = await waitFor(async () => (await stateOf(newer.page)) === "newer", 10000);
+let rText = await showTab(newer.page), rHtml = await tabAsHtml(newer.page);
+check("the tab shows the worker's version and build and, opened, asks GitHub for the newest release once: a newer one is announced with its date, the link to its notes and to operating 3.1",
+  announced && newer.asked.length === 1 && rText.includes(`Version ${WORKER_VERSION} (build ${BUILD})`) && /A newer release is out: 2026\.12\.01/.test(rText) && /update your copy/.test(rText)
+  && rHtml.includes("https://github.com/DesignThinkerer/tiddlywiki-cloudflare/releases/tag/v2026.12.01") && rHtml.includes("docs/operating.md#31-updating-your-copy"),
+  `${newer.asked.length} requests, state ${await stateOf(newer.page)}, version ${pluginVersion}: ${workerSection(rText)}`);
+const ask = newer.asked[0];
+check("...the request went from the browser to GitHub's releases API, no token, JSON asked for; nothing of it through the worker",
+  !!ask && ask.url() === RELEASES_API && ask.method() === "GET" && !ask.headers().authorization && /application\/vnd\.github\+json/.test(ask.headers().accept || "")
+  && requests.some(r => r.tag === "newer" && r.origin === "other" && r.url === RELEASES_API) && !requests.some(r => r.tag === "newer" && r.origin === "worker" && /release/i.test(r.path)),
+  ask ? `${ask.method()} ${ask.url()} accept ${ask.headers().accept}` : "no request");
+// 5b. Once a day: shown again, and after a reload, nothing more is asked; a day later it asks again
+await showTab(newer.page);
+await newer.page.reload();
+await newer.page.waitForFunction(() => window.$tw && $tw.syncer && $tw.syncer.timestampLastSyncFromServer);
+await settle(newer.page);
+rText = await showTab(newer.page);
+check("...shown again, and after a reload, nothing more is asked within a day: the answer is remembered on this device, the line still there",
+  newer.asked.length === 1 && (await stateOf(newer.page)) === "newer" && /A newer release is out: 2026\.12\.01/.test(rText), `${newer.asked.length} requests, state ${await stateOf(newer.page)}: ${workerSection(rText)}`);
+await newer.page.evaluate(() => { const k = "cfworker-release", r = JSON.parse(localStorage.getItem(k) || "{}"); r.at = (r.at || Date.now()) - 25 * 3600 * 1000; localStorage.setItem(k, JSON.stringify(r)); });
+await showTab(newer.page);
+check("...a day later, shown, it asks again", await waitFor(async () => newer.asked.length === 2, 10000), `${newer.asked.length} requests`);
+await newer.ctx.close();
+
+// 5c. The newest release being this worker's version
+const same = await releaseContext("same", answering("v" + WORKER_VERSION));
+await showTab(same.page);
+const sameSeen = await waitFor(async () => (await stateOf(same.page)) === "same", 10000);
+rText = await showTab(same.page);
+check("the newest release being this worker's version: the line says so, with when it was checked, and nothing more is asked",
+  sameSeen && same.asked.length === 1 && /This is the newest release/.test(rText) && /checked at \d\d:\d\d/.test(rText) && !/newer release is out/.test(rText), `${same.asked.length} requests: ${workerSection(rText)}`);
+await same.ctx.close();
+
+// 5d. A release older than this worker: a copy synced past it
+const older = await releaseContext("older", answering("v2026.09.01"));
+await showTab(older.page);
+const aheadSeen = await waitFor(async () => (await stateOf(older.page)) === "ahead", 10000);
+rText = await showTab(older.page);
+check("a release older than this worker (a copy synced past it): said as newer than the newest release, no update offered",
+  aheadSeen && /Newer than the newest release \(2026\.09\.01\)/.test(rText) && !/update your copy/.test(rText), workerSection(rText));
+await older.ctx.close();
+
+// 5e. GitHub not answering, then refusing: said with why, asked again at each showing, a good answer replacing the line
+const down = await releaseContext("down", route => route.abort("failed"));
+await showTab(down.page);
+const failedSeen = await waitFor(async () => (await stateOf(down.page)) === "failed", 10000);
+rText = await lineText(down.page);
+check("GitHub not answering: the line says it couldn't be asked, and why, and names the releases page",
+  failedSeen && /couldn't be asked/.test(rText) && /no answer/.test(rText) && /releases page/.test(rText), rText.slice(0, 300));
+down.state.answer = route => route.fulfill({ status: 403, contentType: "application/json", body: JSON.stringify({ message: "API rate limit exceeded for 1.2.3.4." }) });
+const before403 = down.asked.length;
+await showTab(down.page);
+const refused403 = await waitFor(async () => /403/.test((await field(down.page, RELEASE, "error")) || ""), 10000);
+rText = await lineText(down.page);
+check("...shown again, it asks again (a failure isn't remembered for a day); GitHub refusing (403, the rate limit) is said in GitHub's words",
+  refused403 && down.asked.length > before403 && /GitHub answered 403/.test(rText) && /rate limit exceeded/.test(rText), `${down.asked.length} requests: ${rText.slice(0, 300)}`);
+down.state.answer = answering("v2026.12.01");
+await showTab(down.page);
+const recovered = await waitFor(async () => (await stateOf(down.page)) === "newer", 10000);
+rText = await showTab(down.page);
+check("...a good answer at the next showing replaces the line", recovered && /A newer release is out: 2026\.12\.01/.test(rText) && !/couldn't be asked/.test(rText), workerSection(rText));
+await down.ctx.close();
+
 await A.close();
 
 await finish({ check, results, pageErrors, browser, site, note: `; ${commits.length} commits` });
