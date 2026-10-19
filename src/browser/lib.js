@@ -4,8 +4,8 @@ type: application/javascript
 module-type: library
 
 What the worker's browser modules share: the sync adaptor they patch, the public site's address,
-titles in alerts, the titles the worker can't store, and the "rebuilding" answer. Each module
-requires this one.
+titles in alerts, the service worker's cache name, the manual's links, the titles the worker can't
+store, the "rebuilding" answer, and the waits the tests scale. Each module requires this one.
 \*/
 (function(){
 
@@ -60,11 +60,20 @@ function attributeValue(text) {
 	return null;
 }
 
-// A link to a tiddler in an alert, whatever its title: a [[...]] link would break on one ending in
-// "]" or holding "]]" or "|", and the title is shown as text, never rendered as wikitext
+// A link to a tiddler in an alert, whatever its title, the title shown as text and never rendered as
+// wikitext: the link widget with a quoted attribute when one of the three forms holds the title; a
+// [[...]] link (its text is plain too) for one none holds, both kinds of quote with a final quote or
+// a """, which that link takes as long as it has no "]]" or "|" and doesn't end in "]"; a title that
+// defeats both is shown in quotes, with no link
 exports.link = function(title) {
 	var value = attributeValue(title);
-	return value ? "<$link to=" + value + "><$text text=" + value + "/></$link>" : "'" + title + "'";
+	if(value) {
+		return "<$link to=" + value + "><$text text=" + value + "/></$link>";
+	}
+	if(title.indexOf("]]") === -1 && title.indexOf("|") === -1 && title.indexOf("\n") === -1 && title.charAt(title.length - 1) !== "]") {
+		return "[[" + title + "]]";
+	}
+	return "'" + title + "'";
 };
 
 // The service worker's cache (service-worker.js, which has its own copy of the name: it isn't a
