@@ -80,13 +80,36 @@ const SETUP = "$:/temp/cfworker/setup-check", TAB = "$:/temp/cfworker/ControlPan
 async function setupCheck(p) {
   await p.evaluate(t => { $tw.wiki.deleteTiddler(t); $tw.rootWidget.dispatchEvent({ type: "tm-cfworker-setup-check" }); }, SETUP);
   const done = await waitFor(() => p.evaluate(t => $tw.wiki.tiddlerExists(t) && $tw.wiki.getTiddler(t).fields.checked !== undefined, SETUP), 20000);
-  const tab = done ? await p.evaluate(t => $tw.wiki.renderTiddler("text/plain", t).replace(/\s+/g, " "), TAB) : "";
-  return { done, tab, lines: (tab.match(/[✓✗–] [^✓✗–]+/g) || []).map(l => l.trim()) };
+  const [tab, html] = done ? await p.evaluate(t => [$tw.wiki.renderTiddler("text/plain", t).replace(/\s+/g, " "), $tw.wiki.renderTiddler("text/html", t)], TAB) : ["", ""];
+  return { done, tab, html, lines: (tab.match(/[✓✗–] [^✓✗–]+/g) || []).map(l => l.trim()) };
 }
 const setup1 = await setupCheck(A);
 check("the Cloudflare tab's \"Check the setup\" button lists the pieces: Access, the public site (nothing to check, a private wiki), backups, the queue, and this browser's service worker with the core file kept",
   setup1.done && setup1.lines.some(l => /^✓ .*Access/.test(l)) && setup1.lines.some(l => /^– .*private/i.test(l)) && setup1.lines.some(l => /^✓ .*service worker/.test(l)) && setup1.lines.some(l => /^✓ .*core file/.test(l)),
   setup1.lines.join(" | ") || `done ${setup1.done}`);
+// The lines about this browser link to the manual's section, as the worker's lines do (design 2.28).
+// (A section given as a bare number, where the renderer takes { text, url }, showed as a link to a
+// tiddler named "undefined".)
+const OFFLINE_URL = "https://github.com/DesignThinkerer/tiddlywiki-cloudflare/blob/main/docs/operating.md#313-opening-the-wiki-offline";
+const CORS_URL = "https://github.com/DesignThinkerer/tiddlywiki-cloudflare/blob/main/docs/setup.md#27-the-zones-rules-public-site-only";
+const linksTo = (html, url) => html.split(`href="${url}"`).length - 1;
+check("...the two lines about this browser, the service worker's and the core file's, link to operating 3.13 (opening the wiki offline), and nothing links to a tiddler named \"undefined\"",
+  setup1.lines.some(l => /^✓ .*service worker is in place.*\. \(operating 3\.13\)/.test(l)) && setup1.lines.some(l => /^✓ .*core file is kept.*\. \(operating 3\.13\)/.test(l)) && linksTo(setup1.html, OFFLINE_URL) === 2 && !/undefined/.test(setup1.tab),
+  setup1.lines.filter(l => /service worker|core file/.test(l)).join(" | "));
+
+// --- 1b. The script at a new address (a new version): the next load registers it over the old one ---
+// (The worker serves the same script whatever version is asked for: an older address registered by
+// hand stands in for the one an earlier deploy left in charge of the page)
+const pageSwUrl = p => p.evaluate(() => new URL($tw.wiki.getTiddlerText("$:/cfworker/sw-url"), location.href).href);
+const wanted = await pageSwUrl(A);
+await A.evaluate(() => navigator.serviceWorker.register("/sw.js?v=old", { updateViaCache: "all" }));
+const oldInCharge = await waitFor(async () => /\/sw\.js\?v=old$/.test((await controller(A)) || ""), 15000);
+check("(the script registered by hand at an older address takes the page over, as one left by an earlier deploy would hold it)", oldInCharge, JSON.stringify(await controller(A)));
+await reload(A);
+const takenBack = await waitFor(async () => (await controller(A)) === wanted, 15000);
+check("a page held by the script at another address than its own: the next load registers the page's, which takes over, and nothing else installs or waits",
+  takenBack && await A.evaluate(async () => { const r = await navigator.serviceWorker.getRegistration(); return !!r && !r.installing && !r.waiting && !!r.active && r.active.scriptURL === navigator.serviceWorker.controller.scriptURL; }),
+  `controller ${JSON.stringify(await controller(A))}, the page's ${wanted}`);
 
 // --- 2. With the network cut, the wiki opens from the cache and the device ---------------------------
 await offline(contextA);
@@ -267,6 +290,10 @@ await online(contextA);
 // --- 6b. The core file lost from the cache: back at the next load online; offline, a line, not an alert
 await reload(A);
 await dropCore(A);
+const setupNoCore = await setupCheck(A);
+check("the core file gone from the cache: the setup check's line about it says so, with setup 2.7 (the CORS rule's path), and nothing links to \"undefined\"",
+  setupNoCore.done && setupNoCore.lines.some(l => /^✗ .*core file isn't kept.*check again\. \(setup 2\.7\)/.test(l)) && linksTo(setupNoCore.html, CORS_URL) >= 1 && !/undefined/.test(setupNoCore.tab),
+  setupNoCore.lines.filter(l => /core file/.test(l)).join(" | ") || `done ${setupNoCore.done}`);
 await reload(A);   // (a reload: the page asks for the file conditionally, and the worker answers 304)
 const coreBack = await waitFor(() => holds(A, CORE), 10000);
 check("the core file gone from the cache (a browser clearing space, a copy that didn't finish): back at the next load online", coreBack, (await cached(A)).map(u => u.replace(BASE, "")).join(", "));
