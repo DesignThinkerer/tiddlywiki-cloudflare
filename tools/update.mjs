@@ -13,8 +13,11 @@
 // repository changed, which the copy never had, stays out; wrangler.toml or package.json, when the
 // copy's only change to it is the import's names (a release bumps the version next to the name), is
 // this repository's file with the copy's names put back. Anything else is left as git leaves it, for
-// the user. Later updates are ordinary merges, the histories joined; a fork's too. Nothing is pushed:
-// the deploy is the user's push. Design 2.30; test/update-copy.test.mjs.
+// the user. package-lock.json's root name and version follow package.json's after each merge: the
+// import changes package.json alone, and npm rewrites the lock's at its next install, which would
+// dirty the copy's tree; a conflict in the lock is resolved as this repository's lock, then that.
+// Later updates are ordinary merges, the histories joined; a fork's too. Nothing is pushed: the
+// deploy is the user's push. Design 2.30; test/update-copy.test.mjs.
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -22,6 +25,7 @@ import path from "node:path";
 const UPSTREAM = "https://github.com/DesignThinkerer/tiddlywiki-cloudflare";
 const BRANCH = "main";
 const WORKFLOWS = ".github/workflows";
+const LOCK = "package-lock.json";
 // The lines the import rewrites: the key, then the value between the quotes
 const IDENTITY = {
   "wrangler.toml": /^(name|bucket_name|queue) = "([^"]*)"/,
@@ -144,6 +148,12 @@ for (const file of unmerged()) {
     fs.writeFileSync(path.join(top, file), withIdentity(git(["show", `${upstream}:${file}`]).raw, identity[file], IDENTITY[file]));
     git(["add", "--", file]);
     notes.push(`${file}: this repository's file, with this copy's names put back.`);
+  } else if (file === LOCK && git(["cat-file", "-e", `${upstream}:${LOCK}`], { allow: true }).status === 0) {
+    // (The copy's own changes to the lock are npm's: its root name and version, peer flags; this
+    // repository's lock, with the root name and version set to package.json's below, is the answer)
+    fs.writeFileSync(path.join(top, LOCK), git(["show", `${upstream}:${LOCK}`]).raw);
+    git(["add", "--", LOCK]);
+    notes.push(`${LOCK}: this repository's file.`);
   }
 }
 const left = unmerged();
@@ -158,6 +168,21 @@ if (!hadWorkflows) {
   }
   const theirs = git(["ls-tree", "-r", "--name-only", upstream, `${WORKFLOWS}/`], { allow: true }).out.split("\n").filter(Boolean);
   if (theirs.length && !notes.some(n => n.startsWith(WORKFLOWS))) notes.push(`${theirs.join(", ")}: still out, as the import left the workflows out.`);
+}
+// package-lock.json's root name and version follow package.json's (npm's own format, which the lock is
+// written in: JSON, two spaces, a final newline), where npm would set them at the next install
+if (fs.existsSync(path.join(top, LOCK)) && fs.existsSync(path.join(top, "package.json"))) {
+  let pkg = null, lock = null;
+  try { pkg = JSON.parse(fs.readFileSync(path.join(top, "package.json"), "utf8")); lock = JSON.parse(fs.readFileSync(path.join(top, LOCK), "utf8")); } catch { /* not JSON: left alone */ }
+  const root = lock && lock.packages && lock.packages[""];
+  if (pkg && lock && (lock.name !== pkg.name || lock.version !== pkg.version || (root && (root.name !== pkg.name || root.version !== pkg.version)))) {
+    lock.name = pkg.name;
+    lock.version = pkg.version;
+    if (root) { root.name = pkg.name; root.version = pkg.version; }
+    fs.writeFileSync(path.join(top, LOCK), JSON.stringify(lock, null, 2) + "\n");
+    git(["add", "--", LOCK]);
+    notes.push(`${LOCK}: its root name and version set to package.json's (${pkg.name}, ${pkg.version}), where npm would set them at the next install.`);
+  }
 }
 git(["commit", "--quiet", "--no-edit"]);
 
