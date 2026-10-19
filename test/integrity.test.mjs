@@ -96,6 +96,21 @@ check("a retry with other content after a failed list update: refused (412), the
   purges.slice(purgesBeforeEdited).some(p => p.files.some(f => f.includes("Edited%20note"))),
   `status ${res.status}, listed ${repairedEntry?.revision} (stored ${e2}), color ${repairedEntry?.color}`);
 
+// A save whose list update loses the race five times running (the stand-in answers each conditional
+// write of the list null, as R2 does when another save got there first): 500, saying the tiddler
+// list couldn't be updated and to try again, in those words. The tiddler itself is stored, so the
+// same save again finishes it: listed, 204
+const refuseList = times => mf.dispatchFetch(`${base}/__r2fail`, { method: "POST", body: JSON.stringify({ call: "put list", times, refuse: true }) });
+await refuseList(5);
+res = await save("Contested note", { text: "c1" });
+const contestedText = await res.text();
+const contestedStored = await storedRevision("Contested note");
+const contestedRetry = await save("Contested note", { text: "c1" });
+check("a save whose list update loses the race five times running: 500 saying the tiddler list couldn't be updated and to try again (not \"Manifest\"); the tiddler stored, and the same save again finishes it, listed",
+  res.status === 500 && /tiddler list couldn't be updated/.test(contestedText) && /[Tt]ry again/.test(contestedText) && !/Manifest/.test(contestedText) &&
+  !!contestedStored && contestedRetry.status === 204 && (await entry("Contested note"))?.revision === etagRevision(contestedRetry),
+  `status ${res.status}: ${contestedText.slice(0, 160)}; stored ${contestedStored}; retry ${contestedRetry.status}, listed ${(await entry("Contested note"))?.revision}`);
+
 // --- 2. A damaged or missing tiddler list is rebuilt from the stored tiddlers ---------------------
 // Every tiddler is stored on its own in R2, so the worker can rebuild the list by itself
 await save("$:/SiteTitle", { text: "Title before the damage" });

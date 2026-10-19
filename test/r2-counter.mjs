@@ -2,7 +2,8 @@
 // call it makes ("get list", "put tiddler"...) and which calls ran at the same time, and that can make
 // chosen calls fail. GET /__r2ops returns { calls, overlaps } since the last time and starts a new
 // count; POST /__r2fail with { call: "put baked.html", times: 1 } makes the next such calls throw
-// (or, with delay: milliseconds, makes them wait that long first). GET /__runs returns the R2 calls of
+// (or, with delay: milliseconds, makes them wait that long first; or, with refuse: true, answer null, as
+// R2 answers a conditional write whose precondition failed: a race lost). GET /__runs returns the R2 calls of
 // each queue run since the last time, one list a run, and starts a new count. GET /__qops returns the
 // queue operations since the last time, { sends, deliveries, acks, retries, maxAttempts (the most
 // deliveries of one message), maxMessageBytes (the largest message sent, as JSON) }, and starts a new count:
@@ -16,7 +17,7 @@ import worker from "../worker.js";
 
 let calls = [];
 let overlaps = [];          // "get list + head tiddler": a call that started while the others were running
-let failures = [];          // { call, times, delay }: calls to make fail, or wait first
+let failures = [];          // { call, times, delay, refuse }: calls to make fail, wait first, or answer null
 let runs = [];              // the R2 calls of each queue run
 let qops = { sends: 0, deliveries: 0, acks: 0, retries: 0, maxAttempts: 0, maxMessageBytes: 0 };
 let qfail = 0;              // sends left to refuse
@@ -70,6 +71,7 @@ function counted(bucket, run) {
         if (failure) {
           failure.times--;
           if (failure.delay) return new Promise(r => setTimeout(r, failure.delay)).then(() => value.apply(target, args));
+          if (failure.refuse) return Promise.resolve(null);
           return Promise.reject(new Error(`R2 ${call} failed (test)`));
         }
         const die = run && endRun && dies.find(d => d.call === call && d.times > 0);
@@ -94,8 +96,8 @@ let batchInProgress = Promise.resolve();
 export default {
   async fetch(request, env, ctx) {
     if (new URL(request.url).pathname === "/__r2fail") {
-      const { call, times = 1, delay = 0 } = await request.json();
-      failures.push({ call, times, delay });
+      const { call, times = 1, delay = 0, refuse = false } = await request.json();
+      failures.push({ call, times, delay, refuse });
       return new Response(null, { status: 204 });
     }
     if (new URL(request.url).pathname === "/__qfail") {
