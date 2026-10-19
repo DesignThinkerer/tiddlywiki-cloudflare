@@ -5,6 +5,7 @@
 // Run: npm run test:repository
 import fs, { mkdtempSync } from "node:fs";
 import { execFileSync } from "node:child_process";
+import { gzipSync } from "node:zlib";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -274,6 +275,44 @@ extra("extra2.js", "var shared = 2;\nexport function extraTwo() { return shared;
 const twiceVar = build();
 check("a top-level var declared in two modules fails the build, naming both", twiceVar.code !== 0 && /shared/.test(twiceVar.out) && /extra\.js/.test(twiceVar.out) && /extra2\.js/.test(twiceVar.out), twiceVar.out.slice(-300));
 fs.rmSync(buildRoot, { recursive: true, force: true });
+
+// --- 9. Every suite is wired in ------------------------------------------------------------------
+// A suite nobody runs fails in the most flattering way: the file is there, its checks pass, and it
+// never executes. So every test/*.test.mjs is in `npm test`'s list, in exactly one of test:fast and
+// test:browser (the two CI jobs), and has a script of its own; and nothing listed lacks a file.
+const allScripts = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8")).scripts || {};
+const suiteFiles = fs.readdirSync(path.join(ROOT, "test")).filter(f => f.endsWith(".test.mjs")).map(f => f.slice(0, -".test.mjs".length));
+const suitesOf = name => ((allScripts[name] || "").split("run-suites.mjs ")[1] || "").trim().split(/\s+/).filter(Boolean);
+const inTest = suitesOf("test"), inFast = suitesOf("test:fast"), inBrowser = suitesOf("test:browser");
+const notWired = suiteFiles.filter(s => !inTest.includes(s) || (inFast.includes(s) ? 1 : 0) + (inBrowser.includes(s) ? 1 : 0) !== 1 || !Object.values(allScripts).some(v => v.endsWith(`node test/${s}.test.mjs`)));
+const noFile = [...new Set([...inTest, ...inFast, ...inBrowser])].filter(s => !suiteFiles.includes(s));
+check(`every suite in test/ (${suiteFiles.length}) is in npm test, in one of test:fast and test:browser, and has a script of its own; nothing listed lacks a file`,
+  suiteFiles.length >= 18 && notWired.length === 0 && noFile.length === 0, `not wired: ${notWired.join(", ") || "none"}; no file: ${noFile.join(", ") || "none"}`);
+
+// --- 10. The deployed bundle fits the free plan ----------------------------------------------------
+// A deploy uploads worker.js and the empty wiki (a text module); Cloudflare measures the bundle
+// compressed, against 3 MB on the free plan (reference 7). Two thirds of that is the budget here,
+// so growth shows long before a deploy is refused: a bigger TiddlyWiki, or something inlined by mistake.
+const BUNDLE_BUDGET = 2 * 1024 * 1024;
+const gzSize = f => gzipSync(fs.readFileSync(path.join(ROOT, f)), { level: 9 }).length;
+const bundle = { "worker.js": gzSize("worker.js"), "seed/empty.html": gzSize("seed/empty.html") };
+const bundleTotal = Object.values(bundle).reduce((a, b) => a + b, 0);
+check("the deployed bundle, worker.js and the empty wiki gzipped as Cloudflare measures it, stays under 2 MB (two thirds of the free plan's 3 MB)", bundleTotal < BUNDLE_BUDGET,
+  Object.entries(bundle).map(([f, n]) => `${f} ${Math.round(n / 1024)} KB`).join(", ") + `, together ${Math.round(bundleTotal / 1024)} KB`);
+
+// --- 11. The version is the changelog's newest dated block ------------------------------------------
+// A release is a dated block of CHANGELOG.md (CONTRIBUTING, "Releases"): package.json's version is
+// that date, 2026.10.19 for 2026-10-19 (valid semver), so the admin wiki's plugin version says which
+// release a wiki runs and the tag is v<version>. An Unreleased block above it doesn't count. The
+// release's notes are the block, which tools/release-notes.mjs prints.
+const changelog = fs.readFileSync(path.join(ROOT, "CHANGELOG.md"), "utf8");
+const newestDated = (changelog.match(/^## (\d{4}-\d{2}-\d{2})$/m) || [])[1];
+const versionOf = date => date.split("-").map(n => String(Number(n))).join(".");
+const packageVersion = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8")).version;
+check(`package.json's version is the changelog's newest dated block as a version (${newestDated} → ${newestDated && versionOf(newestDated)})`, !!newestDated && packageVersion === versionOf(newestDated), `version ${packageVersion}`);
+const expectedNotes = newestDated && changelog.split("\n## " + newestDated + "\n")[1].split("\n## ")[0].trim() + "\n";
+const printedNotes = (() => { try { return execFileSync(process.execPath, [path.join(ROOT, "tools/release-notes.mjs")], { cwd: ROOT, encoding: "utf8" }); } catch (e) { return `(failed: ${e.message})`; } })();
+check("tools/release-notes.mjs prints that block, the release's notes, without its heading", !!newestDated && printedNotes === expectedNotes, printedNotes.slice(0, 80).replace(/\n/g, "⏎"));
 
 console.log(`\n${results.filter(Boolean).length}/${results.length} passed`);
 process.exit(results.every(Boolean) ? 0 : 1);
