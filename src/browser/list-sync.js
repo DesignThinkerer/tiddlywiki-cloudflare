@@ -41,15 +41,17 @@ exports.synchronous = true;
 var lib = require("$:/cfworker/lib.js");
 
 var LOAD_ALL_TITLE = "$:/config/cfworker/LoadAll",
-	FILL_PAUSE = 200,     // ms after a list before the fill starts: what the page shows asks for its text first
+	FILL_PAUSE = 200,     // ms after a list before the fill starts: what the page shows asks for its text first (as it is, not scaled)
 	READ_AHEAD = 24,      // tiddlers looked up ahead of the one TiddlyWiki is loading (on the device, or fetched)
 	FETCH_AHEAD = 6,      // ...of which fetched over the network at once ($:/config/cfworker/FetchAhead, the plugin's settings)
+	CATCH_UP_AFTER = 10000,       // ms since the last list after which a tab shown again asks for one at once (as it is, not scaled)
 	PUBLIC_READ_TIMEOUT = 5000,   // ms given to a read from the public site before the worker is asked instead
 	REBUILDING_RETRY = 500,       // ms before the list is asked again while the worker rebuilds it ("rebuilding")
 	STAND_IN_RETRY = 1000,        // ...and after a stand-in for a missing list (the first time, then STAND_IN_RETRY_LATER)
 	STAND_IN_RETRY_LATER = 5000,
 	FORGET_TIMEOUT = 5000,        // ms given to the browser to delete the device's database (cfworkerForgetDevice)
-	// (These go through lib.wait: the tests scale them, a deployed wiki has them as they are)
+	// (The timeouts and retries, from PUBLIC_READ_TIMEOUT down, go through lib.wait: the tests scale
+	// them, a deployed wiki has them as they are)
 	STORE_DB = "cfworker-tiddlers",
 	STORE_VERSION = 2,            // 1: the tiddlers table; 2: the outbox table too ($:/cfworker/outbox.js)
 	STORE_NAME = "tiddlers",
@@ -249,7 +251,7 @@ exports.startup = function() {
 		document.addEventListener("visibilitychange",function() {
 			var s = $tw.syncer;
 			if(!document.hidden && s && s.syncadaptor && typeof s.syncadaptor.cfworkerListed === "function") {
-				if(Date.now() - lastListFetch > 10000) {
+				if(Date.now() - lastListFetch > CATCH_UP_AFTER) {
 					s.syncFromServer();
 				}
 				s.processTaskQueue();

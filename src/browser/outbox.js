@@ -301,8 +301,8 @@ exports.startup = function() {
 	// service worker's cache) rather than clear it when short of space: storage under pressure is
 	// evicted whole, and a change waiting in the outbox would go with it. Asked (persist()) only on
 	// a click in the device tab ($:/cfworker/device.js), never at page load: Firefox puts the question
-	// to the user, which at every load was a prompt at every load; Chrome and Safari answer by their
-	// own rules (a site used often, installed, or bookmarked). At load, only what was promised so far
+	// to the user, so asking at every load was a prompt at every load; Chrome and Safari answer by
+	// their own rules (a site used often, installed, or bookmarked). At load, only what was promised so far
 	// (persisted(), no question asked); the status says, and the dropdown while a change waits.
 	proto.cfworkerStorageKept = function(ask) {
 		var api = typeof navigator === "object" && navigator.storage,

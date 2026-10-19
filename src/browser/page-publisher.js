@@ -8,9 +8,10 @@ its own file, but with the core in a separate file:
 
 - The shell: TiddlyWiki's own $:/core/templates/tiddlywiki5-external-js.html, with the tiddlers that
   came with the page (the themes, TiddlyWeb: plugins the worker doesn't store), installed plugins that
-  have raw markup, and your raw markup tiddlers; never one that was deleted, here or in another tab. TiddlyWiki writes everything else: the title, the
-  language, the raw markup, the content for browsers without JavaScript. The core is loaded at the
-  end, from the public site (from the worker, at a root-relative URL, in a private wiki).
+  have raw markup, and your raw markup tiddlers; never one that was deleted, here or in another tab.
+  TiddlyWiki writes everything else: the title, the language, the raw markup, the content for
+  browsers without JavaScript. The core is loaded at the end, from the public site (from the worker,
+  at a root-relative URL, in a private wiki).
 - The core file: TiddlyWiki's own $:/core/templates/tiddlywiki5.js (boot code, library modules,
   $:/core), sent once per TiddlyWiki version.
 
@@ -55,8 +56,9 @@ var TEMPLATE = "$:/core/templates/tiddlywiki5-external-js.html",
 	LIST_SETTLE = 1000,    // after a tiddler list, before anything here counts as quiet: the page renders, and asks, first
 	QUIET_POLL = 200,      // between looks while waiting for that
 	START_POLL = 300,      // between looks for the first tiddler list
-	QUIET_TIMEOUT = 60000; // waiting for saves and loads to finish
-// (The waits go through lib.wait: the tests scale them, a deployed wiki has them as they are)
+	QUIET_TIMEOUT = 60000; // waiting for saves and loads to finish, at most (a ceiling in real time, the tests' too)
+// (The waits go through lib.wait: the tests scale them, a deployed wiki has them as they are; the
+// ceiling is the sum of the polls as they were waited, so it isn't)
 
 // TiddlyWiki's page template, as its save templates use it (with the global macros). One change: the
 // TiddlyWeb plugin writes each stored tiddler's "revision" as its changecount, a count of this tab's
