@@ -1,6 +1,6 @@
 # TiddlyWiki on Cloudflare
 
-[![CI](https://github.com/DesignThinkerer/tiddlywiki-cloudflare/actions/workflows/ci.yml/badge.svg)](https://github.com/DesignThinkerer/tiddlywiki-cloudflare/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![CI](https://github.com/DesignThinkerer/tiddlywiki-cloudflare/actions/workflows/ci.yml/badge.svg)](https://github.com/DesignThinkerer/tiddlywiki-cloudflare/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) [![Written with Claude](https://img.shields.io/badge/written_with-Claude-D97757.svg)](CONTRIBUTING.md#ai-assisted-contributions)
 
 Host your own [TiddlyWiki](https://tiddlywiki.com) on Cloudflare's free plan: a worker for editing, R2 for storage, a public read-only site served from the cache if you want one, and every save backed up to GitHub as its own commit.
 
@@ -39,6 +39,8 @@ About ten minutes, in this order. The setup guide, [chapter 2](docs/setup.md), h
 *The admin wiki: TiddlyWiki as it is, with the Cloudflare tab the worker adds, after Check the setup. Taken from the test setup by the screenshot tool, so the addresses are local ones.*
 
 **Status:** in use for the author's own wiki. Versions are dated, the newest at the top of [the changelog](CHANGELOG.md), and the admin wiki shows which one it runs. Every change goes through the test suites of [chapter 6](docs/development.md), which run a real TiddlyWiki against the real worker and measure what each request costs on the free plan.
+
+**Written with Claude.** The code, the tests and the manual were written by Claude Code, from the author's requirements and constraints — the free plan's limits, the edge cases to handle, what a user should see — under the process of [CONTRIBUTING.md](CONTRIBUTING.md): a plan in the user's words, tests seen failing first, every suite, the docs in the same pull request. No human has read it line by line; what stands for review is that process, the suites of [chapter 6](docs/development.md), and the author's daily use. Read [SECURITY.md](SECURITY.md#what-the-design-counts-on), "What the design counts on", before trusting it with anything that matters.
 
 ---
 

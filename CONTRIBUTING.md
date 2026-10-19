@@ -27,7 +27,7 @@ A commit message says what changed, in plain words, after a conventional prefix 
 
 ## AI-assisted contributions
 
-Welcome, and used on this repository too, as the commit trailers say. Two conditions: you have read and understood what you submit, and can answer for every line of it; and the pull request says what was verified and how. A plan that reads as implementation detail, a test never seen failing, a doc left as it was: an assistant produces all three readily, and the process above is the check against them.
+Welcome, and how this repository was written, as the README says and the commit trailers show. Two conditions: you have read and understood what you submit, and can answer for every line of it; and the pull request says what was verified and how. A plan that reads as implementation detail, a test never seen failing, a doc left as it was: an assistant produces all three readily, and the process above is the check against them.
 
 ## Running the tests
 
