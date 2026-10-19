@@ -55,8 +55,13 @@ git(UP, "init", "-q");
 const realToml = fs.readFileSync(path.join(ROOT, "wrangler.toml"), "utf8");
 const realPkg = fs.readFileSync(path.join(ROOT, "package.json"), "utf8");
 const realCi = fs.readFileSync(path.join(ROOT, ".github/workflows/ci.yml"), "utf8");
+const realLock = fs.readFileSync(path.join(ROOT, "package-lock.json"), "utf8");
+const version = JSON.parse(realPkg).version;
+// The lock with its root name and version set (both places npm writes them), in npm's own format
+const lockWith = (text, name, version) => { const o = JSON.parse(text); o.name = name; o.version = version; o.packages[""].name = name; o.packages[""].version = version; return JSON.stringify(o, null, 2) + "\n"; };
+if (JSON.stringify(JSON.parse(realLock), null, 2) + "\n" !== realLock) throw new Error("fixture: package-lock.json isn't in npm's format (JSON, two spaces, a final newline)");
 commit(UP, "initial", {
-  "wrangler.toml": realToml, "package.json": realPkg, ".github/workflows/ci.yml": realCi,
+  "wrangler.toml": realToml, "package.json": realPkg, "package-lock.json": realLock, ".github/workflows/ci.yml": realCi,
   "README.md": "# TiddlyWiki on Cloudflare\n\nIntro.\n", "src/worker/index.js": "export default 1;\n", "worker.js": "// bundle v1\n", "docs/operating.md": "## 3.1 Updating your copy\n\nv1\n"
 });
 const X = commit(UP, "docs: a line", { "README.md": "# TiddlyWiki on Cloudflare\n\nIntro, revised.\n" });   // what the import is taken from
@@ -83,6 +88,9 @@ git(WORK, "init", "-q", "--bare", BARE);
 git(COPY, "remote", "add", "origin", BARE);
 git(COPY, "push", "-q", "origin", "main");
 commit(COPY, "my own note in the copy", { "README.md": read(COPY, "README.md") + "\nMy own note.\n" });
+// (An npm install in the copy rewrites the lock's root name and version to package.json's, since the
+// import changed package.json alone; committed, as the owner's Codespace did)
+commit(COPY, "Mise à jour du nom et de la version dans package-lock.json", { "package-lock.json": lockWith(read(COPY, "package-lock.json"), "wiki-test", JSON.parse(read(COPY, "package.json")).version) });
 
 // --- Upstream moves on: code, the bundle, a manual page, a wrangler.toml comment away from the names, the README's first line
 const U3 = commit(UP, "feat: something", {
@@ -110,6 +118,20 @@ check("...and the first line says what the copy was updated to (upstream's commi
   r.out.split("\n")[0] === `Updated from tiddlywiki-cloudflare to ${U3.slice(0, 7)}: 5 files changed, 5 insertions(+), 5 deletions(-).` && !/commits? merged/.test(r.out), r.out.split("\n")[0]);
 check("...the replacement ref the merge used is gone, upstream is a remote of the copy, the merge commit names the source",
   replacements(COPY) === "" && safe(() => git(COPY, "remote", "get-url", "upstream")) === UP && /tiddlywiki-cloudflare/.test(git(COPY, "log", "-1", "--format=%s")), `replace: "${replacements(COPY)}"; subject: ${git(COPY, "log", "-1", "--format=%s")}`);
+const lock1 = JSON.parse(read(COPY, "package-lock.json"));
+check("...package-lock.json, which npm had rewritten in the copy and the user committed: merged clean, its root name the copy's and its version package.json's, in both places npm writes them",
+  lock1.name === "wiki-test" && lock1.packages[""].name === "wiki-test" && lock1.version === version && lock1.packages[""].version === version,
+  `${lock1.name} ${lock1.version} / ${lock1.packages[""].name} ${lock1.packages[""].version}`);
+// An import nobody touched: its lock still says this repository's name (the import changes package.json
+// alone), and the first update sets the lock's root name and version to package.json's, so that an npm
+// install in the copy no longer changes it
+const COPY3 = path.join(WORK, "copy3");
+importOf(COPY3);
+r = update(COPY3, "--from", UP);
+const lock3 = JSON.parse(read(COPY3, "package-lock.json"));
+check("an import nobody touched, updated: package-lock.json's root name and version set to package.json's (the copy's name, this repository's version), in both places, said in the output; the merge commit holds it, the tree clean",
+  r.code === 0 && lock3.name === "wiki-test" && lock3.packages[""].name === "wiki-test" && lock3.version === version && lock3.packages[""].version === version && /package-lock\.json/.test(r.out) && git(COPY3, "status", "--porcelain") === "" && read(COPY3, "package-lock.json") === lockWith(git(UP, "show", `${U3}:package-lock.json`) + "\n", "wiki-test", version),
+  `exit ${r.code}: ${lock3.name} ${lock3.version} / ${lock3.packages[""].name} ${lock3.packages[""].version}; ${r.out.slice(0, 200).replace(/\n/g, "⏎")}`);
 
 // --- 2. The next updates: a plain merge each --------------------------------------------------
 const U4 = commit(UP, "feat: more", { "src/worker/index.js": "export default 3;\n", "wrangler.toml": edit(read(UP, "wrangler.toml"), "a preview would use the real bucket and queue", "a preview would use the real bucket and queue, ever") });
@@ -119,12 +141,11 @@ check("a second update, run from a subdirectory of the copy: a plain merge, no r
   r.code === 0 && isMerge(COPY) && git(COPY, "merge-base", "HEAD", U4) === U4 && read(COPY, "src/worker/index.js") === "export default 3;\n" && replacements(COPY) === "" &&
   /^name = "wiki-test"/m.test(toml2) && (toml2.match(/^queue = "wiki-test-backup"/gm) || []).length === 2 && toml2.includes("bucket and queue, ever"),
   `exit ${r.code}: ${r.out.slice(0, 300).replace(/\n/g, "⏎")}`);
-const version = JSON.parse(realPkg).version;
-const U5 = commit(UP, "release", { "package.json": edit(read(UP, "package.json"), `"version": "${version}"`, '"version": "2099.1.1"') });
+const U5 = commit(UP, "release", { "package.json": edit(read(UP, "package.json"), `"version": "${version}"`, '"version": "2099.1.1"'), "package-lock.json": lockWith(read(UP, "package-lock.json"), "tiddlywiki-cloudflare", "2099.1.1") });
 r = update(COPY, "--from", UP);
-check("a release upstream (the version line next to the name line the import changed): the conflict resolved by the script, upstream's package.json with the copy's name",
-  r.code === 0 && read(COPY, "package.json") === edit(git(UP, "show", `${U5}:package.json`) + "\n", '"name": "tiddlywiki-cloudflare"', '"name": "wiki-test"') && git(COPY, "status", "--porcelain") === "",
-  `exit ${r.code}: ${(read(COPY, "package.json").match(/"(name|version)": "[^"]*"/g) || []).join(", ")}; ${r.out.slice(0, 200).replace(/\n/g, "⏎")}`);
+check("a release upstream (package.json's version and the lock's bumped together, as the release step requires): package.json upstream's with the copy's name (its name line no longer next to the version's, a clean merge); package-lock.json, where the version line is next to the name line the copy changed, resolved as upstream's lock with the copy's name and the new version; exit 0, nothing unmerged",
+  r.code === 0 && read(COPY, "package.json") === edit(git(UP, "show", `${U5}:package.json`) + "\n", '"name": "tiddlywiki-cloudflare"', '"name": "wiki-test"') && read(COPY, "package-lock.json") === lockWith(git(UP, "show", `${U5}:package-lock.json`) + "\n", "wiki-test", "2099.1.1") && git(COPY, "status", "--porcelain") === "",
+  `exit ${r.code}: ${(read(COPY, "package.json").match(/"(name|version)": "[^"]*"/g) || []).join(", ")}; lock ${safe(() => JSON.parse(read(COPY, "package-lock.json")).version) || "unparsable"}; ${r.out.slice(0, 200).replace(/\n/g, "⏎")}`);
 const U6 = commit(UP, "ci and a name line's comment", { ".github/workflows/ci.yml": "# touched\n" + realCi, "wrangler.toml": edit(read(UP, "wrangler.toml"), "the bucket you created (setup 2.2)", "the bucket you created (setup 2.2), yours") });
 r = update(COPY, "--from", UP);
 const toml3 = read(COPY, "wrangler.toml");
