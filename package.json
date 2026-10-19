@@ -32,8 +32,8 @@
     "check:build": "node build.mjs --check",
     "screenshot": "npm run build && node tools/screenshot.mjs",
     "lint": "eslint src build.mjs tools test eslint.config.js",
-    "test": "npm run build && node tools/run-suites.mjs two-tabs page-publish queue-backup lazy-load budget cold-start plugins offline integrity bake private login-expired setup-check backup-sync r2-ops first-visit cpu repository",
-    "test:fast": "npm run build && node tools/run-suites.mjs queue-backup integrity bake setup-check r2-ops cpu repository",
+    "test": "npm run build && node tools/run-suites.mjs two-tabs page-publish queue-backup lazy-load budget cold-start plugins offline integrity bake private login-expired setup-check backup-sync r2-ops first-visit cpu update-copy repository",
+    "test:fast": "npm run build && node tools/run-suites.mjs queue-backup integrity bake setup-check r2-ops cpu update-copy repository",
     "test:browser": "npm run build && node tools/run-suites.mjs two-tabs page-publish lazy-load budget cold-start plugins offline private login-expired backup-sync first-visit",
     "test:suite": "npm run build && node tools/run-suites.mjs",
     "test:bake": "npm run build && node test/bake.test.mjs",
@@ -53,7 +53,8 @@
     "test:login": "npm run build && node test/login-expired.test.mjs",
     "test:cold": "npm run build && node test/cold-start.test.mjs",
     "test:budget": "npm run build && node test/budget.test.mjs",
-    "test:setup": "npm run build && node test/setup-check.test.mjs"
+    "test:setup": "npm run build && node test/setup-check.test.mjs",
+    "test:update-copy": "npm run build && node test/update-copy.test.mjs"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",
