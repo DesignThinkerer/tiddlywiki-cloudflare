@@ -1,8 +1,9 @@
 # Dependency updates as pull requests, weekly: the npm packages (one PR per update, the tests run on
 # it) and the Actions the workflows use. A release is proposed only once it has been out for a few
-# days (cooldown: three for a patch, a week for a minor, a month for a major): a compromised release
-# is usually found and pulled within days, and Workers Builds installs the dev dependencies with the
-# credentials that deploy the worker. A fix for a known vulnerability isn't delayed by it.
+# days (cooldown: for an npm package three for a patch, a week for a minor, a month for a major; a
+# week for an Action, whose versions are tags and take one number): a compromised release is usually
+# found and pulled within days, and Workers Builds installs the dev dependencies with the credentials
+# that deploy the worker. A fix for a known vulnerability isn't delayed by it.
 version: 2
 updates:
   - package-ecosystem: npm
@@ -34,6 +35,3 @@ updates:
       interval: weekly
     cooldown:
       default-days: 7
-      semver-major-days: 30
-      semver-minor-days: 7
-      semver-patch-days: 3
