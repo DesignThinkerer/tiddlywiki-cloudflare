@@ -226,15 +226,18 @@ exports.startup = function() {
 		return ok === true ? "✓" : ok === false ? "✗" : "–";
 	}
 	// This browser's own two lines: the service worker in place, and its copy of the core file,
-	// which is what the CORS rule's /_plugins/ path is for (design 1.11)
+	// which is what the CORS rule's /_plugins/ path is for (design 1.11). Each links to the manual as
+	// the worker's lines do: opening offline, or the rule when the copy is missing
 	function browserLines(then) {
 		var lines = [],
+			offline = lib.guideLink("operating","3.13"),
+			corsRule = lib.guideLink("setup","2.7"),
 			controller = typeof navigator === "object" && navigator.serviceWorker && navigator.serviceWorker.controller;
 		lines.push(line(mark(!!controller),controller ?
 			"Opening offline: a service worker is in place in this browser." :
-			"Opening offline: no service worker is in place in this browser yet. Reload the page once, online.","3"));
+			"Opening offline: no service worker is in place in this browser yet. Reload the page once, online.",offline));
 		if(typeof caches !== "object") {
-			lines.push(line("–","This browser has no cache storage here: nothing kept for opening offline.","3"));
+			lines.push(line("–","This browser has no cache storage here: nothing kept for opening offline.",offline));
 			return then(lines);
 		}
 		caches.open(CACHE).then(function(cache) {
@@ -245,10 +248,10 @@ exports.startup = function() {
 			});
 			lines.push(line(mark(kept),kept ?
 				"...and the core file is kept on this device: the wiki opens with no network (the page and its plugin files with it)." :
-				"...but the core file isn't kept on this device, so the wiki doesn't open with no network. On a public wiki, the CORS rule must cover /_plugins/ (see the line above); right after a first visit, give it a moment and check again.",kept ? "3" : "2.7"));
+				"...but the core file isn't kept on this device, so the wiki doesn't open with no network. On a public wiki, the CORS rule must cover /_plugins/ (see the line above); right after a first visit, give it a moment and check again.",kept ? offline : corsRule));
 			then(lines);
 		},function() {
-			lines.push(line("–","The cache storage couldn't be read.","3"));
+			lines.push(line("–","The cache storage couldn't be read.",offline));
 			then(lines);
 		});
 	}
