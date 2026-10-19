@@ -513,8 +513,10 @@ await A.unroute("**/recipes/default/tiddlers/QuietSave");
 net.splice(netBefore, net.length - netBefore, ...net.slice(netBefore).filter(x => x.status !== 503));   // expected, not failures
 
 // --- 14. Leaving with an editor open ----------------------------------------------------------
-// Drafts are never saved to the server, so closing or reloading the tab would lose what's being typed:
-// the browser asks first, as TiddlyWiki does for unsaved changes. Not for an editor left unchanged.
+// Drafts are never saved to the server, so TiddlyWiki's syncer wouldn't ask before the tab closes or
+// reloads: the browser asks here, as it does for unsaved changes, while an editor holds changes. The
+// outbox keeps the draft on the device meanwhile, a moment behind the typing: the dialog is the belt
+// over that (design 2.7). Not for an editor left unchanged.
 async function leaving(page) {
   let asked = false;
   page.once("dialog", dialog => { asked = dialog.type() === "beforeunload"; dialog.dismiss().catch(() => {}); });
@@ -529,7 +531,7 @@ await typing.evaluate(() => {
   $tw.wiki.addTiddler(new $tw.Tiddler($tw.wiki.getTiddler(d), { text: "half-typed sentence" }));
 });
 const whileTyping = await leaving(typing);
-check("closing a tab while typing in an editor asks first (the draft isn't saved anywhere)", whileTyping.asked && !whileTyping.closed, JSON.stringify(whileTyping));
+check("closing a tab while typing in an editor asks first (a belt over the device's copy of the draft, a moment behind the typing)", whileTyping.asked && !whileTyping.closed, JSON.stringify(whileTyping));
 if (!typing.isClosed()) await typing.close();
 const looking = await openTab("F");
 // (The half-typed draft is back in this tab, from the device: the outbox keeps drafts. Discarded here.)
