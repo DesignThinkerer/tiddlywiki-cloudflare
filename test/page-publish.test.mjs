@@ -38,7 +38,7 @@ const status = p => p.evaluate(() => {
 // The Cloudflare tab's "The page" section: what this tab last did with the page, and when (design 1.9)
 // (anchored on the section's own first words, since a check line can begin "The page has no Browser
 // TTL…"; text/plain joins a heading to the text after it with no space)
-const pageLine = p => p.evaluate(() => (($tw.wiki.renderTiddler("text/plain", "$:/temp/cfworker/ControlPanel").replace(/\s+/g, " ").match(/The page\s*((?:From this tab|Nothing published).*?)(?=\s*Backups to GitHub|$)/) || [])[1] || "").trim());
+const pageLine = p => p.evaluate(() => (($tw.wiki.renderTiddler("text/plain", "$:/temp/cfworker/ControlPanel").replace(/\s+/g, " ").match(/The page\s*((?:From this tab|Nothing published).*?)(?=\s*Backups to GitHub|\s*The plugin's settings|$)/) || [])[1] || "").trim());
 const pageAlerts = p => p.evaluate(() => $tw.wiki.getTiddlersWithTag("$:/tags/Alert").map(t => $tw.wiki.getTiddler(t).fields).filter(f => f.component === "Published page").map(f => f.text));
 const shell = async () => { const obj = await bucket.get("_page/shell.html"); return obj ? obj.text() : ""; };
 const MARK = name => `<!--~~ ${name} ~~-->`;

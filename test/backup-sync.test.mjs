@@ -80,8 +80,17 @@ files.set("tiddlers/Gone.json", { sha: blobSha(Buffer.from("gone")), text: "gone
 
 // 1. The admin wiki: the tab, the status, the hint
 const A = await openTab(base + "/", "A");
-const tab = await A.evaluate(t => { const x = $tw.wiki.getTiddler(t); return x ? { caption: x.fields.caption, tags: x.fields.tags, listed: $tw.wiki.filterTiddlers("[all[shadows+tiddlers]tag[$:/tags/ControlPanel/Saving]]").includes(t) } : null; }, TAB);
-check("the admin wiki has a Cloudflare tab under the control panel's Saving tab", tab?.caption === "Cloudflare" && (tab.tags || []).includes("$:/tags/ControlPanel/Saving") && tab.listed, JSON.stringify(tab));
+const tab = await A.evaluate(t => { const x = $tw.wiki.getTiddler(t); const saving = $tw.wiki.filterTiddlers("[all[shadows+tiddlers]tag[$:/tags/ControlPanel/Saving]]"); return x ? { caption: x.fields.caption, tags: x.fields.tags, listBefore: x.fields["list-before"], listed: saving.includes(t), first: saving[0] === t, count: saving.length } : null; }, TAB);
+check("the admin wiki has a Cloudflare tab under the control panel's Saving tab, first of its sub-tabs (list-before empty), ahead of TiddlyWiki's saver tabs", tab?.caption === "Cloudflare" && (tab.tags || []).includes("$:/tags/ControlPanel/Saving") && tab.listed && tab.listBefore === "" && tab.first && tab.count > 1, JSON.stringify(tab));
+// The tab's first line says the saver tabs beside it aren't used and where backups are set; its last
+// line links the plugin's settings and device tabs, which nothing in the tab named (design 1.13)
+{
+  const first = await A.evaluate(t => $tw.wiki.renderTiddler("text/plain", t).replace(/\s+/g, " ").trim(), TAB);
+  const html = await A.evaluate(t => $tw.wiki.renderTiddler("text/html", t), TAB);
+  check("...its first line says this wiki saves each change as you make it, that the saver tabs beside it are TiddlyWiki's and aren't used here, and where backups are set (setup 2.4); its last line links the plugin's settings and device tabs",
+    /^This wiki saves each change to the worker as you make it\. The saver tabs beside this one are TiddlyWiki's, for single-file wikis, and aren't used here; backups to GitHub are set in the worker's dashboard \(setup 2\.4\)\./.test(first) && /The plugin's settings/.test(first) && /what this browser keeps/.test(first) && /href="#%24%3A%2Fplugins%2Fcfworker%2Fadmin/.test(html),
+    first.slice(0, 160) + " … " + first.slice(-200));
+}
 let text = await tabText(A);
 check("...that says backups are on, no full backup yet, with the button", (await field(A, STATUS, "backups")) === "on" && /committed to GitHub as it happens/.test(text) && /No full backup yet/.test(text) && /Back up everything to GitHub/.test(text), text.slice(0, 300));
 // (The section sits in a <$list> widget: without a blank line after its opening tag, TiddlyWiki
@@ -100,6 +109,7 @@ check("the tab's order: The setup, Backups to GitHub, The worker, The engine; th
   text.replace(/\s+/g, " ").slice(0, 700));
 await A.waitForFunction(t => $tw.wiki.tiddlerExists(t), HINT, { timeout: 10000 }).catch(() => {});
 const hint = await A.evaluate(t => { const x = $tw.wiki.getTiddler(t); return x ? { tags: x.fields.tags, text: x.fields.text } : null; }, HINT);
+check("...and the hint links the Cloudflare tab's own tiddler, which opens the tab's content in the story with one tap, not the Control Panel's first tab", !!hint && /<\$link to="\$:\/temp\/cfworker\/ControlPanel">/.test(hint.text) && !/<\$link to="\$:\/ControlPanel">/.test(hint.text), hint ? hint.text.slice(0, 300) : "no hint");
 check("backups on and no full backup ever, tiddlers listed: an alert says tiddlers saved before aren't on GitHub, with the button in it and its message under it, the Control Panel path as \"or later from\", and that a wiki whose first tiddler was saved with backups on is all there",
   !!hint && (hint.tags || []).includes("$:/tags/Alert") && /full backup/.test(hint.text) && /<\$button message='tm-cfworker-backup-sync'>Back up everything to GitHub<\/\$button>/.test(hint.text) && /\{\{\$:\/temp\/cfworker\/backup-sync-message\}\}/.test(hint.text) && /or later from/.test(hint.text) && /Cloudflare/.test(hint.text) && /first tiddler was saved with backups on is all there/.test(hint.text), JSON.stringify(hint));
 // An empty wiki (the list the worker answers is "[]") has nothing saved before backups: no hint at

@@ -105,7 +105,7 @@ exports.startup = function() {
 			return "The token in the worker's GITHUB_TOKEN secret is wrong or has expired. On GitHub (" + TOKENS + "), regenerate it (it keeps its repository and permission) or make a new one as in " + lib.guide("setup","2.4") + " (Contents: read and write, this repository only; the guide's link opens GitHub's form filled in), then replace the GITHUB_TOKEN secret, " + VARS + ".";
 		}
 		if(problem.status === 403 || problem.status === 404) {
-			return "<$link to=\"$:/ControlPanel\">Control Panel</$link> → Saving → Cloudflare → Check the setup tells a missing repository or branch; if it passes, the token lacks Contents: read and write on that repository (" + lib.guide("setup","2.4") + ").";
+			return "Check the setup, in <$link to=\"$:/temp/cfworker/ControlPanel\">the Cloudflare tab</$link>, tells a missing repository or branch; if it passes, the token lacks Contents: read and write on that repository (" + lib.guide("setup","2.4") + ").";
 		}
 		if(problem.status === 409 || problem.status === 422) {
 			return "GitHub refuses this version of the tiddler for good: its push protection found what looks like a secret (a key, a token) in the text, or its title makes a path GitHub can't take. On a public wiki the tiddler is readable by anyone: revoke that key, then remove it from the tiddler (or rename the tiddler) and save it again; the other backups go on meanwhile, and this one is tried again at the tiddler's next save.";
@@ -123,7 +123,7 @@ exports.startup = function() {
 				refusal ? "The wiki keeps this version meanwhile." :
 				(typeof problem.next === "number" && problem.next > Date.now() ? "Next try: " + $tw.utils.formatDateString(new Date(problem.next),"DDth MMM YYYY 0hh:0mm") + ", by itself." : "They're retried by themselves.") +
 				" The wiki keeps everything meanwhile." +
-				(problem.status === 401 ? " Once the secret is replaced, <$link to=\"$:/ControlPanel\">Control Panel</$link> → Saving → Cloudflare → Back up everything to GitHub sends the current versions now, those the queue dropped meanwhile included (" + lib.guide("limits","5") + "); the waiting ones still arrive afterwards, as history." : "");
+				(problem.status === 401 ? " Once the secret is replaced, Back up everything to GitHub, in <$link to=\"$:/temp/cfworker/ControlPanel\">the Cloudflare tab</$link>, sends the current versions now, those the queue dropped meanwhile included (" + lib.guide("limits","5") + "); the waiting ones still arrive afterwards, as history." : "");
 		return "Backups to GitHub have been failing since " + $tw.utils.formatDateString(new Date(problem.since),"DDth MMM YYYY 0hh:0mm") + ": " +
 			(problem.count > 1 ? problem.count + " tiddlers, " + lib.link(problem.title) + " the oldest, aren't" : lib.link(problem.title) + " isn't") +
 			" backed up yet. GitHub answered: ``" + String(problem.error).replace(/`/g,"'").replace(/[\r\n]+/g," ") + "``. " + hint + " " + retried;
@@ -223,7 +223,7 @@ exports.startup = function() {
 				(stuck.skipped ? ", and the full backup went past it" : " " + stuck.attempts + " times and dropped") +
 				(stuck.count > 1 ? ", and " + (stuck.count - 1) + " more like it" : "") + ": most likely the free plan's CPU time ran out on a tiddler this size (" + lib.guide("limits","5") + "). " +
 				"GitHub keeps the last version of it that went through, if one did; the wiki keeps this one. " +
-				(stuck.skipped ? remedy + ", then run the full backup again (<$link to=\"$:/ControlPanel\">Control Panel</$link> → Saving → Cloudflare → Back up everything to GitHub)." :
+				(stuck.skipped ? remedy + ", then run the full backup again (Back up everything to GitHub, in <$link to=\"$:/temp/cfworker/ControlPanel\">the Cloudflare tab</$link>)." :
 					"It's tried again at the next save of it: " + remedy.charAt(0).toLowerCase() + remedy.slice(1) + ".")
 		}));
 	}
@@ -269,7 +269,7 @@ exports.startup = function() {
 			component: "GitHub backup",
 			modified: new Date(),
 			text: "Backups to GitHub are on: every save from now on is committed. Tiddlers saved before they were set up (an imported wiki, say) aren't on GitHub until a full backup runs, once: " +
-				"<$button message='tm-cfworker-backup-sync'>Back up everything to GitHub</$button> (or later from <$link to=\"$:/ControlPanel\">Control Panel</$link> → Saving → Cloudflare). " +
+				"<$button message='tm-cfworker-backup-sync'>Back up everything to GitHub</$button> (or later from <$link to=\"$:/temp/cfworker/ControlPanel\">the Cloudflare tab</$link>, first under Control Panel → Saving). " +
 				"A wiki whose first tiddler was saved with backups on is all there.\n\n{{$:/temp/cfworker/backup-sync-message}}"
 		}));
 	}
