@@ -213,7 +213,7 @@ Everything the setup made is deleted by hand, in the dashboard, or with Wrangler
 8. **The tokens:** the Cloudflare API token (My Profile → API Tokens) and the GitHub token (Settings → Developer settings → Personal access tokens → Fine-grained tokens). Useless without the worker, valid until they expire.
 9. **On GitHub:** your fork of this repository, Settings → *Danger Zone* → *Delete this repository*; and Cloudflare's GitHub app, if you installed it for this alone (Settings → Applications → Installed GitHub Apps). The backup repository last, or kept.
 
-A private wiki skips the domain, the rules and the Cloudflare token. A second wiki ([setup 2.9](setup.md#29-a-second-wiki)) has its own worker, bucket, queue, application and rules, but the tokens and the zone can be shared: check before deleting those.
+A private wiki skips the domain, the rules and the Cloudflare token. A second wiki ([setup 2.9](setup.md#29-a-second-wiki)) has its own worker, bucket, queue, application, rules and GitHub token, but the Cloudflare token and the zone can be shared: check before deleting those.
 
 ## 3.22 Making a private wiki public
 
@@ -245,3 +245,14 @@ A picture dragged into the wiki becomes a tiddler holding it as base64: in R2, i
 3. **A replaced file** stays as it was on the public site for the cache rule's Edge TTL ([setup 2.7](setup.md#27-the-zones-rules-public-site-only)), a day with the guide's setting, unless its URL is purged ([3.9](#39-manual-purge)).
 
 These files aren't the wiki's: they aren't backed up to GitHub, not even by a full backup ([3.2](#32-a-full-backup)), aren't kept for opening offline ([3.13](#313-opening-the-wiki-offline)), and go with the bucket ([3.21](#321-removing-the-wiki)); keep your own copy.
+
+## 3.25 Changing the admin site's address
+
+A custom domain added after setup, or the worker renamed, is a new address for the admin site: Access and the CORS rule name the hostname, and each device's copy and outbox belong to the origin, so a change waiting on a phone under the old address is never sent from the new one (what waits on a device is sent from that device, [3.11](#311-editing-offline)). In order:
+
+1. **On every device, the cloud icon green and nothing waiting** ([3.11](#311-editing-offline); the device tab's *Measure* counts what waits, [3.18](#318-this-device)). This is the one safeguard a rename has: its old `workers.dev` address is gone at once.
+2. **The new address:** a custom domain under the worker's **Settings → Domains & Routes** ([setup 2.5](setup.md#25-the-worker)); or the rename, which changes `name` in `wrangler.toml` too, and leaves the bucket and the queue under their old names.
+3. **The CORS rule's header value** ([setup 2.7](setup.md#27-the-zones-rules-public-site-only)), the new origin; *Check the setup* confirms it, since the worker sends the admin origin itself. Access follows the worker when the application is *Worker Access → All traffic* ([setup 2.6](setup.md#26-cloudflare-access)); a self-hosted application on the old hostname is edited to the new one.
+4. **Each device moves:** keep the `workers.dev` address enabled until each device has opened the new one; on each device, open the old address once more for *Forget this device's copy* ([3.18](#318-this-device); refused while something waits, which is the point), then open the new address, and install the app again ([3.16](#316-installing-the-wiki-as-an-app)).
+
+Moving the public domain is [3.23](#323-making-a-public-wiki-private-or-changing-its-domain).
