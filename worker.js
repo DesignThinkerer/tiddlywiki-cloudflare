@@ -143,7 +143,8 @@ function waitMs(env, ms) {
 
 // ===== src/worker/access.js ===================================================================================
 
-// Cloudflare Access: the worker has no login of its own; Access, in front of it, has (setup 2.6).
+// Cloudflare Access: the worker has no login of its own; Access, in front of it, has (setup 2.6,
+// design 1.18).
 
 
 // Cloudflare gives a request that came through Access a ctx.access; a request without one didn't,
@@ -166,10 +167,33 @@ function isLocal(request) {
   return isLocalHost(new URL(request.url).hostname);
 }
 
-const ACCESS_REFUSED = "Refused: this request didn't come through Cloudflare Access, which must protect the admin site (" + guideText("setup", "2.6") + "). " +
-  "If you're setting the worker up, add the Access application for this hostname first. Only for tests and local runs, " +
-  "where there is no Access, the variable ACCESS = off lets requests through, and only to a local address (localhost): " +
-  "on a deployed worker it changes nothing.";
+// The refusal, in the setup check's order (design 2.20): what was found, the host the request came
+// to; the one thing to do, in setup 2.6's words (the dashboard's, October 2026); the link; and the
+// local-only switch last
+function accessRefused(request) {
+  const host = new URL(request.url).host;
+  return `Refused: this request to ${host} didn't come through Cloudflare Access, which must protect the admin site. ` +
+    `If you're setting the worker up: in the Cloudflare dashboard, Workers & Pages → the worker → the Access tab → Protect this Worker behind Access → All traffic, with a policy that allows you alone (${guideText("setup", "2.6")}). ` +
+    "Only for tests and local runs, where there is no Access, the variable ACCESS = off lets requests through, and only to a local address (localhost): on a deployed worker it changes nothing.";
+}
+
+// Whom Access let in, for the setup check's line (setup.js): the e-mail Access attaches to each
+// request it passes (Cf-Access-Authenticated-User-Email), else Cloudflare's own identity read
+// (ctx.access.getIdentity, whose cost its documentation doesn't say: once per check, after the
+// header), else null. Said, not acted on: Access decides who gets in, the worker only reports it
+async function accessIdentity(request, ctx) {
+  const header = request.headers.get("Cf-Access-Authenticated-User-Email");
+  if (header) return header;
+  if (ctx && ctx.access && typeof ctx.access.getIdentity === "function") {
+    try {
+      const identity = await ctx.access.getIdentity();
+      return identity && identity.email ? String(identity.email) : null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
 
 // ===== src/worker/bytes.js ====================================================================================
 
@@ -3148,8 +3172,11 @@ async function setupCheck(request, env, ctx, corsHeaders) {
   const checks = [];
   const add = (id, ok, text, section) => checks.push({ id, ok, text, guide: guide("setup", section) });
 
+  // (Whom Access let in is said; the policy itself can't be read without an account-level token,
+  // which the worker mustn't hold: design 2.20)
+  const who = ctx.access ? await accessIdentity(request, ctx) : null;
   add("access", true, ctx.access
-    ? "Cloudflare Access protects the admin site: this request came through it."
+    ? `Cloudflare Access protects the admin site: this request came through it${who ? `, logged in as ${who}` : ""}. The policy itself isn't checked: under Workers & Pages → the worker → the Access tab (or Zero Trust → Access → Applications → the application), it should allow you alone.`
     : "Cloudflare Access is off for this local address (ACCESS = off, for tests and local runs only): a deployed worker refuses every request that didn't come through Access.", SECTION.access);
 
   const site = publicSite(env);
@@ -3422,7 +3449,7 @@ const plainText = (text, status) => new Response(text, { status, headers: { "Con
 export default {
   async fetch(request, env, ctx) {
     // Before anything else: a request Access didn't authenticate costs nothing but this answer
-    if (withoutAccess(request, ctx, env)) return plainText(ACCESS_REFUSED, 403);
+    if (withoutAccess(request, ctx, env)) return plainText(accessRefused(request), 403);
     const url = new URL(request.url);
     // Nor anything with a public address that isn't a site's (the page would load its code from
     // nowhere); none at all is a private wiki
