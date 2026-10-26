@@ -88,7 +88,7 @@ The worker's logs are under its Logs tab in the dashboard. What the lines mean:
 
 ## 3.9 Manual purge
 
-Cloudflare dashboard → Caching → Configuration → Purge Cache. Use it if something on the public site looks stuck, for example after uploading files to R2 by hand.
+Cloudflare dashboard → Caching → Configuration → Purge Cache → *Custom Purge* → *Hostname*, the public hostname. Use it if something on the public site looks stuck, for example after uploading files to R2 by hand, and once after a purge token was replaced or fixed: what changed while purges failed stays cached until its Edge TTL otherwise, a day with the guide's setting, and the admin wiki says so meanwhile (an alert, once a few of its reads from the public site come back stale: [design 2.20](design.md#220-the-setup-check-from-the-worker-on-demand-one-purge-as-the-tokens-test)).
 
 ## 3.10 Loading a big wiki
 

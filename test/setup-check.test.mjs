@@ -247,7 +247,7 @@ check("...and the line ends with what to do: set GITHUB_BRANCH, in the worker's 
 api.branch = 200;
 api.purge = { status: 403, body: { success: false, errors: [{ code: 10000, message: "Authentication error" }] } };
 ({ items } = await run());
-check("Cloudflare refusing the purge: the purges line says so, with the token's section", ok(items, "purges") === false && /Authentication error|403/.test(text(items, "purges")) && guide(items, "purges") === "2.5", line(items, "purges"));
+check("Cloudflare refusing the purge: the purges line says so, with the token's section, and ends with the hostname to purge once after the fix (Purge Cache → Custom Purge → Hostname, the public host, operating 3.9), since what changed while purges failed stays cached until its Edge TTL", ok(items, "purges") === false && /Authentication error|403/.test(text(items, "purges")) && guide(items, "purges") === "2.5" && new RegExp(`Then purge the public hostname once \\(Caching → Configuration → Purge Cache → Custom Purge → Hostname, ${PUBLIC_HOST.replace(/\./g, "\\.")}; operating 3\\.9\\): what changed while purges failed stays cached until its Edge TTL otherwise\\.$`).test(text(items, "purges")), line(items, "purges"));
 check("...and the line ends with what to check: CF_ZONE_ID against the zone ID on the domain's overview page, the token under My Profile → API Tokens, a new one put in the CF_API_TOKEN secret",
   /Check CF_ZONE_ID against the zone ID on the domain's overview page/.test(text(items, "purges")) && /My Profile → API Tokens/.test(text(items, "purges")) && /put in the CF_API_TOKEN secret/.test(text(items, "purges")), line(items, "purges"));
 api.purge = { status: 200, body: { success: true } };

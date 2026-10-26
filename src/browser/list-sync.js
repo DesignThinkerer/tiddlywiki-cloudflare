@@ -458,6 +458,35 @@ exports.startup = function() {
 				return false;
 			});
 	}
+	// Stale copies the public site served of tiddlers saved a while ago, counted here from the reads
+	// already made (no request, no write: design 2.20): the worker's revisions are save times, so a
+	// listed revision older than STALE_PUBLIC_AGE whose public copy is behind it is a purge that didn't
+	// happen (a purge token revoked or expired), not the cache's normal lag of seconds after a save;
+	// a device never refetches its own fresh saves. Past STALE_PUBLIC_ALERT_AT of them in this page's
+	// life, one alert, on the admin site, saying the public site serves old copies and where the token
+	// is tested; the admin wiki itself already works around them (the retry past the cache)
+	var STALE_PUBLIC_AGE = 5 * 60 * 1000,
+		STALE_PUBLIC_ALERT_AT = 3,
+		STALE_PUBLIC_ALERT = "$:/temp/cfworker/stale-public",
+		staleRefusals = 0,
+		staleOldest = 0;
+	function noteStaleCopy(expected) {
+		var savedAt = Number(expected);
+		if(!(savedAt >= 1e12) || Date.now() - savedAt < STALE_PUBLIC_AGE || !lib.onAdminSite(window.location.origin + "/")) {
+			return;
+		}
+		staleOldest = staleOldest ? Math.min(staleOldest,savedAt) : savedAt;
+		if(++staleRefusals !== STALE_PUBLIC_ALERT_AT) {
+			return;
+		}
+		wiki.addTiddler(new $tw.Tiddler({
+			title: STALE_PUBLIC_ALERT,
+			tags: ["$:/tags/Alert"],
+			component: "Public site",
+			modified: new Date(),
+			text: "The public site still serves old copies of tiddlers saved since " + $tw.utils.formatDateString(new Date(staleOldest),"DDth MMM YYYY 0hh:0mm") + ": Cloudflare's cache isn't being purged. Check the setup: its purges line tests the token (<$link to=\"$:/ControlPanel\">Control Panel</$link> → Saving → Cloudflare, " + lib.guide("operating","3.15") + ")."
+		}));
+	}
 	// The listed revision, fetched without the worker; a copy a cache kept from before a change is
 	// refused, and the tiddler asked for again at a URL no cache holds
 	function fetchListed(adaptor,title,expected,urgent) {
@@ -467,7 +496,11 @@ exports.startup = function() {
 		}
 		return withFetchSlot(function() {
 			return fetchRevision(adaptor,at.url,at.sameSite,title,expected).then(function(fields) {
-				return fields === null ? fetchRevision(adaptor,at.url + "?cfworker-retry=" + Date.now(),at.sameSite,title,expected) : fields;
+				if(fields === null) {
+					noteStaleCopy(expected);
+					return fetchRevision(adaptor,at.url + "?cfworker-retry=" + Date.now(),at.sameSite,title,expected);
+				}
+				return fields;
 			}).then(function(fields) {
 				return fields || null;
 			});

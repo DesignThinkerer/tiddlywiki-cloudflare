@@ -258,7 +258,7 @@ async function checkPurges(env, site, add, pageCached) {
       add("purges", true, "Purges work: the public site's status file was purged from Cloudflare's cache to check (CF_ZONE_ID, CF_API_TOKEN).", SECTION.worker);
     } else {
       const message = body && Array.isArray(body.errors) && body.errors.length ? body.errors.map(e => e.message).join("; ") : "";
-      add("purges", false, `Cloudflare refused the purge (${res.status}${message ? `: ${message}` : ""}): CF_API_TOKEN needs Zone → Cache Purge on the zone CF_ZONE_ID names. Check CF_ZONE_ID against the zone ID on the domain's overview page, and the token under My Profile → API Tokens (its permissions, its zone, whether it has expired or was revoked); a new token there, put in the CF_API_TOKEN secret, replaces it.`, SECTION.worker);
+      add("purges", false, `Cloudflare refused the purge (${res.status}${message ? `: ${message}` : ""}): CF_API_TOKEN needs Zone → Cache Purge on the zone CF_ZONE_ID names. Check CF_ZONE_ID against the zone ID on the domain's overview page, and the token under My Profile → API Tokens (its permissions, its zone, whether it has expired or was revoked); a new token there, put in the CF_API_TOKEN secret, replaces it. Then purge the public hostname once (Caching → Configuration → Purge Cache → Custom Purge → Hostname, ${new URL(site).host}; operating 3.9): what changed while purges failed stays cached until its Edge TTL otherwise.`, SECTION.worker);
     }
   } catch (e) {
     add("purges", false, `Cloudflare's API didn't answer the purge (${e && e.message ? e.message : e}): the request to api.cloudflare.com failed before any answer. Check the setup again in a moment; if it keeps failing, see cloudflarestatus.com.`, SECTION.worker);

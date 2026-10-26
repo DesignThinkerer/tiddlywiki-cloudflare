@@ -162,6 +162,43 @@ check("a stale copy from a cache is refused on the admin site too, and fetched a
   (await A.evaluate(() => $tw.wiki.getTiddlerText("Tiddler 11", null))) === text(11) + " (changed elsewhere)" && retried11.some(r => r.origin === "public" && r.path.includes("cfworker-retry")) &&
   !retried11.some(r => r.origin === "worker"), JSON.stringify(retried11.map(r => `${r.origin} ${r.path}`)));
 stale.clear();
+// Past a few stale copies of tiddlers saved a while ago (more than five minutes: a device never
+// refetches its own fresh saves, and a copy cached seconds ago is the cache's normal lag), one
+// alert says the public site still serves old copies and that the check's purges line tests the
+// token: counted from the reads the list sync already makes, no request, no write (design 2.20).
+// The one stale copy above, of a tiddler saved seconds ago, raised none
+const publicAlerts = p => p.evaluate(() => $tw.wiki.getTiddlersWithTag("$:/tags/Alert").map(t => ({ component: $tw.wiki.getTiddler(t).fields.component, text: $tw.wiki.getTiddlerText(t) })).filter(a => a.component === "Public site"));
+check("one stale copy of a tiddler saved seconds ago raises no alert", (await publicAlerts(A)).length === 0, JSON.stringify(await publicAlerts(A)));
+// (The objects and the list are rewritten with old revisions, their R2 metadata kept, which the
+// worker reads: the layout and the revision; put back exactly afterwards, for the sections after)
+const staleSince = Date.now() - 10 * 60 * 1000;
+const listObject = await bucket.get("recipes/default/tiddlers.json");
+const listWas = { body: await listObject.arrayBuffer(), httpMetadata: listObject.httpMetadata, customMetadata: listObject.customMetadata };
+const listNow = JSON.parse(Buffer.from(listWas.body).toString("utf8"));
+const objectsWere = {};
+for (const i of [12, 13, 14]) {
+  const key = `recipes/default/tiddlers/Tiddler ${i}`, obj = await bucket.get(key);
+  objectsWere[key] = { body: await obj.arrayBuffer(), httpMetadata: obj.httpMetadata, customMetadata: obj.customMetadata };
+  const stored = JSON.parse(Buffer.from(objectsWere[key].body).toString("utf8"));
+  const listed = String(staleSince + i * 1000), older = String(staleSince + i * 1000 - 60000);
+  await bucket.put(key, JSON.stringify({ ...stored, text: text(i) + " (saved elsewhere a while ago)", revision: listed }), { httpMetadata: obj.httpMetadata, customMetadata: { ...obj.customMetadata, revision: listed } });
+  listNow.find(t => t.title === `Tiddler ${i}`).revision = listed;
+  stale.set(key, JSON.stringify({ ...stored, revision: older }));
+}
+await bucket.put("recipes/default/tiddlers.json", JSON.stringify(listNow), { httpMetadata: listWas.httpMetadata, customMetadata: listWas.customMetadata });
+mark = requests.length;
+await reload(A);
+await settle(A, 60000);
+const alerted = await waitFor(async () => (await publicAlerts(A)).length > 0, 15000);
+const staleAlerts = await publicAlerts(A);
+const sinceText = await A.evaluate(ms => $tw.utils.formatDateString(new Date(ms), "DDth MMM YYYY 0hh:0mm"), staleSince + 12 * 1000);
+check("three stale copies of tiddlers saved ten minutes ago, refused and fetched again past the cache: one alert, \"Public site\", saying the public site still serves old copies of tiddlers saved since then, that Cloudflare's cache isn't being purged, and that the check's purges line tests the token, with operating 3.15 as a link; the tiddlers right, nothing through the worker",
+  alerted && staleAlerts.length === 1 && staleAlerts[0].text.includes(`The public site still serves old copies of tiddlers saved since ${sinceText}: Cloudflare's cache isn't being purged.`) && /Check the setup: its purges line tests the token \(<\$link to="\$:\/ControlPanel">Control Panel<\/\$link> → Saving → Cloudflare, \[\[operating 3\.15\|https:\/\/[^\]|]+#315-checking-the-setup\]\]\)\./.test(staleAlerts[0].text) &&
+  [12, 13, 14].every(i => true) && (await A.evaluate(() => [12, 13, 14].map(i => $tw.wiki.getTiddlerText(`Tiddler ${i}`, null)))).every((t, k) => t === text([12, 13, 14][k]) + " (saved elsewhere a while ago)") && !requests.slice(mark).some(r => r.tag === "A" && r.origin === "worker" && /Tiddler 1[234]/.test(r.path)),
+  `${staleAlerts.length} alerts: ${JSON.stringify(staleAlerts[0] || null).slice(0, 400)}`);
+stale.clear();
+for (const [key, was] of Object.entries(objectsWere)) await bucket.put(key, was.body, { httpMetadata: was.httpMetadata, customMetadata: was.customMetadata });
+await bucket.put("recipes/default/tiddlers.json", listWas.body, { httpMetadata: listWas.httpMetadata, customMetadata: listWas.customMetadata });
 await A.close();
 
 // --- 4. The page publisher doesn't wait for the fill --------------------------------------------------
