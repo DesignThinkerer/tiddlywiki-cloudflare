@@ -4,14 +4,14 @@ Settings are saved in the wiki (`$:/config/…`), so they apply on every device.
 
 <$checkbox tiddler="$:/config/cfworker/LoadAll" field="text" checked="yes" unchecked="no" default="yes"> Load all tiddlers in the background</$checkbox> — text search and backlinks then see everything. If unchecked, a tiddler is loaded when shown. ''(Requires page reload)''
 
-<$edit-text tiddler="$:/config/SyncPollingInterval" tag="input" type="number" default="" placeholder="60000" size="8"/> ms — Sync polling interval: time between an open tab's checks for updated tiddlers. Each check is one Worker request (TiddlyWiki core setting). ''(Requires page reload)''
+Sync polling interval, ms: <$edit-text tiddler="$:/config/SyncPollingInterval" tag="input" type="number" default="" placeholder="60000" size="8"/> — time between an open tab's checks for updated tiddlers. Each check is one worker request (TiddlyWiki's own setting). ''(Requires page reload)''
 
 ! Advanced
 
-''The defaults fit the Cloudflare free plan and are what the tests run. Modify with caution.'' Leave a field empty to use the default value in parentheses.
+''The defaults fit the Cloudflare free plan and are the values this project is tested with: change one only knowing what it trades ([[operating 3.17|https://github.com/DesignThinkerer/tiddlywiki-cloudflare/blob/main/docs/operating.md#317-the-plugin-and-its-settings]]). An empty field is the default.''
 
-* <$edit-text tiddler="$:/config/cfworker/DraftPause" tag="input" type="number" default="" placeholder="300" size="6"/> ms of typing inactivity before a draft is saved locally (300)
-* <$edit-text tiddler="$:/config/cfworker/FetchAhead" tag="input" type="number" default="" placeholder="6" size="6"/> tiddlers fetched concurrently during background loading (6; 1 at least)
-* <$edit-text tiddler="$:/config/cfworker/PublishPause" tag="input" type="number" default="" placeholder="1000" size="6"/> ms after a save before the page is published (1000)
-* <$edit-text tiddler="$:/config/cfworker/BackupCheckMinutes" tag="input" type="number" default="" placeholder="60" size="6"/> minutes between backup status checks (60)
-* <$edit-text tiddler="$:/config/cfworker/NetworkWait" tag="input" type="number" default="" placeholder="8" size="6"/> seconds the service worker waits for the network before serving the page it kept (8). ''(Requires page reload)''
+* Pause before a draft is saved to the device, ms: <$edit-text tiddler="$:/config/cfworker/DraftPause" tag="input" type="number" default="" placeholder="300" size="6"/>
+* Tiddlers fetched at once during the background fill (1 at least): <$edit-text tiddler="$:/config/cfworker/FetchAhead" tag="input" type="number" default="" placeholder="6" size="6"/>
+* Pause after a save before the page is published, ms: <$edit-text tiddler="$:/config/cfworker/PublishPause" tag="input" type="number" default="" placeholder="1000" size="6"/>
+* Minutes between backup status checks: <$edit-text tiddler="$:/config/cfworker/BackupCheckMinutes" tag="input" type="number" default="" placeholder="60" size="6"/>
+* Seconds the service worker waits for the network before serving the page it kept: <$edit-text tiddler="$:/config/cfworker/NetworkWait" tag="input" type="number" default="" placeholder="8" size="6"/> ''(Requires page reload)''

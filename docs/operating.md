@@ -59,7 +59,7 @@ When the wiki doesn't start after a plugin was installed, on both sites (TiddlyW
 1. In R2, delete `_plugins/<plugin title>.js`. R2's dashboard lists a key by its slashes as folders: `_plugins/$:/plugins/x/y.js` sits under `_plugins`, then `$:`, then `plugins`, then `x`. From a computer, under your own login, `npx wrangler r2 object delete "<bucket>/_plugins/<plugin title>.js" --remote` does the same.
 2. *(public site only)* Purge it from Cloudflare's cache: Caching → Configuration → Purge Cache → *Custom Purge* → *Hostname*, the public site's host (never *Purge Everything*, which clears every site in the zone, [design 2.10](design.md#210-targeted-purges-not-purge-everything)); or the exact URL with its `?v=`, readable with the browser's *View Source* even when the wiki doesn't start.
 3. Hard-reload the admin wiki (Ctrl+Shift+R; on a Mac, Cmd+Shift+R, or Option+Cmd+R in Safari). It starts without the plugin. TiddlyWiki may ask for a reload; ignore it.
-4. Delete or disable the plugin in the Control Panel and wait for the save. The page is rebuilt without it, or with it disabled.
+4. Delete or disable the plugin in the Control Panel (that plugin, not TiddlyWiki on Cloudflare's own, whose checkbox turns the browser modules off: [3.19](#319-the-browser-modules-off-and-checking-theyre-on)) and wait for the save. The page is rebuilt without it, or with it disabled.
 
 On a phone, or in the installed app, there is no hard reload, and the service worker serves the plugin's file from the device's cache until step 4 rebuilds the page: do steps 3 and 4 in a private window, which starts with no service worker and no cached files (you log in to Access again), or from a computer; the other devices and the app pick up the fixed page at their next load, since it no longer loads that file. If the page is rebuilt before step 4 (by a deploy, or by saving another plugin, a startup action, `$:/theme` or a disable flag), the file is written again; delete it again.
 
@@ -160,15 +160,15 @@ The public site can be installed too, as a read-only app; it has no service work
 
 The admin wiki's modules travel as a plugin, `$:/plugins/cfworker/admin`, listed in Control Panel → Plugins with the worker's version, the release's date (`2026.10.20`: [the changelog](../CHANGELOG.md) has the block of that date) followed by a build hash: the worker puts it in every page it builds, so it always matches the worker, and never stores it. Its parts are shadow tiddlers, out of search and out of syncing; a part you edit is an override, as with any plugin — it stays through the worker's updates, the dialog marks it, delete it to get the worker's part back.
 
-The plugin's *settings* tab holds the wiki's own settings (tiddlers under `$:/config/cfworker/`, saved like any other, so they hold on every device): the fill of the device copy (above) and TiddlyWiki's polling interval with its cost in worker requests — both read once, when a tab starts, so a change applies to tabs opened after it, as the tab says. Under a warning, the advanced ones:
+The plugin's *settings* tab holds the wiki's own settings (tiddlers under `$:/config/cfworker/`, saved like any other, so they hold on every device): the fill of the device copy (above) and TiddlyWiki's polling interval (60,000 ms, a minute: about 1,440 worker requests a day for each tab left visible, of the free plan's 100,000; 30 s doubles it; a tab in the background doesn't poll, and catches up when shown) — both read once, when a tab starts, so a change applies to tabs opened after it, as the tab says. Under a warning, the advanced ones:
 
 - the pause before a draft is written to the device (300 ms; lower is more writes, higher is more typing lost if the tab crashes);
 - how many tiddlers the fill fetches at once (6; more is a faster fill with more requests in flight — on a private wiki they're worker requests either way, the same number);
-- the pause after a save before the page is published (1 s; a burst of saves is published once);
+- the pause after a save before the page is published (1,000 ms; a burst of saves is published once);
 - how often the worker is asked how backups go (60 minutes, a minute at least, with a list request; one R2 read each, and the alert when backups fail comes that much later);
 - how long the service worker waits for the network before answering with the page it kept (8 s; longer suits a slow connection, shorter a dead one; the page tells the service worker at each load, so that one applies at the next).
 
-The defaults fit the free plan and are what the tests run; an empty field is the default. The worker's own settings stay in the dashboard ([setup 2.5](setup.md#25-the-worker)). [Design 2.21](design.md#221-the-modules-as-a-plugin-the-settings-in-its-tab-the-advanced-ones-under-a-warning).
+The defaults fit the free plan and are the values this project is tested with; an empty field is the default. On the tab, each label comes before its field, and the default shows once, in the field. The worker's own settings stay in the dashboard ([setup 2.5](setup.md#25-the-worker)). [Design 2.21](design.md#221-the-modules-as-a-plugin-the-settings-in-its-tab-the-advanced-ones-under-a-warning).
 
 ## 3.18 This device
 
@@ -183,6 +183,8 @@ The plugin's *device* tab (Control Panel → Plugins → TiddlyWiki on Cloudflar
 To turn them off, set `CONFLICT_GUARD` to `off`. The next page load rebuilds `baked.html` without them. Saves then go back to TiddlyWiki's default behaviour, without protection or request savings, and the page is no longer published.
 
 To check they're on: in the admin wiki's browser console, `$tw.syncadaptor.conflictGuardInstalled` should be `true` (the conflict guard), and `$tw.syncadaptor.cfworkerBackupAlert` too (the backup alert, which runs after the list sync).
+
+They also go off, on every device at its next load, when the plugin is disabled in Control Panel → Plugins (TiddlyWiki's checkbox, beside the readme that says so): the page looks the same and saves go through, but two tabs can overwrite each other, offline changes aren't kept, no backup alert shows, the page isn't published, and the Cloudflare tab is gone. The flag is a config tiddler saved like any other, `$:/config/Plugins/Disabled/$:/plugins/cfworker/admin`, which the worker bakes into the next page as it does any startup tiddler. If the modules are off and `CONFLICT_GUARD` isn't set, that's where to look: tick the plugin on again in Control Panel → Plugins, and reload ([design 2.21](design.md#221-the-modules-as-a-plugin-the-settings-in-its-tab-the-advanced-ones-under-a-warning)).
 
 ## 3.20 When two tabs edit the same tiddler
 
