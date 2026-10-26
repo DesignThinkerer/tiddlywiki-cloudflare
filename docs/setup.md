@@ -12,20 +12,24 @@ About ten minutes, in this order.
 |---|---|---|
 | What it is | the admin site alone, behind Access, at the worker's own address; nothing in the bucket reachable by anyone else | the same, plus the public site: the bucket's custom domain, where every tiddler you save is readable by anyone at once |
 | The sections | [2.2](#22-the-bucket-and-the-public-site) (the bucket alone), [2.3](#23-the-backup-queue), [2.4](#24-the-backup-repository-optional) (optional; a private repository), [2.5](#25-the-worker) (without `PUBLIC_WIKI_URL`, `CF_ZONE_ID` and `CF_API_TOKEN`), [2.6](#26-cloudflare-access), [2.8](#28-the-first-visit); the steps marked *(public site only)* don't apply | [2.2](#22-the-bucket-and-the-public-site) to [2.8](#28-the-first-visit), the steps marked *(public site only)* included |
-| It takes | about five minutes | about ten, and a domain on the account |
+| It takes | about five minutes | about ten, and a domain added to the account as a zone (below) |
 
-A private wiki's first load on a new device reads every tiddler from the worker, then only what changed ([limits 5](limits.md)). It can be made public later, in the order of [operating 3.22](operating.md#322-making-a-private-wiki-public): nothing moves, but everything written so far becomes public with the domain, so what shouldn't be is deleted first, or moved to a second wiki that stays private (2.9).
+A private wiki's first load on a new device reads every tiddler from the worker, then only what changed ([limits 5](limits.md)). It can be made public later, in the order of [operating 3.22](operating.md#322-making-a-private-wiki-public): the admin site doesn't move, but everything written so far becomes public with the domain, so what shouldn't be is deleted first, or moved to a second wiki that stays private (2.9).
 
 **By hand, from a fork:**
 
 1. **Fork this repository** on GitHub. Cloudflare deploys the worker from the fork's `main` branch, and from then on every push to it deploys; nothing in the fork is edited, so an update is GitHub's *Sync fork* ([operating 3.1](operating.md#31-updating-your-copy)).
 2. **Do [2.2](#22-the-bucket-and-the-public-site) to [2.8](#28-the-first-visit) in order,** with the names below, which apply throughout.
 
-The names, and where each goes. With the defaults, nothing in the repository needs editing: the worker is deployed as it is, and your settings are entered in the dashboard ([2.5](#25-the-worker)).
+The names, and where each goes. With the defaults, nothing in the repository needs editing: the worker is deployed as it is, and your settings are entered in the dashboard ([2.5](#25-the-worker)). A public site by hand: have the zone, its ID and the purge token before [2.5](#25-the-worker), and for backups the repository and its token ([2.4](#24-the-backup-repository-optional)); the rows marked *(public site only)* and *(optional)* say which.
 
 | Name | Default or example | Where it goes |
 |---|---|---|
+| the zone *(public site only)* | `example.com`, yours, added to the Cloudflare account ([2.2](#22-the-bucket-and-the-public-site)) | your domain as a site of the account: the public site, and the admin site's custom domain if any, are hostnames of it, and the rules of [2.7](#27-the-zones-rules-public-site-only) live under it |
 | the public site *(public site only)* | `wiki.example.com`, yours | the bucket's custom domain ([2.2](#22-the-bucket-and-the-public-site)), the setting `PUBLIC_WIKI_URL` ([2.5](#25-the-worker)) and the zone rules ([2.7](#27-the-zones-rules-public-site-only)) |
+| the zone ID *(public site only)* | on the domain's overview page in the dashboard | the setting `CF_ZONE_ID` ([2.5](#25-the-worker)) |
+| the purge token *(public site only)* | a custom API token with *Zone → Cache Purge* on that zone, made before [2.5](#25-the-worker), which has the steps | the `CF_API_TOKEN` secret ([2.5](#25-the-worker)) |
+| the backup repository and its token *(optional)* | [2.4](#24-the-backup-repository-optional) | the setting `GITHUB_REPO` and the `GITHUB_TOKEN` secret ([2.5](#25-the-worker)) |
 | the admin site | `wiki-admin.<your subdomain>.workers.dev` | the worker's own address, behind Access ([2.6](#26-cloudflare-access)), allowed by the CORS rule ([2.7](#27-the-zones-rules-public-site-only)); a custom domain instead, if you like ([2.5](#25-the-worker)) |
 | the bucket | `wiki` | [2.2](#22-the-bucket-and-the-public-site); `wrangler.toml` if you name it otherwise |
 | the queue | `wiki-backup` | [2.3](#23-the-backup-queue); `wrangler.toml` if you name it otherwise |
@@ -36,6 +40,8 @@ The names, and where each goes. With the defaults, nothing in the repository nee
 ## 2.2 The bucket and the public site
 
 1. In the Cloudflare dashboard, under **R2**, create the bucket (`wiki`). Nothing to upload: the worker fills it on the first visit ([2.8](#28-the-first-visit)). For a private wiki, that's all: leave public access off, and **Public Development URL (`r2.dev`)** disabled.
+
+   *(public site only)* **The domain first.** R2 connects only a domain that is a zone of the same Cloudflare account, *Active*: a domain added to the account ([Cloudflare's steps](https://developers.cloudflare.com/fundamentals/manage-domains/add-site/): add the site, review the DNS records it imports, your mail ones among them, and set Cloudflare's nameservers at your registrar), which can take hours, so start it before anything else. The public site is a hostname of it, `wiki.example.com` under `example.com`: pick one with no DNS record of its own yet, since connecting the bucket creates it. The custom domain shows *Initializing* before *Active* ([reference 7](reference.md)). The admin site needn't move: it stays at its `workers.dev` address.
 2. *(public site only)* In the bucket's settings, turn on public access. Everything in the bucket is public through the domain from the moment it's connected, every tiddler, the tiddler list and the page, and for a wiki that was private, everything written so far ([operating 3.22](operating.md#322-making-a-private-wiki-public)). That's intended: nothing private belongs in a public wiki's bucket (secrets live in the worker's settings). Then:
    - **Custom Domains:** connect `wiki.example.com`.
    - **Public Development URL (`r2.dev`):** keep it disabled. It's a second public address that skips the zone's cache and rules.
@@ -51,7 +57,7 @@ Create the queue before the worker's first deploy ([2.5](#25-the-worker)): Wrang
 
 ## 2.4 The backup repository (optional)
 
-- **A repository of its own** for the backup, one per wiki. **Private, for a private wiki:** a public repository publishes every save, with its history, for anyone to read, and *Check the setup* says so ([operating 3.15](operating.md#315-checking-the-setup)); for a public wiki, as you like. Files go in `tiddlers/`. Never use the repository the worker is deployed from: its token would let anyone who got it change the worker's code.
+- **A repository of its own** for the backup, one per wiki, created with *Add a README file* ticked, so its `main` branch exists (a repository with no commit has no branch, and *Check the setup* looks for it); the backup's files go in `tiddlers/`, and the README stays. **Private, for a private wiki:** a public repository publishes every save, with its history, for anyone to read, and *Check the setup* says so ([operating 3.15](operating.md#315-checking-the-setup)); for a public wiki, as you like. Never use the repository the worker is deployed from: its token would let anyone who got it change the worker's code.
 - **A fine-grained personal access token** limited to that repository, with *Contents: read and write*. [This link](https://github.com/settings/personal-access-tokens/new?name=wiki+backup&description=One+commit+per+save+into+the+backup+repository+%28tiddlywiki-cloudflare%2C+setup+2.4%29&expires_in=366&contents=write) opens GitHub's form with the name, the permission and the longest expiry the form allows (a year) filled in; what's left is *Repository access → Only select repositories* → the backup repository, then *Generate token*. You'll store it as the `GITHUB_TOKEN` secret ([2.5](#25-the-worker)). When it expires, the admin wiki shows the backup alert (`Bad credentials`): make a new one the same way and replace the secret.
 
 Without a repository and a token, the worker skips backups: the wiki then has no history, since the bucket keeps the current version of each tiddler alone, and a deletion or an overwrite is final.
@@ -83,24 +89,41 @@ The worker is deployed from your repository by Cloudflare's **Workers Builds**: 
    - **Deploy command:** the default, `npx wrangler deploy`.
    - **Builds for non-production branches:** off. A branch's preview would use the real bucket and queue.
    - **Build watch paths:** include only `src/*`, `build.mjs`, `tools/*`, `package.json`, `package-lock.json` and `wrangler.toml`, so a change to the README, or anything else, doesn't deploy.
-3. **The settings and the secrets,** under the worker's **Settings → Variables and Secrets**. A deploy keeps them all (`keep_vars` in `wrangler.toml`), so nothing of yours is in the repository. The settings can be plain variables or secrets, as you prefer; the two tokens must be secrets — in the dialog, choose the type *Secret*: its default, *Text*, shows the value to anyone who opens the settings.
+3. **The settings and the secrets,** under the worker's **Settings → Variables and Secrets**. A deploy keeps them all (`keep_vars` in `wrangler.toml`), so nothing of yours is in the repository. The settings can be plain variables or secrets, as you prefer; the two tokens must be secrets — in the dialog, choose the type *Secret*: its default, *Text*, shows the value to anyone who opens the settings. Three for a public site, two for backups, one of each a secret; the rest stay unset. A private wiki without backups needs none.
+
+   **For a public site** *(public site only)*:
 
    | Name | What |
    |---|---|
-   | `PUBLIC_WIKI_URL` | *(public site only)* the public site's address, `https://` and the bucket's custom domain ([2.2](#22-the-bucket-and-the-public-site)), nothing after the hostname. The page loads its plugin files and TiddlyWiki's core from it, and the admin wiki reads tiddlers from it. **Leave it out for a private wiki:** the worker then serves all of that itself. Set wrongly — an address that isn't a site's, an `http://` one (the admin site is https, and a browser won't load the core file into its page from an http address), or the worker's own — every request answers `500` saying so. Set before the domain answers ([2.2](#22-the-bucket-and-the-public-site)), the admin wiki can't publish its page until it does, and says so; the wiki starts from the engine meanwhile. Changed later, or removed, it works the same way as setting it: the next page load rebuilds the page from the engine, and the admin wiki publishes it again for the new address. Removed, it doesn't make the wiki private: the bucket's custom domain serves the wiki until it's removed from the bucket ([operating 3.23](operating.md#323-making-a-public-wiki-private-or-changing-its-domain)). |
-   | `CF_ZONE_ID` | *(public site only)* the zone ID of the public site's domain (on the domain's overview page), for the public site's purges |
-   | `CF_API_TOKEN` | *(public site only) secret:* an API token (**My Profile → API Tokens**) with *Zone → Cache Purge* on that zone. Without it and `CF_ZONE_ID`, no purges. |
-   | `GITHUB_REPO`, `GITHUB_BRANCH` | `owner/repo` of the backup repository ([2.4](#24-the-backup-repository-optional)), and its branch (default `main`) |
+   | `PUBLIC_WIKI_URL` | the public site's address, `https://` and the bucket's custom domain ([2.2](#22-the-bucket-and-the-public-site)), nothing after the hostname. Leave it out for a private wiki. |
+   | `CF_ZONE_ID` | the zone ID of the public site's domain, on the domain's overview page, for the purges. |
+   | `CF_API_TOKEN` | *secret:* the purge token, made as follows. Without it and `CF_ZONE_ID`, no purges. |
+
+   **The purge token,** step by step: **My Profile → API Tokens → Create Token**, then *Create Custom Token*; a name; under *Permissions*, one row, *Zone*, *Cache Purge*, *Purge*; under *Zone Resources*, *Include*, *Specific zone*, the public site's domain; a TTL as you like (when it ends, *Check the setup* says Cloudflare refused the purge: make a new one the same way and replace the secret); *Continue to summary*, then *Create Token*; copy it now, it's shown once, and paste it as the `CF_API_TOKEN` secret. A template token would work, but hands the worker more than a wiki should hold ([design 2.31](design.md#231-removing-a-wiki-the-dashboard-not-the-plugin)); Cloudflare documents no prefilled link for a custom token.
+
+   **For backups** *(optional)*:
+
+   | Name | What |
+   |---|---|
+   | `GITHUB_REPO` | `owner/repo` of the backup repository ([2.4](#24-the-backup-repository-optional)). |
    | `GITHUB_TOKEN` | *secret:* the token of 2.4. Without it and `GITHUB_REPO`, no backups. |
+   | `GITHUB_BRANCH` | its branch, only if it isn't `main`. |
+
+   **Leave unset** (defaults; for tuning, and the tests):
+
+   | Name | What |
+   |---|---|
    | `CONFLICT_GUARD` | `off` builds the page without the browser modules ([operating 3.19](operating.md#319-the-browser-modules-off-and-checking-theyre-on)). (The wiki's own settings for those modules live in the plugin's settings tab, [operating 3.17](operating.md#317-the-plugin-and-its-settings).) |
    | `BACKUP_RETRY_SECONDS` | the first wait before a failed backup is tried again (default 60). |
    | `BACKUP_ALERT_MINUTES` | how long backups have to keep failing before the admin wiki shows it (default 60, [design 1.7](design.md#17-github-backup)). |
-   | `ACCESS` | `off` lets requests through that didn't come through Cloudflare Access ([2.6](#26-cloudflare-access)), for the tests and local runs: only requests to a local address (`localhost`, `127.0.0.1`), so on a deployed worker it changes nothing. |
+   | `ACCESS` | `off` lets requests through that didn't come through Cloudflare Access, for the tests and local runs only ([2.6](#26-cloudflare-access)). |
+
+   `PUBLIC_WIKI_URL` is where the page loads its plugin files and TiddlyWiki's core from, and where the admin wiki reads tiddlers from; left out, the worker serves all of that itself. Set wrongly — an address that isn't a site's, an `http://` one (the admin site is https, and a browser won't load the core file into its page from an http address), or the worker's own — every request answers `500` saying so. Set before the domain answers ([2.2](#22-the-bucket-and-the-public-site)), the admin wiki can't publish its page until it does, and says so; the wiki starts from the engine meanwhile. Changed later, or removed, it works the same way as setting it: the next page load rebuilds the page from the engine, and the admin wiki publishes it again for the new address. Removed, it doesn't make the wiki private: the bucket's custom domain serves the wiki until it's removed from the bucket ([operating 3.23](operating.md#323-making-a-public-wiki-private-or-changing-its-domain)).
 
    Saving a variable deploys it at once; the first page load after that uses it.
 4. The first deploy runs when you push, or at once if the dashboard offers it. The worker then answers at `https://wiki-admin.<your subdomain>.workers.dev` (your account's `workers.dev` subdomain is shown under Workers & Pages); that's the admin site, once Access protects it ([2.6](#26-cloudflare-access)).
 
-**A custom domain for the admin site** (`admin.wiki.example.com`, say) instead of the `workers.dev` address, if you have a domain: add it under the worker's **Settings → Domains & Routes** (Cloudflare creates the DNS record), and use it in the CORS rule ([2.7](#27-the-zones-rules-public-site-only)) and in Access ([2.6](#26-cloudflare-access)). Or put it in `wrangler.toml` (the `routes` block in comments) if you'd rather have it in the repository; then set `workers_dev = false` there, so the worker has one address.
+**A custom domain for the admin site** (`admin.wiki.example.com`, say) instead of the `workers.dev` address, if you have a domain: add it under the worker's **Settings → Domains & Routes** (Cloudflare creates the DNS record), and use it in the CORS rule ([2.7](#27-the-zones-rules-public-site-only)) and in Access ([2.6](#26-cloudflare-access)). Or put it in `wrangler.toml` (the `routes` block in comments) if you'd rather have it in the repository; then set `workers_dev = false` there, so the worker has one address. A public site needs none of this. Moving the admin site later is a new site to each browser: let each device's waiting changes go out first; the device copy and the service worker start again, an installed app is installed again ([operating 3.16](operating.md#316-installing-the-wiki-as-an-app)), and the CORS rule and Access follow the new address.
 
 **Without Workers Builds,** two other ways work: `npx wrangler deploy` from your computer, after `npm install` and `npm run build`, with the same `wrangler.toml` and the settings in the dashboard; or pasting `worker.js` into the dashboard's editor, in which case you add the bindings of `wrangler.toml` by hand in the worker's settings too, and the empty wiki ([2.8](#28-the-first-visit)), since a pasted worker carries no asset.
 

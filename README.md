@@ -21,7 +21,7 @@ A new wiki starts by itself: the first time you open the admin site, the worker 
 
 ## Quick start
 
-**What you need:** a Cloudflare account (the free plan is enough) and a GitHub account (the worker is deployed from your fork of this repository; the backup goes to a repository too). For a public site, also a domain on that account (both sites are then hostnames of it).
+**What you need:** a Cloudflare account (the free plan is enough) and a GitHub account (the worker is deployed from your fork of this repository; the backup goes to a repository too). For a public site, also a domain added to that Cloudflare account (a zone, with Cloudflare's nameservers set at your registrar), which can take hours, so start it first; the public site is a hostname of it, and the admin site can stay at its `workers.dev` address ([setup 2.1](docs/setup.md#21-before-you-start)).
 
 About ten minutes, in this order. The setup guide, [chapter 2](docs/setup.md), has each step in full, and the wiki's own setup check (the last step) says what to do about anything missing, with the section that has the full steps.
 
@@ -31,7 +31,7 @@ The eight steps, each with its section in the setup guide:
 2. **Create the bucket,** `wiki`, in R2, and for a public site connect its custom domain ([setup 2.2](docs/setup.md#22-the-bucket-and-the-public-site)).
 3. **Create the queue,** `wiki-backup`, before the worker's first deploy ([setup 2.3](docs/setup.md#23-the-backup-queue)).
 4. **Make a backup repository and a token for it,** if you want every save committed to GitHub, the wiki's only history ([setup 2.4](docs/setup.md#24-the-backup-repository-optional), optional; private, for a private wiki; for a big wiki to import, after the import: [setup 2.8](docs/setup.md#28-the-first-visit)).
-5. **Create the worker,** `wiki-admin`, from your fork with Workers Builds, and enter the settings and the two secrets in its dashboard ([setup 2.5](docs/setup.md#25-the-worker)).
+5. **Create the worker,** `wiki-admin`, from your fork with Workers Builds, with its settings in the dashboard: three for a public site, two for backups, one of each a secret; a private wiki without backups needs none ([setup 2.5](docs/setup.md#25-the-worker)).
 6. **Put Cloudflare Access in front of it** ([setup 2.6](docs/setup.md#26-cloudflare-access)).
 7. **Add the zone's rules,** the rewrite, the cache rules and the CORS header, for a public site only ([setup 2.7](docs/setup.md#27-the-zones-rules-public-site-only)).
 8. **Open the admin site:** the wiki starts by itself, and *Check the setup* in its Cloudflare tab tells you what's missing ([setup 2.8](docs/setup.md#28-the-first-visit)).
