@@ -104,7 +104,7 @@ In the Cloudflare dashboard, [Caching → Configuration](https://dash.cloudflare
 
 ## 3.10 Loading a big wiki
 
-A tab gets the tiddler list (every field but the text) and loads the tiddler it shows first; the rest fills in in the background, several at a time, only while the tab is visible, so that search and backlinks work on everything.
+A tab gets the tiddler list (every field but the text) and loads the tiddler it shows first; the rest fills in in the background, several at a time, only while the tab is visible, so that search and backlinks work on everything. The fill is a setting saved in the wiki, so unticking it on one device stops it on every device, and a tiddler never opened on a device is then empty there offline ([3.13](#313-opening-the-wiki-offline)).
 
 Loaded tiddlers are kept in the browser (IndexedDB, like its cache: clearing the site's data removes them): the device copy, so the next page load fetches only what changed since, on any device.
 
@@ -139,6 +139,8 @@ Offline, only what this device has loaded is there: a tiddler never opened on it
 For a public wiki, the core and plugin files are kept for offline use only with the CORS rule ([setup 2.7](setup.md#27-the-zones-rules-public-site-only)) in place, its `/_plugins/` path included; without it they load as before, online only, and with no network and no copy of the core file on the device the page says so in a line.
 
 The admin wiki asks the browser to keep this site's storage (the service worker's cache, the device copy, the outbox) rather than clear it when short of space; browsers grant that by their own rules (Chrome to a site used often, installed or bookmarked; Firefox asks you), and the cloud icon's dropdown says when it isn't granted and a change waits. Safari also removes a site's storage, the outbox and the device copy with it, after seven days of Safari use without a visit to the site, whatever it promised; a wiki installed on the Home Screen is exempt ([3.16](#316-installing-the-wiki-as-an-app)): on an iPhone or iPad, install it, or open the wiki again within the week. [Design 1.11](design.md#111-opening-the-wiki-offline-the-service-worker).
+
+**Before going offline:** open the device tab (Control Panel → Plugins → TiddlyWiki on Cloudflare → *device*) and press *Measure*: its first line says whether the wiki opens with no network and how many tiddlers aren't loaded yet, which would be empty offline. Wait for that count to reach 0: the fill runs only while the tab is open and visible, so keep the screen on; on a private wiki it costs one worker request per tiddler, once per device; with the fill off ([3.10](#310-loading-a-big-wiki)), tick it and reload first.
 
 ## 3.14 When your login expires
 

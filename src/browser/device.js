@@ -84,7 +84,9 @@ exports.startup = function() {
 		}
 		var name = a.origin === origin ? a.pathname : a.host + a.pathname;
 		if(a.origin === origin && a.pathname === "/") {
-			name = "/ (the page)";
+			name = "the page (/)";
+		} else if(/\/_plugins\/tiddlywikicore\.js/.test(a.pathname)) {
+			name = "TiddlyWiki's core (" + name + ")";
 		}
 		return name;
 	}
@@ -163,6 +165,26 @@ exports.startup = function() {
 		]).then(function(results) {
 			var copy = results[0], outbox = results[1], files = results[2], browser = results[3],
 				lines = [];
+			// The question first, in words, from what was read already (no request, design 2.22): opens with
+			// no network when the page and TiddlyWiki's core are kept; what would be empty offline; what waits
+			var pageKept = !!files && files.some(function(file) { return file.name === "the page (/)"; }),
+				coreKept = !!files && files.some(function(file) { return /^TiddlyWiki's core \(/.test(file.name); }),
+				fillOff = wiki.getTiddlerText("$:/config/cfworker/LoadAll","yes") === "no",
+				counts = waitingCounts(outbox),
+				notLoaded = 0;
+			if(copy) {
+				var keptSet = Object.create(null);
+				$tw.utils.each(copy,function(entry) { keptSet[entry.title] = true; });
+				$tw.utils.each(proto.cfworkerListedTitles(),function(title) {
+					var t = wiki.getTiddler(title);
+					if(!keptSet[title] && !(t && !t.hasField("_is_skinny"))) {
+						notLoaded++;
+					}
+				});
+			}
+			lines.push("''Opens with no network:'' " + (pageKept && coreKept ? "yes, the page and TiddlyWiki's core are kept." : files === null ? "no, this browser has no cache storage here." : "not yet: " + (!pageKept && !coreKept ? "neither the page nor TiddlyWiki's core is kept" : !pageKept ? "the page isn't kept" : "TiddlyWiki's core isn't kept") + " (reload once, online).") +
+				(copy ? (notLoaded ? " " + count(notLoaded,"tiddler") + " not loaded yet would be empty offline" + (fillOff ? " (the fill is off: a tiddler loads when first shown online, " + lib.guide("operating","3.10") + ")." : " (they load while this tab is open and visible, " + lib.guide("operating","3.13") + ").") : " Every listed tiddler is kept.") : "") +
+				(counts.changes ? " " + count(counts.changes,"change") + " waits to be sent." : " Nothing waits to be sent."), "");
 			if(copy) {
 				// Of the tiddlers listed and not kept: the ones the page itself carries (the site title,
 				// the default tiddlers, the settings: baked in by the worker, in full, so TiddlyWiki never

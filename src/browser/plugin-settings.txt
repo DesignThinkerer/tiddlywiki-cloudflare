@@ -2,7 +2,7 @@ Settings are saved in the wiki (`$:/config/…`), so they apply on every device.
 
 ! Settings
 
-<$checkbox tiddler="$:/config/cfworker/LoadAll" field="text" checked="yes" unchecked="no" default="yes"> Load all tiddlers in the background</$checkbox> — text search and backlinks then see everything. If unchecked, a tiddler is loaded when shown. ''(Requires page reload)''
+<$checkbox tiddler="$:/config/cfworker/LoadAll" field="text" checked="yes" unchecked="no" default="yes"> Load all tiddlers in the background</$checkbox> — text search and backlinks then see everything. Unticked, on every device: a tiddler is loaded when shown, and one never opened on a device is empty there offline. ''(Requires page reload)''
 
 Sync polling interval, ms: <$edit-text tiddler="$:/config/SyncPollingInterval" tag="input" type="number" default="" placeholder="60000" size="8"/> — time between an open tab's checks for updated tiddlers. Each check is one worker request (TiddlyWiki's own setting). ''(Requires page reload)''
 

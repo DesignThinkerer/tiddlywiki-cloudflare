@@ -485,6 +485,7 @@ const item = await A.evaluate(t => $tw.wiki.renderTiddler("text/html", t), ITEM)
 check("while a change waits and the browser hasn't promised, the cloud dropdown says so, with a link to the device tab",
   /hasn't promised/.test(item) && (item.includes(encodeURIComponent(DEVICE)) || item.includes(DEVICE)), item.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").slice(0, 240));
 const offlineMeasure = await measure(A);
+check("Measure, offline: the first line says 1 change waits to be sent", offlineMeasure.done && /^Opens with no network: .*1 change waits to be sent\./.test(offlineMeasure.text), offlineMeasure.text.slice(0, 200));
 check("Measure, offline: the change waiting in the outbox is counted (the tab needs no network)", offlineMeasure.done && /1 change\b.* waiting in the outbox/.test(offlineMeasure.text), offlineMeasure.text.slice(0, 300));
 await online(contextA);
 await waitFor(async () => (await status(A))?.waiting === "0", 15000);
@@ -493,10 +494,15 @@ await waitFor(async () => (await deviceCount(A)) >= await listedCount(), 15000);
 const onlineMeasure = await measure(A);
 const kept = await deviceCount(A), listed = await listedCount();
 const copyLine = onlineMeasure.text.match(/(\d+) of (\d+) tiddlers/);
+// The first line answers the question in words (#150): whether the wiki opens with no network, what
+// would be empty offline, what waits; the files are named in words, the path in brackets
+check("Measure opens with one line that says the wiki opens with no network (the page and TiddlyWiki's core kept), that every listed tiddler is kept, and that nothing waits to be sent; the page and the core named in words in the file list",
+  onlineMeasure.done && /^Opens with no network: yes, the page and TiddlyWiki's core are kept\. Every listed tiddler is kept\. Nothing waits to be sent\./.test(onlineMeasure.text) && /the page \(\/\)/.test(onlineMeasure.text) && /TiddlyWiki's core \([^)]*\/_plugins\/tiddlywikicore\.js\)/.test(onlineMeasure.text),
+  onlineMeasure.text.slice(0, 220));
 check("Measure: the tiddlers kept on this device of those the worker lists, with their size; nothing waiting in the outbox",
   onlineMeasure.done && !!copyLine && Number(copyLine[1]) === kept && Number(copyLine[2]) === listed && kept > 0 && /tiddlers kept \(\d+(\.\d+)? (B|KB|MB)\)/.test(onlineMeasure.text) && /nothing waiting in the outbox/.test(onlineMeasure.text),
   `${onlineMeasure.text.slice(0, 200)} — device ${kept}, listed ${listed}`);
-check("...the files the service worker keeps, each with its size", /the page\) \(\d+(\.\d+)? (KB|MB)\)/.test(onlineMeasure.text) && /_plugins\/tiddlywikicore\.js[^)]*\(\d+(\.\d+)? (KB|MB)\)/.test(onlineMeasure.text) && /tiddlers\.json[^)]*\(\d+(\.\d+)? (B|KB|MB)\)/.test(onlineMeasure.text),
+check("...the files the service worker keeps, each with its size", /the page \(\/\) \(\d+(\.\d+)? (KB|MB)\)/.test(onlineMeasure.text) && /TiddlyWiki's core \([^)]*\/_plugins\/tiddlywikicore\.js\) \(\d+(\.\d+)? (KB|MB)\)/.test(onlineMeasure.text) && /tiddlers\.json[^)]*\(\d+(\.\d+)? (B|KB|MB)\)/.test(onlineMeasure.text),
   onlineMeasure.text.replace(/^.*?files/, "files").slice(0, 300));
 check("...and not the service worker's own settings entry, which isn't a file", !/__cfworker/.test(onlineMeasure.text), onlineMeasure.text.replace(/^.*?files/, "files").slice(0, 300));
 check("...what the browser says: this site's use of what it allows, and that it hasn't promised to keep it", /uses \d+(\.\d+)? (B|KB|MB|GB) of (the )?\d+(\.\d+)? (KB|MB|GB)/.test(onlineMeasure.text) && /hasn't promised/.test(onlineMeasure.text),
