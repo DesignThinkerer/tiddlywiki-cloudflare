@@ -112,4 +112,4 @@ The names the manual, the admin wiki and the worker's messages use:
 
 ## Contributing, security, licence
 
-Changes follow the process in [CONTRIBUTING.md](CONTRIBUTING.md): plan first, tests first, every suite, the docs in the same pull request. A vulnerability goes through [SECURITY.md](SECURITY.md), never an issue. The code is under the [MIT licence](LICENSE); TiddlyWiki, which the worker ships, is under the BSD licence ([THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)).
+A problem the manual doesn't cover: [report it](https://github.com/DesignThinkerer/tiddlywiki-cloudflare/issues/new/choose); the bug form asks for *Check the setup*'s lines and the version. Changes follow the process in [CONTRIBUTING.md](CONTRIBUTING.md): plan first, tests first, every suite, the docs in the same pull request. A vulnerability goes through [SECURITY.md](SECURITY.md), never an issue. The code is under the [MIT licence](LICENSE); TiddlyWiki, which the worker ships, is under the BSD licence ([THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)).

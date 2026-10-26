@@ -59,9 +59,10 @@ representative at an online or offline event.
 ## Enforcement
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
-reported to the community leaders responsible for enforcement: the maintainer,
-[DesignThinkerer on GitHub](https://github.com/DesignThinkerer).
-All complaints will be reviewed and investigated promptly and fairly.
+reported to the community leaders responsible for enforcement, the maintainer,
+through a route only they see: *Report content* in the comment's menu on this
+repository, or [GitHub's report-abuse form](https://github.com/contact/report-abuse)
+for anything else. All complaints will be reviewed and investigated promptly and fairly.
 
 All community leaders are obligated to respect the privacy and security of the
 reporter of any incident.
