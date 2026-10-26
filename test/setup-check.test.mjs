@@ -151,6 +151,20 @@ check("an earlier build of the page at / (Cloudflare's cached copy, its ETag not
 delete earlierBuild.headers.ETag;
 ({ items } = await run());
 check("...with no ETag and an older Last-Modified: the same", ok(items, "rewrite") === true && /earlier build/i.test(text(items, "rewrite")), line(items, "rewrite"));
+// The page's Browser TTL, read from the cache answer's Cache-Control (no request added): long, or
+// missing (Cloudflare's default of four hours), it's said as information in the cache line, with why
+// it matters and where to set it; short, the value is named. The mark doesn't change (design 2.20)
+earlierBuild.headers["Cache-Control"] = "max-age=14400";
+({ items } = await run());
+check("the page's Browser TTL long (Cache-Control: max-age=14400): the cache line says it's 4 hours, that a visitor's browser, your own included, keeps a page that long after an edit and purges don't reach it, and to set Override, 5 minutes in the Cache public wiki rule (the line's own link, setup 2.7, says where); not a failure",
+  ok(items, "cache") === true && /The page's Browser TTL is 4 hours \(Cache-Control: max-age=14400\): a visitor's browser, your own included, keeps a page that long after an edit, and purges don't reach it\. In the "Cache public wiki" rule, set Browser TTL to Override, 5 minutes\./.test(text(items, "cache")),
+  line(items, "cache"));
+earlierBuild.headers["Cache-Control"] = "max-age=300";
+({ items } = await run());
+check("...short (max-age=300): the line names it, 5 minutes, and nothing more", ok(items, "cache") === true && /The page's Browser TTL is 5 minutes \(Cache-Control: max-age=300\)\./.test(text(items, "cache")) && !/purges don't reach it/.test(text(items, "cache")), line(items, "cache"));
+delete earlierBuild.headers["Cache-Control"];
+({ items } = await run());
+check("...missing (no Cache-Control header): Cloudflare's default of 4 hours applies, said so, with the rule to set", ok(items, "cache") === true && /The page has no Browser TTL \(no Cache-Control header\), so Cloudflare's default of 4 hours applies: a visitor's browser, your own included, keeps a page that long after an edit, and purges don't reach it\. In the "Cache public wiki" rule, set Browser TTL to Override, 5 minutes\./.test(text(items, "cache")), line(items, "cache"));
 earlierBuild = null;
 corsOff = ["/_plugins/"];
 ({ items } = await run());
@@ -181,7 +195,7 @@ check("...and the line ends with the rules to add (Rules → Cache Rules), by th
   /Rules → Cache Rules/.test(text(items, "cache")) && /\(optional\)/.test(text(items, "cache")) && /"Cache public wiki" for the page, "Cache plugin files" for the core and plugin files, "Cache status file" for the status file\.$/.test(text(items, "cache")), line(items, "cache"));
 cacheStatus = url => url.pathname.startsWith("/_plugins/") ? "DYNAMIC" : "HIT";
 ({ items } = await run());
-check("...the core file alone DYNAMIC: \"Cache plugin files\" named alone", ok(items, "cache") === null && /"Cache plugin files"/.test(text(items, "cache")) && !/"Cache public wiki"/.test(text(items, "cache")) && !/"Cache status file"/.test(text(items, "cache")), line(items, "cache"));
+check("...the core file alone DYNAMIC: \"Cache plugin files\" named alone", ok(items, "cache") === null && /"Cache plugin files"/.test(text(items, "cache")) && !/"Cache public wiki" for the page/.test(text(items, "cache")) && !/"Cache status file"/.test(text(items, "cache")), line(items, "cache"));
 cacheStatus = "HIT";
 ({ items } = await run());
 check("...cached: the line says so", ok(items, "cache") === true && /HIT/.test(text(items, "cache")), line(items, "cache"));

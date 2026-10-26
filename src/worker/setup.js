@@ -81,7 +81,7 @@ async function probe(url, origin, keep) {
     const res = await fetch(url, { headers: origin ? { Origin: origin } : {}, redirect: "follow" });
     const h = name => res.headers.get(name);
     if (!keep && res.body) await res.body.cancel();
-    return { status: res.status, etag: h("ETag"), lastModified: h("Last-Modified"), allowOrigin: h("Access-Control-Allow-Origin"), cache: h("CF-Cache-Status"), type: h("Content-Type"), res: keep ? res : null };
+    return { status: res.status, etag: h("ETag"), lastModified: h("Last-Modified"), allowOrigin: h("Access-Control-Allow-Origin"), cache: h("CF-Cache-Status"), cacheControl: h("Cache-Control"), type: h("Content-Type"), res: keep ? res : null };
   } catch (e) {
     return { error: e && e.message ? e.message : String(e) };
   }
@@ -172,8 +172,23 @@ async function checkPublicSite(env, site, origin, add) {
   const rules = [!cached(page) && '"Cache public wiki" for the page', !cached(core) && '"Cache plugin files" for the core and plugin files', !cached(status) && '"Cache status file" for the status file'].filter(Boolean);
   add("cache", all ? true : null,
     `Cloudflare's cache answered for the page: ${say(page)}, the core file: ${say(core)}, the status file: ${say(status)}.` +
-      (all ? "" : ` DYNAMIC, or no header, means no cache rule covers it, and the public site goes to the bucket for it at every request. To cache it (optional), add under the domain's Rules → Cache Rules: ${rules.join(", ")}.`), SECTION.rules);
+      (all ? "" : ` DYNAMIC, or no header, means no cache rule covers it, and the public site goes to the bucket for it at every request. To cache it (optional), add under the domain's Rules → Cache Rules: ${rules.join(", ")}.`) +
+      (cached(page) ? browserTtl(page) : ""), SECTION.rules);
   return cached(page);
+}
+
+// The page's Browser TTL, from the cache answer's Cache-Control (no request added): the one field of
+// the cache rule whose mistake is invisible at setup and felt daily. Long (over 15 minutes), or
+// missing (Cloudflare's default of four hours), said with why it matters and where to set it, as
+// information (the mark doesn't change, design 2.20); short, the value is named
+const BROWSER_TTL_LONG = 15 * 60;
+function browserTtl(page) {
+  const match = /(?:^|,)\s*max-age=(\d+)/i.exec(page.cacheControl || "");
+  if (!match) return ` The page has no Browser TTL (no Cache-Control header), so Cloudflare's default of 4 hours applies: a visitor's browser, your own included, keeps a page that long after an edit, and purges don't reach it. In the "Cache public wiki" rule, set Browser TTL to Override, 5 minutes.`;
+  const seconds = Number(match[1]);
+  const said = seconds % 3600 === 0 && seconds >= 3600 ? `${seconds / 3600} hour${seconds === 3600 ? "" : "s"}` : seconds % 60 === 0 && seconds >= 60 ? `${seconds / 60} minute${seconds === 60 ? "" : "s"}` : `${seconds} seconds`;
+  if (seconds <= BROWSER_TTL_LONG) return ` The page's Browser TTL is ${said} (Cache-Control: ${page.cacheControl.trim()}).`;
+  return ` The page's Browser TTL is ${said} (Cache-Control: ${page.cacheControl.trim()}): a visitor's browser, your own included, keeps a page that long after an edit, and purges don't reach it. In the "Cache public wiki" rule, set Browser TTL to Override, 5 minutes.`;
 }
 
 // site: the public site's address, "" for a private wiki, whose backup repository must be private too
