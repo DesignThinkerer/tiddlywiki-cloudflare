@@ -206,6 +206,13 @@ const parallelSummary = parallelRun.out.split("=== Summary ===")[1] || "";
 check("the runner takes --parallel <n> (not as a suite's name), runs every suite named, reports what isn't one, and exits 1",
   parallelRun.code === 1 && (parallelSummary.match(/no such suite/g) || []).length === 2 && !/--parallel|FAIL\s+2\b/.test(parallelSummary) && /2 of 2 suites failed/.test(parallelSummary),
   parallelSummary.trim().replace(/\s+/g, " ").slice(0, 200) || parallelRun.out.slice(-200));
+// A suite by its script's short name too (tabs, or test:tabs, for two-tabs: package.json's test:<name>
+// scripts, which docs/tests.md is organised by), and an unknown name listing the suites it knows,
+// by file name with the short names, so nobody builds everything to learn a name
+const shortNameRun = runner("--timeout", "1", "r2", "no-such-suite-c");
+check("the runner takes a script's short name for a suite (r2 for r2-ops) and, for an unknown name, lists the suites it knows, by file name with their short names",
+  /FAIL\s+r2-ops\b/.test(shortNameRun.out) && /Not a suite: no-such-suite-c/.test(shortNameRun.out) && /The suites, by file name/.test(shortNameRun.out) && /two-tabs \(tabs, test:tabs\)/.test(shortNameRun.out) && /\bbudget\b(?! \()/.test(shortNameRun.out),
+  shortNameRun.out.replace(/\s+/g, " ").slice(0, 300));
 const noParallel = runner("--parallel", "0", "cpu");
 check("...and refuses a parallel count under 1", noParallel.code === 2 && /parallel/.test(noParallel.out), `exit ${noParallel.code}: ${noParallel.out.slice(0, 120)}`);
 // --timeout <seconds>: a suite still running after that is stopped and counted as failed, so a

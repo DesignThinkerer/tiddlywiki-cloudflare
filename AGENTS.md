@@ -2,7 +2,7 @@
 
 The process is [CONTRIBUTING.md](CONTRIBUTING.md), and it applies in full: plan first and wait for a yes, tests first and seen failing, every suite before a pull request, the docs in the same pull request, one pull request at a time, never a push to `main`. This file is only what an agent's environment adds to it.
 
-- **Plan first, wait for a yes** holds for an agent as for anyone: the README paragraph and the tests by name, in the conversation, before any code.
+- **Plan first, wait for a yes** holds for an agent as for anyone: the README paragraph and the tests by name, in the conversation, before any code. The one exception is CONTRIBUTING's: a docs-only fix needs no plan and no test, "docs only" in the pull request and the repository suite run.
 - **Long suites go in the background.** A suite longer than one tool call allows (two-tabs, page-publish; `npm test` as a whole):
 
   ```bash
