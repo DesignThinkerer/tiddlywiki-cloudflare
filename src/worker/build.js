@@ -97,6 +97,10 @@ const PLUGIN_SETTINGS_SOURCE = "__PLUGIN_SETTINGS_SOURCE__";
 const PLUGIN_DEVICE_SOURCE = "__PLUGIN_DEVICE_SOURCE__";
 const PLUGIN_STYLESHEET_SOURCE = "__PLUGIN_STYLESHEET_SOURCE__";
 const PLUGIN_GETTING_STARTED_SOURCE = "__PLUGIN_GETTING_STARTED_SOURCE__";
+// Two template parts for conflict copies (design 2.5): the view of a copy and of its original, the
+// editor's line when the original changed behind an open draft (plugin-conflict-view.txt, plugin-conflict-edit.txt)
+const PLUGIN_CONFLICT_VIEW_SOURCE = "__PLUGIN_CONFLICT_VIEW_SOURCE__";
+const PLUGIN_CONFLICT_EDIT_SOURCE = "__PLUGIN_CONFLICT_EDIT_SOURCE__";
 // Two more parts, wikitext short enough to live here (design 2.39): what Ctrl+S says on the admin site
 // (tm-notify shows it, $:/cfworker/save-shortcut.js), and the line under the cloud icon's "Save
 // snapshot for offline use" while tiddlers aren't loaded yet (their text wouldn't be in the file)
@@ -118,7 +122,7 @@ let adminPluginVersion = "";
 export function pluginVersion() {
   if (!adminPluginVersion) {
     // (The shipped TiddlyWiki version is in the page too, for the Cloudflare tab: a new one, a new page)
-    const parts = [...BROWSER_MODULES.map(m => m.source), swVersion(), PLUGIN_README_SOURCE, PLUGIN_SETTINGS_SOURCE, PLUGIN_DEVICE_SOURCE, PLUGIN_STYLESHEET_SOURCE, PLUGIN_GETTING_STARTED_SOURCE, SAVED_AUTOMATICALLY_TEXT, SNAPSHOT_LINE_TEXT, PLUGIN_HISTORY_BUTTON_SOURCE, JSON.stringify(PLUGIN_FIELDS), SHIPPED_VERSION];
+    const parts = [...BROWSER_MODULES.map(m => m.source), swVersion(), PLUGIN_README_SOURCE, PLUGIN_SETTINGS_SOURCE, PLUGIN_DEVICE_SOURCE, PLUGIN_STYLESHEET_SOURCE, PLUGIN_GETTING_STARTED_SOURCE, PLUGIN_CONFLICT_VIEW_SOURCE, PLUGIN_CONFLICT_EDIT_SOURCE, SAVED_AUTOMATICALLY_TEXT, SNAPSHOT_LINE_TEXT, PLUGIN_HISTORY_BUTTON_SOURCE, JSON.stringify(PLUGIN_FIELDS), SHIPPED_VERSION];
     adminPluginVersion = PACKAGE_VERSION + "+" + hashText(parts.join("\n")).toString(36);
   }
   return adminPluginVersion;
@@ -138,6 +142,12 @@ function adminPlugin(env, pageSource) {
   // The first screen: the plugin's GettingStarted (its priority above TiddlyWeb's, whose own would win
   // otherwise), in the project's words; an owner's edit is an override, kept through updates (design 2.21)
   tiddlers.GettingStarted = { title: "GettingStarted", text: PLUGIN_GETTING_STARTED_SOURCE };
+  // A conflict copy says what it's a copy of and shows what it changes, its original that it has one
+  // (a view-template part, above the text); an editor whose tiddler was saved elsewhere since it was
+  // opened says so (an edit-template part, under the title): design 2.5. The plugin is the admin
+  // wiki's, so neither reaches the public site
+  tiddlers[`${ADMIN_PLUGIN_TITLE}/conflict-view`] = { title: `${ADMIN_PLUGIN_TITLE}/conflict-view`, tags: "$:/tags/ViewTemplate", "list-before": "$:/core/ui/ViewTemplate/body", text: PLUGIN_CONFLICT_VIEW_SOURCE };
+  tiddlers[`${ADMIN_PLUGIN_TITLE}/conflict-edit`] = { title: `${ADMIN_PLUGIN_TITLE}/conflict-edit`, tags: "$:/tags/EditTemplate", "list-after": "$:/core/ui/EditTemplate/title", text: PLUGIN_CONFLICT_EDIT_SOURCE };
   // Ctrl+S's notification, and the line under the snapshot button in the cloud icon's dropdown,
   // placed after TiddlyWeb's own item (design 2.39)
   tiddlers[`${ADMIN_PLUGIN_TITLE}/saved-automatically`] = { title: `${ADMIN_PLUGIN_TITLE}/saved-automatically`, text: SAVED_AUTOMATICALLY_TEXT };

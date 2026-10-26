@@ -1,0 +1,19 @@
+<$list filter="[[$:/temp/cfworker/behind]contains:list<currentTiddler>then<currentTiddler>get[draft.of]]" variable="original">
+
+<div class="cfworker-conflict tc-message-box">
+
+Saved on another device since you opened this editor: saving now keeps your text as a copy beside it (unless it's the same). <$button set="$:/state/cfworker/behind-view" setTo=<<currentTiddler>> class="tc-btn-invisible tc-tiddlylink">Show the current version</$button> ([[operating 3.20|https://github.com/DesignThinkerer/tiddlywiki-cloudflare/blob/main/docs/operating.md#320-when-two-tabs-edit-the-same-tiddler]]).
+
+<$reveal state="$:/state/cfworker/behind-view" type="match" text=<<currentTiddler>>>
+
+<div class="cfworker-behind-current">
+
+<$transclude tiddler=<<original>> mode="block"/>
+
+</div>
+
+</$reveal>
+
+</div>
+
+</$list>

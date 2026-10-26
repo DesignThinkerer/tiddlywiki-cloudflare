@@ -154,6 +154,19 @@ await editViaUI(A, "Alpha", "A wins"); await settle(A);
 await sync(B);                                  // B's poll pulls A's version in behind the open draft
 check("B loaded A's version behind its open draft", (await localText(B, "Alpha")) === "A wins");
 check("B's open editor survived the poll (drafts aren't synced)", await B.evaluate(() => !!$tw.wiki.findDraft("Alpha")));
+// The editor says the other device saved meanwhile (design 2.5, #153): the plugin's edit-template part,
+// for a draft whose original changed behind it, with the current version to show; nothing for a draft
+// opened after its tab's own save
+const editLine = (page, draft) => page.evaluate(d => $tw.wiki.renderTiddler("text/html", "$:/plugins/cfworker/admin/conflict-edit", { variables: { currentTiddler: d } }), draft);
+const draftB = await B.evaluate(() => $tw.wiki.findDraft("Alpha"));
+const behindB = await waitFor(async () => /Saved on another device since you opened this editor/.test(await editLine(B, draftB)), 10000);
+check("B's editor says the tiddler was saved on another device since it was opened, that saving keeps its text as a copy, with the current version to show (the plugin's edit-template part; the draft listed in $:/temp/cfworker/behind)",
+  behindB && /saving now keeps your text as a copy beside it/.test(await editLine(B, draftB)) && /Show the current version/.test(await editLine(B, draftB)) && await B.evaluate(d => ($tw.wiki.getTiddler("$:/temp/cfworker/behind")?.fields.list || []).includes(d), draftB),
+  `${(await editLine(B, draftB)).replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").slice(0, 200)} — behind ${JSON.stringify(await B.evaluate(() => $tw.wiki.getTiddler("$:/temp/cfworker/behind")?.fields.list))}`);
+await startEdit(A, "Alpha");
+const draftA = await A.evaluate(() => $tw.wiki.findDraft("Alpha"));
+check("...A's editor on the same tiddler, opened after its own save: no such line, nothing listed", !/cfworker-conflict|Saved on another device/.test(await editLine(A, draftA)) && !(await A.evaluate(() => $tw.wiki.tiddlerExists("$:/temp/cfworker/behind"))), await editLine(A, draftA));
+await A.evaluate(d => $tw.wiki.deleteTiddler(d), draftA);   // (cancelled)
 await finishEdit(B, "Alpha", "B late edit"); await settle(B);
 let copies = await conflictCopies(B, "Alpha");
 check("stale-draft save is rejected with 412", netSince(mark).some(x => x.tag === "B" && x.method === "PUT" && x.path.endsWith("/Alpha") && x.status === 412));
@@ -173,6 +186,33 @@ check("conflict copy opened in B's story", await B.evaluate(c => $tw.wiki.getTid
 await clearAlerts(B);
 await sync(A);
 check("A receives the conflict copy on its next sync", (await A.evaluate(c => $tw.wiki.tiddlerExists(c), copies[0])));
+check("...and B's draft gone, the behind list is gone with it", !(await B.evaluate(() => $tw.wiki.tiddlerExists("$:/temp/cfworker/behind"))));
+// The copy says what it's a copy of and shows what it changes; the original says it has a copy (design
+// 2.5, #153): the plugin's view-template part, rendered for each, on both devices
+const viewLine = (page, title) => page.evaluate(t => $tw.wiki.renderTiddler("text/html", "$:/plugins/cfworker/admin/conflict-view", { variables: { currentTiddler: t } }), title);
+const escapeRe = s => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const copyView = await viewLine(A, copies[0]);
+check("the copy's view says it's a conflict copy of the original, linked, and what to do with operating 3.20; the comparison closed; the buttons to delete it and to use its text in the original",
+  /A conflict copy of <a [^>]*>Alpha<\/a>: your text, saved when the original had changed elsewhere/.test(copyView) && /operating 3\.20/.test(copyView) && /Show what this copy changes/.test(copyView) && !/tc-diff-insert/.test(copyView) && /Delete this copy/.test(copyView) && /Use this text in the original/.test(copyView),
+  copyView.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").slice(0, 240));
+await A.evaluate(c => $tw.wiki.addTiddler({ title: "$:/state/cfworker/conflict-diff/" + c, text: "open" }), copies[0]);
+const diffView = await viewLine(A, copies[0]);
+check("...opened, TiddlyWiki's own comparison shows what the copy changes against the original, insertions and deletions marked",
+  /tc-diff-insert/.test(diffView) && /tc-diff-delete/.test(diffView) && /late edit/.test(diffView) && /Hide what this copy changes/.test(diffView), diffView.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").slice(0, 240));
+const originalView = await viewLine(A, "Alpha");
+check("the original's view says it has a conflict copy, the copy linked and dated, on both devices",
+  new RegExp("A conflict copy of this tiddler, <a [^>]*>" + escapeRe(copies[0]) + "</a> from \\d+(st|nd|rd|th) \\w+ \\d{4} \\d\\d:\\d\\d: compare, put what you want here, then delete the copy").test(originalView) && /operating 3\.20/.test(originalView) &&
+  new RegExp("A conflict copy of this tiddler, <a [^>]*>" + escapeRe(copies[0]) + "</a>").test(await viewLine(B, "Alpha")),
+  originalView.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").slice(0, 240));
+// "Use this text in the original" from the copy in B's story: the copy's text into the original through
+// the ordinary save (B holds the current revision, so no conflict), nothing else merged
+const useText = B.locator("button", { hasText: /^Use this text in the original$/ });
+if (await useText.count()) await useText.first().click();
+await settle(B);
+check("...Use this text in the original puts the copy's text into the original, saved through the ordinary guarded save, the copy left for the user to delete",
+  (await server("Alpha"))?.text === "B late edit" && (await localText(B, "Alpha")) === "B late edit" && await B.evaluate(c => $tw.wiki.tiddlerExists(c), copies[0]) && netSince(mark).filter(x => x.method === "PUT" && x.path.endsWith("/Alpha")).at(-1)?.status === 204,   // (the last save of the original: the one the button made)
+  `server ${JSON.stringify((await server("Alpha"))?.text)}, B ${JSON.stringify(await localText(B, "Alpha"))}, copy kept ${await B.evaluate(c => $tw.wiki.tiddlerExists(c), copies[0])}, last save of Alpha ${JSON.stringify(netSince(mark).filter(x => x.method === "PUT" && x.path.endsWith("/Alpha")).at(-1)?.status)}`);
+await sync(A);
 
 // --- 3. Stale tab that never re-synced -------------------------------------------------------
 mark = net.length;

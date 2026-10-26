@@ -49,3 +49,15 @@ ul.cfworker-setup-check li {
 		margin: -10px;
 	}
 }
+
+/* A conflict copy's box, its original's line and the editor's line (the plugin's template parts,
+   design 2.5): the theme's message box; the comparison and the current version scroll in place */
+.cfworker-conflict {
+	margin: 0.5em 0;
+}
+.cfworker-conflict-diff,
+.cfworker-behind-current {
+	max-height: 24em;
+	overflow: auto;
+	margin-top: 0.5em;
+}
