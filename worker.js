@@ -3154,9 +3154,13 @@ const SECTION = { private: "2.1", site: "2.2", queue: "2.3", backups: "2.4", wor
 const PUBLIC_IDS = ["public", "rewrite", "cors-reads", "cors-files", "cache"];
 // The public site's five pieces by name, one line per piece as on a public wiki, each naming the piece
 // it stands for, on a private wiki (nothing to check) and when the site doesn't answer (not checked):
-// one sentence five times read as a loop gone wrong
+// one sentence five times read as a loop gone wrong. The site's line on a private wiki adds that a
+// custom domain, or the development URL, left on the bucket serves the wiki whatever the setting
+// says, in words: the worker can't see the bucket's domains (operating 3.23, design 2.15)
 const PIECE = { "public": "The public site", "rewrite": "The rewrite rule", "cors-reads": "The CORS rule, tiddler reads", "cors-files": "The CORS rule, files", "cache": "The cache rules" };
-const privateLine = id => `${PIECE[id]}: ${id === "public" ? "a private wiki has none" : "no public site"}, nothing to check.`;
+const privateLine = id => id === "public"
+  ? "The public site: a private wiki has none, nothing to check. A custom domain still connected to the bucket, or its development URL (r2.dev) left on, serves the wiki all the same, and the worker can't see them: remove it (R2 → the bucket → Settings → Custom Domains, Public Development URL; operating 3.23), or set PUBLIC_WIKI_URL to the domain to make the wiki public (operating 3.22)."
+  : `${PIECE[id]}: no public site, nothing to check.`;
 const uncheckedLine = id => `${PIECE[id]}: not checked, the public site didn't answer.`;
 // Where the worker's settings are set, in every line that names one
 const VARS = "in the worker's Variables and Secrets";
