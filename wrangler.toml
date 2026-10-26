@@ -1,14 +1,10 @@
-# The worker's bindings and defaults: what Wrangler deploys, from your repository through Workers
-# Builds, with `npx wrangler deploy`, or from the Deploy to Cloudflare button, which names the
-# worker, the bucket and the queue after the project name you give it and writes them here
-# (setup 2.1). Deployed as it is: nothing in this file has
+# The worker's bindings and defaults: what Wrangler deploys, from your fork through Workers
+# Builds, or with `npx wrangler deploy`. Deployed as it is: nothing in this file has
 # to be changed for a wiki that uses the default names (setup 2.1). Your own settings (all
 # optional: without any, the worker is a private wiki) live in the dashboard, under the worker's
 # Variables and Secrets, which a deploy keeps (keep_vars); so do the two secrets, GITHUB_TOKEN and
 # CF_API_TOKEN. No secret goes in this file. (The section numbers are the manual's: docs/setup.md
-# for 2.x, docs/operating.md for 3.x.) The Deploy to Cloudflare button's import writes the project's
-# names into the name, bucket_name and queue lines below; tools/update.mjs keeps them at an update
-# (operating 3.1): leave those lines, and their neighbours, as they are.
+# for 2.x, docs/operating.md for 3.x.)
 
 name = "wiki-admin"                  # the worker's name: name the worker this when you create it (setup 2.5)
 main = "worker.js"                   # the built file (npm run build): deployed as it is, the one the tests ran on
@@ -16,7 +12,7 @@ no_bundle = true
 find_additional_modules = true       # the empty wiki module (the rules below), nothing else
 compatibility_date = "2024-09-23"
 keep_vars = true                     # a deploy keeps the variables set in the dashboard: that's where the settings are
-workers_dev = true                   # the admin site: https://wiki-admin.<your subdomain>.workers.dev, behind Access (setup 2.6); from the button, enabled by hand after the deploy
+workers_dev = true                   # the admin site: https://wiki-admin.<your subdomain>.workers.dev, behind Access (setup 2.6)
 preview_urls = false                 # no preview URLs: a preview would use the real bucket and queue
 
 # A custom domain for the admin site instead (setup 2.5): add it in the dashboard, under the
@@ -62,7 +58,7 @@ max_retries = 3                      # Cloudflare's default, which the worker co
 
 # The settings, set in the dashboard (the worker's Settings → Variables and Secrets), as plain
 # variables or as secrets, whichever you prefer, the two marked secret as secrets; a deploy keeps
-# both (setup 2.5). The Deploy to Cloudflare button asks for none of them: all are optional.
+# both (setup 2.5). All are optional.
 #   PUBLIC_WIKI_URL        the public site, https:// and the bucket's custom domain (setup 2.2); none for a private wiki (setup 2.1)
 #   CF_ZONE_ID             the zone of the public site, for cache purges, with the secret CF_API_TOKEN
 #   CF_API_TOKEN           secret: an API token with Zone → Cache Purge on that zone (setup 2.5); without it and CF_ZONE_ID, no purges

@@ -325,58 +325,42 @@ const expectedNotes = newestDated && changelog.split("\n## " + newestDated + "\n
 const printedNotes = (() => { try { return execFileSync(process.execPath, [path.join(ROOT, "tools/release-notes.mjs")], { cwd: ROOT, encoding: "utf8" }); } catch (e) { return `(failed: ${e.message})`; } })();
 check("tools/release-notes.mjs prints that block, the release's notes, without its heading", !!newestDated && printedNotes === expectedNotes, printedNotes.slice(0, 80).replace(/\n/g, "⏎"));
 
-// --- 12. The Deploy to Cloudflare button's files (setup 2.1) --------------------------------------
-// The button clones the repository, creates the bucket and the queue named in wrangler.toml and
-// deploys; package.json's cloudflare.bindings describes the two for its form. No .dev.vars.example:
-// the form makes every secret such a file names mandatory, and both of the worker's are optional
-// (design 2.30), so they go in the dashboard afterwards, as the variables do: a [vars] entry would put
-// its value back over the dashboard's at every deploy. Variables and secrets are named in
-// wrangler.toml's settings comment, where a user finds them. Every setting the worker reads (env.NAME
-// in src/worker) is declared in exactly one place, a binding or a settings line of that file;
-// TEST_WAIT_SCALE, which only the test setups give the worker, is the named exception.
+// --- 12. The settings declared in one place; nothing of the Deploy to Cloudflare button ----------
+// Every setting the worker reads (env.NAME in src/worker) is declared in exactly one place, a
+// binding or a settings line of wrangler.toml, where a user finds them: variables and secrets alike,
+// since a [vars] entry in the file would put its value back over the dashboard's at every deploy
+// (setup 2.5). TEST_WAIT_SCALE, which only the test setups give the worker, is the named exception.
 const workerEnv = new Set(walkFiles(path.join(ROOT, "src/worker")).flatMap(f => [...fs.readFileSync(f, "utf8").matchAll(/\benv\.([A-Z][A-Z0-9_]*)\b/g)].map(m => m[1])));
 workerEnv.delete("TEST_WAIT_SCALE");
 const bindingsInToml = new Set([...tomlActive.matchAll(/^binding = "([A-Z_]+)"/gm)].map(m => m[1]));
 const variablesInToml = new Set([...toml.matchAll(/^# {3}([A-Z][A-Z0-9_]*) /gm)].map(m => m[1]));
-const exampleFiles = [".dev.vars.example", ".env.example"].filter(f => fs.existsSync(path.join(ROOT, f)));
-check("no .dev.vars.example or .env.example in the repository: the button's form makes every secret such a file names mandatory, and both of the worker's are optional (they go in the dashboard, setup 2.5)",
-  exampleFiles.length === 0, exampleFiles.join(", "));
-const pkgCloudflare = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8")).cloudflare;
-const described = pkgCloudflare?.bindings || {};
-const describedNames = Object.keys(described).sort();
-const toDescribe = [...bindingsInToml].sort();
-check("package.json's cloudflare.bindings describes each binding of wrangler.toml, the bucket and the queue, with a sentence, and nothing else (no secret: none is asked for)",
-  toDescribe.length === 2 && describedNames.join(",") === toDescribe.join(",") && describedNames.every(n => typeof described[n]?.description === "string" && described[n].description.length > 20),
-  `described: ${describedNames.join(", ") || "none"}; to describe: ${toDescribe.join(", ")}`);
 const placeOf = n => (bindingsInToml.has(n) ? "binding" : "") + (variablesInToml.has(n) ? "settings line" : "");
 const misplaced = [...workerEnv].filter(n => !["binding", "settings line"].includes(placeOf(n)));
 const unread = [...new Set([...bindingsInToml, ...variablesInToml])].filter(n => !workerEnv.has(n));
 check(`every setting the worker reads (${workerEnv.size}, TEST_WAIT_SCALE excepted) is declared in one place, a binding or a settings line of wrangler.toml (the two secrets among the lines); and nothing is declared that the worker doesn't read`,
   misplaced.length === 0 && unread.length === 0 && workerEnv.size >= 10,
   (misplaced.length ? "misplaced: " + misplaced.map(n => `${n} (${placeOf(n) || "nowhere"})`).join(", ") : "") + (unread.length ? " unread: " + unread.join(", ") : ""));
-// The button's import rewrites, in a copy, the lines that carry the names: wrangler.toml's worker,
-// bucket and two queue lines, package.json's name. tools/update.mjs keeps them through an update
-// (operating 3.1), and a line next to one of them that this repository changes conflicts in every
-// copy's update: package.json's version, bumped at each release, stays away from its name.
-const identityLines = { name: (toml.match(/^name = "wiki-admin"/gm) || []).length, bucket: (toml.match(/^bucket_name = "wiki"/gm) || []).length, queue: (toml.match(/^queue = "wiki-backup"/gm) || []).length };
-const pkgLines = fs.readFileSync(path.join(ROOT, "package.json"), "utf8").split("\n");
-const nameAt = pkgLines.findIndex(l => /^\s*"name":/.test(l)), versionAt = pkgLines.findIndex(l => /^\s*"version":/.test(l));
-check("the lines the button's import rewrites in a copy are where tools/update.mjs expects them: wrangler.toml's name, bucket_name and two queue lines with the default names; package.json's name, not next to its version (bumped at each release: a neighbour's change conflicts in every copy's update)",
-  identityLines.name === 1 && identityLines.bucket === 1 && identityLines.queue === 2 && nameAt >= 0 && versionAt >= 0 && Math.abs(nameAt - versionAt) > 1,
-  `wrangler.toml: name ${identityLines.name}, bucket_name ${identityLines.bucket}, queue ${identityLines.queue}; package.json: name at line ${nameAt + 1}, version at line ${versionAt + 1}`);
 // package-lock.json's root name and version are package.json's: npm rewrites them at any install
-// otherwise, which dirties every clone, and a button copy's first update (tools/update.mjs refuses a
-// changed tree); the release step bumps both (CONTRIBUTING, "Releases")
+// otherwise, which dirties every clone; the release step bumps both (CONTRIBUTING, "Releases")
 const lockJson = JSON.parse(fs.readFileSync(path.join(ROOT, "package-lock.json"), "utf8"));
 const pkgJson = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8"));
 check("package-lock.json's root name and version are package.json's, at the top and in its own package entry (npm rewrites them at any install otherwise; the release step bumps both)",
   lockJson.name === pkgJson.name && lockJson.version === pkgJson.version && lockJson.packages?.[""]?.name === pkgJson.name && lockJson.packages?.[""]?.version === pkgJson.version,
   `lock ${lockJson.name} ${lockJson.version} / ${lockJson.packages?.[""]?.name} ${lockJson.packages?.[""]?.version}; package.json ${pkgJson.name} ${pkgJson.version}`);
+// The Deploy to Cloudflare button (2026-10-19 to 2026-10-26; design 2.30, reversed) made an import,
+// not a fork: no Sync fork, so every update needed a script of its own, a suite for it and a second
+// path through the manual. The fork is the one way to make a copy, and nothing of the button comes
+// back: no button in the README, no cloudflare block in package.json (its form read it), no update
+// script and no suite for it.
 const readmeText = fs.readFileSync(path.join(ROOT, "README.md"), "utf8");
-const DEPLOY_URL = "https://deploy.workers.cloudflare.com/?url=https://github.com/DesignThinkerer/tiddlywiki-cloudflare";
-check("the README carries the Deploy to Cloudflare button (Cloudflare's image, linking to its deploy page with this repository's address), and the setup guide says what the button does (setup 2.1)",
-  readmeText.includes(`[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](${DEPLOY_URL})`) && /Deploy to Cloudflare/.test(fs.readFileSync(path.join(ROOT, "docs/setup.md"), "utf8")),
-  readmeText.includes(DEPLOY_URL) ? "the README has the link" : "no button in the README");
+check("the README carries no Deploy to Cloudflare button: the fork is the one way to make a copy, and Sync fork the one update (design 2.30, reversed)",
+  !/deploy\.workers\.cloudflare\.com|Deploy to Cloudflare/i.test(readmeText), /deploy\.workers\.cloudflare\.com/.test(readmeText) ? "the README has the button's link" : "the README names the button");
+check("package.json has no cloudflare block: only the button's form read it",
+  pkgJson.cloudflare === undefined, `cloudflare: ${JSON.stringify(pkgJson.cloudflare)}`);
+const buttonFiles = ["tools/update.mjs", "test/update-copy.test.mjs"].filter(f => fs.existsSync(path.join(ROOT, f)));
+const scriptsNamingIt = Object.entries(pkgJson.scripts || {}).filter(([, cmd]) => /update-copy|update\.mjs/.test(cmd)).map(([name]) => name);
+check("no update script and no suite for it: tools/update.mjs and test/update-copy.test.mjs are gone, and no npm script names them (a fork updates with Sync fork)",
+  buttonFiles.length === 0 && scriptsNamingIt.length === 0, `${buttonFiles.join(", ")}${buttonFiles.length && scriptsNamingIt.length ? "; " : ""}${scriptsNamingIt.length ? "scripts: " + scriptsNamingIt.join(", ") : ""}`);
 
 console.log(`\n${results.filter(Boolean).length}/${results.length} passed`);
 process.exit(results.every(Boolean) ? 0 : 1);
