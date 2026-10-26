@@ -62,11 +62,13 @@ var TAB_TEXT = [
 	"!! The engine",
 	"",
 	"<$list filter='[[" + ENGINE + "]get[same]match[yes]]' variable='same'>TiddlyWiki {{" + ENGINE + "!!engine}}, the version the worker ships.</$list>",
-	"<$list filter='[[" + ENGINE + "]get[same]match[no]]' variable='differs'>TiddlyWiki <$list filter='[[" + ENGINE + "]has[engine]]' variable='known' emptyMessage='of an unknown version (the engine has no version tag)'>{{" + ENGINE + "!!engine}}</$list> — the worker ships {{" + ENGINE + "!!shipped}}. <$list filter='[[" + ENGINE + "]!field:replaced[yes]]' variable='pending'><$button set='" + ENGINE + "!!ask' setTo='yes'>Update the engine</$button></$list>",
+	"<$list filter='[[" + ENGINE + "]get[same]match[no]]' variable='differs'>",
+	"<$list filter='[[" + ENGINE + "]get[newer]match[no]]' variable='older'>TiddlyWiki <$list filter='[[" + ENGINE + "]has[engine]]' variable='known' emptyMessage='of an unknown version (the engine has no version tag)'>{{" + ENGINE + "!!engine}}</$list> — the worker ships {{" + ENGINE + "!!shipped}}. <$list filter='[[" + ENGINE + "]!field:replaced[yes]]' variable='pending'><$button set='" + ENGINE + "!!ask' setTo='yes'>Update the engine</$button></$list></$list>",
+	"<$list filter='[[" + ENGINE + "]get[newer]match[yes]]' variable='newer'>TiddlyWiki {{" + ENGINE + "!!engine}}, newer than the {{" + ENGINE + "!!shipped}} the worker ships. Usually you update your copy of the worker (" + lib.guide("operating","3.1") + ") once it ships {{" + ENGINE + "!!engine}}; if the page isn't published, see troubleshooting (" + lib.guide("troubleshooting","4") + "). <$list filter='[[" + ENGINE + "]!field:replaced[yes]]' variable='pending'><$button set='" + ENGINE + "!!ask' setTo='yes'>Go back to {{" + ENGINE + "!!shipped}}</$button></$list></$list>",
 	"",
 	"<$reveal state='" + ENGINE + "!!ask' type='match' text='yes'>",
 	"",
-	"The worker replaces the engine (`index.html`) with the one it ships, TiddlyWiki {{" + ENGINE + "!!shipped}}; the next page load runs it, publishes it and purges the public copy. Your tiddlers, the plugins you installed and the published page stay. What goes: a plugin that came with the current engine and wasn't installed from the wiki (an engine you uploaded yourself, say). A plugin you updated from the library keeps your version (" + lib.guide("operating","3.4") + ").",
+	"The worker replaces the engine (`index.html`) with the one it ships, TiddlyWiki {{" + ENGINE + "!!shipped}}; the next page load runs it, publishes it and purges the public copy. This can't be undone from the tab: the current `index.html` isn't kept anywhere. If you uploaded it yourself, download it from R2 first (R2 → the bucket → Objects → index.html). <$list filter='[[" + ENGINE + "]get[newer]match[yes]]' variable='back'>Tiddlers saved by {{" + ENGINE + "!!engine}} will run on {{" + ENGINE + "!!shipped}}. </$list>Your tiddlers, the plugins you installed and the published page stay. What goes: a plugin that came with the current engine and wasn't installed from the wiki (an engine you uploaded yourself, say). A plugin you updated from the library keeps your version: to take the new engine's, delete your copy after Replace it and before you reload (wait for the save). Deleted later, it's gone, and operating 3.4's steps in R2 (delete `_page/shell.html` and `baked.html`, open the admin wiki) bring the new engine's version back. A new TiddlyWiki can break a plugin: if the wiki doesn't start after the reload, " + lib.guide("operating","3.6") + " (" + lib.guide("operating","3.3") + ").",
 	"",
 	"<$button message='" + UPDATE + "'>Replace it</$button> <$button set='" + ENGINE + "!!ask' setTo='no'>Not now</$button>",
 	"",
@@ -245,8 +247,11 @@ exports.startup = function() {
 	try {
 		source = JSON.parse(wiki.getTiddlerText(PAGE_SOURCE,"") || "null");
 	} catch(e) {}
-	var engine = (source && source.engine) || "", shipped = (source && source.shipped) || "";
-	wiki.addTiddler(new $tw.Tiddler({title: ENGINE, engine: engine, shipped: shipped, same: engine && engine === shipped ? "yes" : "no", ask: "no"}));
+	// (newer: the engine ahead of the one the worker ships, uploaded by hand or the worker's copy
+	// behind: the button then says "go back", since the update would be a downgrade)
+	var engine = (source && source.engine) || "", shipped = (source && source.shipped) || "",
+		newer = engine && shipped && lib.compareVersions(engine,shipped) > 0 ? "yes" : "no";
+	wiki.addTiddler(new $tw.Tiddler({title: ENGINE, engine: engine, shipped: shipped, same: engine && engine === shipped ? "yes" : "no", newer: newer, ask: "no"}));
 
 	function engineSay(text) {
 		wiki.addTiddler(new $tw.Tiddler({title: ENGINE_MESSAGE, text: text}));

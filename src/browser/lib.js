@@ -88,7 +88,7 @@ exports.REPO_URL = "https://github.com/DesignThinkerer/tiddlywiki-cloudflare";  
 exports.DOCS_URL = "https://github.com/DesignThinkerer/tiddlywiki-cloudflare/blob/main/docs";
 var GUIDE = {
 	setup: { page: "setup.md", headings: { "2.4": "The backup repository (optional)", "2.7": "The zone's rules (public site only)" } },
-	operating: { page: "operating.md", headings: { "3.1": "Updating your copy", "3.4": "Plugins", "3.8": "Log lines", "3.13": "Opening the wiki offline", "3.14": "When your login expires", "3.15": "Checking the setup", "3.20": "When two tabs edit the same tiddler" } },
+	operating: { page: "operating.md", headings: { "3.1": "Updating your copy", "3.3": "Updating the wiki engine", "3.4": "Plugins", "3.6": "If a plugin breaks the page", "3.8": "Log lines", "3.13": "Opening the wiki offline", "3.14": "When your login expires", "3.15": "Checking the setup", "3.20": "When two tabs edit the same tiddler" } },
 	limits: { page: "limits.md", headings: { "5": "Known limits" } },
 	troubleshooting: { page: "troubleshooting.md", headings: { "4": "Troubleshooting" } }
 };
@@ -107,6 +107,23 @@ exports.guideLink = function(chapter,section) {
 exports.guide = function(chapter,section) {
 	var link = exports.guideLink(chapter,section);
 	return "[[" + link.text + "|" + link.url + "]]";
+};
+
+// Two TiddlyWiki versions compared ("5.4.1", "5.4.1-prerelease", "5.4"): by their numeric parts, a
+// missing part 0, a prerelease below its release; negative, 0 or positive, as a sort's comparison
+exports.compareVersions = function(a,b) {
+	function parts(version) {
+		var match = /^(\d+(?:\.\d+)*)(.*)$/.exec(String(version || "").trim());
+		return {numbers: match ? match[1].split(".").map(Number) : [], pre: match ? match[2] : ""};
+	}
+	var pa = parts(a), pb = parts(b), count = Math.max(pa.numbers.length,pb.numbers.length);
+	for(var i = 0; i < count; i++) {
+		var difference = (pa.numbers[i] || 0) - (pb.numbers[i] || 0);
+		if(difference) {
+			return difference;
+		}
+	}
+	return (pa.pre ? 0 : 1) - (pb.pre ? 0 : 1);
 };
 
 // TiddlyWiki's "XMLHttpRequest error code: <status>" with the answer's own words after it, when the
