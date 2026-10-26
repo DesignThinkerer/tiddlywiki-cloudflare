@@ -21,7 +21,7 @@ A new wiki starts by itself: the first time you open the admin site, the worker 
 
 ## Quick start
 
-**What you need:** a Cloudflare account (the free plan is enough) and a GitHub account (the worker is deployed from your fork of this repository; the backup goes to a repository too). For a public site, also a domain added to that Cloudflare account (a zone, with Cloudflare's nameservers set at your registrar), which can take hours, so start it first; the public site is a hostname of it, and the admin site can stay at its `workers.dev` address ([setup 2.1](docs/setup.md#21-before-you-start)).
+**What you need:** a Cloudflare account (the free plan is enough: how big a wiki it holds, in measured numbers, opens [limits 5](docs/limits.md)) and a GitHub account (the worker is deployed from your fork of this repository; the backup goes to a repository too). For a public site, also a domain added to that Cloudflare account (a zone, with Cloudflare's nameservers set at your registrar), which can take hours, so start it first; the public site is a hostname of it, and the admin site can stay at its `workers.dev` address ([setup 2.1](docs/setup.md#21-before-you-start)).
 
 About ten minutes, in this order. The setup guide, [chapter 2](docs/setup.md), has each step in full, and the wiki's own setup check (the last step) says what to do about anything missing, with the section that has the full steps.
 
@@ -52,7 +52,7 @@ Seven chapters, numbered across the pages: a section number means the same thing
 
 1. [How it fits together](#1-how-it-fits-together): the pieces, and the names used throughout
 2. [Setting up](docs/setup.md): the bucket, the queue, the backup repository, the worker, Access, the zone's rules, the first visit
-3. [Operating it](docs/operating.md): updates, plugins, backups, logs, working offline, conflicts, the app, the settings, removing the wiki
+3. [Operating it](docs/operating.md): checking the setup, conflicts, editing and opening offline, the app; then updates, backups, plugins and the page, repairs, the plugin's tabs, going public or private, removing the wiki
 4. [Troubleshooting](docs/troubleshooting.md): symptoms, causes and fixes
 5. [Known limits](docs/limits.md): what you can hit, and what to do about it
 6. [Development and tests](docs/development.md): the build, the suites, the repository layout
