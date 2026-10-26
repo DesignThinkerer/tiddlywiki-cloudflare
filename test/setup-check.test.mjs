@@ -5,6 +5,7 @@
 // Run: npm run test:setup
 import fs from "node:fs";
 import { createChecks, readWikiFile, startSite } from "./browser-harness.mjs";
+import { setupCheck } from "../src/worker/setup.js";
 
 const { check, results } = createChecks();
 
@@ -87,6 +88,25 @@ check("each line's link points at the heading of docs/setup.md its section numbe
 }), IDS.map(id => `${id}: ${items[id] && items[id].guide ? items[id].guide.url : "none"}`).join(" "));
 check("everything in place: every piece fine, the lines saying so", IDS.every(id => items[id] && items[id].ok === true),
   IDS.filter(id => !items[id] || items[id].ok !== true).map(id => `${id}: ${line(items, id)}`).join(" | "));
+check("...the Access line, on this local address with ACCESS = off: says the switch is on and that a deployed worker refuses without Access",
+  ok(items, "access") === true && /ACCESS = off/.test(text(items, "access")) && /deployed worker refuses/.test(text(items, "access")), line(items, "access"));
+// A request Access did authenticate, which Miniflare can't make: the worker's own function, with the
+// mark Access sets and the e-mail header it adds to each request it passes (a private wiki's
+// environment: no public site, backups and purges unset, so nothing is asked of anyone)
+const through = async (headers, ctx) => {
+  const res = await setupCheck(new Request("https://wiki-admin.someone.workers.dev/setup/check", { headers }), {}, ctx, {});
+  const body = await res.json();
+  return Object.fromEntries(body.checks.map(c => [c.id, c]));
+};
+const marked = await through({ "Cf-Access-Authenticated-User-Email": "me@example.com" }, { access: { aud: "app" } });
+check("a request Access let through (the mark, and its e-mail header): the Access line passes, names whom Access let in, and says the policy itself isn't checked, with where it should allow you alone",
+  ok(marked, "access") === true && /me@example\.com/.test(text(marked, "access")) && /policy itself isn't checked/.test(text(marked, "access")) && /allow you alone/.test(text(marked, "access")) && /Access tab|Zero Trust/.test(text(marked, "access")) && !/ACCESS = off/.test(text(marked, "access")),
+  line(marked, "access"));
+const identified = await through({}, { access: { aud: "app", getIdentity: async () => ({ email: "member@example.com", name: "A member" }) } });
+check("...without the header, Cloudflare's own identity read (ctx.access.getIdentity) names whom Access let in", ok(identified, "access") === true && /member@example\.com/.test(text(identified, "access")), line(identified, "access"));
+const unnamed = await through({}, { access: { aud: "app", getIdentity: async () => { throw new Error("no identity (test)"); } } });
+check("...with neither the header nor an identity: the line still passes and says the policy isn't checked, naming nobody",
+  ok(unnamed, "access") === true && /policy itself isn't checked/.test(text(unnamed, "access")) && !/@/.test(text(unnamed, "access")), line(unnamed, "access"));
 check("...the public site asked for the page, the tiddler list, the core file and the status file, with the admin site as Origin",
   site.publicRequests.some(p => p === "/") && site.publicRequests.some(p => p.startsWith("/recipes/default/tiddlers.json")) && site.publicRequests.some(p => p.startsWith("/_plugins/tiddlywikicore.js")) && site.publicRequests.includes("/status"),
   site.publicRequests.join(", "));

@@ -18,6 +18,7 @@
 // Each line: { id, ok: true | false | null (nothing to check, or optional), text, guide: { section,
 // text ("setup 2.6"), url } }.
 
+import { accessIdentity } from "./access.js";
 import { guide } from "./docs.js";
 import { github, publicSite, publicUrl, purges } from "./settings.js";
 import { CORE_KEY, LIST_KEY, PAGE_KEY, STATUS_KEY } from "./storage.js";
@@ -44,8 +45,11 @@ export async function setupCheck(request, env, ctx, corsHeaders) {
   const checks = [];
   const add = (id, ok, text, section) => checks.push({ id, ok, text, guide: guide("setup", section) });
 
+  // (Whom Access let in is said; the policy itself can't be read without an account-level token,
+  // which the worker mustn't hold: design 2.20)
+  const who = ctx.access ? await accessIdentity(request, ctx) : null;
   add("access", true, ctx.access
-    ? "Cloudflare Access protects the admin site: this request came through it."
+    ? `Cloudflare Access protects the admin site: this request came through it${who ? `, logged in as ${who}` : ""}. The policy itself isn't checked: under Workers & Pages → the worker → the Access tab (or Zero Trust → Access → Applications → the application), it should allow you alone.`
     : "Cloudflare Access is off for this local address (ACCESS = off, for tests and local runs only): a deployed worker refuses every request that didn't come through Access.", SECTION.access);
 
   const site = publicSite(env);

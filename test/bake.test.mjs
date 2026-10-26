@@ -414,7 +414,7 @@ const mfClosed = new Miniflare({
 const baseClosed = (await mfClosed.ready).toString().replace(/\/$/, "");
 const bucketClosed = await mfClosed.getR2Bucket("WIKI_BUCKET");
 await bucketClosed.put("index.html", html("engine behind Access"));
-const refusals = [];
+const refusals = [], noAction = [];   // (noAction: refusals that don't say what to do, for the second check)
 for (const [method, path, body] of [
   ["GET", "/"], ["GET", "/status"], ["GET", "/recipes/default/tiddlers.json"], ["GET", "/recipes/default/tiddlers/x"],
   ["PUT", "/recipes/default/tiddlers/x", JSON.stringify({ title: "x", text: "t" })], ["DELETE", "/bags/default/tiddlers/x"],
@@ -424,8 +424,14 @@ for (const [method, path, body] of [
   const text = await res.text();
   refusals.push(`${method} ${path} → ${res.status}`);
   if (res.status !== 403 || (method !== "HEAD" && !text.includes("Cloudflare Access"))) refusals.push("WRONG: " + text.slice(0, 80));
+  // (The one thing to do, in setup 2.6's words, with the host the request came to: the worker's
+  // Access tab, Protect this Worker behind Access, All traffic; then the link; the local switch last)
+  if (method !== "HEAD" && !(text.includes(`this request to ${new URL(baseClosed).host}`) && /Workers & Pages/.test(text) && /Access tab/.test(text) && /Protect this Worker behind Access/.test(text) && /All traffic/.test(text) &&
+    text.indexOf("Protect this Worker") < text.indexOf("setup 2.6") && text.indexOf("setup 2.6") < text.indexOf("ACCESS = off"))) noAction.push(`${method} ${path}: ${text.slice(0, 200)}`);
 }
 check("without Access, every request is refused with 403 and says why", refusals.every(r => r.endsWith("403")), refusals.join(", "));
+check("...and the refusal names the host the request came to and the one thing to do, in setup 2.6's words (the worker's Access tab, Protect this Worker behind Access, All traffic), before the link, the local switch last",
+  noAction.length === 0, noAction.join(" | "));
 check("...and nothing was built or stored for them", !(await bucketClosed.head("baked.html")) && !(await bucketClosed.head("recipes/default/tiddlers/x")));
 await mfClosed.dispose();
 // ACCESS = off counts only for a local address (what the tests and wrangler dev use): a deployed
@@ -433,7 +439,7 @@ await mfClosed.dispose();
 for (const deployed of ["https://admin.example.com/status", "https://wiki-admin.someone.workers.dev/", "https://admin.example.com/recipes/default/tiddlers.json"]) {
   const res = await mf.dispatchFetch(deployed);
   const text = await res.text();
-  check(`ACCESS = off on a deployed hostname still refuses: ${new URL(deployed).hostname}`, res.status === 403 && text.includes("Cloudflare Access") && /local/i.test(text), `status ${res.status}: ${text.slice(0, 100)}`);
+  check(`ACCESS = off on a deployed hostname still refuses: ${new URL(deployed).hostname}, named in the refusal`, res.status === 403 && text.includes("Cloudflare Access") && /local/i.test(text) && text.includes(`this request to ${new URL(deployed).host}`), `status ${res.status}: ${text.slice(0, 100)}`);
 }
 for (const local of ["http://localhost:8787/status", "http://[::1]:8787/status", "http://wiki.localhost:8787/status"]) {
   const res = await mf.dispatchFetch(local);

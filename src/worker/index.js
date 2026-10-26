@@ -12,7 +12,7 @@
 // worker.js is built from these by `npm run build` (build.mjs), with the browser modules of
 // src/browser/ embedded as text (build.js lists them).
 
-import { ACCESS_REFUSED, withoutAccess } from "./access.js";
+import { accessRefused, withoutAccess } from "./access.js";
 import { processBackupBatch } from "./backup/queue.js";
 import { backupSyncStatus, startBackupSync } from "./backup/sync.js";
 import { decodePath, invalidPath } from "./http.js";
@@ -69,7 +69,7 @@ const plainText = (text, status) => new Response(text, { status, headers: { "Con
 export default {
   async fetch(request, env, ctx) {
     // Before anything else: a request Access didn't authenticate costs nothing but this answer
-    if (withoutAccess(request, ctx, env)) return plainText(ACCESS_REFUSED, 403);
+    if (withoutAccess(request, ctx, env)) return plainText(accessRefused(request), 403);
     const url = new URL(request.url);
     // Nor anything with a public address that isn't a site's (the page would load its code from
     // nowhere); none at all is a private wiki
