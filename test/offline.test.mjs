@@ -86,6 +86,17 @@ await waitFor(async () => (await status(A))?.waiting === "0", 5000);
 check("...the dropdown says nothing more, no alert, the device's outbox empty", (await line(A)) === "" && (await alerts(A)).length === 0 && JSON.stringify(await outbox(A)) === "[]" && (await status(A))?.online === "yes",
   `item ${JSON.stringify(await line(A))}, alerts ${(await alerts(A)).length}, outbox ${JSON.stringify(await outbox(A))}`);
 
+// Offline with nothing waiting, the dropdown says so in one line (design 2.17: the dropdown says it,
+// no alert); before, its item showed only while something waited or the login had expired
+await contextA.setOffline(true);
+await waitFor(async () => (await status(A))?.online === "no", 10000);
+const quiet = await line(A);
+check("offline with nothing waiting: the dropdown says offline, that what this device has loaded is here, a tiddler never opened on it empty, and changes made elsewhere coming when the network is back; nothing of changes or the login",
+  /^Offline: what this device has loaded is here; a tiddler never opened on it is empty, and changes made elsewhere come when the network is back\.$/.test(quiet || "") && !/login|waiting|kept/i.test(quiet || ""), JSON.stringify(quiet));
+await contextA.setOffline(false);
+await waitFor(async () => (await status(A))?.online === "yes", 10000);
+check("...and nothing again once the network is back", (await line(A)) === "", JSON.stringify(await line(A)));
+
 // --- 3. A reload once the network is back: the changes come back from the device and are sent ------
 await contextA.setOffline(true);
 await addTiddler(A, { title: "Offline reload", text: "survives a reload" });
@@ -161,7 +172,7 @@ await contextA.setOffline(true);
 const draftTitle = "Draft of 'Note A'";
 await A2.evaluate(([title, draft]) => $tw.wiki.addTiddler(new $tw.Tiddler($tw.wiki.getTiddler(title), { title: draft, "draft.of": title, "draft.title": title, text: "typing offline, not saved yet" })), ["Note A", draftTitle]);
 await waitFor(async () => ((await outbox(A2)) || []).some(e => e.title === draftTitle && e.kind === "draft"), 10000);
-check("a draft is kept on the device as a draft, and doesn't count as a change waiting", (await status(A2))?.waiting === "0" && (await line(A2)) === "", JSON.stringify(await status(A2)));
+check("a draft is kept on the device as a draft, and doesn't count as a change waiting (the dropdown says offline alone)", (await status(A2))?.waiting === "0" && /^Offline:/.test((await line(A2)) || "") && !/waiting|kept/.test((await line(A2)) || ""), `${JSON.stringify(await status(A2))} ${JSON.stringify(await line(A2))}`);
 await contextA.setOffline(false);
 await A2.reload();
 await ready(A2);

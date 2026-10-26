@@ -251,9 +251,14 @@ exports.startup = function() {
 
 	// One line per piece: a mark (✓ fine, ✗ missing or wrong, – nothing to check or optional), the
 	// worker's text, shown as text whatever it contains (addresses, quotes), and the section of the
-	// manual that fixes it as a link ({ text, url }, the worker's or lib.guideLink's)
+	// manual that fixes it as a link ({ text, url }, the worker's or lib.guideLink's). The mark is a
+	// span with its class, which the plugin's stylesheet colours (never the only signal: the glyph
+	// stays), and a label a screen reader says as a word; the glyph first, a space after it, as the
+	// lines are read (the suites, troubleshooting)
 	function line(mark,text,guide) {
-		return "<li><$text text=\"\"\"" + mark + " " + text + "\"\"\"/>" + (guide ? " ([[" + guide.text + "|" + guide.url + "]])" : "") + "</li>";
+		var kind = mark === "✓" ? "ok" : mark === "✗" ? "bad" : "none",
+			label = kind === "ok" ? "fine" : kind === "bad" ? "missing or wrong" : "not checked";
+		return "<li><span class='cfworker-mark cfworker-mark-" + kind + "' aria-label='" + label + "'>" + mark + "</span> <$text text=\"\"\"" + text + "\"\"\"/>" + (guide ? " ([[" + guide.text + "|" + guide.url + "]])" : "") + "</li>";
 	}
 	function mark(ok) {
 		return ok === true ? "✓" : ok === false ? "✗" : "–";

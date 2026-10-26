@@ -1,0 +1,51 @@
+/* The admin plugin's stylesheet, a part tagged $:/tags/Stylesheet (design 2.21): where TiddlyWiki's
+   theme doesn't fit the modules' markup. Plain CSS: a text/css tiddler isn't wikified, so no palette
+   macro here; the colours below read on light and dark backgrounds, and never say anything alone. */
+
+/* The cloud icon's dropdown: the theme gives a dropdown a 380 px minimum width and no wrapping, and
+   makes every link in it a block of its own; the outbox's item is sentences, with links in them */
+.tc-drop-down .cfworker-outbox {
+	white-space: normal;
+	max-width: 22em;
+	padding-right: 14px;
+}
+.tc-drop-down .cfworker-outbox a,
+.tc-drop-down .cfworker-outbox a.tc-tiddlylink,
+.tc-drop-down .cfworker-outbox a.tc-tiddlylink-external {
+	display: inline;
+	padding: 0;
+	width: auto;
+}
+
+/* The setup check's list: no bullets before the marks; each mark a span, a word for a screen reader
+   (its aria-label), coloured, the glyph staying what says it */
+ul.cfworker-setup-check {
+	list-style: none;
+	padding-left: 0;
+}
+ul.cfworker-setup-check li {
+	margin: 0.3em 0;
+}
+.cfworker-mark {
+	display: inline-block;
+	min-width: 1.2em;
+	font-weight: bold;
+}
+.cfworker-mark-ok {
+	color: #2e8b57;
+}
+.cfworker-mark-bad {
+	color: #d14343;
+}
+.cfworker-mark-none {
+	opacity: 0.65;
+}
+
+/* An alert's close button (TiddlyWiki's, the icon alone, 14 × 17 px): a thumb's hit area on a
+   narrow screen, the icon where it was */
+@media (max-width: 600px) {
+	.tc-alert .tc-alert-toolbar button {
+		padding: 10px;
+		margin: -10px;
+	}
+}

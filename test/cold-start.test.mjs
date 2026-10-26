@@ -97,6 +97,22 @@ check("...the two lines about this browser, the service worker's and the core fi
   setup1.lines.some(l => /^✓ .*service worker is in place.*\. \(operating 3\.13\)/.test(l)) && setup1.lines.some(l => /^✓ .*core file is kept.*\. \(operating 3\.13\)/.test(l)) && linksTo(setup1.html, OFFLINE_URL) === 2 && !/undefined/.test(setup1.tab),
   setup1.lines.filter(l => /service worker|core file/.test(l)).join(" | "));
 
+// The marks are elements with a class and a label a screen reader says as a word, the glyph first
+// with a space after it in the text, as the lines are read here and in the manual; the stylesheet
+// (the plugin's part, design 2.21) colours them, never as the only signal, and drops the bullets
+check("...each mark is a span with its class and a label (fine, not checked), the glyph first in the text, in a list the stylesheet styles",
+  /<span (?=[^>]*class="cfworker-mark cfworker-mark-ok")(?=[^>]*aria-label="fine")[^>]*>✓<\/span> /.test(setup1.html) && /<span (?=[^>]*class="cfworker-mark cfworker-mark-none")(?=[^>]*aria-label="not checked")[^>]*>–<\/span> /.test(setup1.html) && /<ul[^>]*class="cfworker-setup-check"[^>]*>/.test(setup1.html) && setup1.lines.length >= 5 && setup1.lines.every(l => /^[✓✗–] \S/.test(l)),
+  setup1.html.replace(/\s+/g, " ").slice(0, 400));
+// An alert's close button on a narrow screen: TiddlyWiki's is the icon's 14 × 17 px; the
+// stylesheet gives it a thumb's hit area under a narrow-screen media rule
+const viewport = A.viewportSize();
+await A.setViewportSize({ width: 390, height: 800 });
+await A.evaluate(() => $tw.wiki.addTiddler(new $tw.Tiddler({ title: "$:/temp/cfworker/test-alert", tags: ["$:/tags/Alert"], text: "an alert for the close button's size" })));
+const closeShown = await waitFor(() => A.evaluate(() => !!document.querySelector(".tc-alert .tc-alert-toolbar button")), 5000);
+const closeBox = closeShown ? await A.evaluate(() => { const r = document.querySelector(".tc-alert .tc-alert-toolbar button").getBoundingClientRect(); return { w: Math.round(r.width), h: Math.round(r.height) }; }) : null;
+check("on a narrow screen (390 px), an alert's close button is at least 32 px each way", !!closeBox && closeBox.w >= 32 && closeBox.h >= 32, JSON.stringify(closeBox));
+await A.evaluate(() => $tw.wiki.deleteTiddler("$:/temp/cfworker/test-alert"));
+await A.setViewportSize(viewport);
 // --- 1b. The script at a new address (a new version): the next load registers it over the old one ---
 // (The worker serves the same script whatever version is asked for: an older address registered by
 // hand stands in for the one an earlier deploy left in charge of the page)
@@ -304,7 +320,7 @@ await reload(A);
 await dropCore(A);
 const setupNoCore = await setupCheck(A);
 check("the core file gone from the cache: the setup check's line about it says so, with setup 2.7 (the CORS rule's path), and nothing links to \"undefined\"",
-  setupNoCore.done && setupNoCore.lines.some(l => /^✗ .*core file isn't kept.*check again\. \(setup 2\.7\)/.test(l)) && linksTo(setupNoCore.html, CORS_URL) >= 1 && !/undefined/.test(setupNoCore.tab),
+  setupNoCore.done && setupNoCore.lines.some(l => /^✗ .*core file isn't kept.*check again\. \(setup 2\.7\)/.test(l)) && /<span (?=[^>]*class="cfworker-mark cfworker-mark-bad")(?=[^>]*aria-label="missing or wrong")[^>]*>✗<\/span> /.test(setupNoCore.html) && linksTo(setupNoCore.html, CORS_URL) >= 1 && !/undefined/.test(setupNoCore.tab),
   setupNoCore.lines.filter(l => /core file/.test(l)).join(" | ") || `done ${setupNoCore.done}`);
 await reload(A);   // (a reload: the page asks for the file conditionally, and the worker answers 304)
 const coreBack = await waitFor(() => holds(A, CORE), 10000);

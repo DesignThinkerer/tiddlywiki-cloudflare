@@ -286,6 +286,12 @@ check("...the settings tab offers the fill of the device copy, TiddlyWiki's poll
   ["$:/config/cfworker/LoadAll", "$:/config/SyncPollingInterval", "$:/config/cfworker/DraftPause", "$:/config/cfworker/FetchAhead", "$:/config/cfworker/PublishPause", "$:/config/cfworker/BackupCheckMinutes", "$:/config/cfworker/NetworkWait"].every(t => (parts[ADMIN + "/settings"]?.text || "").includes(t)) &&
   /300/.test(parts[ADMIN + "/settings"]?.text || "") && /free plan/.test(parts[ADMIN + "/settings"]?.text || ""),
   (parts[ADMIN + "/settings"]?.text || "").slice(0, 120));
+// The plugin's stylesheet (design 2.21): a part tagged $:/tags/Stylesheet, for what the theme's rules
+// don't fit: the dropdown item's wrapping and inline links, the check's marks, the alert's close button
+const stylesheet = parts[ADMIN + "/stylesheet"];
+check("...and a stylesheet part, tagged $:/tags/Stylesheet, CSS: the dropdown item wrapping with its links inline, the check's marks by class, the alert's close button on a narrow screen",
+  !!stylesheet && stylesheet.tags === "$:/tags/Stylesheet" && stylesheet.type === "text/css" && /\.cfworker-outbox\s*\{[^}]*white-space:\s*normal/.test(stylesheet.text) && /\.cfworker-outbox a[^{]*\{[^}]*display:\s*inline/.test(stylesheet.text) && /\.cfworker-mark-bad/.test(stylesheet.text) && /\.cfworker-mark-ok/.test(stylesheet.text) && /@media[^{]*max-width[^{]*\{[^}]*\.tc-alert-toolbar/.test(stylesheet.text) && !/<<|{{/.test(stylesheet.text),
+  stylesheet ? `tags ${stylesheet.tags}, type ${stylesheet.type}, ${stylesheet.text.length} bytes` : "no stylesheet part");
 // The page carries the whole plugin, so a deploy that changes any part of it — a tab's text, a
 // field, the package version — has to rebuild the page, and one that changes only the worker's own
 // code must not (design 1.4: the page is rebuilt when it would differ, not at every deploy). Each
@@ -304,6 +310,7 @@ check("...the settings tab offers the fill of the device copy, TiddlyWiki's poll
   const variants = [
     ["the settings tab", variant("Leave a field empty to use the default value in parentheses.", "Leave a field empty to use the default value in parentheses. (changed)"), text => (part(text, ADMIN + "/settings")?.text || "").includes("(changed)")],
     ["the readme", variant("The admin wiki's side of [[TiddlyWiki on Cloudflare|", "The admin wiki's side (changed) of [[TiddlyWiki on Cloudflare|"), text => (part(text, ADMIN + "/readme")?.text || "").includes("(changed)")],
+    ["the stylesheet", variant("white-space: normal;", "white-space: normal; /* changed */"), text => (part(text, ADMIN + "/stylesheet")?.text || "").includes("/* changed */")],
     ["a plugin field (the author)", variant('author: "https://github.com/DesignThinkerer/tiddlywiki-cloudflare"', 'author: "https://example.com/a-fork"'), text => preloads(text).find(t => t.title === ADMIN)?.author === "https://example.com/a-fork"],
     ["the package version", variant(`const PACKAGE_VERSION = "${packageVersion}"`, `const PACKAGE_VERSION = "${packageVersion}-next"`), text => (preloads(text).find(t => t.title === ADMIN)?.version || "").startsWith(`${packageVersion}-next+`)],
     ["the TiddlyWiki version it ships", variant(`const SHIPPED_VERSION = "${shippedVersion}"`, `const SHIPPED_VERSION = "9.9.9"`), text => pageSource(text)?.shipped === "9.9.9"],

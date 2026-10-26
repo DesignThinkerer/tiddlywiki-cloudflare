@@ -148,6 +148,21 @@ check("the next list poll is redirected to the login page, which the browser blo
   since(refused, refusedMark).some(r => r.path === "/recipes/default/tiddlers.json") && since(listAnswers, listMark).some(a => a.tag === "A" && a.fromCache) && arrived.length === mark,
   `refused ${since(refused, refusedMark).map(r => r.method + " " + r.path).join(", ")}; lists ${JSON.stringify(since(listAnswers, listMark))}; arrived ${arrived.length - mark}`);
 check("...the tab asked Access once whether the session stands, and was told it doesn't (400, \"no app token set\")", since(probes, probesMark).length === 1 && probes[probesMark]?.status === 400, JSON.stringify(since(probes, probesMark)));
+// The item rendered in a dropdown as the theme styles it (a 380 px minimum width, no wrapping, every
+// link a block of its own) fits the screen with the plugin's stylesheet: the sentences wrap, and the
+// link sits in its sentence
+const fit = await A.evaluate(t => {
+  const host = document.createElement("div");
+  host.className = "tc-drop-down";
+  host.style.position = "absolute"; host.style.left = "0"; host.style.top = "0";
+  host.innerHTML = $tw.wiki.renderTiddler("text/html", t);
+  document.body.appendChild(host);
+  const item = host.querySelector(".tc-drop-down-info"), link = host.querySelector("a");
+  const out = { width: item ? Math.round(item.getBoundingClientRect().width) : -1, link: link ? getComputedStyle(link).display : "none", text: item ? item.textContent.replace(/\s+/g, " ").trim().slice(0, 80) : "" };
+  host.remove();
+  return out;
+}, ITEM);
+check("...rendered in a dropdown as the theme styles it, the item wraps within 400 px (the theme's 380 px dropdown) and its link is inline, in its sentence", fit.width > 0 && fit.width <= 400 && fit.link === "inline", JSON.stringify(fit));
 check("...and, nothing waiting, the dropdown says the login has expired and to log in again, not \"offline\"; no alert",
   noticed && s2?.online === "yes" && s2?.waiting === "0" && /login has expired/i.test(l2 || "") && /log in again/i.test(l2 || "") && !/offline/i.test(l2 || "") && a2.length === 0,
   `${JSON.stringify(s2)} ${JSON.stringify(l2)} alerts ${JSON.stringify(a2)}`);
@@ -217,7 +232,7 @@ proxy.closeAllConnections();
 await new Promise(resolve => proxy.close(resolve));
 const wentOffline = await waitFor(async () => (await status(A))?.online === "no", 15000);
 const s6 = await status(A);
-check("no network: the probe gets no answer either, the status says offline and the login stands; nothing in the dropdown while nothing waits", wentOffline && s6?.online === "no" && s6?.login === "ok" && (await line(A)) === "", `${JSON.stringify(s6)} ${JSON.stringify(await line(A))}`);
+check("no network: the probe gets no answer either, the status says offline and the login stands; the dropdown says offline in one line, nothing of the login", wentOffline && s6?.online === "no" && s6?.login === "ok" && /^Offline: what this device has loaded is here/.test((await line(A)) || "") && !/login/i.test((await line(A)) || ""), `${JSON.stringify(s6)} ${JSON.stringify(await line(A))}`);
 const setup6 = await setupCheck(A);
 check("...\"Check the setup\" then says the worker didn't answer, no network, and nothing of the login", setup6.done && setup6.lines.some(l => /^✗ .*didn't answer/.test(l) && /no network/i.test(l)) && !setup6.lines.some(l => /login/i.test(l)), setup6.lines.join(" | "));
 await addTiddler(A, { title: "Offline note", text: "typed with the network gone" });
