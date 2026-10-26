@@ -91,7 +91,6 @@ check("the Cloudflare tab's \"Check the setup\" button lists the pieces: Access,
 // (A section given as a bare number, where the renderer takes { text, url }, showed as a link to a
 // tiddler named "undefined".)
 const OFFLINE_URL = "https://github.com/DesignThinkerer/tiddlywiki-cloudflare/blob/main/docs/operating.md#313-opening-the-wiki-offline";
-const CORS_URL = "https://github.com/DesignThinkerer/tiddlywiki-cloudflare/blob/main/docs/setup.md#27-the-zones-rules-public-site-only";
 const linksTo = (html, url) => html.split(`href="${url}"`).length - 1;
 check("...the two lines about this browser, the service worker's and the core file's, link to operating 3.13 (opening the wiki offline), and nothing links to a tiddler named \"undefined\"",
   setup1.lines.some(l => /^✓ .*service worker is in place.*\. \(operating 3\.13\)/.test(l)) && setup1.lines.some(l => /^✓ .*core file is kept.*\. \(operating 3\.13\)/.test(l)) && linksTo(setup1.html, OFFLINE_URL) === 2 && !/undefined/.test(setup1.tab),
