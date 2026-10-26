@@ -362,7 +362,7 @@ await showTab(same.page);
 const sameSeen = await waitFor(async () => (await stateOf(same.page)) === "same", 10000);
 rText = await showTab(same.page);
 check("the newest release being this worker's version: the line says so, with when it was checked, and nothing more is asked",
-  sameSeen && same.asked().length === 1 && /This is the newest release/.test(rText) && /checked at \d\d:\d\d/.test(rText) && !/newer release is out/.test(rText), `${same.asked().length} requests: ${workerSection(rText)}`);
+  sameSeen && same.asked().length === 1 && /This is the newest release/.test(rText) && /checked at \d+(st|nd|rd|th) \w+ \d\d:\d\d/.test(rText) && !/newer release is out/.test(rText), `${same.asked().length} requests: ${workerSection(rText)}`);
 await same.ctx.close();
 
 // 5d. A release older than this worker: a copy synced past it

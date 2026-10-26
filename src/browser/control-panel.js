@@ -325,7 +325,9 @@ exports.startup = function() {
 	}
 	// This browser's own two lines: the service worker in place, and its copy of the core file,
 	// which is what the CORS rule's /_plugins/ path is for (design 1.11). Each links to the manual as
-	// the worker's lines do: opening offline, or the rule when the copy is missing
+	// the worker's lines do: opening offline, or the rule when the copy is missing; each with its own
+	// subject, "Opening offline:", since each is its own item with its own mark (no "...and", which a
+	// reader scanning for ✗ lands on without a subject, and a screen reader reads as "dot dot dot and")
 	// corsFiles: the worker's own "cors-files" result (true, false, or null for a private wiki), which
 	// says whether a missing copy of the core file is the CORS rule's doing (a public wiki whose rule
 	// doesn't cover /_plugins/) or only the first visit's (the service worker takes its copy after the
@@ -349,10 +351,10 @@ exports.startup = function() {
 				return /\/_plugins\/tiddlywikicore\.js/.test(request.url);
 			});
 			lines.push(line(mark(kept),kept ?
-				"...and the core file is kept on this device: the wiki opens with no network (the page and its plugin files with it)." :
+				"Opening offline: the core file is kept on this device, so the wiki opens with no network (the page and its plugin files with it)." :
 				corsFiles === false ?
-					"...but the core file isn't kept on this device, so the wiki doesn't open with no network: the CORS rule doesn't cover /_plugins/ (\"The CORS rule, files\", above)." :
-					"...but the core file isn't kept on this device yet, so the wiki doesn't open with no network: the service worker takes its copy after a first visit.",kept || corsFiles !== false ? offline : corsRule,
+					"Opening offline: the core file isn't kept on this device, so the wiki doesn't open with no network: the CORS rule doesn't cover /_plugins/ (\"The CORS rule, files\", above)." :
+					"Opening offline: the core file isn't kept on this device yet, so the wiki doesn't open with no network: the service worker takes its copy after a first visit.",kept || corsFiles !== false ? offline : corsRule,
 				kept ? null : corsFiles === false ? "Fix the rule, reload once online, then check again." : "Reload the page once, online, then check again."));
 			then(lines);
 		},function() {
@@ -363,7 +365,7 @@ exports.startup = function() {
 	function show(lines,checked) {
 		wiki.addTiddler(new $tw.Tiddler({
 			title: SETUP,
-			text: "<ul class='cfworker-setup-check'>\n" + lines.join("\n") + "\n</ul>\n\nChecked at <$view tiddler='" + SETUP + "' field='checked' format='date' template='0hh:0mm:0ss'/>.",
+			text: "<ul class='cfworker-setup-check'>\n" + lines.join("\n") + "\n</ul>\n\nChecked at <$view tiddler='" + SETUP + "' field='checked' format='date' template='DDth MMM 0hh:0mm'/>.",
 			checked: $tw.utils.stringifyDate(checked || new Date())
 		}));
 	}

@@ -214,7 +214,7 @@ exports.startup = function() {
 			lines.push("", "''The browser:'' " + (estimate && typeof estimate.usage === "number" && typeof estimate.quota === "number" ?
 				"this site uses " + size(estimate.usage) + " of the " + size(estimate.quota) + " it allows" + (parts.length ? " (" + parts.join(", ") + ")" : "") :
 				"it doesn't say how much this site uses or may use") + "; it " + (browser.kept === true ? "has promised to keep it." : browser.kept === false ? "hasn't promised to keep it (ask it below)." : "doesn't say whether it will keep it."));
-			lines.push("", "Measured at <$view tiddler='" + MEASURE + "' field='measured' format='date' template='0hh:0mm:0ss'/>.");
+			lines.push("", "Measured at <$view tiddler='" + MEASURE + "' field='measured' format='date' template='DDth MMM 0hh:0mm'/>.");
 			wiki.addTiddler(new $tw.Tiddler({title: MEASURE, text: lines.join("\n"), measured: $tw.utils.stringifyDate(new Date())}));
 		}).catch(function(e) {
 			// (Each source answers null when it fails; this is for anything else, rather than "Measuring…" for good)

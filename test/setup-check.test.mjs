@@ -122,8 +122,8 @@ check("...the public site asked for the page, the tiddler list, the core file an
 check("...GitHub asked for the repository and its branch with the token, Cloudflare asked to purge the status file's cached copy",
   calls.some(c => c === "GET https://api.github.com/repos/someone/wiki-backup") && calls.some(c => c === "GET https://api.github.com/repos/someone/wiki-backup/branches/main") &&
   calls.some(c => c === "POST https://api.cloudflare.com/client/v4/zones/zone-1/purge_cache"), calls.join(", "));
-check("...the purges line says the status file's copy was purged, the backups line names the repository and the branch, and says the tab's Backups section and an alert report backups that fail",
-  /status/.test(text(items, "purges")) && /someone\/wiki-backup/.test(text(items, "backups")) && /main/.test(text(items, "backups")) && /the tab's Backups section and an alert report backups that fail/.test(text(items, "backups")),
+check("...the purges line says the status file's copy was purged, the backups line names the repository and the branch, and says what the check can't test, writing, with the next step: save any tiddler, and the tab's Backups section and an alert say if GitHub refuses it",
+  /status/.test(text(items, "purges")) && /someone\/wiki-backup/.test(text(items, "backups")) && /main/.test(text(items, "backups")) && /GitHub accepts the token\. The check can't test writing: save any tiddler, and if GitHub refuses it, the tab's Backups section and an alert say so within minutes\.$/.test(text(items, "backups")) && !/Whether it may write/.test(text(items, "backups")),
   `${line(items, "purges")} ${line(items, "backups")}`);
 
 // --- 2. The public site's rules, one missing at a time --------------------------------------------
