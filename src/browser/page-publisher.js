@@ -213,8 +213,20 @@ exports.startup = function() {
 		return container.textContent;
 	}
 
-	function report(state,text) {
-		wiki.addTiddler({title: STATUS, type: "text/plain", state: state, text: text});
+	// The state, the words and the time, for the Cloudflare tab's "The page" section (design 1.9).
+	// A failure the next save or load retries is a notification, three seconds; a refusal (final:
+	// the worker answered 400, or 409 for a changed index.html) needs the user's action and won't
+	// repeat, so it's an alert, one, replaced rather than duplicated, gone once a publish goes through
+	var PAGE_ALERT = "$:/temp/cfworker/page-refused";
+	function report(state,text,refused) {
+		wiki.addTiddler({title: STATUS, type: "text/plain", state: state, text: text, time: $tw.utils.stringifyDate(new Date())});
+		if(refused) {
+			wiki.addTiddler(new $tw.Tiddler({title: PAGE_ALERT, tags: ["$:/tags/Alert"], component: "Published page", modified: new Date(), text: text}));
+			return;
+		}
+		if(state === "published" && wiki.tiddlerExists(PAGE_ALERT)) {
+			wiki.deleteTiddler(PAGE_ALERT);
+		}
 		if(state === "failed") {
 			$tw.notifier.display(STATUS);
 		}
@@ -255,7 +267,7 @@ exports.startup = function() {
 			} else {
 				refused = print + " " + coreVersion;
 			}
-			report("failed","Page not published: " + sentence(err) + (core ? " It will be sent again at the next reload." : " It will be sent again once it changes, or at the next reload."));
+			report("failed","Page not published: " + sentence(err) + (core ? " It will be sent again at the next reload." : " It will be sent again once it changes, or at the next reload."),true);
 			return done();
 		}
 		failed(done,err);

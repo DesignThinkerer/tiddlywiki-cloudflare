@@ -46,7 +46,7 @@ As in a single-file wiki, updating a plugin that came with `index.html` (a theme
 
 ## 3.5 The published page
 
-Nothing to do. After this version is deployed, the first admin page load publishes the core file and the page; after that, every save that changes the page publishes it ([design 1.9](design.md#19-the-page-published-from-the-admin-wiki)). If a raw markup tiddler stops the wiki from starting:
+Nothing to do. After this version is deployed, the first admin page load publishes the core file and the page; after that, every save that changes the page publishes it ([design 1.9](design.md#19-the-page-published-from-the-admin-wiki)). Control Panel → Saving → Cloudflare → *The page* says what this tab last did with it and when: published, not published yet (still loading, during an import), or not published with the worker's reason; a refusal stays on the page as an alert until a publish goes through. If a raw markup tiddler stops the wiki from starting:
 1. In R2, delete `_page/shell.html` and `baked.html`.
 2. Open the admin wiki: the page is built from `index.html` again.
 3. Fix or delete the tiddler in that tab before reloading. The tab publishes the broken page again once loaded, but it keeps running the page it has, and saving the fix publishes the fixed one.
