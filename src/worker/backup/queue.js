@@ -76,7 +76,7 @@ export async function queueBackup(env, job) {
         continue;
       }
       console.error(`[Backup] '${job.title}' could not be backed up:`, e.message);
-      await recordBackupResults(env, [backupFailure(direct, e)], []);
+      await recordBackupResults(env, [backupFailure(direct, e, { direct: true })], []);
     }
   }
 }
@@ -124,7 +124,7 @@ export async function processBackupBatch(batch, env) {
       // Waits for the pause to end. (Marked, so that its backup going through ends the pause in the
       // status file too)
       await requeueBackup(env, msg, Math.ceil((backupPause.until - Date.now()) / 1000), false, { paused: true });
-      if (backupPause.all && msg.body.action !== "sync") failures.push(backupFailure(msg.body, backupPause.error));
+      if (backupPause.all && msg.body.action !== "sync") failures.push(backupFailure(msg.body, backupPause.error, { next: backupPause.until }));
       continue;
     }
     if (msg.body.action === "sync") {
@@ -172,7 +172,7 @@ export async function processBackupBatch(batch, env) {
         const delay = Math.ceil((backupPause.until - Date.now()) / 1000);
         console.error(`[Backup] Backups paused for ${delay}s: ${e.message}`);
         await requeueBackup(env, msg, delay, true);
-        if (backupPause.all) failures.push(backupFailure(msg.body, e));
+        if (backupPause.all) failures.push(backupFailure(msg.body, e, { next: backupPause.until }));
         continue;
       }
       if (isAccountWide(e)) denied = msg.body.title;
@@ -184,7 +184,7 @@ export async function processBackupBatch(batch, env) {
       // (its path, or a secret in its text): the next one may be fine, and goes ahead (the late
       // versions logic keeps GitHub on the newest)
       if (!isRefusal(e)) held.set(msg.body.title, delay);
-      failures.push(backupFailure(msg.body, e));
+      failures.push(backupFailure(msg.body, e, { next: Date.now() + delay * 1000 }));
       continue;
     }
     if (delivery.noted) finished.push(msg.body.title);

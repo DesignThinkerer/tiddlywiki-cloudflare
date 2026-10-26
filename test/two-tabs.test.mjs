@@ -605,9 +605,9 @@ await other.close();
 // consumer; stored here directly). A page load asks with its first tiddler list request, and the
 // problem appears as an alert, which goes once the backups get through.
 const BACKUP_ALERT = "$:/temp/cfworker/backup-alert";
-const hourAgo = Date.now() - 2 * 3600 * 1000;
+const hourAgo = Date.now() - 2 * 3600 * 1000, nextTry = Date.now() + 3 * 3600 * 1000;
 await bucket.put("_backup/status.json", JSON.stringify({ failing: {
-  "Alpha": { since: hourAgo, last: Date.now(), error: "Bad credentials", status: 401 },
+  "Alpha": { since: hourAgo, last: Date.now(), error: "Bad credentials", status: 401, next: nextTry },
   "Beta": { since: hourAgo + 60000, last: Date.now(), error: "Bad credentials", status: 401 } } }));
 let reqMark16 = requests.length;
 const K = await openTab("K");
@@ -615,9 +615,11 @@ const firstListAsk = requests.slice(reqMark16).find(r => r.tag === "K" && r.url.
 await K.waitForFunction(t => $tw.wiki.tiddlerExists(t), BACKUP_ALERT, { timeout: 10000 }).catch(() => {});
 const backupAlert = await K.evaluate(t => { const a = $tw.wiki.getTiddler(t); return a ? { tags: a.fields.tags, text: a.fields.text } : null; }, BACKUP_ALERT);
 check("a page load asks how backups go with its first tiddler list request", firstListAsk === "ask", String(firstListAsk));
-check("...and failing backups show as an alert: since when, how many, the oldest, GitHub's answer, what to do",
+const nextTryText = await K.evaluate(ms => $tw.utils.formatDateString(new Date(ms), "DDth MMM YYYY 0hh:0mm"), nextTry);
+check("...and failing backups show as an alert: since when, how many, the oldest, GitHub's answer, what to do, the next try, and that a full backup sends the current versions now once the secret is replaced",
   !!backupAlert && (backupAlert.tags || []).includes("$:/tags/Alert") && /2 tiddlers/.test(backupAlert.text) && backupAlert.text.includes('<$link to="Alpha">') &&
-  backupAlert.text.includes("Bad credentials") && backupAlert.text.includes("GITHUB_TOKEN"), JSON.stringify(backupAlert));
+  backupAlert.text.includes("Bad credentials") && backupAlert.text.includes("GITHUB_TOKEN") && backupAlert.text.includes("Next try: " + nextTryText) && /sends the current versions now/.test(backupAlert.text),
+  JSON.stringify(backupAlert));
 const alertStamp = () => K.evaluate(t => { const a = $tw.wiki.getTiddler(t); return a ? $tw.utils.stringifyDate(a.fields.modified) : null; }, BACKUP_ALERT);
 const stampShown = await alertStamp();
 await sync(K);

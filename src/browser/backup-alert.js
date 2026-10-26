@@ -92,14 +92,44 @@ exports.startup = function() {
 		return ms ? $tw.utils.stringifyDate(new Date(ms)) : undefined;
 	}
 
-	// $:/temp/cfworker/backup-status: backups ("on"/"off"), asked (when), and the last full backup
-	// as sync-* fields (id, phase, total, done, committed, removed, failed, started, updated,
-	// finished, error), for the control panel
+	// What there is to say about backups that keep failing, for the alert and the tab alike (wikitext).
+	// problem: {count, title, since, error, status, next, direct} of the oldest
+	function problemText(problem) {
+		var hint = problem.status === 401 ? "The token in the worker's GITHUB_TOKEN secret is wrong or has expired: make a new one and put it in the secret." :
+			problem.status === 403 || problem.status === 404 ? "The token may not be allowed to write to the repository in GITHUB_REPO, or the repository or its branch doesn't exist." :
+			problem.status === 409 || problem.status === 422 ? "GitHub refuses that file." :
+			"GitHub, or the way to it, may be down.",
+			// What becomes of them: the next try, when known (the time the queue was asked to deliver the
+			// oldest again; kept current by the tab's line, the alert keeps its first), or nothing retries
+			// a direct backup's failure (no queue, design 2.36)
+			retried = problem.direct ?
+				"Not retried: this worker has no backup queue, or couldn't reach it (" + lib.guide("setup","2.3") + "). Once fixed, each tiddler is backed up at its next save; with the queue bound, <$link to=\"$:/ControlPanel\">Control Panel</$link> → Saving → Cloudflare → Back up everything to GitHub sends them all." :
+				(typeof problem.next === "number" && problem.next > Date.now() ? "Next try: " + $tw.utils.formatDateString(new Date(problem.next),"DDth MMM YYYY 0hh:0mm") + ", by itself." : "They're retried by themselves.") +
+				" The wiki keeps everything meanwhile." +
+				(problem.status === 401 ? " Once the secret is replaced, <$link to=\"$:/ControlPanel\">Control Panel</$link> → Saving → Cloudflare → Back up everything to GitHub sends the current versions now; the waiting ones still arrive afterwards, as history." : "");
+		return "Backups to GitHub have been failing since " + $tw.utils.formatDateString(new Date(problem.since),"DDth MMM YYYY 0hh:0mm") + ": " +
+			(problem.count > 1 ? problem.count + " tiddlers, " + lib.link(problem.title) + " the oldest, aren't" : lib.link(problem.title) + " isn't") +
+			" backed up yet. GitHub answered: ``" + String(problem.error).replace(/`/g,"'").replace(/[\r\n]+/g," ") + "``. " + hint + " " + retried;
+	}
+
+	// $:/temp/cfworker/backup-status: backups ("on"/"off"), asked (when), the last full backup as
+	// sync-* fields (id, phase, total, done, committed, removed, failed, started, updated, finished,
+	// error), and the backups failing as problem-* fields (since, count, title, next, text: the
+	// alert's sentence, which the tab shows in place of "every save is committed"), for the control
+	// panel. An answer that says nothing of problems (a full backup's) leaves the problem-* fields as
+	// they are; one that says there are none clears them
 	function noteStatus(status) {
-		var sync = status.sync, fields = {
+		var sync = status.sync, problem = status.problem,
+			kept = problem === undefined ? wiki.getTiddler(BACKUP_STATUS) : null,
+			fields = {
 			title: BACKUP_STATUS,
 			backups: status.backups,
 			asked: dateField(Date.now()),
+			"problem-since": problem ? dateField(problem.since) : kept ? kept.fields["problem-since"] : undefined,
+			"problem-count": problem ? String(problem.count) : kept ? kept.fields["problem-count"] : undefined,
+			"problem-title": problem ? String(problem.title) : kept ? kept.fields["problem-title"] : undefined,
+			"problem-next": problem ? dateField(problem.next) : kept ? kept.fields["problem-next"] : undefined,
+			"problem-text": problem ? problemText(problem) : kept ? kept.fields["problem-text"] : undefined,
 			"sync-id": sync ? String(sync.id || "") : undefined,
 			"sync-phase": sync ? String(sync.phase || "") : undefined,
 			"sync-total": sync && sync.total !== undefined && sync.total !== null ? String(sync.total) : undefined,
@@ -134,19 +164,12 @@ exports.startup = function() {
 			return;
 		}
 		problemKey = key;
-		var hint = problem.status === 401 ? "The token in the worker's GITHUB_TOKEN secret is wrong or has expired: make a new one and put it in the secret." :
-			problem.status === 403 || problem.status === 404 ? "The token may not be allowed to write to the repository in GITHUB_REPO, or the repository or its branch doesn't exist." :
-			problem.status === 409 || problem.status === 422 ? "GitHub refuses that file." :
-			"GitHub, or the way to it, may be down.";
 		wiki.addTiddler(new $tw.Tiddler({
 			title: BACKUP_ALERT,
 			tags: ["$:/tags/Alert"],
 			component: "GitHub backup",
 			modified: new Date(),
-			text: "Backups to GitHub have been failing since " + $tw.utils.formatDateString(new Date(problem.since),"DDth MMM YYYY 0hh:0mm") + ": " +
-				(problem.count > 1 ? problem.count + " tiddlers, " + lib.link(problem.title) + " the oldest, aren't" : lib.link(problem.title) + " isn't") +
-				" backed up yet. GitHub answered: ``" + String(problem.error).replace(/`/g,"'").replace(/[\r\n]+/g," ") + "``. " + hint +
-				" They're retried by themselves, and the wiki keeps everything meanwhile."
+			text: problemText(problem)
 		}));
 	}
 
@@ -186,8 +209,11 @@ exports.startup = function() {
 		}
 	}
 
+	// (Not while backups fail, which the status tiddler says after noteStatus: the hint would sit under
+	// the alert saying every save is committed; removed by the module, back once they're through)
 	function showHint(status) {
-		if(status.backups !== "on" || status.sync) {
+		var noted = wiki.getTiddler(BACKUP_STATUS);
+		if(status.backups !== "on" || status.sync || (noted && noted.fields["problem-since"])) {
 			if(wiki.tiddlerExists(BACKUP_HINT)) {
 				removingHint = true;
 				wiki.deleteTiddler(BACKUP_HINT);
