@@ -118,7 +118,7 @@ Under your domain, in the dashboard. Each rule names the public hostname, so `/`
 **Cache rule "Cache public wiki":**
 - **When:** `http.host eq "wiki.example.com"`
 - **Cache eligibility:** eligible for cache
-- **Edge TTL:** ignore the cache-control header and use a TTL. R2 sends none, and every change made through the worker is purged right away. One day is a safe default; longer works too, but a missed purge or a file uploaded to R2 by hand then stays stale that long.
+- **Edge TTL:** ignore the cache-control header and use a TTL. R2 sends none, and every change made through the worker is purged right away once `CF_ZONE_ID` and `CF_API_TOKEN` are set ([2.5](#25-the-worker)); until then, a change shows on the public site when this TTL runs out, and *Check the setup* says so ([operating 3.15](operating.md#315-checking-the-setup)). One day is a safe default; longer works too, but a missed purge or a file uploaded to R2 by hand then stays stale that long.
 - **Browser TTL:** override with something short, for example 5 minutes. Purges can't reach visitors' browsers, and without this Cloudflare's default of 4 hours applies.
 - **Serve stale content while revalidating:** off.
 - **Cache key:** the defaults. The query string must stay in the key, because purges target exact URLs ([design 1.6](design.md#16-public-cache-purges)).
