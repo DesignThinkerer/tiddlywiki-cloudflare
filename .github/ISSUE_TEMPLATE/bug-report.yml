@@ -5,7 +5,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Before filing: the troubleshooting page (docs/troubleshooting.md) and the known limits (docs/limits.md), and *Check the setup* in the admin wiki (Control Panel → Saving → Cloudflare), which names the setup guide's section for anything missing. Never paste a token or a secret here.
+        Before filing: the troubleshooting page (docs/troubleshooting.md) and the known limits (docs/limits.md), and *Check the setup* in the admin wiki (Control Panel → Saving → Cloudflare), which names the setup guide's section for anything missing. Never paste a token or a secret here. An issue is public: log lines and request URLs name tiddlers, and the check's lines name your addresses and your backup repository, so replace what you'd rather not show (each field says what it holds).
   - type: textarea
     id: what
     attributes:
@@ -17,13 +17,24 @@ body:
     id: setup-check
     attributes:
       label: What "Check the setup" says
-      description: Its lines, pasted. Replace your addresses if you'd rather not show them.
+      description: >-
+        Its lines, pasted. Under them, *Copy for a bug report* copies them with the worker's version, the engine and the browser,
+        and *Copy with the addresses replaced* puts admin.example and wiki.example in place of your addresses. They hold no token
+        or secret; they name your admin and public addresses and your backup repository (owner/repo), so replace any you'd rather not show.
       render: text
   - type: input
     id: version
     attributes:
       label: Worker version
-      description: Control Panel → Plugins lists "TiddlyWiki on Cloudflare" with the version the worker put in the page: the release's date, then a build hash.
+      description: >-
+        Under *The worker* in the same Cloudflare tab, "Version (build …)", the release's date, then a build hash (in the copied
+        report too). Also in Control Panel → Plugins → TiddlyWiki on Cloudflare.
+  - type: input
+    id: engine
+    attributes:
+      label: Engine
+      description: >-
+        The Cloudflare tab's *The engine* line ("TiddlyWiki 5.4.1", say); in the copied report too.
   - type: input
     id: browser
     attributes:
@@ -37,8 +48,16 @@ body:
         - Private (no public site)
         - Public (a public site at the bucket's domain)
   - type: textarea
+    id: plugins
+    attributes:
+      label: Plugins you installed
+      description: >-
+        Title and version of each, from Control Panel → Plugins (a plugin can break the page, operating 3.6). Leave empty if none.
+  - type: textarea
     id: logs
     attributes:
       label: The browser console, or the worker's logs
-      description: What the console printed (F12), or lines from Workers Logs (operating 3.8), with addresses replaced if you like.
+      description: >-
+        What the console printed (F12), or lines from Workers Logs (operating 3.8). Log lines and request URLs name tiddlers
+        (`[Backup] '<title>' …`, `/recipes/default/tiddlers/<title>`), so replace the titles and addresses you'd rather not make public.
       render: text

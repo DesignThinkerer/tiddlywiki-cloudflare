@@ -114,6 +114,17 @@ check("...the check's lines sit in a live region (role=status, aria-live=polite)
 check("...each mark is a span with its class and a label (fine, not checked), the glyph first in the text, in a list the stylesheet styles",
   /<span (?=[^>]*class="cfworker-mark cfworker-mark-ok")(?=[^>]*aria-label="fine")[^>]*>✓<\/span> /.test(setup1.html) && /<span (?=[^>]*class="cfworker-mark cfworker-mark-none")(?=[^>]*aria-label="not checked")[^>]*>–<\/span> /.test(setup1.html) && /<ul[^>]*class="cfworker-setup-check"[^>]*>/.test(setup1.html) && setup1.lines.length >= 5 && setup1.lines.every(l => /^[✓✗–] \S/.test(l)),
   setup1.html.replace(/\s+/g, " ").slice(0, 400));
+// Copy for a bug report (design 2.20, #171): the check's lines as plain text on the check's tiddler, with
+// the worker's version and build, the engine, whether the wiki is public and the browser; a second copy
+// with the addresses replaced; two buttons under the lines sending each to the clipboard
+const reportOf = p => p.evaluate(t => { const f = $tw.wiki.getTiddler(t).fields; return { report: f.report || "", anonymised: f["report-anonymised"] || "" }; }, SETUP);
+const report1 = await reportOf(A);
+const reportLines = report1.report.split("\n");
+check("the check's tiddler carries a plain-text report for a bug report: a dated heading, each line's mark and text, the worker's version and build, the engine, the wiki private, the browser; the tab offers it under the lines, plain and with the addresses replaced",
+  /^Check the setup \(\d{4}-\d\d-\d\d \d\d:\d\d\):$/.test(reportLines[0]) && reportLines.filter(l => /^[✓✗–] /.test(l)).length === setup1.lines.length && reportLines.some(l => /^✓ .*Access/.test(l)) &&
+  /^Worker: version \S+ \(build \S+\)$/m.test(report1.report) && /^Engine: TiddlyWiki 5\.\d+\.\d+ \(the worker ships 5\.\d+\.\d+\)$/m.test(report1.report) && /^Wiki: private \(no public site\)$/m.test(report1.report) && /^Browser: .*Chrome/m.test(report1.report) &&
+  report1.anonymised.length > 0 && /Copy for a bug report/.test(setup1.tab) && /Copy with the addresses replaced/.test(setup1.tab),
+  report1.report.slice(0, 400) || "no report");
 // An alert's close button on a narrow screen: TiddlyWiki's is the icon's 14 × 17 px; the
 // stylesheet gives it a thumb's hit area under a narrow-screen media rule
 const viewport = A.viewportSize();
@@ -463,6 +474,10 @@ check("...kept as real answers, asked for with CORS, never opaque (the browser w
   publicFiles.length >= 2 && types.every(t => t === "cors"), `${publicFiles.length} files: ${types.join(", ")}`);
 await online(contextA);
 const setupPublic = await setupCheck(A);
+const reportPublic = await reportOf(A);
+check("on a public wiki, the report says so with the public address, and the copy with the addresses replaced has wiki.example in its place (admin.example for the admin site's)",
+  new RegExp("^Wiki: public \\(" + PUB.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "/?\\)$", "m").test(reportPublic.report) && reportPublic.report.includes(new URL(PUB).host) && !reportPublic.anonymised.includes(new URL(PUB).host) && /wiki\.example/.test(reportPublic.anonymised) && !reportPublic.anonymised.includes(new URL(BASE).host),
+  (reportPublic.anonymised.match(/^Wiki: .*$/m) || ["no Wiki line"])[0]);
 check("the setup check on a public wiki: the public site answering with the page, the CORS rule covering the reads and the files, this browser keeping the core file",
   setupPublic.done && setupPublic.lines.some(l => /^✓ .*rewrite/i.test(l)) && setupPublic.lines.some(l => /^✓ .*\/recipes\//.test(l)) && setupPublic.lines.some(l => /^✓ .*\/_plugins\//.test(l)) && setupPublic.lines.some(l => /^✓ .*core file/.test(l)),
   setupPublic.lines.join(" | ") || `done ${setupPublic.done}`);

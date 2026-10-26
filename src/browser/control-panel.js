@@ -39,6 +39,7 @@ var TAB = "$:/temp/cfworker/ControlPanel",
 	PAGE_STATUS = "$:/temp/cfworker/page-publisher",   // what this tab last did with the page: state, text, time (page-publisher.js)
 	ENGINE_MESSAGE = "$:/temp/cfworker/engine-message",
 	PAGE_SOURCE = "$:/cfworker/page-source",
+	PUBLIC_URL = "$:/cfworker/public-url",   // the public site's address the page carries (empty on a private wiki)
 	RELEASE = "$:/temp/cfworker/release",
 	ADMIN_PLUGIN = "$:/plugins/cfworker/admin",
 	UPDATE = "tm-cfworker-engine-update",
@@ -65,6 +66,13 @@ var TAB_TEXT = [
 	"</$list>",
 	"",
 	"</div>",
+	"<$list filter='[[" + SETUP + "]has[report]]' variable='report'>",
+	"",
+	"<$button message='tm-copy-to-clipboard' param={{" + SETUP + "!!report}}>Copy for a bug report</$button> <$button message='tm-copy-to-clipboard' param={{" + SETUP + "!!report-anonymised}}>Copy with the addresses replaced</$button>",
+	"",
+	"The lines above as plain text, with the worker's version, the engine, whether the wiki is public, and the browser; the second puts admin.example and wiki.example in place of your addresses (" + lib.guide("operating","3.15") + ").",
+	"",
+	"</$list>",
 	"",
 	"!! Backups to GitHub",
 	"",
@@ -366,11 +374,13 @@ exports.startup = function() {
 	// lines are read (the suites, troubleshooting)
 	// todo: the one thing to do, on its own line under what was found (the worker's own field, or the
 	// browser's lines' below), before the link, so the reader finds the verb (design 2.20)
+	var plainLines = [];   // each line of the last check as plain text, in order, for the bug report (noteReport)
 	// link: a second link after the section's, {text, url}: the page the line's action is on, the
 	// dashboard's or GitHub's (the worker's own field, design 2.20)
 	function line(mark,text,guide,todo,link) {
 		var kind = mark === "✓" ? "ok" : mark === "✗" ? "bad" : "none",
 			label = kind === "ok" ? "fine" : kind === "bad" ? "missing or wrong" : "not checked";
+		plainLines.push(mark + " " + text + (todo ? " To do: " + todo : "") + (guide ? " (" + guide.text + ")" : ""));
 		return "<li><span class='cfworker-mark cfworker-mark-" + kind + "' aria-label='" + label + "'>" + mark + "</span> <$text text=\"\"\"" + text + "\"\"\"/>" +
 			(todo ? " <br/>''To do:'' <$text text=\"\"\"" + todo + "\"\"\"/>" : "") +
 			(guide ? " ([[" + guide.text + "|" + guide.url + "]])" : "") +
@@ -418,6 +428,41 @@ exports.startup = function() {
 			then(lines);
 		});
 	}
+	// The check's lines as plain text for a bug report (design 2.20): the marks and lines, the worker's
+	// version and build, the engine, whether the wiki is public, and the browser, on the check's tiddler
+	// (report); a second copy with the admin and public addresses replaced by admin.example and
+	// wiki.example (report-anonymised), for a report that keeps them private. No request, and no
+	// prefilled issue address: it would carry the addresses to GitHub before they could be replaced
+	function noteReport() {
+		var release = wiki.getTiddler(RELEASE),
+			engine = wiki.getTiddler(ENGINE),
+			publicUrl = wiki.getTiddlerText(PUBLIC_URL,"").trim(),
+			report = ["Check the setup (" + $tw.utils.formatDateString(new Date(),"YYYY-0MM-0DD 0hh:0mm") + "):"].concat(plainLines).concat([
+				"Worker: version " + ((release && release.fields.version) || "?") + " (build " + ((release && release.fields.build) || "?") + ")",
+				"Engine: TiddlyWiki " + ((engine && engine.fields.engine) || "?") + " (the worker ships " + ((engine && engine.fields.shipped) || "?") + ")",
+				"Wiki: " + (publicUrl ? "public (" + publicUrl + ")" : "private (no public site)"),
+				"Browser: " + (typeof navigator === "object" && navigator.userAgent ? navigator.userAgent : "?")
+			]).join("\n"),
+			anonymised = report,
+			admin = here.replace(/\/$/,""),
+			site = publicUrl.replace(/\/$/,""),
+			hostOf = function(address) {
+				try {
+					return address ? new URL(address).host : "";
+				} catch(e) {
+					return "";
+				}
+			};
+		$tw.utils.each([[admin,"https://admin.example"],[site,"https://wiki.example"],[hostOf(admin),"admin.example"],[hostOf(site),"wiki.example"]],function(pair) {
+			if(pair[0]) {
+				anonymised = anonymised.split(pair[0]).join(pair[1]);
+			}
+		});
+		var current = wiki.getTiddler(SETUP);
+		if(current) {
+			wiki.addTiddler(new $tw.Tiddler(current,{report: report, "report-anonymised": anonymised}));
+		}
+	}
 	function show(lines,checked) {
 		wiki.addTiddler(new $tw.Tiddler({
 			title: SETUP,
@@ -427,6 +472,7 @@ exports.startup = function() {
 	}
 	$tw.rootWidget.addEventListener(CHECK,function() {
 		wiki.addTiddler(new $tw.Tiddler({title: SETUP, text: "Checking…"}));
+		plainLines = [];
 		var host = ($tw.syncadaptor && $tw.syncadaptor.host) || here;
 		$tw.utils.httpRequest({
 			url: host + "setup/check",
@@ -443,6 +489,7 @@ exports.startup = function() {
 				var done = function() {
 					browserLines(corsFiles,function(own) {
 						show(lines.concat(own));
+						noteReport();
 					});
 				};
 				if(body && Array.isArray(body.checks)) {
