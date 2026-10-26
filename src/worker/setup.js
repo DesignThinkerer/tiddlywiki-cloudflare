@@ -184,7 +184,13 @@ async function checkBackups(env, site, add) {
     const todo = env.GITHUB_REPO ? `Make a fine-grained token limited to that repository, with Contents read and write, and put it in the GITHUB_TOKEN secret, ${VARS}.`
       : env.GITHUB_TOKEN ? `Set GITHUB_REPO, ${VARS}, to the backup repository's owner/repo, the one the token is limited to.`
         : `Create a repository for the backup and a fine-grained token limited to it, with Contents read and write, then set GITHUB_REPO (owner/repo) and the GITHUB_TOKEN secret ${VARS}.`;
-    add("backups", false, `Backups aren't set up: the worker has ${has} (optional; with ${env.GITHUB_REPO || env.GITHUB_TOKEN ? "it" : "them"}, every save is committed to GitHub, ${HISTORY}). ${todo}`, SECTION.backups);
+    // Neither setting: backups left out, a choice like purges, a dash with the action (design 2.20);
+    // one of the pair: a mistake, a failure naming the missing one
+    if (!env.GITHUB_REPO && !env.GITHUB_TOKEN) {
+      add("backups", null, `Backups are off (optional): set GITHUB_REPO and the GITHUB_TOKEN secret to commit every save to GitHub, ${HISTORY}. ${todo}`, SECTION.backups);
+      return;
+    }
+    add("backups", false, `Backups aren't set up: the worker has ${has} (optional; with it, every save is committed to GitHub, ${HISTORY}). ${todo}`, SECTION.backups);
     return;
   }
   const headers = { Authorization: `Bearer ${gh.token}`, Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "TiddlyWiki-Cloudflare-Worker" };

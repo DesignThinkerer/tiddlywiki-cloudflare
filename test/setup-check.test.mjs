@@ -258,11 +258,13 @@ check("Cloudflare's API not answering the purge at all: the line says so, with t
 api.purgeDown = false;
 await site.setBindings({ GITHUB_REPO: "", GITHUB_TOKEN: "", CF_ZONE_ID: "", CF_API_TOKEN: "" });
 ({ items } = await run());
-check("backups not set up: the line says so with setup 2.4; no purge token: a dash, not a failure",
-  ok(items, "backups") === false && guide(items, "backups") === "2.4" && /GITHUB_REPO/.test(text(items, "backups")) && ok(items, "purges") === null && /CF_ZONE_ID/.test(text(items, "purges")),
+// Backups left out are a choice, like purges: a dash with the action, not a ✗ on a line that calls
+// itself optional (design 2.20); half a pair stays a ✗, a mistake rather than a choice
+check("backups not set up (neither setting): a dash, not a failure, the line saying backups are off and optional, with setup 2.4; no purge token: a dash, not a failure",
+  ok(items, "backups") === null && guide(items, "backups") === "2.4" && /^Backups are off \(optional\): set GITHUB_REPO and the GITHUB_TOKEN secret to commit every save to GitHub, the wiki's only history/.test(text(items, "backups")) && ok(items, "purges") === null && /CF_ZONE_ID/.test(text(items, "purges")),
   `${line(items, "backups")} | ${line(items, "purges")}`);
 check("...and the backups line ends with what to do: a repository and a fine-grained token with Contents read and write, then GITHUB_REPO (owner/repo) and the GITHUB_TOKEN secret in the worker's Variables and Secrets; backups said to be optional",
-  /no GITHUB_REPO and no GITHUB_TOKEN \(optional/.test(text(items, "backups")) && /fine-grained token limited to it, with Contents read and write/.test(text(items, "backups")) && /set GITHUB_REPO \(owner\/repo\) and the GITHUB_TOKEN secret in the worker's Variables and Secrets\.$/.test(text(items, "backups")), line(items, "backups"));
+  /\(optional\)/.test(text(items, "backups")) && /fine-grained token limited to it, with Contents read and write/.test(text(items, "backups")) && /set GITHUB_REPO \(owner\/repo\) and the GITHUB_TOKEN secret in the worker's Variables and Secrets\.$/.test(text(items, "backups")), line(items, "backups"));
 check("...and says what a wiki without backups lacks: a history, the bucket keeping the current version of each tiddler alone",
   /the wiki's only history/.test(text(items, "backups")) && /a deletion or an overwrite is final/.test(text(items, "backups")), line(items, "backups"));
 check("...and the purges line ends with what to set: CF_ZONE_ID (the zone ID on the domain's overview page) and the CF_API_TOKEN secret (a token from My Profile → API Tokens with Zone → Cache Purge), in the worker's Variables and Secrets",

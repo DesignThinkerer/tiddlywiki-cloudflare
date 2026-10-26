@@ -85,7 +85,7 @@ var TAB_TEXT = [
 	"Not known yet: the worker hasn't said whether backups are on. It's asked with the page's first tiddler list request; with no network, the answer waits for it.",
 	"</$list>",
 	"<$list filter='[[" + STATUS + "]get[backups]match[off]]' variable='off'>",
-	"Backups are off: the worker has no `GITHUB_REPO` and `GITHUB_TOKEN` (" + lib.guide("setup","2.4") + "). Set them, and every save is committed to GitHub: the wiki's only history, since the bucket keeps the current version of each tiddler alone, and a deletion or an overwrite is final.",
+	"Backups are off (optional): set `GITHUB_REPO` and the `GITHUB_TOKEN` secret (" + lib.guide("setup","2.4") + ") to commit every save to GitHub: the wiki's only history, since the bucket keeps the current version of each tiddler alone, and a deletion or an overwrite is final.",
 	"</$list>",
 	"<$list filter='[[" + STATUS + "]get[backups]match[on]]' variable='on'>",
 	"",
