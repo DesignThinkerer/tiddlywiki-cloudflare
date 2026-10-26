@@ -257,7 +257,9 @@ check("...a skinny tiddler changed before its text loaded keeps its text on the 
   loaded52 && stored52.text === text(52) && JSON.stringify(stored52.tags) === '["done"]' && (await D.evaluate(() => $tw.wiki.getTiddlerText("Tiddler 52"))) === text(52) && tiddlerGets(mark, "D", "public").includes("Tiddler 52"),
   JSON.stringify(tiddlerGets(mark, "D", "public")));
 // A skinny tiddler edited before its text loaded (opened offline, say): TiddlyWiki's draft carries the
-// mark, and its editor starts empty. What's typed there is what was meant: stored, and the tab shows it
+// mark, and its editor starts empty. The typed text would replace a text this device never showed: the
+// worker refuses the save, the typed text is kept as a conflict copy (without the mark: the copy holds
+// its text), the stored text is loaded and shown, and the alert says why (design 2.33)
 const edited53 = await D.evaluate(() => {
   const wiki = $tw.wiki, title = "Tiddler 53";
   const find = w => w.parseTreeNode && w.parseTreeNode.type === "navigator" ? w : (w.children || []).map(find).find(Boolean);
@@ -269,13 +271,20 @@ const edited53 = await D.evaluate(() => {
   return { wasSkinny: wiki.getTiddler(title).hasField("_is_skinny") || draftHadMark, draftHadMark };
 });
 await settle(D);
-const loaded53 = await waitFor(() => D.evaluate(() => !$tw.wiki.getTiddler("Tiddler 53").hasField("_is_skinny")), 15000);
+const copied53 = await waitFor(() => D.evaluate(() => $tw.wiki.filterTiddlers("[conflict-of[Tiddler 53]]").length === 1 && $tw.wiki.getTiddlerText("Tiddler 53", null) !== null && !$tw.wiki.getTiddler("Tiddler 53").hasField("_is_skinny")), 15000);
+await settle(D);   // (the copy's own save)
 const stored53 = await (await bucket.get("recipes/default/tiddlers/Tiddler 53")).json();
-check("...a skinny tiddler edited before its text loaded, its empty editor typed into: the typed text is stored, without the mark, and shown",
-  edited53.draftHadMark && loaded53 && stored53.text === "typed into the empty editor" && !("_is_skinny" in stored53) &&
-  (await D.evaluate(() => $tw.wiki.getTiddlerText("Tiddler 53"))) === "typed into the empty editor",
-  JSON.stringify({ ...edited53, stored: stored53.text.slice(0, 40), markStored: "_is_skinny" in stored53, shown: String(await D.evaluate(() => $tw.wiki.getTiddlerText("Tiddler 53", null))).slice(0, 40) }));
-expected.set("Tiddler 53", "typed into the empty editor");
+const copy53 = await D.evaluate(() => {
+  const title = $tw.wiki.filterTiddlers("[conflict-of[Tiddler 53]]")[0], fields = title ? $tw.wiki.getTiddler(title).fields : null;
+  return fields ? { title, text: fields.text, skinny: "_is_skinny" in fields } : null;
+});
+const alert53 = (await alerts(D)).find(t => /Edit conflict/.test(t)) || "";
+check("...a skinny tiddler edited before its text loaded, its empty editor typed into: the typed text is kept as a conflict copy, without the mark; the stored text stays, is loaded and shown; the alert says the text hadn't loaded here",
+  edited53.draftHadMark && copied53 && stored53.text === text(53) && !("_is_skinny" in stored53) && !!copy53 && copy53.text === "typed into the empty editor" && !copy53.skinny &&
+  (await D.evaluate(() => $tw.wiki.getTiddlerText("Tiddler 53"))) === text(53) && /hadn't loaded on this device/.test(alert53) && alert53.includes(copy53.title),
+  JSON.stringify({ ...edited53, copied53, stored: String(stored53.text).slice(0, 20), copy: copy53 && { ...copy53, text: String(copy53.text).slice(0, 30) }, shown: String(await D.evaluate(() => $tw.wiki.getTiddlerText("Tiddler 53", null))).slice(0, 20), alert: alert53.slice(0, 200) }));
+// (The copy, saved to the worker like any tiddler, goes: the sections below count the tiddlers)
+if (copy53) { await D.evaluate(t => $tw.wiki.deleteTiddler(t), copy53.title); await settle(D); }
 await D.close();
 // With TiddlyWiki's own lazy loading off, every tiddler has to be loaded in full: the setting is ignored
 await put("$:/config/SyncDisableLazyLoading", { text: "yes" });

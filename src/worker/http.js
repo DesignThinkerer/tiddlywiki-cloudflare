@@ -65,9 +65,13 @@ export function objectHeaders(object, corsHeaders) {
   return headers;
 }
 
-export function conflictResponse(title, reason, currentRevision, corsHeaders) {
+// why: a word for the browser module (X-Conflict) when the refusal isn't about a version: "text-not-loaded",
+// a text typed into a tiddler whose text hadn't loaded on that device (design 2.33). The module reads it
+// rather than the sentence in the body, which TiddlyWiki shows as it is in a tab without the module.
+export function conflictResponse(title, reason, currentRevision, corsHeaders, why) {
   const headers = { ...corsHeaders, "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" };
   if (currentRevision !== null) headers.ETag = tiddlerEtag(title, currentRevision);
+  if (why) headers["X-Conflict"] = why;
   return new Response(`Edit conflict: '${title}' was not saved because ${reason}.`, { status: 412, headers });
 }
 

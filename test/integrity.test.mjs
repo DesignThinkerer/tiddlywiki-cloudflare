@@ -655,21 +655,52 @@ const notStored = JSON.parse(await (await bucket.get("recipes/default/tiddlers/S
 check("...and one the worker doesn't have is stored without text, without the mark", res.status === 204 && !("text" in notStored) && !("_is_skinny" in notStored),
   JSON.stringify(notStored));
 // A text sent with the mark was typed into the empty editor of a tiddler whose text hadn't loaded
-// (opened offline, say: limits 5): it's what was meant, and is stored as sent. Only a save without a
-// text, or with an empty one (that editor starts empty), keeps the stored text
-res = await save("Skinny", { tags: ["todo", "done", "again"], _is_skinny: "", text: "typed into the empty editor" });
+// (opened offline, say: limits 5). Stored, it would replace on every device a text this one never
+// showed: the save is refused (412), with a word for the browser module (X-Conflict: text-not-loaded),
+// which keeps the typed text as a conflict copy and shows the stored one (design 2.33); nothing changes
+const skinnyRevision = await storedRevision("Skinny");
+res = await save("Skinny", { tags: ["todo", "done", "again"], _is_skinny: "", text: "typed into the empty editor" }, { "If-Match": `"default/Skinny/${skinnyRevision}:auto"` });
+const skinnyRefusal = await res.text();
 skinnyStored = JSON.parse(await (await bucket.get("recipes/default/tiddlers/Skinny")).text());
-check("a save with the mark and a text typed in stores that text, without the mark", res.status === 204 && skinnyStored.text === "typed into the empty editor" && !("_is_skinny" in skinnyStored),
-  `status ${res.status} ${JSON.stringify(skinnyStored)}`);
-res = await mf.dispatchFetch(url("Skinny"), { method: "PUT", headers: { "Content-Type": "application/json", "If-Match": res.headers.get("ETag") },
+check("a save with the mark and a text typed in, when a text is stored, is refused: 412 saying the text hadn't loaded, X-Conflict: text-not-loaded, the stored version's ETag, nothing stored",
+  res.status === 412 && /hadn't loaded on this device/.test(skinnyRefusal) && res.headers.get("X-Conflict") === "text-not-loaded" && etagRevision(res) === skinnyRevision &&
+  skinnyStored.text === "text that must stay" && (await storedRevision("Skinny")) === skinnyRevision,
+  `status ${res.status} ${skinnyRefusal} ${res.headers.get("X-Conflict")} ${JSON.stringify(skinnyStored)}`);
+res = await save("Skinny", { tags: ["todo"], _is_skinny: "", text: "typed, sent without a precondition" });
+check("...a save without a precondition too (a script's; the browser's always has one)", res.status === 412 && res.headers.get("X-Conflict") === "text-not-loaded" && (await storedRevision("Skinny")) === skinnyRevision,
+  `status ${res.status}`);
+// In TiddlyWeb's layout the save comes from a tab without the browser modules (CONFLICT_GUARD off,
+// operating 3.19), which has no conflict protection and nothing to keep a copy, and TiddlyWiki would
+// send a refused save again every few seconds for good: stored as sent, as before
+res = await mf.dispatchFetch(url("Skinny"), { method: "PUT", headers: { "Content-Type": "application/json", "If-Match": `"default/Skinny/${skinnyRevision}:auto"` },
   body: JSON.stringify({ title: "Skinny", tags: ["todo"], text: "typed, in TiddlyWeb's layout", fields: { _is_skinny: "" } }) });
 skinnyStored = JSON.parse(await (await bucket.get("recipes/default/tiddlers/Skinny")).text());
-check("...also in TiddlyWeb's layout", res.status === 204 && skinnyStored.text === "typed, in TiddlyWeb's layout" && !("_is_skinny" in skinnyStored), `status ${res.status} ${JSON.stringify(skinnyStored)}`);
+check("...while in TiddlyWeb's layout (a tab without the modules: nothing there to keep a copy) the typed text is stored as sent, without the mark",
+  res.status === 204 && skinnyStored.text === "typed, in TiddlyWeb's layout" && !("_is_skinny" in skinnyStored), `status ${res.status} ${JSON.stringify(skinnyStored)}`);
 res = await save("Skinny", { tags: ["todo"], _is_skinny: "", text: "" }, { "If-Match": res.headers.get("ETag") });
 skinnyStored = JSON.parse(await (await bucket.get("recipes/default/tiddlers/Skinny")).text());
-check("...while one with an empty text keeps the stored text", res.status === 204 && skinnyStored.text === "typed, in TiddlyWeb's layout" && JSON.stringify(skinnyStored.tags) === '["todo"]' && !("_is_skinny" in skinnyStored),
+check("...and one with an empty text keeps the stored text", res.status === 204 && skinnyStored.text === "typed, in TiddlyWeb's layout" && JSON.stringify(skinnyStored.tags) === '["todo"]' && !("_is_skinny" in skinnyStored),
   `status ${res.status} ${JSON.stringify(skinnyStored)}`);
-for (const title of ["Skinny", "Skinny, not stored"]) await del(title);
+// Nothing is lost when no text is stored: the typed text is stored as sent, for a tiddler the worker
+// doesn't have, for one stored without a text and for one stored with an empty text
+res = await save("Skinny, typed, new", { _is_skinny: "", text: "typed, nothing stored" });
+const typedNew = JSON.parse(await (await bucket.get("recipes/default/tiddlers/Skinny, typed, new")).text());
+check("a text typed into a tiddler the worker doesn't have is stored as sent, without the mark", res.status === 204 && typedNew.text === "typed, nothing stored" && !("_is_skinny" in typedNew),
+  `status ${res.status} ${JSON.stringify(typedNew)}`);
+res = await save("Skinny, not stored", { tags: ["x"], _is_skinny: "", text: "typed over no text" }, { "If-Match": `"default/${encodeURIComponent("Skinny, not stored")}/${await storedRevision("Skinny, not stored")}:auto"` });
+const typedOverNone = JSON.parse(await (await bucket.get("recipes/default/tiddlers/Skinny, not stored")).text());
+check("...so is one typed into a tiddler stored without a text", res.status === 204 && typedOverNone.text === "typed over no text" && !("_is_skinny" in typedOverNone), `status ${res.status} ${JSON.stringify(typedOverNone)}`);
+res = await save("Skinny, empty text", { text: "" });
+const emptyBase = res.headers.get("ETag");
+res = await save("Skinny, empty text", { _is_skinny: "", text: "typed over an empty text" }, { "If-Match": emptyBase });
+const typedRevision = etagRevision(res), typedOverEmpty = JSON.parse(await (await bucket.get("recipes/default/tiddlers/Skinny, empty text")).text());
+check("...and one typed into a tiddler whose stored text is empty", res.status === 204 && typedOverEmpty.text === "typed over an empty text" && !("_is_skinny" in typedOverEmpty), `status ${res.status} ${JSON.stringify(typedOverEmpty)}`);
+// The retry of such a save, its answer lost (the same save with the same precondition, the typed text
+// now stored): finished, like any retry (section 1), rather than refused for the text it stored itself
+res = await save("Skinny, empty text", { _is_skinny: "", text: "typed over an empty text" }, { "If-Match": emptyBase });
+check("...and the retry of that save, its answer lost, finishes it (204, the stored revision) rather than refusing the text it stored", res.status === 204 && etagRevision(res) === typedRevision,
+  `status ${res.status} ${etagRevision(res)} vs ${typedRevision}`);
+for (const title of ["Skinny", "Skinny, not stored", "Skinny, typed, new", "Skinny, empty text"]) await del(title);
 
 // --- 5. A tiddler whose title only looks like a draft is saved like any other ---------------------
 const NOT_A_DRAFT = "Draft of 'Chapter 1'";

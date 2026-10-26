@@ -10,6 +10,9 @@ Edit-conflict protection for the TiddlyWeb sync adaptor (served by the Cloudflar
   is still caught even if this tab has re-synced in the meantime.
 - When the server answers 412, your version is kept as "<title> (conflict <date>)", the server
   version is loaded, and an alert explains what happened. Deletes are protected the same way.
+- A text typed into a tiddler whose text hadn't loaded on this device (opened offline, say: the editor
+  starts empty) is refused by the worker too, so that it doesn't replace the stored text: kept as a
+  copy the same way, with an alert that says so (X-Conflict: text-not-loaded, design 2.33).
 
 And it sends saves in the layout the worker stores (X-Tiddler-Layout: flat): every field at the
 top level, compact JSON, "text" last, no revision/bag/recipe. The worker then only parses the
@@ -176,6 +179,9 @@ exports.startup = function() {
 			bag: undefined,
 			recipe: undefined,
 			permissions: undefined,
+			// (The mark of a tiddler whose text hadn't loaded, which the typed version carries: the copy
+			// holds its text, and with the mark TiddlyWiki would show it as loading and ask the worker for it)
+			_is_skinny: undefined,
 			"conflict-of": title,
 			"conflict-removed-tags": removedTags.length ? $tw.utils.stringifyList(removedTags) : undefined
 		};
@@ -207,9 +213,12 @@ exports.startup = function() {
 		return note + (deleted ? "rename it " + lib.link(title) + " and give it back its " + moved.join(" and ") + "." : "copy its text into " + lib.link(title) + ".");
 	}
 
-	// The server rejected our write because its copy changed. Keep our version, adopt the server's.
+	// The server rejected our write: its copy changed, or (why) for a reason of its own. Keep our
+	// version, adopt the server's.
 	// ownEarlier(revision): for a save, called instead if the server's copy is this tab's own earlier
 	// save, one that got an error (an answer lost, say) though the worker stored it
+	// why: the worker's word (X-Conflict) for a save refused for another reason than a version:
+	// "text-not-loaded", a text typed into a tiddler whose text hadn't loaded here (design 2.33)
 	// The server's version, adopted here: stored as a load is, and kept on the device at that revision
 	// as a save of this tab's would be (the list sync), so a later load of it costs nothing. Before,
 	// only the wiki got it: the device kept this tab's refused version, and the next page load fetched
@@ -220,7 +229,7 @@ exports.startup = function() {
 			proto.cfworkerNoteListed(title,String(serverFields.revision),wiki.getTiddler(title));
 		}
 	}
-	function resolveConflict(adaptor,title,operation,callback,ownEarlier) {
+	function resolveConflict(adaptor,title,operation,callback,ownEarlier,why) {
 		$tw.utils.httpRequest({
 			url: adaptor.host + "recipes/" + encodeURIComponent(adaptor.recipe) + "/tiddlers/" + encodeURIComponent(title),
 			callback: function(err,data,request) {
@@ -267,6 +276,9 @@ exports.startup = function() {
 					kept = copyTitle ? " Your version has been kept as " + lib.link(copyTitle) + "." + inactiveNote(localTiddler,title,!serverFields) : "";
 				if(serverFields) {
 					adoptServer(title,serverFields);
+					if(why === "text-not-loaded") {
+						return callback("Edit conflict: the text of " + lib.link(title) + " hadn't loaded on this device when you typed into it." + kept + " " + lib.link(title) + " now shows the stored text.");
+					}
 					callback("Edit conflict: " + lib.link(title) + " was changed in another tab or browser before your save reached the server." + kept + " " + lib.link(title) + " now shows the server version.");
 				} else {
 					delete s.tiddlerInfo[title];
@@ -411,7 +423,7 @@ exports.startup = function() {
 								rebase(title,base,revision);
 								base = revision;
 								send();
-							});
+							},request.getResponseHeader("X-Conflict"));
 						}
 						// Maybe stored all the same: the next try's refusal will tell (resolveConflict)
 						unconfirmedSaves[title] = tiddler;

@@ -153,31 +153,38 @@ function storedSuffix(revision) {
 // it's saved without the text: the stored text is kept, as TiddlyWiki's own server does, rather than
 // stored as nothing, and the mark isn't stored. A text sent with the mark was typed into the empty
 // editor of such a tiddler (opened offline, say, limits 5: TiddlyWiki's draft copies the mark, and
-// the editor starts empty): it's what was meant, and is stored as sent; only a save without a text,
-// or with an empty one, keeps the stored text. current: the stored object, read with its body.
+// the editor starts empty). With no text stored it's stored as sent: nothing is lost. With one stored,
+// the save comes back marked replacesStoredText: stored, the typed text would replace on every device
+// a text that device never showed, so handleSave refuses it and the browser module keeps the typed
+// text as a conflict copy (design 2.33). A save without a text, or with an empty one, keeps the stored
+// text. current: the stored object, read with its body.
 export async function keepStoredText(save, current) {
   const { _is_skinny, ...fields } = save.fields;
   const head = encoder.encode(JSON.stringify(fields));
   const at = textKeyOffset(save.body);
   const typed = at === -1 ? null : save.body.subarray(at, save.body.length - 1);   // ',"text":"..."' as sent
-  if (typed && typed.length > TEXT_KEY.length + 2) {   // more than ,"text":""
-    return flatSave(fields, concatBytes([head.subarray(0, head.length - 1), typed, encoder.encode("}")]));
+  const stored = current ? await storedText(current) : new Uint8Array(0);         // the same, of the stored tiddler
+  const hasText = bytes => bytes.length > TEXT_KEY.length + 2;   // more than ,"text":""
+  if (typed && hasText(typed)) {
+    const result = flatSave(fields, concatBytes([head.subarray(0, head.length - 1), typed, encoder.encode("}")]));
+    if (hasText(stored)) result.replacesStoredText = true;
+    return result;
   }
-  let text = new Uint8Array(0);   // ',"text":"..."' of the stored tiddler
-  if (current) {
-    const stored = new Uint8Array(await current.arrayBuffer());
-    const at = textKeyOffset(stored), suffix = storedSuffix(revisionOf(current));
-    const tail = stored.subarray(stored.length - suffix.length);
-    if (at !== -1 && suffix.every((byte, i) => tail[i] === byte)) {
-      text = stored.subarray(at, stored.length - suffix.length);   // the stored layout: copied as bytes
-    } else {
-      // Stored by hand: read as JSON
-      let value;
-      try { value = JSON.parse(decoder.decode(stored)).text; } catch (e) {}
-      if (typeof value === "string") text = encoder.encode(`,"text":${JSON.stringify(value)}`);
-    }
+  return flatSave(fields, concatBytes([head.subarray(0, head.length - 1), stored, encoder.encode("}")]));
+}
+
+// The ',"text":"..."' of a stored tiddler, as bytes; nothing if it has no text
+async function storedText(current) {
+  const stored = new Uint8Array(await current.arrayBuffer());
+  const at = textKeyOffset(stored), suffix = storedSuffix(revisionOf(current));
+  const tail = stored.subarray(stored.length - suffix.length);
+  if (at !== -1 && suffix.every((byte, i) => tail[i] === byte)) {
+    return stored.subarray(at, stored.length - suffix.length);   // the stored layout: copied as bytes
   }
-  return flatSave(fields, concatBytes([head.subarray(0, head.length - 1), text, encoder.encode("}")]));
+  // Stored by hand: read as JSON
+  let value;
+  try { value = JSON.parse(decoder.decode(stored)).text; } catch (e) {}
+  return typeof value === "string" ? encoder.encode(`,"text":${JSON.stringify(value)}`) : new Uint8Array(0);
 }
 
 // Whether the stored object holds exactly what this save would store with that revision
