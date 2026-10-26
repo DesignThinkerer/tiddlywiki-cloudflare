@@ -311,10 +311,14 @@ exports.startup = function() {
 	// span with its class, which the plugin's stylesheet colours (never the only signal: the glyph
 	// stays), and a label a screen reader says as a word; the glyph first, a space after it, as the
 	// lines are read (the suites, troubleshooting)
-	function line(mark,text,guide) {
+	// todo: the one thing to do, on its own line under what was found (the worker's own field, or the
+	// browser's lines' below), before the link, so the reader finds the verb (design 2.20)
+	function line(mark,text,guide,todo) {
 		var kind = mark === "✓" ? "ok" : mark === "✗" ? "bad" : "none",
 			label = kind === "ok" ? "fine" : kind === "bad" ? "missing or wrong" : "not checked";
-		return "<li><span class='cfworker-mark cfworker-mark-" + kind + "' aria-label='" + label + "'>" + mark + "</span> <$text text=\"\"\"" + text + "\"\"\"/>" + (guide ? " ([[" + guide.text + "|" + guide.url + "]])" : "") + "</li>";
+		return "<li><span class='cfworker-mark cfworker-mark-" + kind + "' aria-label='" + label + "'>" + mark + "</span> <$text text=\"\"\"" + text + "\"\"\"/>" +
+			(todo ? " <br/>''To do:'' <$text text=\"\"\"" + todo + "\"\"\"/>" : "") +
+			(guide ? " ([[" + guide.text + "|" + guide.url + "]])" : "") + "</li>";
 	}
 	function mark(ok) {
 		return ok === true ? "✓" : ok === false ? "✗" : "–";
@@ -333,7 +337,7 @@ exports.startup = function() {
 			controller = typeof navigator === "object" && navigator.serviceWorker && navigator.serviceWorker.controller;
 		lines.push(line(mark(!!controller),controller ?
 			"Opening offline: a service worker is in place in this browser." :
-			"Opening offline: no service worker is in place in this browser yet. Reload the page once, online.",offline));
+			"Opening offline: no service worker is in place in this browser yet.",offline,controller ? null : "Reload the page once, online."));
 		if(typeof caches !== "object") {
 			lines.push(line("–","This browser has no cache storage here: nothing kept for opening offline.",offline));
 			return then(lines);
@@ -347,8 +351,9 @@ exports.startup = function() {
 			lines.push(line(mark(kept),kept ?
 				"...and the core file is kept on this device: the wiki opens with no network (the page and its plugin files with it)." :
 				corsFiles === false ?
-					"...but the core file isn't kept on this device, so the wiki doesn't open with no network: the CORS rule doesn't cover /_plugins/ (\"The CORS rule, files\", above). Fix the rule, reload once online, then check again." :
-					"...but the core file isn't kept on this device yet, so the wiki doesn't open with no network: the service worker takes its copy after a first visit. Reload the page once, online, then check again.",kept || corsFiles !== false ? offline : corsRule));
+					"...but the core file isn't kept on this device, so the wiki doesn't open with no network: the CORS rule doesn't cover /_plugins/ (\"The CORS rule, files\", above)." :
+					"...but the core file isn't kept on this device yet, so the wiki doesn't open with no network: the service worker takes its copy after a first visit.",kept || corsFiles !== false ? offline : corsRule,
+				kept ? null : corsFiles === false ? "Fix the rule, reload once online, then check again." : "Reload the page once, online, then check again."));
 			then(lines);
 		},function() {
 			lines.push(line("–","The cache storage couldn't be read.",offline));
@@ -387,7 +392,7 @@ exports.startup = function() {
 						if(item.id === "cors-files") {
 							corsFiles = item.ok;
 						}
-						lines.push(line(mark(item.ok),String(item.text || ""),item.guide));
+						lines.push(line(mark(item.ok),String(item.text || ""),item.guide,item.todo ? String(item.todo) : null));
 					});
 					return done();
 				}

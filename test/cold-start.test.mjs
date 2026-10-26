@@ -328,7 +328,7 @@ await reload(A);
 await dropCore(A);
 const setupNoCore = await setupCheck(A);
 check("the core file gone from the cache: the setup check's line about it says so in the first visit's words, with operating 3.13 (not setup 2.7: a private wiki has no CORS rule), and nothing links to \"undefined\"",
-  setupNoCore.done && setupNoCore.lines.some(l => /^✗ \.\.\.but the core file isn't kept on this device yet, so the wiki doesn't open with no network: the service worker takes its copy after a first visit\. Reload the page once, online, then check again\. \(operating 3\.13\)/.test(l)) && !setupNoCore.lines.some(l => /core file isn't kept.*setup 2\.7/.test(l)) && /<span (?=[^>]*class="cfworker-mark cfworker-mark-bad")(?=[^>]*aria-label="missing or wrong")[^>]*>✗<\/span> /.test(setupNoCore.html) && linksTo(setupNoCore.html, OFFLINE_URL) >= 2 && !/undefined/.test(setupNoCore.tab),
+  setupNoCore.done && setupNoCore.lines.some(l => /^✗ \.\.\.but the core file isn't kept on this device yet, so the wiki doesn't open with no network: the service worker takes its copy after a first visit\. To do: Reload the page once, online, then check again\. \(operating 3\.13\)/.test(l)) && /<br>\s*<strong>To do:<\/strong>/.test(setupNoCore.html) && !setupNoCore.lines.some(l => /core file isn't kept.*setup 2\.7/.test(l)) && /<span (?=[^>]*class="cfworker-mark cfworker-mark-bad")(?=[^>]*aria-label="missing or wrong")[^>]*>✗<\/span> /.test(setupNoCore.html) && linksTo(setupNoCore.html, OFFLINE_URL) >= 2 && !/undefined/.test(setupNoCore.tab),
   setupNoCore.lines.filter(l => /core file/.test(l)).join(" | ") || `done ${setupNoCore.done}`);
 await reload(A);   // (a reload: the page asks for the file conditionally, and the worker answers 304)
 const coreBack = await waitFor(() => holds(A, CORE), 10000);
@@ -397,7 +397,7 @@ check("the setup check on a public wiki: the public site answering with the page
 corsOn = false;
 await dropCore(A);   // (the browser's core-file line names the CORS cause only when the file isn't kept)
 const setupNoCors = await setupCheck(A);
-check("...without the CORS header: the files line fails naming /_plugins/ and setup 2.7 (what nothing said before), and the browser's core-file line names that line, \"The CORS rule, files\", as the cause, with setup 2.7", setupNoCors.done && setupNoCors.lines.some(l => /^✗ .*\/_plugins\/.*2\.7/.test(l)) && setupNoCors.lines.some(l => /^✗ \.\.\.but the core file isn't kept on this device, so the wiki doesn't open with no network: the CORS rule doesn't cover \/_plugins\/ \("The CORS rule, files", above\)\. Fix the rule, reload once online, then check again\. \(setup 2\.7\)/.test(l)),
+check("...without the CORS header: the files line fails naming /_plugins/ and setup 2.7 (what nothing said before), and the browser's core-file line names that line, \"The CORS rule, files\", as the cause, with setup 2.7", setupNoCors.done && setupNoCors.lines.some(l => /^✗ .*\/_plugins\/.*2\.7/.test(l)) && setupNoCors.lines.some(l => /^✗ \.\.\.but the core file isn't kept on this device, so the wiki doesn't open with no network: the CORS rule doesn't cover \/_plugins\/ \("The CORS rule, files", above\)\. To do: Fix the rule, reload once online, then check again\. \(setup 2\.7\)/.test(l)),
   setupNoCors.lines.filter(l => /_plugins|recipes|core file/.test(l)).join(" | ") || `done ${setupNoCors.done}`);
 corsOn = true;
 await reload(A);   // (the core file back in the cache, as 6b showed, before the next scenario)
@@ -513,7 +513,9 @@ check("...a tiddler the page carries (the site subtitle, set on another device) 
   carriedLine ? carriedLine[0] : carriedMeasure.text.slice(0, 200));
 mark = responses.length;
 const quietMeasure = await measure(A);
-check("...and asks the worker nothing", quietMeasure.done && got("A", mark, r => (r.url.startsWith(BASE) && !r.url.includes("/recipes/default/tiddlers.json")) || r.url.startsWith(PUB)).length === 0,
+// (The measure's own requests are what's counted: a page publish this tab owes for the other tab's
+// change, /page/shell, is the publisher's, timed by its own pause, and lands here at times under load)
+check("...and asks the worker nothing (the publisher's own page publish apart)", quietMeasure.done && got("A", mark, r => (r.url.startsWith(BASE) && !r.url.includes("/recipes/default/tiddlers.json") && !/\/page\/(shell|core)/.test(r.url)) || r.url.startsWith(PUB)).length === 0,
   got("A", mark, r => r.url.startsWith(BASE) || r.url.startsWith(PUB)).map(r => r.url.replace(BASE, "").replace(PUB, "pub:")).join(", "));
 await A.evaluate(() => $tw.rootWidget.dispatchEvent({ type: "tm-cfworker-device-keep" }));
 await waitFor(async () => /promise/i.test(await said(A)), 10000);
