@@ -322,7 +322,11 @@ exports.startup = function() {
 	// This browser's own two lines: the service worker in place, and its copy of the core file,
 	// which is what the CORS rule's /_plugins/ path is for (design 1.11). Each links to the manual as
 	// the worker's lines do: opening offline, or the rule when the copy is missing
-	function browserLines(then) {
+	// corsFiles: the worker's own "cors-files" result (true, false, or null for a private wiki), which
+	// says whether a missing copy of the core file is the CORS rule's doing (a public wiki whose rule
+	// doesn't cover /_plugins/) or only the first visit's (the service worker takes its copy after the
+	// page has loaded: one reload)
+	function browserLines(corsFiles,then) {
 		var lines = [],
 			offline = lib.guideLink("operating","3.13"),
 			corsRule = lib.guideLink("setup","2.7"),
@@ -342,7 +346,9 @@ exports.startup = function() {
 			});
 			lines.push(line(mark(kept),kept ?
 				"...and the core file is kept on this device: the wiki opens with no network (the page and its plugin files with it)." :
-				"...but the core file isn't kept on this device, so the wiki doesn't open with no network. On a public wiki, the CORS rule must cover /_plugins/ (see the line above); right after a first visit, give it a moment and check again.",kept ? offline : corsRule));
+				corsFiles === false ?
+					"...but the core file isn't kept on this device, so the wiki doesn't open with no network: the CORS rule doesn't cover /_plugins/ (\"The CORS rule, files\", above). Fix the rule, reload once online, then check again." :
+					"...but the core file isn't kept on this device yet, so the wiki doesn't open with no network: the service worker takes its copy after a first visit. Reload the page once, online, then check again.",kept || corsFiles !== false ? offline : corsRule));
 			then(lines);
 		},function() {
 			lines.push(line("–","The cache storage couldn't be read.",offline));
@@ -370,13 +376,17 @@ exports.startup = function() {
 				try {
 					body = data ? JSON.parse(data) : null;
 				} catch(e) {}
+				var corsFiles = null;
 				var done = function() {
-					browserLines(function(own) {
+					browserLines(corsFiles,function(own) {
 						show(lines.concat(own));
 					});
 				};
 				if(body && Array.isArray(body.checks)) {
 					$tw.utils.each(body.checks,function(item) {
+						if(item.id === "cors-files") {
+							corsFiles = item.ok;
+						}
 						lines.push(line(mark(item.ok),String(item.text || ""),item.guide));
 					});
 					return done();

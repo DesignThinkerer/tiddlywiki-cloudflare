@@ -1,0 +1,21 @@
+\define lingo-base() $:/language/ControlPanel/Basics/
+<$reveal state="$:/status/IsReadOnly" type="match" text="yes">
+
+Welcome to {{$:/SiteTitle}}.
+
+</$reveal>
+<$reveal state="$:/status/IsReadOnly" type="nomatch" text="yes">
+
+Welcome to your wiki on Cloudflare.
+
+* ''Where saves go:'' every tiddler you save goes to the bucket at once, and to GitHub once backups are set up ([[setup 2.4|https://github.com/DesignThinkerer/tiddlywiki-cloudflare/blob/main/docs/setup.md#24-the-backup-repository-optional]]). There's no file to save by hand.
+* ''The cloud icon'' in the sidebar turns red while something waits to be sent; click it to see why (offline, or your login expired).
+* ''The setup'' is checked from <$link to="$:/ControlPanel">Control Panel</$link> → Saving → Cloudflare, //Check the setup//: each piece set up by hand, with what to do about a missing one ([[operating 3.15|https://github.com/DesignThinkerer/tiddlywiki-cloudflare/blob/main/docs/operating.md#315-checking-the-setup]]).
+
+|tc-table-no-border tc-first-col-min-width tc-first-link-nowrap|k
+|<$link to="$:/SiteTitle"><<lingo Title/Prompt>></$link> |<$edit-text tiddler="$:/SiteTitle" default="" tag="input"/> |
+|<$link to="$:/SiteSubtitle"><<lingo Subtitle/Prompt>></$link> |<$edit-text tiddler="$:/SiteSubtitle" default="" tag="input"/> |
+
+The manual is the repository's [[README|https://github.com/DesignThinkerer/tiddlywiki-cloudflare#readme]]. This page is the plugin's: edit it and your version stays through updates; to open another tiddler first, set [[$:/DefaultTiddlers]].
+
+</$reveal>

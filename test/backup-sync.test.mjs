@@ -100,8 +100,38 @@ check("the tab's order: The setup, Backups to GitHub, The worker, The engine; th
   text.replace(/\s+/g, " ").slice(0, 700));
 await A.waitForFunction(t => $tw.wiki.tiddlerExists(t), HINT, { timeout: 10000 }).catch(() => {});
 const hint = await A.evaluate(t => { const x = $tw.wiki.getTiddler(t); return x ? { tags: x.fields.tags, text: x.fields.text } : null; }, HINT);
-check("backups on and no full backup ever: an alert says tiddlers saved before aren't on GitHub, and where the button is",
-  !!hint && (hint.tags || []).includes("$:/tags/Alert") && /full backup/.test(hint.text) && /Cloudflare/.test(hint.text), JSON.stringify(hint));
+check("backups on and no full backup ever, tiddlers listed: an alert says tiddlers saved before aren't on GitHub, with the button in it and its message under it, the Control Panel path as \"or later from\", and that a wiki whose first tiddler was saved with backups on is all there",
+  !!hint && (hint.tags || []).includes("$:/tags/Alert") && /full backup/.test(hint.text) && /<\$button message='tm-cfworker-backup-sync'>Back up everything to GitHub<\/\$button>/.test(hint.text) && /\{\{\$:\/temp\/cfworker\/backup-sync-message\}\}/.test(hint.text) && /or later from/.test(hint.text) && /Cloudflare/.test(hint.text) && /first tiddler was saved with backups on is all there/.test(hint.text), JSON.stringify(hint));
+// An empty wiki (the list the worker answers is "[]") has nothing saved before backups: no hint at
+// load, and that is remembered on this device, so the hint doesn't come back once the first saves,
+// all backed up, fill the list; the memory cleared, the hint is due as on any wiki with tiddlers
+// (A GitHub of its own, accepting every commit and keeping none: the suite's imitation is shared, and
+// this wiki's first save would count among the files the main wiki's full backup removes)
+const emptySite = await startSite({
+  index: readWikiFile(), publicStatus: true, queue: true,
+  bindings: { GITHUB_REPO: "o/r", GITHUB_TOKEN: "ghtoken", BACKUP_RETRY_SECONDS: "1" },
+  outbound: async req => req.url.startsWith("https://api.github.com/") ? (req.method === "PUT" ? json({ content: { sha: "e" } }, 201) : json({ message: "Not Found" }, 404)) : new Response('{"success":true}')
+});
+const E = await openTab(emptySite.base + "/", "E");
+await sleep(500);
+const emptyKey = () => E.evaluate(() => localStorage.getItem("cfworker-backup-hint-empty"));
+const noHintEmpty = !(await exists(E, HINT)) && (await emptyKey()) === "yes" && (await E.evaluate(() => $tw.syncadaptor.cfworkerListedTitles().length)) === 0;
+await E.evaluate(() => $tw.wiki.addTiddler({ title: "First note", text: "saved with backups on" }));
+await settle(E);
+await E.reload();
+await E.waitForFunction(() => window.$tw && $tw.syncer && $tw.syncer.timestampLastSyncFromServer);
+await settle(E);
+await sleep(500);
+const noHintRemembered = !(await exists(E, HINT)) && (await emptyKey()) === "yes" && (await E.evaluate(() => $tw.syncadaptor.cfworkerListedTitles().length)) === 1;
+await E.evaluate(() => localStorage.removeItem("cfworker-backup-hint-empty"));
+await E.reload();
+await E.waitForFunction(() => window.$tw && $tw.syncer && $tw.syncer.timestampLastSyncFromServer);
+await E.waitForFunction(t => $tw.wiki.tiddlerExists(t), HINT, { timeout: 10000 }).catch(() => {});
+const hintBack = await exists(E, HINT);
+check("an empty wiki (the list the worker answers is []): no hint at load, and that is remembered on the device (cfworker-backup-hint-empty); its first tiddler saved and the page reloaded, the list no longer empty, still no hint; the memory cleared, the hint is due",
+  noHintEmpty && noHintRemembered && hintBack, `empty ${noHintEmpty}, remembered ${noHintRemembered}, back ${hintBack}`);
+await E.close();
+await emptySite.close();
 // Closing the alert is remembered on the device: a reload doesn't bring it back
 // The module's own removal of the hint (backups reported off) isn't the user closing it: on again,
 // with no full backup still, the hint is back

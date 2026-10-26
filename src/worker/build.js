@@ -94,9 +94,12 @@ const PLUGIN_README_SOURCE = "__PLUGIN_README_SOURCE__";
 const PLUGIN_SETTINGS_SOURCE = "__PLUGIN_SETTINGS_SOURCE__";
 const PLUGIN_DEVICE_SOURCE = "__PLUGIN_DEVICE_SOURCE__";
 const PLUGIN_STYLESHEET_SOURCE = "__PLUGIN_STYLESHEET_SOURCE__";
+const PLUGIN_GETTING_STARTED_SOURCE = "__PLUGIN_GETTING_STARTED_SOURCE__";
 const PLUGIN_FIELDS = {
   name: "TiddlyWiki on Cloudflare", description: "The admin wiki's side of the worker: conflicts, the tiddler list and the device copy, backups, the published page, editing and opening offline",
-  author: "https://github.com/DesignThinkerer/tiddlywiki-cloudflare", "core-version": ">=5.3.0", list: "readme settings device"
+  author: "https://github.com/DesignThinkerer/tiddlywiki-cloudflare", "core-version": ">=5.3.0", list: "readme settings device",
+  // (Above TiddlyWeb's 10, so the plugin's GettingStarted is the one shown, not TiddlyWeb's; a missing priority counts as 1)
+  "plugin-priority": "20"
 };
 let adminPluginVersion = "";
 
@@ -107,7 +110,7 @@ let adminPluginVersion = "";
 export function pluginVersion() {
   if (!adminPluginVersion) {
     // (The shipped TiddlyWiki version is in the page too, for the Cloudflare tab: a new one, a new page)
-    const parts = [...BROWSER_MODULES.map(m => m.source), swVersion(), PLUGIN_README_SOURCE, PLUGIN_SETTINGS_SOURCE, PLUGIN_DEVICE_SOURCE, PLUGIN_STYLESHEET_SOURCE, JSON.stringify(PLUGIN_FIELDS), SHIPPED_VERSION];
+    const parts = [...BROWSER_MODULES.map(m => m.source), swVersion(), PLUGIN_README_SOURCE, PLUGIN_SETTINGS_SOURCE, PLUGIN_DEVICE_SOURCE, PLUGIN_STYLESHEET_SOURCE, PLUGIN_GETTING_STARTED_SOURCE, JSON.stringify(PLUGIN_FIELDS), SHIPPED_VERSION];
     adminPluginVersion = PACKAGE_VERSION + "+" + hashText(parts.join("\n")).toString(36);
   }
   return adminPluginVersion;
@@ -124,6 +127,9 @@ function adminPlugin(env, pageSource) {
   tiddlers[`${ADMIN_PLUGIN_TITLE}/device`] = { title: `${ADMIN_PLUGIN_TITLE}/device`, text: PLUGIN_DEVICE_SOURCE };
   // (A shadow tiddler tagged $:/tags/Stylesheet is applied like any stylesheet; text/css isn't wikified)
   tiddlers[`${ADMIN_PLUGIN_TITLE}/stylesheet`] = { title: `${ADMIN_PLUGIN_TITLE}/stylesheet`, tags: "$:/tags/Stylesheet", type: "text/css", text: PLUGIN_STYLESHEET_SOURCE };
+  // The first screen: the plugin's GettingStarted (its priority above TiddlyWeb's, whose own would win
+  // otherwise), in the project's words; an owner's edit is an override, kept through updates (design 2.21)
+  tiddlers.GettingStarted = { title: "GettingStarted", text: PLUGIN_GETTING_STARTED_SOURCE };
   return {
     title: ADMIN_PLUGIN_TITLE, "plugin-type": "plugin", type: "application/json", ...PLUGIN_FIELDS, version: pluginVersion(),
     text: JSON.stringify({ tiddlers })

@@ -31,6 +31,7 @@ var BACKUP_ALERT = "$:/temp/cfworker/backup-alert",
 	BACKUP_HINT = "$:/temp/cfworker/backup-hint",
 	BACKUP_STATUS = "$:/temp/cfworker/backup-status",
 	HINT_DISMISSED_KEY = "cfworker-backup-hint-dismissed",
+	HINT_EMPTY_KEY = "cfworker-backup-hint-empty",         // the hint held back on an empty wiki, remembered (showHint)
 	BACKUP_CHECK_MINUTES = 60;   // between asking how backups go ($:/config/cfworker/BackupCheckMinutes, the plugin's settings)
 
 exports.startup = function() {
@@ -231,15 +232,20 @@ exports.startup = function() {
 	// remembered on this device (localStorage); a full backup makes it moot everywhere.
 	function hintDismissed() {
 		try {
-			return !!window.localStorage && window.localStorage.getItem(HINT_DISMISSED_KEY) === "yes";
+			return !!window.localStorage && (window.localStorage.getItem(HINT_DISMISSED_KEY) === "yes" || window.localStorage.getItem(HINT_EMPTY_KEY) === "yes");
 		} catch(e) {
 			return false;
 		}
 	}
 
 	// (Not while backups fail, which the status tiddler says after noteStatus: the hint would sit under
-	// the alert saying every save is committed; removed by the module, back once they're through)
-	function showHint(status) {
+	// the alert saying every save is committed; removed by the module, back once they're through.)
+	// listEmpty: the list the worker just answered was "[]" (the list request's hook, below). An empty
+	// wiki has nothing saved before backups were set up, so the hint would ask for a full backup it
+	// doesn't need, on the first screen, and a full backup then makes GitHub mirror the empty bucket:
+	// held back, and that is remembered on this device, so it doesn't come back once the first saves,
+	// all backed up, fill the list
+	function showHint(status,listEmpty) {
 		var noted = wiki.getTiddler(BACKUP_STATUS);
 		if(status.backups !== "on" || status.sync || (noted && noted.fields["problem-since"])) {
 			if(wiki.tiddlerExists(BACKUP_HINT)) {
@@ -251,13 +257,20 @@ exports.startup = function() {
 		if(hintDismissed() || wiki.tiddlerExists(BACKUP_HINT)) {
 			return;
 		}
+		if(listEmpty === true) {
+			try {
+				window.localStorage.setItem(HINT_EMPTY_KEY,"yes");
+			} catch(e) {}
+			return;
+		}
 		wiki.addTiddler(new $tw.Tiddler({
 			title: BACKUP_HINT,
 			tags: ["$:/tags/Alert"],
 			component: "GitHub backup",
 			modified: new Date(),
 			text: "Backups to GitHub are on: every save from now on is committed. Tiddlers saved before they were set up (an imported wiki, say) aren't on GitHub until a full backup runs, once: " +
-				"<$link to=\"$:/ControlPanel\">Control Panel</$link> → Saving → Cloudflare → Back up everything to GitHub."
+				"<$button message='tm-cfworker-backup-sync'>Back up everything to GitHub</$button> (or later from <$link to=\"$:/ControlPanel\">Control Panel</$link> → Saving → Cloudflare). " +
+				"A wiki whose first tiddler was saved with backups on is all there.\n\n{{$:/temp/cfworker/backup-sync-message}}"
 		}));
 	}
 
@@ -278,7 +291,7 @@ exports.startup = function() {
 	// What the worker said, from the list request's header (the whole picture) or from a full
 	// backup's answers (control-panel.js: {backups: "on", sync}, the failing backups not known, left
 	// as they are): the status noted, the alert and the hint shown or removed
-	proto.cfworkerNoteBackupStatus = function(answer) {
+	proto.cfworkerNoteBackupStatus = function(answer,listEmpty) {
 		var status = typeof answer === "string" ? parseAnswer(answer) : answer;
 		if(!status) {
 			return;
@@ -290,7 +303,7 @@ exports.startup = function() {
 		if(status.stuck !== undefined) {
 			showStuck(status.stuck);
 		}
-		showHint(status);
+		showHint(status,listEmpty);
 	};
 
 	proto.cfworkerOnListRequest({
@@ -309,7 +322,10 @@ exports.startup = function() {
 			var answer = xhr.getResponseHeader("X-Backup-Status");
 			if(answer) {
 				backupAsked = Date.now();
-				proto.cfworkerNoteBackupStatus(answer);
+				// (Whether the list itself is "[]", a wiki with nothing stored: the hooks run before the
+				// adaptor reads the list, so the titles it recorded last can't say; a stand-in or a
+				// rebuilding answer isn't "[]")
+				proto.cfworkerNoteBackupStatus(answer,xhr.status === 200 && typeof xhr.responseText === "string" && /^\s*\[\s*\]\s*$/.test(xhr.responseText));
 			}
 		}
 	});
