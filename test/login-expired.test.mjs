@@ -166,6 +166,13 @@ check("...rendered in a dropdown as the theme styles it, the item wraps within 4
 const regionExpired = await A.evaluate(() => { const el = document.querySelector(".cfworker-live-region"); return el ? { role: el.getAttribute("role"), live: el.getAttribute("aria-live"), text: el.textContent.replace(/\s+/g, " ").trim() } : null; });
 check("...the hidden live region says the login has expired, in words, for a screen reader (design 2.17, #168)",
   !!regionExpired && regionExpired.role === "status" && regionExpired.live === "polite" && regionExpired.text === "Your login has expired: log in again from the cloud icon.", JSON.stringify(regionExpired));
+// The installed app has no reload of its own (design 2.26, #169): a Reload button beside Log in again,
+// offered only while what waits is kept on this device (a reload would lose what isn't)
+const reloadHtml = await A.evaluate(t => $tw.wiki.renderTiddler("text/html", t), ITEM);
+const unkeptHtml = await A.evaluate(t => { const s = $tw.wiki.getTiddler("$:/temp/cfworker/outbox"); $tw.wiki.addTiddler(new $tw.Tiddler(s, { kept: "no" })); const html = $tw.wiki.renderTiddler("text/html", t); $tw.wiki.addTiddler(s); return html; }, ITEM);
+check("...the item offers a Reload button (tm-browser-refresh) beside Log in again while what waits is kept on this device, and not when the device refused to keep it",
+  /<button[^>]*class="[^"]*cfworker-reload[^"]*"[^>]*>Reload<\/button> this page \(the installed app has no reload of its own\)/.test(reloadHtml) && /Log in again<\/a>/.test(reloadHtml) && !/cfworker-reload/.test(unkeptHtml) && /Log in again<\/a>/.test(unkeptHtml),
+  (reloadHtml.match(/.{0,60}Reload.{0,80}/) || ["no Reload"])[0]);
 check("...and, nothing waiting, the dropdown says the login has expired and to log in again, not \"offline\"; no alert",
   noticed && s2?.online === "yes" && s2?.waiting === "0" && /login has expired/i.test(l2 || "") && /log in again/i.test(l2 || "") && !/offline/i.test(l2 || "") && a2.length === 0,
   `${JSON.stringify(s2)} ${JSON.stringify(l2)} alerts ${JSON.stringify(a2)}`);

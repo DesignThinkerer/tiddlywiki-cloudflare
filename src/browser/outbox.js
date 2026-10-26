@@ -90,7 +90,10 @@ var ITEM_TEXT = [
 	"<$list filter='[[" + STATUS + "]get[waiting]match[0]]' variable='quiet'><$list filter='[[" + STATUS + "]get[online]match[no]]' variable='off'><$list filter='[[" + STATUS + "]get[login]!match[expired]]' variable='in'>Offline: what this device has loaded is here; a tiddler never opened on it is empty, and changes made elsewhere come when the network is back.</$list></$list></$list>",
 	"<$list filter='[[" + STATUS + "]get[login]match[expired]]' variable='expired'>",
 	"<$list filter='[[" + STATUS + "]get[waiting]match[0]]' variable='nothing'>''Your login has expired'': changes made on other devices no longer reach this tab, and one made here would wait on this device.</$list>",
-	"<br/>" + LOGIN_LINK + " (a new tab; this one then sends what waits by itself), or reload this page: what waits is kept on this device through it.",
+	// (Reload as a button: the installed app has no reload of its own, and a link's new tab opens the
+	// system browser there; offered while what waits is kept on this device, since a reload loses what
+	// isn't, and the unkept line above already says to keep the tab open: design 2.26)
+	"<br/>" + LOGIN_LINK + " (a new tab; this one then sends what waits by itself)<$list filter='[[" + STATUS + "]get[kept]!match[no]]' variable='kept'>, or <$button message='tm-browser-refresh' class='cfworker-reload'>Reload</$button> this page (the installed app has no reload of its own): what waits is kept on this device through it</$list>.",
 	"</$list>",
 	// A draft is the device's and never sent: said last, apart from what waits, whatever else the item says
 	"<$list filter='[[" + STATUS + "]get[drafts]!match[0]]' variable='d'><$list filter='[[" + STATUS + "]get[waiting]!match[0]] [[" + STATUS + "]get[login]match[expired]] [[" + STATUS + "]get[online]match[no]] +[limit[1]]' variable='sep'><br/></$list><$text text={{{ [[" + STATUS + "]get[drafts]] }}}/> <$text text={{{ [[" + STATUS + "]get[drafts]compare:number:eq[1]then[tiddler]else[tiddlers]] }}}/> still open in the editor here: not saved, and not on other devices until you click ✓ done</$list>",

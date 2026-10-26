@@ -16,6 +16,14 @@
 	padding: 0;
 	width: auto;
 }
+/* (the Reload button in the item's sentence, where the theme makes a dropdown's button a block) */
+.tc-drop-down .cfworker-outbox button.cfworker-reload {
+	display: inline;
+	width: auto;
+	padding: 0 0.4em;
+	margin: 0;
+	text-align: inherit;
+}
 
 /* The setup check's list: no bullets before the marks; each mark a span, a word for a screen reader
    (its aria-label), coloured, the glyph staying what says it */

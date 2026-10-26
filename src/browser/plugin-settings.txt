@@ -14,4 +14,4 @@ Sync polling interval, ms: <$edit-text tiddler="$:/config/SyncPollingInterval" t
 * Tiddlers fetched at once during the background fill (1 at least): <$edit-text tiddler="$:/config/cfworker/FetchAhead" tag="input" type="number" default="" placeholder="6" size="6"/>
 * Pause after a save before the page is published, ms: <$edit-text tiddler="$:/config/cfworker/PublishPause" tag="input" type="number" default="" placeholder="1000" size="6"/>
 * Minutes between backup status checks: <$edit-text tiddler="$:/config/cfworker/BackupCheckMinutes" tag="input" type="number" default="" placeholder="60" size="6"/>
-* Seconds the service worker waits for the network before serving the page it kept: <$edit-text tiddler="$:/config/cfworker/NetworkWait" tag="input" type="number" default="" placeholder="8" size="6"/> ''(Requires page reload)''
+* Seconds the service worker waits for the network before serving the page it kept (the tiddler list then comes from the kept copy at once): <$edit-text tiddler="$:/config/cfworker/NetworkWait" tag="input" type="number" default="" placeholder="8" size="6"/> ''(Requires page reload)''

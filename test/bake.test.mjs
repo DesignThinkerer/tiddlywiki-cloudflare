@@ -746,8 +746,8 @@ const dataPng = src => /^data:image\/png;base64,/.test(src || "") ? src.slice("d
   let copy = null;
   for (let i = 0; i < 20 && !copy; i++) { copy = await store.get("manifest.webmanifest"); if (!copy) await new Promise(r => setTimeout(r, 100)); }
   const copyJson = copy ? await copy.json().catch(() => null) : null;
-  check("a page build writes the manifest into the bucket for the public site, with the icons at /_app/ addresses, and the default icons there",
-    !!copyJson && copyJson.start_url === "/" && icon(copyJson, 192)?.src === "/_app/icon-192.png" && icon(copyJson, 512)?.src === "/_app/icon-512.png" && !!(await store.head("_app/icon-192.png")) && !!(await store.head("_app/icon-512.png")) && (copy?.httpMetadata?.contentType || "").startsWith("application/manifest+json"),
+  check("a page build writes the manifest into the bucket for the public site, with the icons at /_app/ addresses, display browser (no service worker there: not offered as an app that can't open offline, design 2.19), and the default icons there",
+    !!copyJson && copyJson.display === "browser" && copyJson.start_url === "/" && icon(copyJson, 192)?.src === "/_app/icon-192.png" && icon(copyJson, 512)?.src === "/_app/icon-512.png" && !!(await store.head("_app/icon-192.png")) && !!(await store.head("_app/icon-512.png")) && (copy?.httpMetadata?.contentType || "").startsWith("application/manifest+json"),
     JSON.stringify(copyJson).slice(0, 160));
   // The wiki's title, once set: the name follows, and a short name when it's short
   await store.put("recipes/default/tiddlers/$:/SiteTitle", JSON.stringify({ title: "$:/SiteTitle", text: "Notes" }), { customMetadata: { revision: "1", layout: "flat" } });

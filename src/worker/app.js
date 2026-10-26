@@ -74,7 +74,10 @@ async function manifestJson(env, { embedIcons }) {
     type: "image/png",
     purpose: "any maskable"
   })));
-  const manifest = { name, start_url: "/", scope: "/", display: "standalone", background_color: BACKGROUND_COLOR, theme_color: THEME_COLOR, icons };
+  // (The public site's copy says browser: without a service worker there, an installed app would open
+  // on the browser's "No internet" page offline, and Chrome offers no install for display: browser,
+  // while Add to Home screen still makes a shortcut that opens in a browser tab: design 2.19)
+  const manifest = { name, start_url: "/", scope: "/", display: embedIcons ? "standalone" : "browser", background_color: BACKGROUND_COLOR, theme_color: THEME_COLOR, icons };
   if (name.length <= SHORT_NAME_LIMIT) manifest.short_name = name;
   return JSON.stringify(manifest);
 }
