@@ -1,0 +1,6 @@
+# Every text file is checked out with LF, whatever Git's default on the system (Git for Windows
+# checks text out with CRLF): check:build compares worker.js byte for byte, and the browser modules
+# are embedded in it as JSON strings of their source files, so a clone with CRLF would fail the
+# check untouched and rebuild a worker.js that differs from CI's (development 6).
+* text=auto eol=lf
+*.png binary

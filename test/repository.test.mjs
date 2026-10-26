@@ -22,6 +22,18 @@ const ignored = fs.readFileSync(path.join(ROOT, ".gitignore"), "utf8").split(/\r
 const missing = [".dev.vars", ".wrangler/", "restore.json", "wiki/"].filter(p => !ignored.includes(p));
 check(".gitignore covers .dev.vars and .wrangler/, restore.json and wiki/ (what a restore leaves, setup 2.4), and not wrangler.toml", missing.length === 0 && !ignored.includes("wrangler.toml") && fs.existsSync(path.join(ROOT, "wrangler.toml")),
   missing.length ? "missing: " + missing.join(", ") : ignored.includes("wrangler.toml") ? "wrangler.toml is ignored" : fs.existsSync(path.join(ROOT, "wrangler.toml")) ? "" : "no wrangler.toml");
+// Line endings: LF in every clone, whatever Git's default on the system (Git for Windows checks text
+// out with CRLF), since check:build compares worker.js byte for byte and the browser modules are
+// embedded in it as JSON strings of their source files (development 6)
+const attributes = fs.existsSync(path.join(ROOT, ".gitattributes")) ? fs.readFileSync(path.join(ROOT, ".gitattributes"), "utf8").split(/\r?\n/).map(l => l.trim().replace(/\s+/g, " ")) : null;
+check(".gitattributes checks every text file out with LF (* text=auto eol=lf) and keeps PNG files binary, so a clone on Windows builds the same worker.js as CI and passes check:build (development 6)",
+  !!attributes && attributes.includes("* text=auto eol=lf") && attributes.includes("*.png binary"),
+  attributes ? attributes.filter(Boolean).join(" | ") : "no .gitattributes");
+// (git ls-files --eol: "i/lf w/lf attr/text=auto eol=lf  path"; i/crlf or i/mixed in the index would
+// be a file the attribute renormalises at the next add, a diff nobody made)
+const eol = execFileSync("git", ["ls-files", "--eol"], { cwd: ROOT, encoding: "utf8" }).split("\n").filter(Boolean);
+const notLf = eol.filter(l => !/^i\/(lf|-text|none)\s/.test(l)).map(l => l.trim());
+check(`every committed text file is LF in the index (git ls-files --eol, ${eol.length} files), so the attribute renormalises nothing`, eol.length > 0 && notLf.length === 0, notLf.join(" | "));
 const toml = fs.existsSync(path.join(ROOT, "wrangler.toml")) ? fs.readFileSync(path.join(ROOT, "wrangler.toml"), "utf8") : "";
 const tomlActive = toml.split(/\r?\n/).filter(l => !l.trim().startsWith("#")).join("\n");   // (what Wrangler reads: comments aside)
 check("wrangler.toml holds no secret, and every binding the worker needs",
