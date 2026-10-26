@@ -4,7 +4,7 @@ What this project is for, what comes next and in what order, and what has been p
 
 ## The goal
 
-A TiddlyWiki anyone hosts on Cloudflare's free plan in about ten minutes, a few of them with the Deploy to Cloudflare button, from this repository as it is: nothing edited in the fork, the settings in the dashboard, updates by syncing the fork. The wiki runs on Cloudflare only; GitHub keeps the backup (one commit per save) and the code. Behind Cloudflare Access it's private; given a domain, it's also a public site that costs no worker requests to read.
+A TiddlyWiki anyone hosts on Cloudflare's free plan in about ten minutes, from a fork of this repository as it is: nothing edited in the fork, the settings in the dashboard, updates by syncing the fork. The wiki runs on Cloudflare only; GitHub keeps the backup (one commit per save) and the code. Behind Cloudflare Access it's private; given a domain, it's also a public site that costs no worker requests to read.
 
 ## Who it's for
 
@@ -16,7 +16,7 @@ A TiddlyWiki anyone hosts on Cloudflare's free plan in about ten minutes, a few 
 
 Each step is one pull request, with its tests, its page in the manual, its design entry and its changelog line. "Done when" is written as behaviour, and becomes the list of tests when the step starts.
 
-Nothing is scheduled. The steps the goal needed are done, the Deploy to Cloudflare button last ([design 2.30](design.md#230-the-deploy-to-cloudflare-button-three-files-the-variables-kept-out-of-them), 2026-10-19, the day the repository went public). What comes next comes from use: an idea goes under Parked with its reason, or to an issue first.
+Nothing is scheduled. The steps the goal needed are done. The last of them, a Deploy to Cloudflare button (2026-10-19, the day the repository went public), was taken out again on 2026-10-26: its copy wasn't a fork, so every update needed a script, and the fork with *Sync fork* is the one path ([design 2.30](design.md#230-the-deploy-to-cloudflare-button-three-files-the-variables-kept-out-of-them)). What comes next comes from use: an idea goes under Parked with its reason, or to an issue first.
 
 ## Parked
 
@@ -24,7 +24,7 @@ Ideas with a reason to wait. Each says what it would be if it came back, so the 
 
 - **Static pages** (for search engines and readers without JavaScript, as tiddlywiki.com offers): rendered by the admin wiki, which already renders the page, into the bucket; not GitHub Pages, not an Action in the backup repository (the wiki stays on Cloudflare). Parked: not needed for the first audiences; the public wiki is a full TiddlyWiki already.
 - **Several wikis on one worker:** today a second wiki is a second worker, from the same repository with Wrangler environments ([setup 2.9](setup.md#29-a-second-wiki)). The argument for one worker is one update for every wiki. If it comes back: a wiki per hostname, each with its own bucket or prefix and settings; a session's work, and it changes the storage layout, so it waits for a need.
-- **A setup wizard** — a web page doing the setup through Cloudflare's API with a token — parked until the button proves insufficient.
+- **A setup wizard** — a web page doing the setup through Cloudflare's API with a token — parked until the setup by hand proves too much for the audience; the Deploy to Cloudflare button, tried for a week in October 2026, wasn't the answer ([design 2.30](design.md#230-the-deploy-to-cloudflare-button-three-files-the-variables-kept-out-of-them)).
 - **Image and file upload** from the admin wiki into the bucket, served by the public site, with a tiddler pointing at the file (`_canonical_uri`). Parked: not asked for yet; noted when the missing features were reviewed.
 - **Restore in reverse** — a tool writing the backup straight into the bucket. Parked: the import covers it ([setup 2.4](setup.md#24-the-backup-repository-optional)), and it would need the tiddler list rebuilt afterwards.
 - **A private site behind Access:** for a private wiki that has a domain, the bucket's custom domain protected by Cloudflare Access too, so the admin wiki reads tiddlers, the core file and plugin files through Cloudflare's cache with no worker request, as a public wiki does, while nobody else can. Needs the Access session shared across the two hostnames, reads sent with credentials (the CORS rule with `Allow-Credentials`), and the existing fallback to the worker for a read Access refuses. Open question before starting: whether a response Access allows is served from the cache rather than from R2 every time. Parked: a setup option for one audience. The private wiki and the cold start it waited for are done (checked 2026-10-17); what still comes first is the step above, and the open question wants an answer from a real zone before any code.

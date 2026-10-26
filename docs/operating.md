@@ -10,15 +10,6 @@ Your worker is deployed from your copy of this repository, which this one keeps 
 
 To take an update: on GitHub, *Sync fork* on your fork; Workers Builds redeploys, and the next admin page load rebuilds the page.
 
-**The button's copy** has no *Sync fork*: it isn't a fork but an import, one commit by Cloudflare's bot with the files as they were that day, the CI workflow left out and your project's names written into `wrangler.toml` and `package.json`, so a plain `git pull` refuses to merge it with this repository ([design 2.30](design.md#230-the-deploy-to-cloudflare-button-three-files-the-variables-kept-out-of-them)). The update is one command, in a clone of your copy on your machine, with git and Node 22 installed:
-
-```bash
-node tools/update.mjs
-git push
-```
-
-The script fetches this repository and merges its `main` into your copy: the first time by finding the commit your copy was taken from, so that the merge is an ordinary one, then as plain merges. Your names stay in `wrangler.toml` and `package.json`, which matters: this repository's file names the worker `wiki-admin`, the bucket `wiki` and the queue `wiki-backup`, and Workers Builds would bind your copy to a bucket and a queue of those names (the worker's name it corrects by itself). The CI workflow stays out, as the import left it. Your copy's `package-lock.json` gets your project's name and the version from `package.json` too, where the import had left this repository's name: an `npm install` in the copy would otherwise rewrite them, and a tree with that change makes the script ask for a commit first. A change you made to a file this repository also changed is merged like any other, and a real conflict is left to you, the script saying which file and how to finish or undo the merge. Nothing is pushed: the `git push` is the deploy. A copy made before the script existed downloads it once from this repository and commits it, `curl -fsSL https://raw.githubusercontent.com/DesignThinkerer/tiddlywiki-cloudflare/main/tools/update.mjs -o tools/update.mjs && git add tools/update.mjs && git commit -m "Add the update script"`, then runs the command above (the script refuses to start while the working tree has changes, its own file included).
-
 Nothing in the repository holds your values (`wrangler.toml` is deployed as it is, the settings live in the dashboard, [setup 2.5](setup.md#25-the-worker)), so an update never conflicts with them. [CHANGELOG.md](../CHANGELOG.md) lists, for each change, anything to do by hand — a new setting, a new zone rule; unless it says so, nothing is.
 
 After an update, reload any open admin tabs: tabs opened before it keep the old modules, and tabs older than the modules have no conflict protection.
@@ -210,6 +201,6 @@ Everything the setup made is deleted by hand, in the dashboard, or with Wrangler
 6. *(public site only)* **The zone's rules** of [setup 2.7](setup.md#27-the-zones-rules-public-site-only), under your domain's Rules: the rewrite rule, the response header rule and the cache rules. They name the hostname, so they do nothing once it's gone, but they count against the zone's free rules. `CF_ZONE_ID` is nothing to delete.
 7. **The Access application** (Zero Trust → Access → Applications), and its policy if it was made for it alone.
 8. **The tokens:** the Cloudflare API token (My Profile → API Tokens) and the GitHub token (Settings → Developer settings → Personal access tokens → Fine-grained tokens). Useless without the worker, valid until they expire.
-9. **On GitHub:** your copy of this repository (a fork, or the button's copy), Settings → *Danger Zone* → *Delete this repository*; and Cloudflare's GitHub app, if you installed it for this alone (Settings → Applications → Installed GitHub Apps). The backup repository last, or kept.
+9. **On GitHub:** your fork of this repository, Settings → *Danger Zone* → *Delete this repository*; and Cloudflare's GitHub app, if you installed it for this alone (Settings → Applications → Installed GitHub Apps). The backup repository last, or kept.
 
 A private wiki skips the domain, the rules and the Cloudflare token. A second wiki ([setup 2.9](setup.md#29-a-second-wiki)) has its own worker, bucket, queue, application and rules, but the tokens and the zone can be shared: check before deleting those.
