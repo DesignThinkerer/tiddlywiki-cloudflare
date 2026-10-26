@@ -317,6 +317,12 @@ await (await fetch(priv.base + "/")).arrayBuffer();
   check("...and each of the five public-site lines names its piece (the site, the rewrite rule, the CORS rule's two paths, the cache rules), five different lines rather than one sentence five times, each with setup 2.1",
     Object.entries(PIECES).every(([id, re]) => re.test(text(items, id)) && /nothing to check/.test(text(items, id)) && guide(items, id) === "2.1") && new Set(privateTexts).size === 5,
     privateTexts.join(" | "));
+  // The worker can't see the bucket's domains: a custom domain, or the development URL, left on the
+  // bucket serves the wiki whatever the setting says (operating 3.23), so the site's line says so in
+  // words, with where to remove it, or the setting to set to the domain
+  check("...and the public site's line says a custom domain or the development URL left on the bucket still serves the wiki, with where to remove it (R2 → the bucket → Settings → Custom Domains), or PUBLIC_WIKI_URL to set to the domain",
+    /custom domain still connected to the bucket, or its development URL \(r2\.dev\) left on, serves the wiki/.test(text(items, "public")) && /R2 → the bucket → Settings → Custom Domains/.test(text(items, "public")) && /set PUBLIC_WIKI_URL to the domain/.test(text(items, "public")) && /nothing to check/.test(text(items, "public")),
+    line(items, "public"));
   // The backup repository's visibility matters here: a public one publishes every tiddler of a private
   // wiki, with its history, against what a private wiki promises (README, "Private, or public")
   const privCheck = async () => Object.fromEntries(((await (await fetch(priv.base + "/setup/check")).json()).checks || []).map(c => [c.id, c]));
