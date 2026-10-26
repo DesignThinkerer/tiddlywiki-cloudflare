@@ -313,12 +313,15 @@ exports.startup = function() {
 	// lines are read (the suites, troubleshooting)
 	// todo: the one thing to do, on its own line under what was found (the worker's own field, or the
 	// browser's lines' below), before the link, so the reader finds the verb (design 2.20)
-	function line(mark,text,guide,todo) {
+	// link: a second link after the section's, {text, url}: the page the line's action is on, the
+	// dashboard's or GitHub's (the worker's own field, design 2.20)
+	function line(mark,text,guide,todo,link) {
 		var kind = mark === "✓" ? "ok" : mark === "✗" ? "bad" : "none",
 			label = kind === "ok" ? "fine" : kind === "bad" ? "missing or wrong" : "not checked";
 		return "<li><span class='cfworker-mark cfworker-mark-" + kind + "' aria-label='" + label + "'>" + mark + "</span> <$text text=\"\"\"" + text + "\"\"\"/>" +
 			(todo ? " <br/>''To do:'' <$text text=\"\"\"" + todo + "\"\"\"/>" : "") +
-			(guide ? " ([[" + guide.text + "|" + guide.url + "]])" : "") + "</li>";
+			(guide ? " ([[" + guide.text + "|" + guide.url + "]])" : "") +
+			(link ? " ([[" + link.text + "|" + link.url + "]])" : "") + "</li>";
 	}
 	function mark(ok) {
 		return ok === true ? "✓" : ok === false ? "✗" : "–";
@@ -394,7 +397,8 @@ exports.startup = function() {
 						if(item.id === "cors-files") {
 							corsFiles = item.ok;
 						}
-						lines.push(line(mark(item.ok),String(item.text || ""),item.guide,item.todo ? String(item.todo) : null));
+						lines.push(line(mark(item.ok),String(item.text || ""),item.guide,item.todo ? String(item.todo) : null,
+							item.link && item.link.url && item.link.text ? item.link : null));
 					});
 					return done();
 				}

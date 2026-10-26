@@ -27,7 +27,7 @@ The names, and where each goes. With the defaults, nothing in the repository nee
 |---|---|---|
 | the zone *(public site only)* | `example.com`, yours, added to the Cloudflare account ([2.2](#22-the-bucket-and-the-public-site)) | your domain as a site of the account: the public site, and the admin site's custom domain if any, are hostnames of it, and the rules of [2.7](#27-the-zones-rules-public-site-only) live under it |
 | the public site *(public site only)* | `wiki.example.com`, yours | the bucket's custom domain ([2.2](#22-the-bucket-and-the-public-site)), the setting `PUBLIC_WIKI_URL` ([2.5](#25-the-worker)) and the zone rules ([2.7](#27-the-zones-rules-public-site-only)) |
-| the zone ID *(public site only)* | on the domain's overview page in the dashboard | the setting `CF_ZONE_ID` ([2.5](#25-the-worker)) |
+| the zone ID *(public site only)* | on [the domain's overview page](https://dash.cloudflare.com/?to=/:account/:zone) in the dashboard | the setting `CF_ZONE_ID` ([2.5](#25-the-worker)) |
 | the purge token *(public site only)* | a custom API token with *Zone → Cache Purge* on that zone, made before [2.5](#25-the-worker), which has the steps | the `CF_API_TOKEN` secret ([2.5](#25-the-worker)) |
 | the backup repository and its token *(optional)* | [2.4](#24-the-backup-repository-optional) | the setting `GITHUB_REPO` and the `GITHUB_TOKEN` secret ([2.5](#25-the-worker)) |
 | the admin site | `wiki-admin.<your subdomain>.workers.dev` | the worker's own address, behind Access ([2.6](#26-cloudflare-access)), allowed by the CORS rule ([2.7](#27-the-zones-rules-public-site-only)); a custom domain instead, if you like ([2.5](#25-the-worker)) |
@@ -39,7 +39,7 @@ The names, and where each goes. With the defaults, nothing in the repository nee
 
 ## 2.2 The bucket and the public site
 
-1. In the Cloudflare dashboard, under **R2**, create the bucket (`wiki`). Nothing to upload: the worker fills it on the first visit ([2.8](#28-the-first-visit)). For a private wiki, that's all: leave public access off, and **Public Development URL (`r2.dev`)** disabled.
+1. In the Cloudflare dashboard, under **[R2](https://dash.cloudflare.com/?to=/:account/r2/overview)**, create the bucket (`wiki`). Nothing to upload: the worker fills it on the first visit ([2.8](#28-the-first-visit)). For a private wiki, that's all: leave public access off, and **Public Development URL (`r2.dev`)** disabled.
 
    *(public site only)* **The domain first.** R2 connects only a domain that is a zone of the same Cloudflare account, *Active*: a domain added to the account ([Cloudflare's steps](https://developers.cloudflare.com/fundamentals/manage-domains/add-site/): add the site, review the DNS records it imports, your mail ones among them, and set Cloudflare's nameservers at your registrar), which can take hours, so start it before anything else. The public site is a hostname of it, `wiki.example.com` under `example.com`: pick one with no DNS record of its own yet, since connecting the bucket creates it. The custom domain shows *Initializing* before *Active* ([reference 7](reference.md)). The admin site needn't move: it stays at its `workers.dev` address.
 2. *(public site only)* In the bucket's settings, turn on public access. Everything in the bucket is public through the domain from the moment it's connected, every tiddler, the tiddler list and the page, and for a wiki that was private, everything written so far ([operating 3.22](operating.md#322-making-a-private-wiki-public)). That's intended: nothing private belongs in a public wiki's bucket (secrets live in the worker's settings). Then:
@@ -51,7 +51,7 @@ The names, and where each goes. With the defaults, nothing in the repository nee
 
 ## 2.3 The backup queue
 
-Under **Storage & Databases → Queues**, create the queue (`wiki-backup`). That's all: the deploy ([2.5](#25-the-worker)) binds the worker to it as its producer and consumer, with the settings in `wrangler.toml` (batches of 10, 5 seconds, one at a time, 3 retries). Don't lower the retries: the worker counts on them for its waits ([design 1.7](design.md#17-github-backup)).
+Under **[Storage & Databases → Queues](https://dash.cloudflare.com/?to=/:account/workers/queues)**, create the queue (`wiki-backup`). That's all: the deploy ([2.5](#25-the-worker)) binds the worker to it as its producer and consumer, with the settings in `wrangler.toml` (batches of 10, 5 seconds, one at a time, 3 retries). Don't lower the retries: the worker counts on them for its waits ([design 1.7](design.md#17-github-backup)).
 
 Create the queue before the worker's first deploy ([2.5](#25-the-worker)): Wrangler refuses to deploy while a queue named in `wrangler.toml` doesn't exist. A worker without the queue binding (pasted into the dashboard without it, [2.5](#25-the-worker)) runs the same backup directly after each save, with a couple of quick retries but no long-term waiting.
 
@@ -84,7 +84,7 @@ Dragging the clone's files themselves onto the admin wiki, or importing them wit
 
 The worker is deployed from your repository by Cloudflare's **Workers Builds**: every push to `main` builds `worker.js` and deploys it, with the bindings and settings from `wrangler.toml`.
 
-1. Under **Workers & Pages**, create the worker from your repository (**Create → Import a repository**, or for a worker that already exists, its **Settings → Builds → Connect**). Cloudflare's GitHub app needs access to that repository. Name the worker `wiki-admin`: the name must be the `name` in `wrangler.toml`.
+1. Under **[Workers & Pages](https://dash.cloudflare.com/?to=/:account/workers-and-pages)**, create the worker from your repository (**Create → Import a repository**, or for a worker that already exists, its **Settings → Builds → Connect**). Cloudflare's GitHub app needs access to that repository. Name the worker `wiki-admin`: the name must be the `name` in `wrangler.toml`.
 2. The build settings:
    - **Production branch:** `main`.
    - **Build command:** `npm run build`. It writes `worker.js` and `seed/empty.html`, the empty wiki a new bucket starts from, which the deploy uploads with the worker (as a text module of it: `wrangler.toml`).
@@ -98,10 +98,10 @@ The worker is deployed from your repository by Cloudflare's **Workers Builds**: 
    | Name | What |
    |---|---|
    | `PUBLIC_WIKI_URL` | the public site's address, `https://` and the bucket's custom domain ([2.2](#22-the-bucket-and-the-public-site)), nothing after the hostname. Leave it out for a private wiki. |
-   | `CF_ZONE_ID` | the zone ID of the public site's domain, on the domain's overview page, for the purges. |
+   | `CF_ZONE_ID` | the zone ID of the public site's domain, on [the domain's overview page](https://dash.cloudflare.com/?to=/:account/:zone), for the purges. |
    | `CF_API_TOKEN` | *secret:* the purge token, made as follows. Without it and `CF_ZONE_ID`, no purges. |
 
-   **The purge token,** step by step: **My Profile → API Tokens → Create Token**, then *Create Custom Token*; a name; under *Permissions*, one row, *Zone*, *Cache Purge*, *Purge*; under *Zone Resources*, *Include*, *Specific zone*, the public site's domain; a TTL as you like (when it ends, *Check the setup* says Cloudflare refused the purge: make a new one the same way and replace the secret); *Continue to summary*, then *Create Token*; copy it now, it's shown once, and paste it as the `CF_API_TOKEN` secret. A template token would work, but hands the worker more than a wiki should hold ([design 2.31](design.md#231-removing-a-wiki-the-dashboard-not-the-plugin)); Cloudflare documents no prefilled link for a custom token.
+   **The purge token,** step by step: **[My Profile → API Tokens](https://dash.cloudflare.com/profile/api-tokens) → Create Token**, then *Create Custom Token*; a name; under *Permissions*, one row, *Zone*, *Cache Purge*, *Purge*; under *Zone Resources*, *Include*, *Specific zone*, the public site's domain; a TTL as you like (when it ends, *Check the setup* says Cloudflare refused the purge: make a new one the same way and replace the secret); *Continue to summary*, then *Create Token*; copy it now, it's shown once, and paste it as the `CF_API_TOKEN` secret. A template token would work, but hands the worker more than a wiki should hold ([design 2.31](design.md#231-removing-a-wiki-the-dashboard-not-the-plugin)); Cloudflare documents no prefilled link for a custom token.
 
    **For backups** *(optional)*:
 
@@ -131,11 +131,11 @@ The worker is deployed from your repository by Cloudflare's **Workers Builds**: 
 
 ## 2.6 Cloudflare Access
 
-Cloudflare Access is the admin site's only lock: the worker has no login of its own. In the Cloudflare dashboard (October 2026): **Workers & Pages → the worker → the Access tab → Protect this Worker behind Access**, then **All traffic** (not *Previews only*, which would leave the `workers.dev` address and a custom domain open), a policy (below), and *Apply Access*. That one application covers every address of the worker: its `workers.dev` address, a custom domain ([2.5](#25-the-worker)) and its preview URLs, which `wrangler.toml` turns off anyway. Requests Access blocks never reach the worker, so they cost no quota. The first time an account uses Zero Trust, Cloudflare asks for a team name, which becomes the address of the login page (`<team>.cloudflareaccess.com`), and a plan: the Free one, which asks for payment details all the same and charges nothing.
+Cloudflare Access is the admin site's only lock: the worker has no login of its own. In the Cloudflare dashboard (October 2026): **[Workers & Pages](https://dash.cloudflare.com/?to=/:account/workers-and-pages) → the worker → the Access tab → Protect this Worker behind Access**, then **All traffic** (not *Previews only*, which would leave the `workers.dev` address and a custom domain open), a policy (below), and *Apply Access*. That one application covers every address of the worker: its `workers.dev` address, a custom domain ([2.5](#25-the-worker)) and its preview URLs, which `wrangler.toml` turns off anyway. Requests Access blocks never reach the worker, so they cost no quota. The first time an account uses Zero Trust, Cloudflare asks for a team name, which becomes the address of the login page (`<team>.cloudflareaccess.com`), and a plan: the Free one, which asks for payment details all the same and charges nothing.
 
 **The policy** says who gets in; whoever matches none is denied. The tab offers two: *Cloudflare account*, the members of your Cloudflare account, you alone on an account you haven't added anyone to, which is the one to pick; and *Email domain*, every verified address at a domain you enter, which with a shared domain (`gmail.com`, say) admits everyone with an address there: not that one. For one address exactly, make a policy under **Zero Trust → Access → Policies**, *Include → Emails* with your address, and select it in the tab as an existing policy.
 
-**Logging in:** the login page asks you to sign in with your Cloudflare account, the default method of an organisation made since June 2026, or, with the one-time PIN method turned on (Zero Trust → Integrations → Identity providers), sends a code to your e-mail, valid ten minutes.
+**Logging in:** the login page asks you to sign in with your Cloudflare account, the default method of an organisation made since June 2026, or, with the one-time PIN method turned on ([Zero Trust](https://dash.cloudflare.com/) → Integrations → Identity providers), sends a code to your e-mail, valid ten minutes.
 
 The worker refuses any request that didn't come through Access (`403`, before reading or building anything), so a missing application, or one covering another hostname than the one a request came to, leaves the wiki closed rather than open; the refusal names the address and says what to do ([design 1.18](design.md#118-cloudflare-access)). *Check the setup* ([operating 3.15](operating.md#315-checking-the-setup)) names whom Access let in, and says the policy itself isn't checked: look at it once, in the tab. Only the tests and local runs, where there is no Access, switch the check off with `ACCESS = off`, and the switch counts only for a request to a local address (`localhost`, `127.0.0.1`): left on by mistake on a deployed worker, it opens nothing.
 
@@ -147,11 +147,11 @@ The worker refuses any request that didn't come through Access (`403`, before re
 
 Under your domain, in the dashboard. Each rule names the public hostname, so `/` on other hostnames of the zone isn't rewritten, and nothing else is cached by these rules.
 
-**A URL rewrite** (Rules → Transform Rules → Rewrite URL), so the public site opens on the built page:
+**A URL rewrite** ([Rules](https://dash.cloudflare.com/?to=/:account/:zone/rules/overview) → Transform Rules → Rewrite URL), so the public site opens on the built page:
 - **When:** `http.host eq "wiki.example.com"` and `http.request.uri.path eq "/"`
 - **Then:** rewrite the path to `/baked.html`
 
-**Cache rule "Cache public wiki":**
+**Cache rule "Cache public wiki"** ([Rules → Cache Rules](https://dash.cloudflare.com/?to=/:account/:zone/caching/cache-rules)):
 - **When:** `http.host eq "wiki.example.com"`
 - **Cache eligibility:** eligible for cache
 - **Edge TTL:** ignore the cache-control header and use a TTL. R2 sends none, and every change made through the worker is purged right away once `CF_ZONE_ID` and `CF_API_TOKEN` are set ([2.5](#25-the-worker)); a file uploaded by hand isn't ([operating 3.24](operating.md#324-images-and-files)); until then, a change shows on the public site when this TTL runs out, and *Check the setup* says so ([operating 3.15](operating.md#315-checking-the-setup)). One day is a safe default; longer works too, but a missed purge or a file uploaded to R2 by hand then stays stale that long.
@@ -176,7 +176,7 @@ Plugin files are never purged: each version has its own URL ([design 1.8](design
 
 Public tabs ask for `/status` at every page load, before the tiddler list. With this rule a visitor's browser asks once a week; without it, "Cache public wiki" applies and it asks again after a few minutes.
 
-**Response header transform rule "CORS for the admin wiki"** (Rules → Transform Rules → Modify Response Header):
+**Response header transform rule "CORS for the admin wiki"** ([Rules](https://dash.cloudflare.com/?to=/:account/:zone/rules/overview) → Transform Rules → Modify Response Header):
 - **When:** `http.host eq "wiki.example.com" and (starts_with(http.request.uri.path, "/recipes/") or starts_with(http.request.uri.path, "/_plugins/"))`
 - **Then:** set the static header `Access-Control-Allow-Origin` to the admin site's origin, `https://wiki-admin.<your subdomain>.workers.dev` (or `https://admin.wiki.example.com` with a custom domain; no trailing slash)
 

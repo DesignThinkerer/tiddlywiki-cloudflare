@@ -72,6 +72,14 @@ const text = (items, id) => items[id] ? items[id].text + (items[id].todo ? " " +
 const said = (items, id) => items[id] ? items[id].text : "";
 const todoOf = (items, id) => items[id] && typeof items[id].todo === "string" ? items[id].todo : "";
 const guide = (items, id) => items[id] && items[id].guide ? items[id].guide.section : "";
+// The dashboard's page a line's action is on, beside the guide's section (design 2.20, #164): Cloudflare's
+// deep link in the form its documentation uses, which the dashboard resolves to the account and zone
+// the user picks, one of those reference 7 lists; GitHub's settings pages the same way
+const DEEP_LINK = /^https:\/\/dash\.cloudflare\.com\/(\?to=\/:account(\/:zone)?(\/[a-z0-9-]+)*|profile\/api-tokens)$|^https:\/\/github\.com\/settings\/[a-z-]+$/;
+const listedLinks = new Set([...fs.readFileSync(new URL("../docs/reference.md", import.meta.url), "utf8").matchAll(/\]\((https:\/\/(?:dash\.cloudflare\.com|github\.com\/settings)[^)\s]*)\)/g)].map(m => m[1]));
+const dashOf = (items, id) => items[id] && items[id].link ? items[id].link : null;
+const dashTo = (items, id, text, tail) => { const d = dashOf(items, id); return !!d && d.text === text && typeof d.url === "string" && DEEP_LINK.test(d.url) && d.url.endsWith(tail) && listedLinks.has(d.url); };
+const dashNone = (items, ids) => ids.every(id => !dashOf(items, id));
 const PUBLIC_HOST = new URL(site.pub).host;   // what the zone's rules name: "when the host is …"
 // The five public-site lines, each naming the piece it stands for, when the public site doesn't
 // answer, so the list doesn't read as one sentence five times (a private wiki gets one line: section 4)
@@ -97,6 +105,9 @@ check("everything in place: every piece fine, the lines saying so", IDS.every(id
 check("...a passing line carries no todo (the cache line apart, whose optional one is information), and the queue line is plain: in place, its binding named",
   ["access", "public", "rewrite", "cors-reads", "cors-files", "backups", "queue", "purges"].every(id => !todoOf(items, id)) && /^The backup queue is in place \(BACKUP_QUEUE\)\.$/.test(said(items, "queue")),
   `queue ${line(items, "queue")} | todos ${IDS.map(id => `${id}=${JSON.stringify(todoOf(items, id))}`).join(" ")}`);
+check("...and no passing line carries a dashboard page (the Access line, with Access off, names none; the cache line's goes with its Browser TTL todo)",
+  dashNone(items, IDS.filter(id => id !== "cache")) && !!dashOf(items, "cache") === !!todoOf(items, "cache"),
+  IDS.map(id => `${id}=${JSON.stringify(dashOf(items, id))}`).join(" "));
 check("...the Access line, on this local address with ACCESS = off: says the switch is on and that a deployed worker refuses without Access",
   ok(items, "access") === true && /ACCESS = off/.test(text(items, "access")) && /deployed worker refuses/.test(text(items, "access")), line(items, "access"));
 // A request Access did authenticate, which Miniflare can't make: the worker's own function, with the
@@ -111,6 +122,8 @@ const marked = await through({ "Cf-Access-Authenticated-User-Email": "me@example
 check("a request Access let through (the mark, and its e-mail header): the Access line passes, names whom Access let in, and says the policy itself isn't checked, with where it should allow you alone",
   ok(marked, "access") === true && /me@example\.com/.test(text(marked, "access")) && /policy itself isn't checked/.test(text(marked, "access")) && /allow you alone/.test(text(marked, "access")) && /Access tab|Zero Trust/.test(text(marked, "access")) && !/ACCESS = off/.test(text(marked, "access")),
   line(marked, "access"));
+check("...and carries the dashboard's page the policy is on as a second link: Workers & Pages, Cloudflare's deep link in the documented form, listed in reference 7",
+  dashTo(marked, "access", "Workers & Pages", "/workers-and-pages"), JSON.stringify(dashOf(marked, "access")));
 const identified = await through({}, { access: { aud: "app", getIdentity: async () => ({ email: "member@example.com", name: "A member" }) } });
 check("...without the header, Cloudflare's own identity read (ctx.access.getIdentity) names whom Access let in", ok(identified, "access") === true && /member@example\.com/.test(text(identified, "access")), line(identified, "access"));
 const unnamed = await through({}, { access: { aud: "app", getIdentity: async () => { throw new Error("no identity (test)"); } } });
@@ -134,6 +147,8 @@ check("the rewrite rule missing (the public site's / isn't the page): named, wit
   `${line(items, "rewrite")} | public ${ok(items, "public")}`);
 check("...and the line ends with what to do: the rule's place (Rules → Transform Rules → Rewrite URL), the host, the path / rewritten to /baked.html",
   /Rules → Transform Rules → Rewrite URL/.test(text(items, "rewrite")) && text(items, "rewrite").includes(`the host is ${PUBLIC_HOST}`) && /rewrite the path to \/baked\.html\.$/.test(text(items, "rewrite")), line(items, "rewrite"));
+check("...the rewrite line carries the Rules page as its dashboard link, the other lines none", dashTo(items, "rewrite", "Rules", "/rules/overview") && dashNone(items, ["public", "cors-reads", "cors-files", "backups", "queue", "purges"]),
+  IDS.map(id => `${id}=${JSON.stringify(dashOf(items, id))}`).join(" "));
 check("...that action as the line's own todo field, the text ending at what was found, the evidence (status, ETag, Last-Modified, the stored page's) after the diagnosis rather than before it",
   /^Add it under the domain, Rules → Transform Rules → Rewrite URL: when the host is /.test(todoOf(items, "rewrite")) && !/Add it under/.test(said(items, "rewrite")) && /^The public site's \/ doesn't serve the wiki page: the rewrite rule \/ → \/baked\.html is missing or wrong \(answered \d+/.test(said(items, "rewrite")) && /\.$/.test(said(items, "rewrite")),
   `text ${JSON.stringify(said(items, "rewrite"))} | todo ${JSON.stringify(todoOf(items, "rewrite"))}`);
@@ -185,6 +200,8 @@ check("the CORS header missing under /_plugins/ only: the files line fails namin
   `${line(items, "cors-files")} | ${line(items, "cors-reads")}`);
 check("...and the files line ends with what to do: add the path to the rule's When (Rules → Transform Rules → Modify Response Header), the host and both paths named",
   /Add the path to the rule's When/.test(text(items, "cors-files")) && /Rules → Transform Rules → Modify Response Header/.test(text(items, "cors-files")) && text(items, "cors-files").includes(`the host is ${PUBLIC_HOST}`) && /\/recipes\/ or \/_plugins\/\.$/.test(text(items, "cors-files")), line(items, "cors-files"));
+check("...the files line carries the Rules page as its dashboard link, the reads line none", dashTo(items, "cors-files", "Rules", "/rules/overview") && !dashOf(items, "cors-reads"),
+  `${JSON.stringify(dashOf(items, "cors-files"))} ${JSON.stringify(dashOf(items, "cors-reads"))}`);
 check("...as its own todo field, the text ending at the consequence", /^Add the path to the rule's When/.test(todoOf(items, "cors-files")) && /doesn't open offline on a device that doesn't have them\.$/.test(said(items, "cors-files")) && !/Add the path/.test(said(items, "cors-files")),
   `text ${JSON.stringify(said(items, "cors-files"))} | todo ${JSON.stringify(todoOf(items, "cors-files"))}`);
 corsOff = ["/recipes/", "/_plugins/"];
@@ -205,6 +222,7 @@ corsValue = null;
 cacheStatus = "DYNAMIC";
 ({ items } = await run());
 check("no cache rule on the public site (DYNAMIC): reported with what was found, not a failure", ok(items, "cache") === null && /DYNAMIC/.test(text(items, "cache")) && guide(items, "cache") === "2.7", line(items, "cache"));
+check("...the cache line carries the Cache Rules page as its dashboard link", dashTo(items, "cache", "Cache Rules", "/caching/cache-rules"), JSON.stringify(dashOf(items, "cache")));
 check("...and the line ends with the rules to add (Rules → Cache Rules), by the setup guide's names: \"Cache public wiki\" for the page, \"Cache plugin files\" for the core file, \"Cache status file\" for the status file, as optional",
   /Rules → Cache Rules/.test(text(items, "cache")) && /\(optional\)/.test(text(items, "cache")) && /"Cache public wiki" for the page, "Cache plugin files" for the core and plugin files, "Cache status file" for the status file\.$/.test(text(items, "cache")), line(items, "cache"));
 cacheStatus = url => url.pathname.startsWith("/_plugins/") ? "DYNAMIC" : "HIT";
@@ -219,6 +237,7 @@ check("the public site not answering: its line says so with setup 2.2, the rule 
   `${line(items, "public")} | rewrite ${ok(items, "rewrite")}`);
 check("...and the public line ends with what to do: check again in a few minutes if the domain was just connected, else connect the domain to the bucket (R2 → the bucket → Settings → Custom Domains) or correct PUBLIC_WIKI_URL, named with its value, in the worker's Variables and Secrets",
   /check the setup again in a few minutes/.test(text(items, "public")) && /connect the domain to the bucket \(R2 → the bucket → Settings → Custom Domains/.test(text(items, "public")) && text(items, "public").includes(`correct PUBLIC_WIKI_URL, in the worker's Variables and Secrets, now "${site.pub}", to https:// and that domain`), line(items, "public"));
+check("...the public line carries the R2 page as its dashboard link (the bucket's custom domain)", dashTo(items, "public", "R2", "/r2/overview"), JSON.stringify(dashOf(items, "public")));
 check("...as its own todo field, the text one sentence on what was found", /^If you connected the domain to the bucket in the last few minutes/.test(todoOf(items, "public")) && /^The public site at \S+ (didn't answer \(.*\): nothing answers at PUBLIC_WIKI_URL|answered \d+: Cloudflare's edge, with no bucket behind the host yet)\.$/.test(said(items, "public")),
   `text ${JSON.stringify(said(items, "public"))} | todo ${JSON.stringify(todoOf(items, "public"))}`);
 const unchecked = ["rewrite", "cors-reads", "cors-files", "cache"];
@@ -259,6 +278,7 @@ check("...a private one: said so", ok(items, "backups") === true && /a private r
 api.repo = 401;
 ({ items } = await run());
 check("GitHub refusing the token (401): the backups line says so, with setup 2.4, and ends where the fix is: GitHub's token page, regenerate or make a new one (Contents: read and write, this repository only), then the GITHUB_TOKEN secret in the worker's Variables and Secrets", ok(items, "backups") === false && /401|token/.test(text(items, "backups")) && /Settings → Developer settings → Personal access tokens → Fine-grained tokens/.test(text(items, "backups")) && /regenerate it/.test(text(items, "backups")) && /Contents: read and write, this repository only/.test(text(items, "backups")) && /replace the GITHUB_TOKEN secret in the worker's Variables and Secrets/.test(text(items, "backups")) && guide(items, "backups") === "2.4", line(items, "backups"));
+check("...the backups line carries GitHub's tokens page as its dashboard link", dashTo(items, "backups", "GitHub's tokens", "/settings/personal-access-tokens"), JSON.stringify(dashOf(items, "backups")));
 check("...the fix as its own todo field, the text ending at the diagnosis", /^On GitHub \(Settings → Developer settings/.test(todoOf(items, "backups")) && /the GITHUB_TOKEN secret is wrong or has expired\.$/.test(said(items, "backups")),
   `text ${JSON.stringify(said(items, "backups"))} | todo ${JSON.stringify(todoOf(items, "backups"))}`);
 api.repo = 404;
@@ -282,6 +302,7 @@ api.purge = { status: 403, body: { success: false, errors: [{ code: 10000, messa
 check("Cloudflare refusing the purge: the purges line says so, with the token's section, and ends with the hostname to purge once after the fix (Purge Cache → Custom Purge → Hostname, the public host, operating 3.9), since what changed while purges failed stays cached until its Edge TTL", ok(items, "purges") === false && /Authentication error|403/.test(text(items, "purges")) && guide(items, "purges") === "2.5" && new RegExp(`Then purge the public hostname once \\(Caching → Configuration → Purge Cache → Custom Purge → Hostname, ${PUBLIC_HOST.replace(/\./g, "\\.")}; operating 3\\.9\\): what changed while purges failed stays cached until its Edge TTL otherwise\\.$`).test(text(items, "purges")), line(items, "purges"));
 check("...and the line ends with what to check: CF_ZONE_ID against the zone ID on the domain's overview page, the token under My Profile → API Tokens, a new one put in the CF_API_TOKEN secret",
   /Check CF_ZONE_ID against the zone ID on the domain's overview page/.test(text(items, "purges")) && /My Profile → API Tokens/.test(text(items, "purges")) && /put in the CF_API_TOKEN secret/.test(text(items, "purges")), line(items, "purges"));
+check("...the purges line carries the API Tokens page as its dashboard link", dashTo(items, "purges", "API Tokens", "/profile/api-tokens"), JSON.stringify(dashOf(items, "purges")));
 check("...as its own todo field (the check, the new token, the hostname purge after), the text ending at what the token needs", /^Check CF_ZONE_ID against the zone ID/.test(todoOf(items, "purges")) && /Then purge the public hostname once/.test(todoOf(items, "purges")) && /CF_API_TOKEN needs Zone → Cache Purge on the zone CF_ZONE_ID names\.$/.test(said(items, "purges")),
   `text ${JSON.stringify(said(items, "purges"))} | todo ${JSON.stringify(todoOf(items, "purges"))}`);
 api.purge = { status: 200, body: { success: true } };
@@ -303,6 +324,8 @@ check("...and says what a wiki without backups lacks: a history, the bucket keep
   /the wiki's only history/.test(text(items, "backups")) && /a deletion or an overwrite is final/.test(text(items, "backups")), line(items, "backups"));
 check("...and the purges line ends with what to set: CF_ZONE_ID (the zone ID on the domain's overview page) and the CF_API_TOKEN secret (a token from My Profile → API Tokens with Zone → Cache Purge), in the worker's Variables and Secrets",
   /CF_ZONE_ID and CF_API_TOKEN aren't set/.test(text(items, "purges")) && /CF_ZONE_ID \(the zone ID on the domain's overview page\)/.test(text(items, "purges")) && /CF_API_TOKEN secret \(a token from My Profile → API Tokens with Zone → Cache Purge on that zone\) in the worker's Variables and Secrets\.$/.test(text(items, "purges")), line(items, "purges"));
+check("...the purges line, both settings unset, carries the API Tokens page; the backups line, off, none", dashTo(items, "purges", "API Tokens", "/profile/api-tokens") && !dashOf(items, "backups"),
+  `${JSON.stringify(dashOf(items, "purges"))} ${JSON.stringify(dashOf(items, "backups"))}`);
 check("(the queue is bound here)", ok(items, "queue") === true, line(items, "queue"));
 // What the missing purge settings cost depends on the cache rules: with the page found cached, the
 // rule keeps it for its Edge TTL, a day with the guide's setting, and the line says so instead of
@@ -352,6 +375,7 @@ await (await fetch(priv.base + "/")).arrayBuffer();
   // The worker can't see the bucket's domains: a custom domain, or the development URL, left on the
   // bucket serves the wiki whatever the setting says (operating 3.23), so the line says so in words,
   // with where to remove it, or the setting to set to the domain
+  check("...and carries R2's page as its dashboard link, where that domain is removed", dashTo(items, "public", "R2", "/r2/overview"), JSON.stringify(dashOf(items, "public")));
   check("...and the line says a custom domain or the development URL left on the bucket still serves the wiki, with where to remove it (R2 → the bucket → Settings → Custom Domains), or PUBLIC_WIKI_URL to set to the domain",
     /custom domain still connected to the bucket, or its development URL \(r2\.dev\) left on, serves the wiki/.test(text(items, "public")) && /R2 → the bucket → Settings → Custom Domains/.test(text(items, "public")) && /set PUBLIC_WIKI_URL to the domain/.test(text(items, "public")),
     line(items, "public"));
