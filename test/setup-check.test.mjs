@@ -238,7 +238,7 @@ check("Cloudflare's API not answering the purge at all: the line says so, with t
 api.purgeDown = false;
 await site.setBindings({ GITHUB_REPO: "", GITHUB_TOKEN: "", CF_ZONE_ID: "", CF_API_TOKEN: "" });
 ({ items } = await run());
-check("backups not set up: the line says so with setup 2.4; no purge token: an optional piece, not a failure",
+check("backups not set up: the line says so with setup 2.4; no purge token: a dash, not a failure",
   ok(items, "backups") === false && guide(items, "backups") === "2.4" && /GITHUB_REPO/.test(text(items, "backups")) && ok(items, "purges") === null && /CF_ZONE_ID/.test(text(items, "purges")),
   `${line(items, "backups")} | ${line(items, "purges")}`);
 check("...and the backups line ends with what to do: a repository and a fine-grained token with Contents read and write, then GITHUB_REPO (owner/repo) and the GITHUB_TOKEN secret in the worker's Variables and Secrets; backups said to be optional",
@@ -248,6 +248,18 @@ check("...and says what a wiki without backups lacks: a history, the bucket keep
 check("...and the purges line ends with what to set: CF_ZONE_ID (the zone ID on the domain's overview page) and the CF_API_TOKEN secret (a token from My Profile → API Tokens with Zone → Cache Purge), in the worker's Variables and Secrets",
   /CF_ZONE_ID and CF_API_TOKEN aren't set/.test(text(items, "purges")) && /CF_ZONE_ID \(the zone ID on the domain's overview page\)/.test(text(items, "purges")) && /CF_API_TOKEN secret \(a token from My Profile → API Tokens with Zone → Cache Purge on that zone\) in the worker's Variables and Secrets\.$/.test(text(items, "purges")), line(items, "purges"));
 check("(the queue is bound here)", ok(items, "queue") === true, line(items, "queue"));
+// What the missing purge settings cost depends on the cache rules: with the page found cached, the
+// rule keeps it for its Edge TTL, a day with the guide's setting, and the line says so instead of
+// "optional"; with nothing cached, nothing holds a change back, and "optional" stays
+cacheStatus = "DYNAMIC";
+({ items } = await run());
+check("...the page not cached (no cache rule): the purges line keeps calling the settings optional, no delay to name",
+  ok(items, "purges") === null && /\(optional\)/.test(text(items, "purges")) && !/Edge TTL/.test(text(items, "purges")), line(items, "purges"));
+cacheStatus = "HIT";
+({ items } = await run());
+check("...the page cached (the guide's cache rule in place): the purges line says what the missing settings cost, the rule keeping the page for its Edge TTL, a day with the guide's setting, so a change reaches the public site when that runs out; not called optional, still a dash",
+  ok(items, "purges") === null && /"Cache public wiki"/.test(text(items, "purges")) && /Edge TTL/.test(text(items, "purges")) && /a day/.test(text(items, "purges")) && /when that runs out/.test(text(items, "purges")) && !/\(optional\)/.test(text(items, "purges")) && /CF_ZONE_ID \(the zone ID on the domain's overview page\)/.test(text(items, "purges")),
+  line(items, "purges"));
 await site.setBindings({ GITHUB_REPO: "someone/wiki-backup", GITHUB_TOKEN: "", CF_ZONE_ID: "zone-1", CF_API_TOKEN: "" });
 ({ items } = await run());
 check("the token missing of each pair, the other set: the backups line names GITHUB_TOKEN alone, with the repository, and says to make a token limited to it; the purges line names CF_API_TOKEN alone and says to set that secret",

@@ -49,8 +49,9 @@ export async function setupCheck(request, env, ctx, corsHeaders) {
     : "Cloudflare Access is off for this local address (ACCESS = off, for tests and local runs only): a deployed worker refuses every request that didn't come through Access.", SECTION.access);
 
   const site = publicSite(env);
+  let pageCached = false;   // the public site's page found cached: what missing purge settings cost (checkPurges)
   if (site) {
-    await checkPublicSite(env, site, origin, add);
+    pageCached = await checkPublicSite(env, site, origin, add);
   } else {
     for (const id of PUBLIC_IDS) add(id, null, privateLine(id), SECTION.private);
   }
@@ -58,7 +59,7 @@ export async function setupCheck(request, env, ctx, corsHeaders) {
   add("queue", !!env.BACKUP_QUEUE, env.BACKUP_QUEUE
     ? "The backup queue is bound (BACKUP_QUEUE): saves are queued for backup, and a full backup can run."
     : "The backup queue isn't bound: the worker was deployed without BACKUP_QUEUE, so nothing can be queued for backup. Deploy it with the queue wrangler.toml names.", SECTION.queue);
-  await checkPurges(env, site, add);
+  await checkPurges(env, site, add, pageCached);
 
   return new Response(JSON.stringify({ checked: new Date().toISOString(), checks }), {
     headers: { ...corsHeaders, "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" }
@@ -104,6 +105,8 @@ async function whichPage(page, stored) {
   }
 }
 
+// Returns whether the page was found cached (the cache rule in place: what missing purge settings
+// cost, checkPurges)
 async function checkPublicSite(env, site, origin, add) {
   const host = new URL(site).host;   // (PUBLIC_WIKI_URL is checked before any request is handled: a URL)
   const [page, list, core, status, stored] = await Promise.all([
@@ -120,7 +123,7 @@ async function checkPublicSite(env, site, origin, add) {
     const found = page.error ? `didn't answer (${page.error}): nothing answers at PUBLIC_WIKI_URL` : `answered ${page.status}: Cloudflare's edge, with no bucket behind the host yet`;
     add("public", false, `The public site at ${site} ${found}. If you connected the domain to the bucket in the last few minutes, Cloudflare is still setting it up: check the setup again in a few minutes. Otherwise connect the domain to the bucket (R2 → the bucket → Settings → Custom Domains, which creates its DNS record and turns public access on for it), or correct PUBLIC_WIKI_URL, ${VARS}, now "${site}", to https:// and that domain, nothing after the hostname.`, SECTION.site);
     for (const id of PUBLIC_IDS.slice(1)) add(id, null, uncheckedLine(id), SECTION.site);
-    return;
+    return false;
   }
   add("public", true, `The public site answers at ${site}.`, SECTION.site);
   const which = await whichPage(page, stored);
@@ -162,6 +165,7 @@ async function checkPublicSite(env, site, origin, add) {
   add("cache", all ? true : null,
     `Cloudflare's cache answered for the page: ${say(page)}, the core file: ${say(core)}, the status file: ${say(status)}.` +
       (all ? "" : ` DYNAMIC, or no header, means no cache rule covers it, and the public site goes to the bucket for it at every request. To cache it (optional), add under the domain's Rules → Cache Rules: ${rules.join(", ")}.`), SECTION.rules);
+  return cached(page);
 }
 
 // site: the public site's address, "" for a private wiki, whose backup repository must be private too
@@ -213,7 +217,12 @@ async function checkBackups(env, site, add) {
   }
 }
 
-async function checkPurges(env, site, add) {
+// pageCached: the public site's page found cached (checkPublicSite). Without the purge settings the
+// line is a dash either way (the site works: the rules are optional, setup 2.7), but what they cost
+// differs: with the page cached, the rule keeps it for its Edge TTL, a day with the guide's setting,
+// and the line says so in those numbers rather than "optional"; with nothing cached, nothing holds a
+// change back (design 2.20)
+async function checkPurges(env, site, add, pageCached) {
   if (!site) {
     add("purges", null, "A private wiki: nothing to purge.", SECTION.private);
     return;
@@ -224,7 +233,10 @@ async function checkPurges(env, site, add) {
     const todo = env.CF_ZONE_ID ? `set the CF_API_TOKEN secret, ${VARS}: a token from My Profile → API Tokens with Zone → Cache Purge on that zone.`
       : env.CF_API_TOKEN ? `set CF_ZONE_ID, ${VARS}, to the zone ID on the domain's overview page.`
         : `set CF_ZONE_ID (the zone ID on the domain's overview page) and the CF_API_TOKEN secret (a token from My Profile → API Tokens with Zone → Cache Purge on that zone) ${VARS}.`;
-    add("purges", null, `No purges: ${missing}, so a change shows on the public site when its cached copy expires (optional). To purge, ${todo}`, SECTION.worker);
+    const cost = pageCached
+      ? `and the cache rule "Cache public wiki" (setup 2.7) keeps the page for its Edge TTL, a day with the guide's setting, so a change made in the admin wiki reaches the public site when that runs out. To purge it at once, ${todo}`
+      : `so a change shows on the public site when its cached copy expires (optional). To purge, ${todo}`;
+    add("purges", null, `No purges: ${missing}, ${cost}`, SECTION.worker);
     return;
   }
   try {
