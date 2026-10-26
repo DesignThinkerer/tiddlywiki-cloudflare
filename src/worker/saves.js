@@ -34,7 +34,7 @@ export async function handleSave(request, env, ctx, url, corsHeaders) {
     // The stored tiddler and the tiddler list, read at once (one round trip, not two). While a
     // damaged list is being rebuilt, readableList throws: the save is refused (503) without
     // changing anything, so the browser's retry can't conflict with it.
-    // (A save without its text, keepStoredText, reads the stored text too.)
+    // (A save with the mark of a tiddler whose text hadn't loaded, keepStoredText, reads the stored text too.)
     const key = tiddlerKey(title), skinny = Object.hasOwn(save.fields, "_is_skinny");
     const [current, list] = await Promise.all([skinny ? env.WIKI_BUCKET.get(key) : env.WIKI_BUCKET.head(key), readableList(env, ctx)]);
     const currentRevision = current ? revisionOf(current) : null;
@@ -58,6 +58,15 @@ export async function handleSave(request, env, ctx, url, corsHeaders) {
         if (fields) await untilDone(ctx, finishSave(env, ctx, title, fields, currentRevision, list, url.origin, true));
       }
       return conflictResponse(title, reason, currentRevision, corsHeaders);
+    }
+    // A text typed into a tiddler whose text hadn't loaded on this device, where a text is stored
+    // (keepStoredText): refused, with a word for the browser module (X-Conflict), which keeps the typed
+    // text as a conflict copy and shows the stored tiddler (design 2.33). Only a save the module sent
+    // (the flat layout): TiddlyWiki without it (CONFLICT_GUARD off) has nothing to keep a copy and would
+    // send a refused save again for good. After the check above, so that a retry of such a save that was
+    // stored (no text was stored then; its answer lost) is finished there rather than refused.
+    if (save.replacesStoredText && request.headers.get("X-Tiddler-Layout") === FLAT_LAYOUT) {
+      return conflictResponse(title, "its text hadn't loaded on this device when the new one was typed", currentRevision, corsHeaders, "text-not-loaded");
     }
 
     const newRevision = Date.now().toString();

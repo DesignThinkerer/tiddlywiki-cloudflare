@@ -323,4 +323,49 @@ check("Forget this device's copy, offline: refused, saying to get online first; 
   `said ${JSON.stringify(await F.evaluate(() => $tw.wiki.getTiddler("$:/temp/cfworker/device-message")?.fields.text).catch(() => null))}; still here ${stillHere}, database ${dbKept}`);
 await contextF.close();
 
+// --- 15. Typed offline into a tiddler whose text hadn't loaded here: a conflict copy, the stored text shown ---
+// On a device that never loaded a tiddler's text (the fill off, $:/config/cfworker/LoadAll, built into
+// the page), the tiddler opens empty offline; what's typed there would replace, once online, a text this
+// device never showed. The worker refuses that save (412, X-Conflict: text-not-loaded), the typed text
+// is kept as a conflict copy, the stored text is loaded and shown, and the alert says why (design 2.33).
+const contextS0 = await browser.newContext();
+const S0 = await open(contextS0, "S0");
+await addTiddler(S0, { title: "$:/config/cfworker/LoadAll", text: "no" });
+await settle(S0);
+await addTiddler(S0, { title: "Never loaded here", text: "the stored text, never loaded on the other device" });
+await settle(S0);
+await contextS0.close();
+const contextS = await browser.newContext();
+const S = await open(contextS, "S");
+const skinnyHere = await S.evaluate(() => { const t = $tw.wiki.getTiddler("Never loaded here"); return !!t && t.hasField("_is_skinny"); });
+check("(with the fill off, a tiddler saved elsewhere is listed on this device, not loaded)", skinnyHere);
+await S.evaluate(() => { $tw.syncer.errorRetryInterval = 20000; });
+await contextS.setOffline(true);
+const typedS = await S.evaluate(() => {
+  const wiki = $tw.wiki, title = "Never loaded here";
+  const find = w => w.parseTreeNode && w.parseTreeNode.type === "navigator" ? w : (w.children || []).map(find).find(Boolean);
+  const navigator = find($tw.rootWidget);
+  navigator.dispatchEvent({ type: "tm-edit-tiddler", param: title });   // the edit button
+  const draft = wiki.findDraft(title), draftHadMark = wiki.getTiddler(draft).hasField("_is_skinny");
+  wiki.addTiddler(new $tw.Tiddler(wiki.getTiddler(draft), { text: "typed offline, into the empty editor" }));   // typing
+  navigator.dispatchEvent({ type: "tm-save-tiddler", param: draft });   // the save button
+  return { draftHadMark };
+});
+await waitFor(async () => ((await outbox(S)) || []).some(e => e.title === "Never loaded here" && e.kind === "save"), 10000);
+check("offline, the tiddler opened empty (its draft carries the mark), typed into and saved: the change waits on the device",
+  typedS.draftHadMark && ((await outbox(S)) || []).some(e => e.title === "Never loaded here" && e.text === "typed offline, into the empty editor"), JSON.stringify({ typedS, outbox: await outbox(S) }));
+await contextS.setOffline(false);
+const copiedS = await waitFor(() => S.evaluate(() => $tw.wiki.filterTiddlers("[conflict-of[Never loaded here]]").length === 1 && $tw.wiki.getTiddlerText("Never loaded here", null) !== null && !$tw.wiki.getTiddler("Never loaded here").hasField("_is_skinny")), 15000);
+await settle(S);
+const copyS = await S.evaluate(() => { const t = $tw.wiki.filterTiddlers("[conflict-of[Never loaded here]]")[0], f = t ? $tw.wiki.getTiddler(t).fields : null; return f ? { title: t, text: f.text, skinny: "_is_skinny" in f } : null; });
+const alertS = await S.evaluate(() => $tw.wiki.getTiddlersWithTag("$:/tags/Alert").map(t => $tw.wiki.getTiddlerText(t)).find(t => /Edit conflict/.test(t)) || "");
+check("back online: the stored text stays and is shown, the typed text is a conflict copy without the mark, and the alert says the text hadn't loaded on this device",
+  copiedS && (await stored("Never loaded here")) === "the stored text, never loaded on the other device" &&
+  await S.evaluate(() => $tw.wiki.getTiddlerText("Never loaded here") === "the stored text, never loaded on the other device") &&
+  !!copyS && copyS.text === "typed offline, into the empty editor" && !copyS.skinny && /hadn't loaded on this device/.test(alertS) && alertS.includes(copyS.title),
+  JSON.stringify({ copiedS, stored: await stored("Never loaded here"), copy: copyS, alert: alertS.slice(0, 200) }));
+await waitFor(async () => (await status(S))?.waiting === "0", 5000);
+check("...and nothing waits", (await status(S))?.waiting === "0" && JSON.stringify(await outbox(S)) === "[]", JSON.stringify(await outbox(S)));
+await contextS.close();
+
 await finish({ check, results, pageErrors, browser, site });

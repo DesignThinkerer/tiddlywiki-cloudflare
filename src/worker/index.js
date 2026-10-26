@@ -35,7 +35,7 @@ const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, PUT, POST, DELETE, OPTIONS, HEAD",
   "Access-Control-Allow-Headers": "Content-Type, X-Requested-With, X-Tiddler-Layout, If-Match, If-None-Match, Accept",
-  "Access-Control-Expose-Headers": "ETag, X-Tiddler-List, Retry-After",
+  "Access-Control-Expose-Headers": "ETag, X-Tiddler-List, X-Conflict, Retry-After",
 };
 
 const PAGE_PATHS = ["/", "/index.html", "/baked.html"];
