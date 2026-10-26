@@ -88,7 +88,7 @@ exports.REPO_URL = "https://github.com/DesignThinkerer/tiddlywiki-cloudflare";  
 exports.DOCS_URL = "https://github.com/DesignThinkerer/tiddlywiki-cloudflare/blob/main/docs";
 var GUIDE = {
 	setup: { page: "setup.md", headings: { "2.4": "The backup repository (optional)", "2.7": "The zone's rules (public site only)" } },
-	operating: { page: "operating.md", headings: { "3.1": "Updating your copy", "3.4": "Plugins", "3.13": "Opening the wiki offline", "3.14": "When your login expires" } },
+	operating: { page: "operating.md", headings: { "3.1": "Updating your copy", "3.4": "Plugins", "3.13": "Opening the wiki offline", "3.14": "When your login expires", "3.15": "Checking the setup", "3.20": "When two tabs edit the same tiddler" } },
 	limits: { page: "limits.md", headings: { "5": "Known limits" } }
 };
 function slug(text) {
@@ -106,6 +106,21 @@ exports.guideLink = function(chapter,section) {
 exports.guide = function(chapter,section) {
 	var link = exports.guideLink(chapter,section);
 	return "[[" + link.text + "|" + link.url + "]]";
+};
+
+// TiddlyWiki's "XMLHttpRequest error code: <status>" with the answer's own words after it, when the
+// worker (or Cloudflare) answered in plain text: a refusal's sentence, which says what happened and
+// what to do, cut short; never an HTML page (Access's login page, say). A request with no answer at
+// all (status 0) stays as it is: the outbox and the syncer match that string
+exports.withAnswer = function(err,xhr) {
+	if(typeof err !== "string" || !xhr || !xhr.status) {
+		return err;
+	}
+	var text = String(xhr.responseText || "").trim();
+	if(!text || text.charAt(0) === "<" || err.indexOf(text) !== -1) {
+		return err;
+	}
+	return err + ": " + text.slice(0,200);
 };
 
 // The longest title the worker stores: an R2 key holds 1024 bytes, 25 of them before the title

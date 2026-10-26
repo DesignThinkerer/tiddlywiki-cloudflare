@@ -132,7 +132,7 @@ Cloudflare Access ends a session after a set time (a day by default: the applica
 
 The tab tells this from a lost network by asking Access itself (one request, answered at Cloudflare's edge, never a worker request, and only after something has failed or a list came from the cache), and the cloud icon's dropdown then says the login has expired, not "offline", whether or not a change waits: *Log in again* opens the login in a new tab, after which this tab sends what's waiting by itself; or reload this page, which shows the login and comes back with the kept changes sent.
 
-Nothing is lost in between: every change is kept on this device, as when offline (above). [Design 1.10](design.md#110-editing-offline-the-outbox), 2.26.
+Nothing is lost in between: every change is kept on this device, as when offline (above). *Check the setup* and the tab's two buttons, *Back up everything to GitHub* and *Update the engine*, say the same when their request gets no answer: the login expired, with this section as a link, or that you're offline, or that the worker can't be reached. [Design 1.10](design.md#110-editing-offline-the-outbox), 2.26.
 
 ## 3.15 Checking the setup
 
@@ -182,7 +182,7 @@ To check they're on: in the admin wiki's browser console, `$tw.syncadaptor.confl
 
 ## 3.20 When two tabs edit the same tiddler
 
-Two tabs, two devices, or a script and a tab can't silently overwrite each other: every save says which version it's based on, and the worker refuses one based on a version that's no longer current ([design 1.4](design.md#14-edit-conflict-protection)). What you see:
+Two tabs, two devices, or a script and a tab can't silently overwrite each other: every save says which version it's based on, and the worker refuses one based on a version that's no longer current ([design 1.4](design.md#14-edit-conflict-protection)). An alert says what happened, headed "Edit conflict", "Delete conflict" or "Deleted elsewhere", names the tiddler and the copy, and ends with what to do and this section as a link. What you see:
 
 - **An edit conflict.** You save a tiddler that another tab or device saved after you started editing it (even if this tab loaded that version behind your open editor meanwhile). The tiddler then shows the version the worker has, your text is kept beside it as `<title> (conflict YYYY-MM-DD hh.mm.ss)`, opened in the story river, and an alert links both. Compare them, put what you want into the original, and delete the copy. Nothing is merged for you ([limits 5](limits.md#5-known-limits)), and nothing is overwritten.
 - **A delete conflict.** You delete, or rename, a tiddler that another tab or device saved meanwhile: it isn't deleted, the newer version is restored in your tab, and an alert says so. A rename saves the new title first, then deletes the old one, so the new title keeps your text.

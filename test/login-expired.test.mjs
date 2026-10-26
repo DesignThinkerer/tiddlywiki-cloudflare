@@ -211,6 +211,14 @@ check("\"Check the setup\" gets no answer (its request sent to the login page): 
   setup5.done && setup5.lines.some(l => /^✗ .*login has expired/i.test(l) && /operating 3\.14/.test(l)) && !setup5.lines.some(l => /^✗/.test(l) && /no network/i.test(l)) && since(probes, probesMark).length === 1,
   `${setup5.lines.join(" | ")}; ${since(probes, probesMark).length} probes`);
 check("...and the dropdown says so from then on", await loginIs(A, "expired") && /login has expired/i.test((await line(A)) || ""), JSON.stringify(await line(A)));
+// The tab's two buttons with the session expired: each says the login has expired and to log in
+// again, with the section as a link, never the XHR's "error code: 0" (the check's helper, shared)
+await A.evaluate(() => { $tw.rootWidget.dispatchEvent({ type: "tm-cfworker-backup-sync" }); $tw.rootWidget.dispatchEvent({ type: "tm-cfworker-engine-update" }); });
+const buttonsSaid = await waitFor(() => A.evaluate(() => /expired/.test($tw.wiki.getTiddlerText("$:/temp/cfworker/backup-sync-message", "")) && /expired/.test($tw.wiki.getTiddlerText("$:/temp/cfworker/engine-message", ""))), 15000);
+const [backupSaid, engineSaid] = await A.evaluate(() => [$tw.wiki.getTiddlerText("$:/temp/cfworker/backup-sync-message", ""), $tw.wiki.getTiddlerText("$:/temp/cfworker/engine-message", "")]);
+check("the tab's two buttons with the session expired: \"Back up everything\" and \"Update the engine\" each say the worker didn't answer because the login has expired, and to log in again, with operating 3.14 as a link, never the XHR's code",
+  buttonsSaid && [backupSaid, engineSaid].every(t => /The worker didn't answer: your login has expired/.test(t) && /\[\[operating 3\.14\|https:\/\/[^\]|]+#314-when-your-login-expires\]\]/.test(t) && !/XMLHttpRequest/.test(t)),
+  JSON.stringify({ backupSaid, engineSaid }));
 await pollEvery(A, 1000);
 
 // --- A reload instead: the login page, then the wiki with the change sent ------------------------------
@@ -234,7 +242,7 @@ const wentOffline = await waitFor(async () => (await status(A))?.online === "no"
 const s6 = await status(A);
 check("no network: the probe gets no answer either, the status says offline and the login stands; the dropdown says offline in one line, nothing of the login", wentOffline && s6?.online === "no" && s6?.login === "ok" && /^Offline: what this device has loaded is here/.test((await line(A)) || "") && !/login/i.test((await line(A)) || ""), `${JSON.stringify(s6)} ${JSON.stringify(await line(A))}`);
 const setup6 = await setupCheck(A);
-check("...\"Check the setup\" then says the worker didn't answer, no network, and nothing of the login", setup6.done && setup6.lines.some(l => /^✗ .*didn't answer/.test(l) && /no network/i.test(l)) && !setup6.lines.some(l => /login/i.test(l)), setup6.lines.join(" | "));
+check("...\"Check the setup\" then says the worker didn't answer, no network or the worker can't be reached, with operating 3.15 as the link and never the XHR's code, and nothing of the login", setup6.done && setup6.lines.some(l => /^✗ The worker didn't answer: no network, or the worker can't be reached/.test(l) && /\(operating 3\.15\)/.test(l)) && !setup6.lines.some(l => /XMLHttpRequest/.test(l)) && setup6.lines.some(l => /^✗ .*didn't answer/.test(l) && /no network/i.test(l)) && !setup6.lines.some(l => /login/i.test(l)), setup6.lines.join(" | "));
 await addTiddler(A, { title: "Offline note", text: "typed with the network gone" });
 await waitFor(async () => (await status(A))?.waiting === "1", 10000);
 const l6 = await line(A);

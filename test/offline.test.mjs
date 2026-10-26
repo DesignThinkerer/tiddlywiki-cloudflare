@@ -32,6 +32,14 @@ const status = p => p.evaluate(t => { const x = $tw.wiki.getTiddler(t); return x
 // What the cloud icon's dropdown says about the outbox (its item, rendered)
 const line = p => p.evaluate(t => $tw.wiki.tiddlerExists(t) && $tw.wiki.getTiddler(t).fields.tags.includes("$:/tags/SyncerDropdown") ? $tw.wiki.renderTiddler("text/plain", t).replace(/\s+/g, " ").trim() : null, ITEM);
 const alerts = p => p.evaluate(() => $tw.wiki.getTiddlersWithTag("$:/tags/Alert").map(t => { const f = $tw.wiki.getTiddler(t).fields; return { component: f.component, text: String(f.text).slice(0, 60) }; }));
+// The setup check, from the Cloudflare tab (as test/cold-start.test.mjs reads it): done, and the lines
+const SETUP = "$:/temp/cfworker/setup-check", TAB = "$:/temp/cfworker/ControlPanel";
+async function setupCheck(p) {
+  await p.evaluate(t => { $tw.wiki.deleteTiddler(t); $tw.rootWidget.dispatchEvent({ type: "tm-cfworker-setup-check" }); }, SETUP);
+  const done = await waitFor(() => p.evaluate(t => $tw.wiki.tiddlerExists(t) && $tw.wiki.getTiddler(t).fields.checked !== undefined, SETUP), 20000);
+  const tab = done ? await p.evaluate(t => $tw.wiki.renderTiddler("text/plain", t).replace(/\s+/g, " "), TAB) : "";
+  return { done, lines: (tab.match(/[✓✗–] [^✓✗–]+/g) || []).map(l => l.trim()) };
+}
 // What the device holds in its outbox: [{title, kind, base, fields}]
 const outbox = p => p.evaluate(() => new Promise(resolve => {
   const req = indexedDB.open("cfworker-tiddlers");
@@ -93,6 +101,12 @@ await waitFor(async () => (await status(A))?.online === "no", 10000);
 const quiet = await line(A);
 check("offline with nothing waiting: the dropdown says offline, that what this device has loaded is here, a tiddler never opened on it empty, and changes made elsewhere coming when the network is back; nothing of changes or the login",
   /^Offline: what this device has loaded is here; a tiddler never opened on it is empty, and changes made elsewhere come when the network is back\.$/.test(quiet || "") && !/login|waiting|kept/i.test(quiet || ""), JSON.stringify(quiet));
+// "Check the setup" run offline: the worker's line says you're offline, in words the browser knows, with
+// operating 3.13 as the link, never the XHR's "error code: 0"; this browser's own lines still follow
+const offlineCheck = await setupCheck(A);
+check("\"Check the setup\" run offline: the worker's line says you're offline, the worker couldn't be asked, only this browser's lines were checked, check again with the network back, with operating 3.13 as the link, never the XHR's code; the browser's own lines follow",
+  offlineCheck.done && offlineCheck.lines.some(l => /^✗ The worker didn't answer: you're offline: the worker couldn't be asked\. Only this browser's two lines below were checked; check again once the network is back\. \(operating 3\.13\)/.test(l)) && !offlineCheck.lines.some(l => /XMLHttpRequest/.test(l)) && offlineCheck.lines.some(l => /service worker/.test(l)),
+  offlineCheck.lines.join(" | "));
 await contextA.setOffline(false);
 await waitFor(async () => (await status(A))?.online === "yes", 10000);
 check("...and nothing again once the network is back", (await line(A)) === "", JSON.stringify(await line(A)));

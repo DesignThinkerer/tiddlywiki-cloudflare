@@ -163,6 +163,27 @@ exports.startup = function() {
 			wiki.deleteTiddler(MESSAGE);
 		}
 	}
+	// A request of this tab's own that got no answer at all (status 0): the network gone, the worker
+	// unreachable, or the Access session expired (its login page, on another origin, is blocked by the
+	// browser). The outbox tells the login from the rest by asking Access (design 2.26), and the
+	// browser knows when it's offline. then(text, guide): the words, in the manual's, and the section
+	// to link; never the XHR's "error code: 0". forCheck: the setup check's own wording
+	function noAnswer(forCheck,then) {
+		var adaptor = $tw.syncadaptor,
+			asked = adaptor && typeof adaptor.cfworkerNoAnswer === "function" ? adaptor.cfworkerNoAnswer() : Promise.resolve(null);
+		asked.then(function(login) {
+			if(login === "expired") {
+				return then("your login has expired, and Cloudflare Access sent the request to its login page instead. Log in again (the cloud icon's dropdown has the link), then " + (forCheck ? "check" : "try") + " again.",lib.guideLink("operating","3.14"));
+			}
+			if(typeof navigator === "object" && navigator.onLine === false) {
+				return then("you're offline: the worker couldn't be asked." + (forCheck ? " Only this browser's two lines below were checked; check again once the network is back." : " Try again once the network is back."),lib.guideLink("operating","3.13"));
+			}
+			then("no network, or the worker can't be reached. Try again in a moment; the cloud icon's dropdown says which it was, once it knows.",lib.guideLink("operating",forCheck ? "3.15" : "3.13"));
+		});
+	}
+	function noAnswerLink(guide) {
+		return " ([[" + guide.text + "|" + guide.url + "]])";
+	}
 	// A worker answer in a message: the worker's own words as they are (plain text, with a link to
 	// the manual in them), and anything else (an error page from the edge: HTML) as text, not markup
 	function shown(answer) {
@@ -192,7 +213,13 @@ exports.startup = function() {
 					say("No full backup yet.");
 					return;
 				}
-				say((status ? "The worker answered " + status + ": " : "The worker didn't answer: ") + shown(data || err));
+				if(status) {
+					say("The worker answered " + status + ": " + shown(data || err));
+					return;
+				}
+				noAnswer(false,function(text,guide) {
+					say("The worker didn't answer: " + text + noAnswerLink(guide));
+				});
 			}
 		});
 	}
@@ -233,7 +260,13 @@ exports.startup = function() {
 					engineSay("Engine replaced: TiddlyWiki " + (body.from || "(unknown)") + " → " + body.to + ". <$button message='" + RELOAD + "'>Reload</$button> to run it: that load builds the page from it and publishes it.");
 					return;
 				}
-				engineSay("The engine wasn't replaced. " + (status ? "The worker answered " + status + ": " : "The worker didn't answer: ") + shown(data || err));
+				if(status) {
+					engineSay("The engine wasn't replaced. The worker answered " + status + ": " + shown(data || err));
+					return;
+				}
+				noAnswer(false,function(text,guide) {
+					engineSay("The engine wasn't replaced. The worker didn't answer: " + text + noAnswerLink(guide));
+				});
 			}
 		});
 		return false;
@@ -329,15 +362,9 @@ exports.startup = function() {
 					lines.push(line("✗","The worker answered " + status + ": " + String(data || err || "").slice(0,300),""));
 					return done();
 				}
-				// No answer at all: no network, or the Access session has expired (its login page, on
-				// another origin, is blocked by the browser). The outbox tells the two apart by asking
-				// Access (design 2.26), and learns it at the same time, for the cloud icon's dropdown
-				var adaptor = $tw.syncadaptor,
-					asked = adaptor && typeof adaptor.cfworkerNoAnswer === "function" ? adaptor.cfworkerNoAnswer() : Promise.resolve(null);
-				asked.then(function(login) {
-					lines.push(login === "expired" ?
-						line("✗","The worker didn't answer: your login has expired, and Cloudflare Access sent the request to its login page instead. Log in again (the cloud icon's dropdown has the link), then check again.",lib.guideLink("operating","3.14")) :
-						line("✗","The worker didn't answer (no network, or it can't be reached): " + String(err || "").slice(0,300),""));
+				// No answer at all: said in words (noAnswer), with the section as a link
+				noAnswer(true,function(text,guide) {
+					lines.push(line("✗","The worker didn't answer: " + text,guide));
 					done();
 				});
 			}

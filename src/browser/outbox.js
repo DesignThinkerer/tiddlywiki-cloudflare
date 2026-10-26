@@ -354,10 +354,41 @@ exports.startup = function() {
 	// waits, that it's kept on this device): the alert is logged instead, and the browser marked
 	// offline, a failed load or list included, or the login expired once Access has been asked
 	// (noteNoAnswer). TiddlyWiki's other alerts (a save refused by the worker, say) show as they do.
+	// A conflict's alert is the plugin's own (design 2.17): headed by what happened, the guard's
+	// first words (conflict-guard.js), with the guard's text as it is, in place of TiddlyWiki's
+	// "Sync error while processing save of '…'" under its module id: nothing is lost in a conflict,
+	// and the text names the tiddler itself. One alert per text, as TiddlyWiki's logger keeps one
+	// per text and component. TiddlyWiki's other alerts (a save the worker refuses) show as they do.
+	var CONFLICT_HEADINGS = ["Edit conflict","Delete conflict","Deleted elsewhere"],
+		alertCount = 0;
+	function conflictHeading(err) {
+		var text = typeof err === "string" ? err : "";
+		for(var i = 0; i < CONFLICT_HEADINGS.length; i++) {
+			if(text.indexOf(CONFLICT_HEADINGS[i] + ": ") === 0) {
+				return CONFLICT_HEADINGS[i];
+			}
+		}
+		return null;
+	}
+	function conflictAlert(heading,text) {
+		var shown = wiki.getTiddlersWithTag("$:/tags/Alert").some(function(title) {
+			var fields = wiki.getTiddler(title).fields;
+			return fields.component === heading && fields.text === text;
+		});
+		if(!shown) {
+			wiki.addTiddler(new $tw.Tiddler({title: "$:/temp/cfworker/alerts/" + (++alertCount), tags: ["$:/tags/Alert"], component: heading, modified: new Date(), text: text}));
+		}
+	}
 	var originalDisplayError = $tw.Syncer.prototype.displayError;
 	$tw.Syncer.prototype.displayError = function(msg,err) {
 		if(err === $tw.language.getString("Error/XMLHttpRequest") + ": 0") {
 			noteNoAnswer();
+			this.logger.log(msg + ":",err);
+			return;
+		}
+		var heading = conflictHeading(err);
+		if(heading) {
+			conflictAlert(heading,err);
 			this.logger.log(msg + ":",err);
 			return;
 		}

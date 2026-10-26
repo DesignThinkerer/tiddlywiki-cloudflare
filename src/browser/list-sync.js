@@ -663,6 +663,9 @@ exports.startup = function() {
 			}
 			function listFetched(err,tiddlers) {
 				delivered = true;
+				if(err && request && request.status) {
+					err = lib.withAnswer(err,request);   // (the worker's own sentence after the code: lib.withAnswer)
+				}
 				if(!err && !isTiddlerList(tiddlers)) {
 					err = "the tiddler list can't be read (it isn't a list of tiddlers)";
 					tiddlers = null;

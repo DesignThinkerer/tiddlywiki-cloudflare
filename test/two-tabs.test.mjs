@@ -108,6 +108,8 @@ async function editViaUI(page, title, text) {
 const localText = (page, title) => page.evaluate(t => $tw.wiki.getTiddlerText(t, null), title);
 const conflictCopies = (page, title) => page.evaluate(t => $tw.wiki.filterTiddlers("[field:conflict-of[" + t + "]]"), title);
 const alerts = page => page.evaluate(() => $tw.wiki.filterTiddlers("[tag[$:/tags/Alert]]").map(t => $tw.wiki.getTiddlerText(t)));
+const alertFields = page => page.evaluate(() => $tw.wiki.filterTiddlers("[tag[$:/tags/Alert]]").map(t => { const f = $tw.wiki.getTiddler(t).fields; return { component: f.component, text: f.text }; }));
+const GUIDE_320 = /\(\[\[operating 3\.20\|https:\/\/[^\]|]+#320-when-two-tabs-edit-the-same-tiddler\]\]\)\.$/;   // the closing link, as the alerts end
 const clearAlerts = page => page.evaluate(() => $tw.wiki.filterTiddlers("[tag[$:/tags/Alert]]").forEach(t => $tw.wiki.deleteTiddler(t)));
 const netSince = n => net.slice(n);
 // Drops the copies of loaded tiddlers kept on the device (shared by every tab of this browser), so
@@ -159,6 +161,13 @@ check("server keeps A's version", (await server("Alpha"))?.text === "A wins");
 check("B's text is kept in a conflict copy on the server", copies.length === 1 && (await server(copies[0]))?.text === "B late edit", JSON.stringify(copies));
 check("B's tiddler now shows the server version", (await localText(B, "Alpha")) === "A wins");
 check("B shows an alert linking the copy", (await alerts(B)).some(t => t.includes("Edit conflict") && t.includes(copies[0])));
+// The alert is the plugin's own (design 2.17): headed by what happened, not TiddlyWiki's "Sync error
+// while processing save of '…'" wrapper under its module id; "the worker", never "the server"; one
+// closing sentence saying what to do, with the manual's section as a link
+const editAlert = (await alertFields(B)).find(a => /^Edit conflict:/.test(a.text || "")) || {};
+check("...the alert is the plugin's own: component \"Edit conflict\", no \"Sync error\" wrapper or module id, \"the worker\" not \"the server\", ending with what to do and operating 3.20 as a link",
+  editAlert.component === "Edit conflict" && !/Sync error|the server|syncer-browser/.test(editAlert.text || "") && /The original now shows that version: compare them, keep what you want in the original, delete the copy /.test(editAlert.text || "") && GUIDE_320.test(editAlert.text || "") && !(await alertFields(B)).some(a => /Sync error/.test(a.text || "") || a.component === "syncer-browser-tiddlyweb"),
+  JSON.stringify(editAlert));
 check("B ends clean (nothing left to retry)", await B.evaluate(() => !$tw.syncer.isDirty()));
 check("conflict copy opened in B's story", await B.evaluate(c => $tw.wiki.getTiddlerList("$:/StoryList").includes(c), copies[0]));
 await clearAlerts(B);
@@ -251,6 +260,8 @@ check("rename in an editor opened before another tab's save: deleting the old ti
 check("...the old title keeps the other tab's version, on the server and in this tab; the new title has this tab's text",
   (await server("Zeta"))?.text === "z2 from A" && (await localText(B, "Zeta")) === "z2 from A" && (await server("Zeta renamed"))?.text === "B's renamed text");
 check("...and this tab is told", (await alerts(B)).some(t => t.includes("Delete conflict") && t.includes("Zeta")), JSON.stringify(await alerts(B)));
+const deleteAlert = (await alertFields(B)).find(a => /^Delete conflict:/.test(a.text || "")) || {};
+check("...by the plugin's own alert: component \"Delete conflict\", no wrapper, ending with what to do and operating 3.20", deleteAlert.component === "Delete conflict" && !/Sync error|the server/.test(deleteAlert.text || "") && /Delete it again if you still want to /.test(deleteAlert.text || "") && GUIDE_320.test(deleteAlert.text || ""), JSON.stringify(deleteAlert));
 await clearAlerts(B);
 
 await create(A, "Eta", "h1"); await settle(A); await sync(B);
@@ -490,8 +501,8 @@ reqMark = requests.length;
 await A.evaluate(() => $tw.syncer.syncFromServer());
 await new Promise(r => setTimeout(r, FAST.errorRetry * 1.5));   // TiddlyWiki's own retry comes once in this; the quiet retries would be many
 const plainRetries = requests.slice(reqMark).filter(r => r.tag === "A" && r.url.includes("tiddlers.json")).length;
-check("another 503 isn't retried quietly: TiddlyWiki reports it as before",
-  plainRetries <= 2 && (await alerts(A)).some(text => text.includes("503")), `${plainRetries} list requests, alerts ${JSON.stringify(await alerts(A))}`);
+check("another 503 isn't retried quietly: TiddlyWiki reports it as before, with the answer's own words after the code",
+  plainRetries <= 2 && (await alerts(A)).some(text => text.includes("503") && text.includes("Worker exceeded resource limits")), `${plainRetries} list requests, alerts ${JSON.stringify(await alerts(A))}`);
 await A.unroute("**/recipes/default/tiddlers.json*");
 await clearAlerts(A);
 await settle(A);
@@ -511,6 +522,24 @@ check("a save answered \"rebuilding\" is sent again quietly and goes through",
   `${2 - rebuildingAnswers} sends, alerts ${JSON.stringify(await alerts(A))}`);
 await A.unroute("**/recipes/default/tiddlers/QuietSave");
 net.splice(netBefore, net.length - netBefore, ...net.slice(netBefore).filter(x => x.status !== 503));   // expected, not failures
+// A save the worker refuses carries the worker's own sentence: the guard appends the answer's text to
+// TiddlyWiki's "XMLHttpRequest error code: <status>" (a plain-text answer, never an HTML page), so the
+// alert says what happened and what to do, as the worker wrote it
+let refusals = 1;
+await A.route("**/recipes/default/tiddlers/RefusedOnce", route => {
+  if (route.request().method() === "PUT" && refusals-- > 0) return route.fulfill({ status: 500, headers: { "Content-Type": "text/plain; charset=utf-8" }, body: "Save failed: The tiddler list couldn't be updated: 5 saves in a row got to it first. Try again." });
+  return route.continue();
+});
+const netRefused = net.length;
+await create(A, "RefusedOnce", "refused, then stored");
+const refusedSaid = await waitFor(async () => (await alerts(A)).some(t => t.includes("error code: 500: Save failed: The tiddler list couldn't be updated: 5 saves in a row got to it first. Try again.")), 10000);
+const refusedStored = await waitFor(async () => (await server("RefusedOnce"))?.text === "refused, then stored", FAST.errorRetry * 4 + 5000);
+check("a save the worker refuses: the alert carries the worker's sentence after the code (\"5 saves in a row got to it first. Try again.\"), and the retry goes through",
+  refusedSaid && refusedStored && refusals === -1, JSON.stringify(await alerts(A)));   // (asked twice: refused once, then let through)
+await A.unroute("**/recipes/default/tiddlers/RefusedOnce");
+await clearAlerts(A);
+await settle(A);
+net.splice(netRefused, net.length - netRefused, ...net.slice(netRefused).filter(x => x.status !== 500));   // expected, not a failure
 
 // --- 14. Leaving with an editor open ----------------------------------------------------------
 // Drafts are never saved to the server, so TiddlyWiki's syncer wouldn't ask before the tab closes or
@@ -583,6 +612,8 @@ await putCode(other, GONE, markerModule("edited after the delete")); await settl
 const goneAlert = (await alerts(other)).find(t => t.includes("was deleted") && t.includes(GONE)) || "";
 check("...when the original was deleted in another tab, it says to rename the copy and give its module-type back",
   /inactive/.test(goneAlert) && /rename it/.test(goneAlert) && /module-type/.test(goneAlert) && !/copy its text/.test(goneAlert), goneAlert);
+const goneFields = (await alertFields(other)).find(a => (a.text || "").includes(GONE) && /deleted/.test(a.text || "")) || {};
+check("...headed \"Deleted elsewhere\", the plugin's own alert, ending with what to do and operating 3.20", goneFields.component === "Deleted elsewhere" && /^Deleted elsewhere: /.test(goneFields.text || "") && /otherwise delete the copy /.test(goneFields.text || "") && GUIDE_320.test(goneFields.text || ""), JSON.stringify(goneFields));
 // A raw markup tiddler with TiddlyWiki's older tag, $:/core/wiki/rawmarkup (still rendered into the
 // page's <head>): its copy loses that tag too, as every $:/ tag, so the copy's markup isn't published
 const OLD_RAW = "Old-style raw markup";

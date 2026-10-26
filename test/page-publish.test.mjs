@@ -684,6 +684,21 @@ await settle(A);
 await waitFor(async () => (await shell()).includes("after a rendering error"));
 check("...and the tab publishes again at its next save", (await shell()).includes("after a rendering error") && (await status(A))?.state === "published", JSON.stringify(await status(A)));
 
+// --- 10b. A publish with no answer (the network gone, or the login expired): the notice says so in
+// words, the dropdown telling which, never the XHR's "error code: 0" ----------------------------------
+await A.route("**/page/shell", route => route.abort());
+await add(A, { title: "$:/SiteSubtitle", text: "with no answer" });
+await settle(A);
+await waitFor(async () => /no network/.test((await status(A))?.text || ""), 15000);
+const noAnswer = await status(A);
+check("a publish with no answer: the notice says the worker didn't answer, no network or the login expired, that the cloud icon's dropdown says which, and that it's tried again at the next save or reload; never the XHR's code",
+  noAnswer?.state === "failed" && /^Page not published: the worker didn't answer: no network, or your login has expired; the cloud icon's dropdown says which\. It will be tried again at the next save or reload\.$/.test(noAnswer?.text || ""), JSON.stringify(noAnswer));
+await A.unroute("**/page/shell");
+await add(A, { title: "$:/SiteSubtitle", text: "answered again" });
+await settle(A);
+await waitFor(async () => (await shell()).includes("answered again"), 30000);
+check("...and the next change publishes", (await shell()).includes("answered again") && (await status(A))?.state === "published", JSON.stringify(await status(A)));
+
 // --- 11. A new index.html: the page is built from it, then published again ----------------------------
 await bucket.put("index.html", ENGINE.replace("</head>", "<!-- new upload -->\n</head>"));
 const contextD = await browser.newContext();

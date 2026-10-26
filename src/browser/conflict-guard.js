@@ -198,19 +198,21 @@ exports.startup = function() {
 		return copyTitle;
 	}
 
-	// For a copy of code (see makeConflictCopy): it doesn't run, and how to use that version
-	// deleted: the original was deleted elsewhere, so there's nothing to copy the text into
-	function inactiveNote(localTiddler,title,deleted) {
-		var moved = ["module-type","plugin-type"].filter(function(field) {
+	// The fields a copy of code loses (makeConflictCopy), so that it doesn't run
+	function movedFields(localTiddler) {
+		return ["module-type","plugin-type"].filter(function(field) {
 			return localTiddler.fields[field] !== undefined;
 		});
+	}
+	// For a copy of code: that it doesn't run, and where its fields went
+	function inactiveNote(localTiddler) {
+		var moved = movedFields(localTiddler);
 		if(!moved.length) {
 			return "";
 		}
-		var note = " The copy is inactive (its " + moved.join(" and ") + " moved to " + moved.map(function(field) {
+		return " The copy is inactive (its " + moved.join(" and ") + " moved to " + moved.map(function(field) {
 			return "conflict-removed-" + field;
-		}).join(" and ") + "): to use your version, ";
-		return note + (deleted ? "rename it " + lib.link(title) + " and give it back its " + moved.join(" and ") + "." : "copy its text into " + lib.link(title) + ".");
+		}).join(" and ") + ").";
 	}
 
 	// The server rejected our write: its copy changed, or (why) for a reason of its own. Keep our
@@ -261,7 +263,7 @@ exports.startup = function() {
 						return callback(null,null); // It has been deleted in the meantime anyway
 					}
 					adoptServer(title,serverFields);
-					return callback("Delete conflict: " + lib.link(title) + " was changed in another tab or browser, so it was not deleted. The latest version has been restored.");
+					return callback("Delete conflict: " + lib.link(title) + " was changed in another tab or browser, so it wasn't deleted, and the latest version has been restored. Delete it again if you still want to (" + lib.guide("operating","3.20") + ").");
 				}
 				if(localTiddler && sameContent(localTiddler,serverFields)) {
 					// Someone else saved exactly what we were saving: nothing to keep
@@ -272,20 +274,25 @@ exports.startup = function() {
 					}
 					return;
 				}
-				var copyTitle = localTiddler ? makeConflictCopy(localTiddler) : null,
-					kept = copyTitle ? " Your version has been kept as " + lib.link(copyTitle) + "." + inactiveNote(localTiddler,title,!serverFields) : "";
+				// The alert's words (the outbox shows it as the plugin's own, design 2.17): what happened,
+				// the tiddler named once, "the worker", what to do, and the manual's section as a link
+				var guide = " (" + lib.guide("operating","3.20") + ").",
+					copyTitle = localTiddler ? makeConflictCopy(localTiddler) : null,
+					moved = localTiddler ? movedFields(localTiddler) : [],
+					kept = copyTitle ? " Your version is kept as " + lib.link(copyTitle) + "." + inactiveNote(localTiddler) : "";
 				if(serverFields) {
 					adoptServer(title,serverFields);
+					var compare = copyTitle ? ": compare them, keep what you want in the original" + (moved.length ? " (its text copied across: the copy's " + moved.join(" and ") + " is gone)" : "") + ", delete the copy" + guide : ".";
 					if(why === "text-not-loaded") {
-						return callback("Edit conflict: the text of " + lib.link(title) + " hadn't loaded on this device when you typed into it." + kept + " " + lib.link(title) + " now shows the stored text.");
+						return callback("Edit conflict: the text of " + lib.link(title) + " hadn't loaded on this device when you typed into it." + kept + " The original now shows the stored text" + compare);
 					}
-					callback("Edit conflict: " + lib.link(title) + " was changed in another tab or browser before your save reached the server." + kept + " " + lib.link(title) + " now shows the server version.");
+					callback("Edit conflict: " + lib.link(title) + " was changed in another tab or browser before your save reached the worker." + kept + " The original now shows that version" + compare);
 				} else {
 					delete s.tiddlerInfo[title];
 					if(localTiddler) {
 						wiki.deleteTiddler(title);
 					}
-					callback("Edit conflict: " + lib.link(title) + " was deleted in another tab or browser." + kept);
+					callback("Deleted elsewhere: " + lib.link(title) + " was deleted in another tab or browser." + kept + (copyTitle ? " To keep your version, rename it to the original's title" + (moved.length ? " and give it back its " + moved.join(" and ") : "") + "; otherwise delete the copy" + guide : ""));
 				}
 			}
 		});
@@ -427,7 +434,7 @@ exports.startup = function() {
 						}
 						// Maybe stored all the same: the next try's refusal will tell (resolveConflict)
 						unconfirmedSaves[title] = tiddler;
-						return callback(err);
+						return callback(lib.withAnswer(err,request));   // (the worker's own sentence after the code)
 					}
 					delete unconfirmedSaves[title];
 					if($tw.browserStorage && $tw.browserStorage.isEnabled()) {
@@ -488,7 +495,7 @@ exports.startup = function() {
 						if(request && request.status === 412) {
 							return resolveConflict(self,title,"delete",callback);
 						}
-						return callback(err);
+						return callback(lib.withAnswer(err,request));
 					}
 					delete pendingBases[title];
 					delete deleteBases[title];
