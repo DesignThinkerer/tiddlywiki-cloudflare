@@ -96,6 +96,7 @@ const PLUGIN_SETTINGS_SOURCE = "__PLUGIN_SETTINGS_SOURCE__";
 const PLUGIN_DEVICE_SOURCE = "__PLUGIN_DEVICE_SOURCE__";
 const PLUGIN_STYLESHEET_SOURCE = "__PLUGIN_STYLESHEET_SOURCE__";
 const PLUGIN_GETTING_STARTED_SOURCE = "__PLUGIN_GETTING_STARTED_SOURCE__";
+const PLUGIN_HISTORY_BUTTON_SOURCE = "__PLUGIN_HISTORY_BUTTON_SOURCE__";
 const PLUGIN_FIELDS = {
   name: "TiddlyWiki on Cloudflare", description: "The admin wiki's side of the worker: conflicts, the tiddler list and the device copy, backups, the published page, editing and opening offline",
   author: "https://github.com/DesignThinkerer/tiddlywiki-cloudflare", "core-version": ">=5.3.0", list: "readme settings device",
@@ -111,7 +112,7 @@ let adminPluginVersion = "";
 export function pluginVersion() {
   if (!adminPluginVersion) {
     // (The shipped TiddlyWiki version is in the page too, for the Cloudflare tab: a new one, a new page)
-    const parts = [...BROWSER_MODULES.map(m => m.source), swVersion(), PLUGIN_README_SOURCE, PLUGIN_SETTINGS_SOURCE, PLUGIN_DEVICE_SOURCE, PLUGIN_STYLESHEET_SOURCE, PLUGIN_GETTING_STARTED_SOURCE, JSON.stringify(PLUGIN_FIELDS), SHIPPED_VERSION];
+    const parts = [...BROWSER_MODULES.map(m => m.source), swVersion(), PLUGIN_README_SOURCE, PLUGIN_SETTINGS_SOURCE, PLUGIN_DEVICE_SOURCE, PLUGIN_STYLESHEET_SOURCE, PLUGIN_GETTING_STARTED_SOURCE, PLUGIN_HISTORY_BUTTON_SOURCE, JSON.stringify(PLUGIN_FIELDS), SHIPPED_VERSION];
     adminPluginVersion = PACKAGE_VERSION + "+" + hashText(parts.join("\n")).toString(36);
   }
   return adminPluginVersion;
@@ -131,6 +132,12 @@ function adminPlugin(env, pageSource) {
   // The first screen: the plugin's GettingStarted (its priority above TiddlyWeb's, whose own would win
   // otherwise), in the project's words; an owner's edit is an override, kept through updates (design 2.21)
   tiddlers.GettingStarted = { title: "GettingStarted", text: PLUGIN_GETTING_STARTED_SOURCE };
+  // "History on GitHub" for the tiddler shown, in TiddlyWiki's view toolbar, hidden by default (the
+  // toolbar's own visibility setting, Control Panel → Appearance → Toolbars), shown only while
+  // backups are on and the site isn't read-only: the file's commits, each slash of the title a folder
+  // in the backup (#143)
+  tiddlers[`${ADMIN_PLUGIN_TITLE}/history-button`] = { title: `${ADMIN_PLUGIN_TITLE}/history-button`, tags: "$:/tags/ViewToolbar", caption: "History on GitHub", description: "This tiddler's past versions, in the backup repository", "list-after": "$:/core/ui/Buttons/more-tiddler-actions", text: PLUGIN_HISTORY_BUTTON_SOURCE };
+  tiddlers[`$:/config/ViewToolbarButtons/Visibility/${ADMIN_PLUGIN_TITLE}/history-button`] = { title: `$:/config/ViewToolbarButtons/Visibility/${ADMIN_PLUGIN_TITLE}/history-button`, text: "hide" };
   return {
     title: ADMIN_PLUGIN_TITLE, "plugin-type": "plugin", type: "application/json", ...PLUGIN_FIELDS, version: pluginVersion(),
     text: JSON.stringify({ tiddlers })

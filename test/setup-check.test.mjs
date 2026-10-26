@@ -105,8 +105,8 @@ check("everything in place: every piece fine, the lines saying so", IDS.every(id
 check("...a passing line carries no todo (the cache line apart, whose optional one is information), and the queue line is plain: in place, its binding named",
   ["access", "public", "rewrite", "cors-reads", "cors-files", "backups", "queue", "purges"].every(id => !todoOf(items, id)) && /^The backup queue is in place \(BACKUP_QUEUE\)\.$/.test(said(items, "queue")),
   `queue ${line(items, "queue")} | todos ${IDS.map(id => `${id}=${JSON.stringify(todoOf(items, id))}`).join(" ")}`);
-check("...and no passing line carries a dashboard page (the Access line, with Access off, names none; the cache line's goes with its Browser TTL todo)",
-  dashNone(items, IDS.filter(id => id !== "cache")) && !!dashOf(items, "cache") === !!todoOf(items, "cache"),
+check("...and no passing line carries a dashboard page (the Access line, with Access off, names none; the cache line's goes with its Browser TTL todo; the backups line's second link is the repository's commits, #143)",
+  dashNone(items, IDS.filter(id => id !== "cache" && id !== "backups")) && !!dashOf(items, "cache") === !!todoOf(items, "cache") && /\/commits\//.test(dashOf(items, "backups")?.url || ""),
   IDS.map(id => `${id}=${JSON.stringify(dashOf(items, id))}`).join(" "));
 check("...the Access line, on this local address with ACCESS = off: says the switch is on and that a deployed worker refuses without Access",
   ok(items, "access") === true && /ACCESS = off/.test(text(items, "access")) && /deployed worker refuses/.test(text(items, "access")), line(items, "access"));
@@ -136,7 +136,7 @@ check("...GitHub asked for the repository and its branch with the token, Cloudfl
   calls.some(c => c === "GET https://api.github.com/repos/someone/wiki-backup") && calls.some(c => c === "GET https://api.github.com/repos/someone/wiki-backup/branches/main") &&
   calls.some(c => c === "POST https://api.cloudflare.com/client/v4/zones/zone-1/purge_cache"), calls.join(", "));
 check("...the purges line says the status file's copy was purged, the backups line names the repository and the branch, and says what the check can't test, writing, with the next step: save any tiddler, and the tab's Backups section and an alert say if GitHub refuses it",
-  /status/.test(text(items, "purges")) && /someone\/wiki-backup/.test(text(items, "backups")) && /main/.test(text(items, "backups")) && /GitHub accepts the token\. The check can't test writing: save any tiddler, and if GitHub refuses it, the tab's Backups section and an alert say so within minutes\.$/.test(text(items, "backups")) && !/Whether it may write/.test(text(items, "backups")),
+  /status/.test(text(items, "purges")) && /someone\/wiki-backup/.test(text(items, "backups")) && /main/.test(text(items, "backups")) && /GitHub accepts the token\. The check can't test writing: save any tiddler, and if GitHub refuses it, the tab's Backups section and an alert say so within minutes\.$/.test(text(items, "backups")) && !/Whether it may write/.test(text(items, "backups")) && !!items.backups.link && items.backups.link.url === "https://github.com/someone/wiki-backup/commits/main" && items.backups.link.text === "its commits on GitHub",
   `${line(items, "purges")} ${line(items, "backups")}`);
 
 // --- 2. The public site's rules, one missing at a time --------------------------------------------
@@ -147,7 +147,7 @@ check("the rewrite rule missing (the public site's / isn't the page): named, wit
   `${line(items, "rewrite")} | public ${ok(items, "public")}`);
 check("...and the line ends with what to do: the rule's place (Rules → Transform Rules → Rewrite URL), the host, the path / rewritten to /baked.html",
   /Rules → Transform Rules → Rewrite URL/.test(text(items, "rewrite")) && text(items, "rewrite").includes(`the host is ${PUBLIC_HOST}`) && /rewrite the path to \/baked\.html\.$/.test(text(items, "rewrite")), line(items, "rewrite"));
-check("...the rewrite line carries the Rules page as its dashboard link, the other lines none", dashTo(items, "rewrite", "Rules", "/rules/overview") && dashNone(items, ["public", "cors-reads", "cors-files", "backups", "queue", "purges"]),
+check("...the rewrite line carries the Rules page as its dashboard link, the other lines none (the backups line's commits apart)", dashTo(items, "rewrite", "Rules", "/rules/overview") && dashNone(items, ["public", "cors-reads", "cors-files", "queue", "purges"]),
   IDS.map(id => `${id}=${JSON.stringify(dashOf(items, id))}`).join(" "));
 check("...that action as the line's own todo field, the text ending at what was found, the evidence (status, ETag, Last-Modified, the stored page's) after the diagnosis rather than before it",
   /^Add it under the domain, Rules → Transform Rules → Rewrite URL: when the host is /.test(todoOf(items, "rewrite")) && !/Add it under/.test(said(items, "rewrite")) && /^The public site's \/ doesn't serve the wiki page: the rewrite rule \/ → \/baked\.html is missing or wrong \(answered \d+/.test(said(items, "rewrite")) && /\.$/.test(said(items, "rewrite")),

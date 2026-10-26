@@ -13,4 +13,6 @@ if (!block) {
   console.error(wanted ? `CHANGELOG.md has no block dated ${wanted}` : "CHANGELOG.md has no dated block");
   process.exit(1);
 }
-process.stdout.write(block.slice(block.indexOf("\n") + 1).trim() + "\n");
+// (The notes end with where every release since the reader's is, with anything to do by hand: a worker
+// several releases behind is shown the newest notes only, #143)
+process.stdout.write(block.slice(block.indexOf("\n") + 1).trim() + "\n\nEvery release since yours, with anything to do by hand: https://github.com/DesignThinkerer/tiddlywiki-cloudflare/blob/main/CHANGELOG.md\n");

@@ -130,7 +130,11 @@ async function backupStatus(b = base, m = mf, ask = true) {
   const res = await m.dispatchFetch(`${b}/recipes/default/tiddlers.json`, ask ? { headers: { "X-Backup-Status": "ask" } } : undefined);
   await res.arrayBuffer();
   const value = res.headers.get("X-Backup-Status");
-  return value === null || value === "ok" || value === "off" ? value : JSON.parse(decodeURIComponent(value));
+  if (value === null || value === "ok" || value === "off") return value;
+  // (With backups on and nothing to report, the report is the repository and branch alone, which the
+  // tab links (#143): "ok" here, as the header said before)
+  const report = JSON.parse(decodeURIComponent(value));
+  return Object.keys(report).every(k => k === "repo" || k === "branch") ? "ok" : report;
 }
 async function until(cond, ms = 60000) {
   const end = Date.now() + ms;

@@ -78,7 +78,7 @@ It runs in the backup queue, without the tab, at GitHub's pace (about 500 commit
 
 Dragging the clone's files themselves onto the admin wiki, or importing them with the Tools tab's button, works too (the admin wiki knows these files: TiddlyWiki's own JSON import keeps only text fields, and a stored tiddler has its tags as a list, so dropped onto any other TiddlyWiki they would lose every tag; the admin wiki's restore-import module turns them back into tiddlers, tags included, without the old revision, bag and recipe), but a thousand files with `$:/` and slashed titles in subfolders are better merged first. The tool also makes a file any TiddlyWiki imports, and a single-file wiki out of a backup, for reading it anywhere: `npx tiddlywiki@5.4.1 wiki --init empty && npx tiddlywiki@5.4.1 wiki --load restore.json --build index` makes `wiki/output/index.html`.
 
-**One tiddler, or one of its past versions:** download its file from GitHub (its history has every version) and drop it onto the admin wiki, or import it with the Tools tab's button.
+**One tiddler, or one of its past versions:** the *History on GitHub* button in the tiddler's toolbar opens its file's history (the button is off by default: Control Panel → Appearance → Toolbars → View Toolbar; the file is `tiddlers/<title>.json`, each slash of the title a folder); download the version you want and drop it onto the admin wiki, or import it with the Tools tab's button. The Cloudflare tab's *Backups* section links the repository's commits.
 
 ## 2.5 The worker
 

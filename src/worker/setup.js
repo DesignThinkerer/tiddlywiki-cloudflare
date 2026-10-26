@@ -272,7 +272,8 @@ async function checkBackups(env, site, add) {
     } else if (branch.status === 200) {
       const visibility = repo.isPublic === null ? "" : repo.isPublic ? ", a public repository, like the wiki" : ", a private repository";
       // (What the check can't test, writing, said with the next step rather than taken back in a parenthesis)
-      add("backups", true, `Backups go to ${gh.repo}, branch ${gh.branch}${visibility}: GitHub accepts the token. The check can't test writing: save any tiddler, and if GitHub refuses it, the tab's Backups section and an alert say so within minutes.`, SECTION.backups);
+      add("backups", true, `Backups go to ${gh.repo}, branch ${gh.branch}${visibility}: GitHub accepts the token. The check can't test writing: save any tiddler, and if GitHub refuses it, the tab's Backups section and an alert say so within minutes.`, SECTION.backups, null,
+        { text: "its commits on GitHub", url: `https://github.com/${gh.repo}/commits/${encodeURIComponent(gh.branch)}` });
     } else {
       add("backups", false, `GitHub finds ${gh.repo} but not its branch ${gh.branch} (${branch.status}${branch.message ? `, ${branch.message}` : ""}): the repository has no such branch, or is empty.`, SECTION.backups,
         `Set GITHUB_BRANCH, ${VARS}, to a branch it has (main when GITHUB_BRANCH isn't set), or give an empty repository its first commit (a README added on GitHub does).`);

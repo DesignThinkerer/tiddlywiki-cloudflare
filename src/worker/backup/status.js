@@ -163,9 +163,11 @@ export function backupReport(env, { failing, sync, running }) {
   const now = Date.now();
   const due = [...failing].filter(([, e]) => waiting(e, now) && now - e.since >= after).sort((a, b) => a[1].since - b[1].since);
   const cut = [...(running || [])].filter(([, n]) => now - n.started <= BACKUP_STATUS_STALE && (n.skipped || n.attempt > QUEUE_RETRIES || now - n.started >= RUNNING_STALE_MS)).sort((a, b) => a[1].started - b[1].started);
-  const on = !!github(env);
-  if (!due.length && !cut.length && !sync) return on ? "ok" : "off";
-  const report = {};
+  const gh = github(env), on = !!gh;
+  if (!due.length && !cut.length && !sync && !on) return "off";
+  // (The repository and branch travel with every report, so the tab, the alert and the history button
+  // can link GitHub; only in this admin-only header, never in the page: design 2.19)
+  const report = on ? { repo: gh.repo, branch: gh.branch } : {};
   if (due.length) {
     const [title, e] = due[0];
     Object.assign(report, { count: due.length, title: title.slice(0, 200), since: e.since, error: e.error, status: e.status, ...(e.direct ? { direct: true } : typeof e.next === "number" ? { next: e.next } : {}) });

@@ -1,0 +1,4 @@
+\whitespace trim
+<$list filter="[[$:/temp/cfworker/backup-status]get[backups]match[on]] :filter[[$:/temp/cfworker/backup-status]has[history]] :filter[[$:/status/IsReadOnly]!match[yes]]" variable="backups">
+<a class="tc-btn-invisible tc-tiddlylink-external" href={{{ [[$:/temp/cfworker/backup-status]get[history]] [<currentTiddler>split[/]encodeuricomponent[]join[/]addsuffix[.json]] +[join[]] }}} target="_blank" rel="noopener noreferrer" title="This tiddler's past versions, in the backup repository">History on GitHub</a>
+</$list>

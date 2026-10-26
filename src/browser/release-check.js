@@ -106,7 +106,7 @@ function show(record) {
 	note({
 		state: order > 0 ? "newer" : order === 0 ? "same" : "ahead",
 		latest: record.latest, url: record.url, checked: checked, error: undefined,
-		text: order > 0 ? "A newer release is out: " + link + " (the link opens its notes). To take it, update your copy (" + lib.guide("operating","3.1") + "): Workers Builds redeploys, and the next page load runs it." :
+		text: order > 0 ? "A newer release is out: " + link + " (the link opens its notes). To take it, update your copy (" + lib.guide("operating","3.1") + "): Workers Builds redeploys, and the next page load runs it. Every release since yours, with anything to do by hand, is in [[the changelog|https://github.com/DesignThinkerer/tiddlywiki-cloudflare/blob/main/CHANGELOG.md]]." :
 			order === 0 ? "This is the newest release, checked at " + CHECKED + "." :
 			"Newer than the newest release (" + link + "): a copy synced past it. Checked at " + CHECKED + "."
 	});

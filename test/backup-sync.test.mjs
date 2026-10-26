@@ -93,6 +93,19 @@ check("the admin wiki has a Cloudflare tab under the control panel's Saving tab,
 }
 let text = await tabText(A);
 check("...that says backups are on, no full backup yet, with the button", (await field(A, STATUS, "backups")) === "on" && /committed to GitHub as it happens/.test(text) && /No full backup yet/.test(text) && /Back up everything to GitHub/.test(text), text.slice(0, 300));
+// The repository and branch come with the worker's report, in the admin-only header (design 2.19):
+// the tab links the backup's commits, and the history button links a tiddler's file, each slash of
+// the title a folder in the backup (#143)
+{
+  const tabHtml = await A.evaluate(t => $tw.wiki.renderTiddler("text/html", t), TAB);
+  check("...the report names the repository and branch, kept on the status tiddler with the commits' address, and the tab's line links the backup's commits on GitHub",
+    (await field(A, STATUS, "repo")) === "o/r" && (await field(A, STATUS, "branch")) === "main" && (await field(A, STATUS, "commits")) === "https://github.com/o/r/commits/main" && (await field(A, STATUS, "history")) === "https://github.com/o/r/commits/main/tiddlers/" && /href="https:\/\/github\.com\/o\/r\/commits\/main"[^>]*>the commits<\/a>/.test(tabHtml),
+    `repo ${await field(A, STATUS, "repo")}, branch ${await field(A, STATUS, "branch")}, commits ${await field(A, STATUS, "commits")}`);
+  const button = await A.evaluate(() => ({ html: $tw.wiki.renderTiddler("text/html", "$:/plugins/cfworker/admin/history-button", { variables: { currentTiddler: "Old with/slash" } }), tags: ($tw.wiki.getTiddler("$:/plugins/cfworker/admin/history-button") || { fields: {} }).fields.tags, hidden: $tw.wiki.getTiddlerText("$:/config/ViewToolbarButtons/Visibility/$:/plugins/cfworker/admin/history-button") }));
+  check("...and the plugin's \"History on GitHub\" view-toolbar button, hidden by default (the toolbar's visibility setting), links the tiddler's file history with each slash of the title a folder",
+    (button.tags || []).includes("$:/tags/ViewToolbar") && button.hidden === "hide" && /href="https:\/\/github\.com\/o\/r\/commits\/main\/tiddlers\/Old%20with\/slash\.json"/.test(button.html) && /History on GitHub/.test(button.html),
+    `${button.hidden} ${(button.html.match(/href="[^"]*"/) || ["no href"])[0]}`);
+}
 // (The section sits in a <$list> widget: without a blank line after its opening tag, TiddlyWiki
 // parses it inline, and the heading showed as "!!! Full backup" in the text)
 const tabHtml = await A.evaluate(t => $tw.wiki.renderTiddler("text/html", t), TAB);
@@ -161,7 +174,7 @@ await sleep(200);
 text = await tabText(A);
 const nextTryText = await A.evaluate(ms => $tw.utils.formatDateString(new Date(ms), "DDth MMM YYYY 0hh:0mm"), nextTry);
 check("backups failing: the tab says since when, how many, the oldest, GitHub's answer, what to do and the next try, in place of \"every save is committed\", and the hint waits",
-  /Backups to GitHub have been failing since/.test(text) && /2 tiddlers/.test(text) && /Old 01/.test(text) && /Bad credentials/.test(text) && /GITHUB_TOKEN/.test(text) &&
+  /Backups to GitHub have been failing since/.test(text) && /2 tiddlers/.test(text) && /Old 01/.test(text) && /href="https:\/\/github\.com\/o\/r\/commits\/main\/tiddlers\/Old%2001\.json"[^>]*>its history on GitHub<\/a>/.test(await A.evaluate(t => $tw.wiki.renderTiddler("text/html", t), TAB)) && /Bad credentials/.test(text) && /GITHUB_TOKEN/.test(text) &&
   text.includes("Next try: " + nextTryText) && /sends the current versions now/.test(text) && !/committed to GitHub as it happens/.test(text) && !(await exists(A, HINT)), text.slice(0, 600));
 // Each hint ends where the fix is (design 2.36): the token page and the secret for a 401, the check
 // that tells the causes apart for a 403 or 404, the tiddler to edit and the key to revoke for a 409
@@ -345,7 +358,7 @@ await newer.page.locator('button[role="tab"]', { hasText: /^Cloudflare$/ }).firs
 const announced = await waitFor(async () => (await stateOf(newer.page)) === "newer", 10000);
 let rText = await showTab(newer.page), rHtml = await tabAsHtml(newer.page);
 check("the tab shows the worker's version and build and, opened, asks GitHub for the newest release once: a newer one is announced with its date, the link to its notes and to operating 3.1",
-  announced && newer.asked().length === 1 && rText.includes(`Version ${WORKER_VERSION} (build ${BUILD})`) && /A newer release is out: 2026\.12\.01/.test(rText) && /update your copy/.test(rText)
+  announced && newer.asked().length === 1 && rText.includes(`Version ${WORKER_VERSION} (build ${BUILD})`) && /A newer release is out: 2026\.12\.01/.test(rText) && /update your copy/.test(rText) && /Every release since yours, with anything to do by hand, is in the changelog/.test(rText)
   && rHtml.includes("https://github.com/DesignThinkerer/tiddlywiki-cloudflare/releases/tag/v2026.12.01") && rHtml.includes("docs/operating.md#31-updating-your-copy"),
   `${newer.asked().length} requests, state ${await stateOf(newer.page)}, version ${pluginVersion}: ${workerSection(rText)}`);
 const ask = newer.asked()[0];

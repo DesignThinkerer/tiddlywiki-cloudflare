@@ -400,7 +400,7 @@ const packageVersion = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"
 check(`package.json's version is the changelog's newest dated block as a version (${newestDated} → ${newestDated && versionOf(newestDated)})`, !!newestDated && packageVersion === versionOf(newestDated), `version ${packageVersion}`);
 const expectedNotes = newestDated && changelog.split("\n## " + newestDated + "\n")[1].split("\n## ")[0].trim() + "\n";
 const printedNotes = (() => { try { return execFileSync(process.execPath, [path.join(ROOT, "tools/release-notes.mjs")], { cwd: ROOT, encoding: "utf8" }); } catch (e) { return `(failed: ${e.message})`; } })();
-check("tools/release-notes.mjs prints that block, the release's notes, without its heading", !!newestDated && printedNotes === expectedNotes, printedNotes.slice(0, 80).replace(/\n/g, "⏎"));
+check("tools/release-notes.mjs prints that block, the release's notes, without its heading, ending with where every release since the reader's is (the changelog)", !!newestDated && printedNotes === expectedNotes + "\nEvery release since yours, with anything to do by hand: https://github.com/DesignThinkerer/tiddlywiki-cloudflare/blob/main/CHANGELOG.md\n", printedNotes.slice(-120).replace(/\n/g, "⏎"));
 
 // --- 12. The settings declared in one place; nothing of the Deploy to Cloudflare button ----------
 // Every setting the worker reads (env.NAME in src/worker) is declared in exactly one place, a

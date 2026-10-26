@@ -67,7 +67,7 @@ exports.startup = function() {
 	// { backups, problem, stuck, sync } or null for an answer it can't read.
 	function parseAnswer(answer) {
 		if(answer === "ok" || answer === "off") {
-			return {backups: answer === "ok" ? "on" : "off", problem: null, stuck: null, sync: null};
+			return {backups: answer === "ok" ? "on" : "off", problem: null, stuck: null, sync: null, repo: null, branch: null};
 		}
 		var report;
 		try {
@@ -80,6 +80,8 @@ exports.startup = function() {
 		}
 		return {
 			backups: report.backups === "off" ? "off" : "on",
+			repo: typeof report.repo === "string" ? report.repo : null,
+			branch: typeof report.branch === "string" ? report.branch : null,
 			problem: report.count ? report : null,
 			stuck: report.stuck && typeof report.stuck === "object" && report.stuck.title ? report.stuck : null,
 			sync: report.sync && typeof report.sync === "object" ? report.sync : null
@@ -125,7 +127,7 @@ exports.startup = function() {
 				" The wiki keeps everything meanwhile." +
 				(problem.status === 401 ? " Once the secret is replaced, Back up everything to GitHub, in <$link to=\"$:/temp/cfworker/ControlPanel\">the Cloudflare tab</$link>, sends the current versions now, those the queue dropped meanwhile included (" + lib.guide("limits","5") + "); the waiting ones still arrive afterwards, as history." : "");
 		return "Backups to GitHub have been failing since " + $tw.utils.formatDateString(new Date(problem.since),"DDth MMM YYYY 0hh:0mm") + ": " +
-			(problem.count > 1 ? problem.count + " tiddlers, " + lib.link(problem.title) + " the oldest, aren't" : lib.link(problem.title) + " isn't") +
+			(problem.count > 1 ? problem.count + " tiddlers, " + lib.link(problem.title) + historyLink(problem.title) + " the oldest, aren't" : lib.link(problem.title) + historyLink(problem.title) + " isn't") +
 			" backed up yet. GitHub answered: ``" + String(problem.error).replace(/`/g,"'").replace(/[\r\n]+/g," ") + "``. " + hint + " " + retried;
 	}
 
@@ -135,12 +137,34 @@ exports.startup = function() {
 	// alert's sentence, which the tab shows in place of "every save is committed"), for the control
 	// panel. An answer that says nothing of problems (a full backup's) leaves the problem-* fields as
 	// they are; one that says there are none clears them
+	// The backup repository and branch, from the worker's report (only in the admin-only header, never
+	// in the page: design 2.19), kept from the last report that had them; the links built from them, the
+	// repository's commits and a tiddler's file history, each slash of the title a folder (#143)
+	var historyBase = "";
+	function repoOf(status) {
+		var kept = wiki.getTiddler(BACKUP_STATUS);
+		return {repo: status.repo || (kept ? String(kept.fields.repo || "") : ""), branch: status.branch || (kept ? String(kept.fields.branch || "") : "") || "main"};
+	}
+	function historyUrl(title) {
+		return historyBase ? historyBase + String(title).split("/").map(encodeURIComponent).join("/") + ".json" : "";
+	}
+	function historyLink(title) {
+		var url = historyUrl(title);
+		return url ? " (<a href=\"" + url + "\" target=\"_blank\" rel=\"noopener noreferrer\">its history on GitHub</a>)" : "";
+	}
 	function noteStatus(status) {
+		var where = repoOf(status),
+			commits = where.repo ? "https://github.com/" + where.repo + "/commits/" + encodeURIComponent(where.branch) : "";
+		historyBase = commits ? commits + "/tiddlers/" : "";
 		var sync = status.sync, problem = status.problem,
 			kept = problem === undefined ? wiki.getTiddler(BACKUP_STATUS) : null,
 			fields = {
 			title: BACKUP_STATUS,
 			backups: status.backups,
+			repo: where.repo || undefined,
+			branch: where.repo ? where.branch : undefined,
+			commits: commits || undefined,
+			history: historyBase || undefined,
 			asked: dateField(Date.now()),
 			"problem-since": problem ? dateField(problem.since) : kept ? kept.fields["problem-since"] : undefined,
 			"problem-count": problem ? String(problem.count) : kept ? kept.fields["problem-count"] : undefined,

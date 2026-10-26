@@ -77,7 +77,7 @@ var TAB_TEXT = [
 	"</$list>",
 	"<$list filter='[[" + STATUS + "]!has[problem-since]]' variable='fine'>",
 	"",
-	"Every save is committed to GitHub as it happens (" + lib.guide("setup","2.4") + ").",
+	"<$list filter='[[" + STATUS + "]has[commits]]' variable='linked'>Every save is committed to GitHub as it happens: <a href={{{ [[" + STATUS + "]get[commits]] }}} target='_blank' rel='noopener noreferrer'>the commits</a> (" + lib.guide("setup","2.4") + ").</$list><$list filter='[[" + STATUS + "]!has[commits]]' variable='plain'>Every save is committed to GitHub as it happens (" + lib.guide("setup","2.4") + ").</$list>",
 	"",
 	"</$list>",
 	"!!! Full backup",
