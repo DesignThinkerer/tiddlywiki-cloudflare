@@ -46,26 +46,28 @@ As in a single-file wiki, updating a plugin that came with `index.html` (a theme
 
 ## 3.5 The published page
 
-Nothing to do. After this version is deployed, the first admin page load publishes the core file and the page; after that, every save that changes the page publishes it ([design 1.9](design.md#19-the-page-published-from-the-admin-wiki)). Control Panel → Saving → Cloudflare → *The page* says what this tab last did with it and when: published, not published yet (still loading, during an import), or not published with the worker's reason; a refusal stays on the page as an alert until a publish goes through. If a raw markup tiddler stops the wiki from starting:
+Nothing to do. After this version is deployed, the first admin page load publishes the core file and the page; after that, every save that changes the page publishes it ([design 1.9](design.md#19-the-page-published-from-the-admin-wiki)). Control Panel → Saving → Cloudflare → *The page* says what this tab last did with it and when: published, not published yet (still loading, during an import), or not published with the worker's reason; a refusal stays on the page as an alert until a publish goes through.
+
+**If a tiddler of yours stops the wiki from starting** (one tagged `$:/tags/RawMarkup…`: a snippet pasted for analytics, fonts or a splash screen), on both sites, TiddlyWiki's red box on the admin site ends with a line that links the troubleshooting page; the way back:
 1. In R2, delete `_page/shell.html` and `baked.html`.
 2. Open the admin wiki: the page is built from `index.html` again.
 3. Fix or delete the tiddler in that tab before reloading. The tab publishes the broken page again once loaded, but it keeps running the page it has, and saving the fix publishes the fixed one.
 
 ## 3.6 If a plugin breaks the page
 
-When the wiki doesn't start after a plugin was installed, on both sites:
-1. In R2, delete `_plugins/<plugin title>.js`.
-2. Purge it from Cloudflare's cache: Caching → Configuration → Purge Cache, either the exact URL with its `?v=` (in the page's source) or everything.
-3. Hard-reload the admin wiki (Ctrl+Shift+R). It starts without the plugin. TiddlyWiki may ask for a reload; ignore it.
+When the wiki doesn't start after a plugin was installed, on both sites (TiddlyWiki's red box on the admin site ends with a line that links the troubleshooting page). A plugin with a raw markup tiddler, or a page that comes back and breaks again at the next rebuild: [3.7](#37-a-plugin-with-raw-markup) instead. Close every other admin tab first: a save there rebuilds the page and writes the file again. Then:
+1. In R2, delete `_plugins/<plugin title>.js`. R2's dashboard lists a key by its slashes as folders: `_plugins/$:/plugins/x/y.js` sits under `_plugins`, then `$:`, then `plugins`, then `x`. From a computer, under your own login, `npx wrangler r2 object delete "<bucket>/_plugins/<plugin title>.js" --remote` does the same.
+2. *(public site only)* Purge it from Cloudflare's cache: Caching → Configuration → Purge Cache → *Custom Purge* → *Hostname*, the public site's host (never *Purge Everything*, which clears every site in the zone, [design 2.10](design.md#210-targeted-purges-not-purge-everything)); or the exact URL with its `?v=`, readable with the browser's *View Source* even when the wiki doesn't start.
+3. Hard-reload the admin wiki (Ctrl+Shift+R; on a Mac, Cmd+Shift+R, or Option+Cmd+R in Safari). It starts without the plugin. TiddlyWiki may ask for a reload; ignore it.
 4. Delete or disable the plugin in the Control Panel and wait for the save. The page is rebuilt without it, or with it disabled.
 
-If the page is rebuilt before step 4 (by a deploy, or by saving another plugin, a startup action, `$:/theme` or a disable flag), the file is written again; delete it again.
+On a phone, or in the installed app, there is no hard reload, and the service worker serves the plugin's file from the device's cache until step 4 rebuilds the page: do steps 3 and 4 in a private window, which starts with no service worker and no cached files (you log in to Access again), or from a computer; the other devices and the app pick up the fixed page at their next load, since it no longer loads that file. If the page is rebuilt before step 4 (by a deploy, or by saving another plugin, a startup action, `$:/theme` or a disable flag), the file is written again; delete it again.
 
 ## 3.7 A plugin with raw markup
 
 A plugin with raw markup (one with a tiddler tagged `$:/tags/RawMarkup…`) is in the page as well as in its file ([design 1.9](design.md#19-the-page-published-from-the-admin-wiki)), so deleting the file isn't enough, and a page built again writes the file again while the plugin is stored. Remove the plugin itself, in R2:
-1. Delete `recipes/default/tiddlers/<plugin title>` and `_plugins/<plugin title>.js`, then `recipes/default/tiddlers.json`, `_page/shell.html` and `baked.html`.
-2. Purge everything from Cloudflare's cache.
+1. Delete `recipes/default/tiddlers/<plugin title>` and `_plugins/<plugin title>.js`, then `recipes/default/tiddlers.json`, `_page/shell.html` and `baked.html`. Only the plugin's own object under `recipes/default/tiddlers/`: a tiddler deleted by mistake comes back from its file on GitHub, dropped onto the admin wiki once it starts ([setup 2.4](setup.md#24-the-backup-repository-optional)).
+2. *(public site only)* Purge the public hostname from Cloudflare's cache ([3.9](#39-manual-purge)).
 3. Open the admin wiki. The worker rebuilds the tiddler list from the stored tiddlers ([design 1.2](design.md#12-storage-revisions-and-etags)) and the page from `index.html`, both without the plugin, and the admin wiki then publishes its page. The wiki opens empty and fills in as the list is rebuilt, roughly a second per hundred tiddlers, a notification saying so after a second or two: no need to reload. The GitHub backup still has the plugin (`tiddlers/<plugin title>.json`), to install again once fixed.
 
 ## 3.8 Log lines

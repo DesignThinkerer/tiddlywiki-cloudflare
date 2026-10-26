@@ -491,4 +491,26 @@ check("...and deleted in that tab, the plugin tiddler is gone from the other at 
 await settle();
 await other.close();
 
+// A plugin that throws at boot breaks both sites (limits 5): TiddlyWiki's red box says "refresh",
+// which repeats the error; on the admin site one line under it names the causes this project knows
+// and links what to do (design 2.13). The line is added when the box appears in the page's first
+// minutes, a boot-time error
+await add({ title: "$:/test/boot-breaker.js", type: "application/javascript", "module-type": "startup", text: "exports.name = 'boot-breaker'; exports.startup = function() { throw new Error('boot broken for the test'); };" });
+await settle();
+await page.reload();
+const box = await page.waitForSelector(".tc-error-form", { timeout: 20000 }).catch(() => null);
+const bootLine = box ? await page.evaluate(() => { const l = document.querySelector(".tc-error-form .cfworker-boot-line"); return l ? { text: l.textContent, href: l.querySelector("a")?.getAttribute("href") } : null; }) : null;
+check("a plugin that throws at boot: TiddlyWiki's error box on the admin site carries one line naming a plugin, a raw markup tiddler or the engine update as the cause, with the troubleshooting page as the link",
+  !!box && !!bootLine && /^If this began after you installed or edited a plugin, a raw markup tiddler, or updated the engine: what to do \(troubleshooting 4\)$/.test(bootLine.text) && /docs\/troubleshooting\.md#4-troubleshooting$/.test(bootLine.href || ""),
+  box ? JSON.stringify(bootLine) : "no error box");
+// (The way back of operating 3.6: the file deleted, the next load boots without it, the plugin deleted there)
+await bucket.delete("_plugins/$:/test/boot-breaker.js");
+await page.reload();
+await page.waitForFunction(() => window.$tw && $tw.rootWidget, null, { timeout: 30000 });
+await page.evaluate(() => $tw.wiki.deleteTiddler("$:/test/boot-breaker.js"));
+await settle();
+check("...the file deleted in R2, the next load boots without the plugin, and deleting it there removes it", await page.evaluate(() => !$tw.wiki.tiddlerExists("$:/test/boot-breaker.js")) && !(await bucket.head("recipes/default/tiddlers/$:/test/boot-breaker.js")), "");
+// (The boot error above was thrown on purpose: not one of the page errors the suite ends on)
+pageErrors.splice(0, pageErrors.length, ...pageErrors.filter(e => !e.includes("boot broken for the test")));
+
 await finish({ check, results, pageErrors, browser, site, cleanup: () => fs.rmSync(r2Dir, { recursive: true, force: true }) });

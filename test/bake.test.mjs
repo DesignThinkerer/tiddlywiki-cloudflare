@@ -282,6 +282,10 @@ check("...its parts are the ten browser modules, each the right kind of module, 
   !!parts["$:/cfworker/public-url"] && /^\/sw\.js\?v=/.test(parts["$:/cfworker/sw-url"]?.text || "") && !!parts["$:/cfworker/page-source"],
   Object.keys(parts).join(", "));
 check("...and no loose $:/cfworker/ tiddler is preloaded beside it", !preloaded.some(t => t.title.startsWith("$:/cfworker/")), preloaded.filter(t => t.title.startsWith("$:/cfworker/")).map(t => t.title).join(", "));
+// One line under TiddlyWiki's error box when the boot fails (design 2.13): an inline script in the
+// page, with the public origin, so it does nothing on the public site, and the troubleshooting page's link
+check("the page carries the boot-error line's script, with the public origin it does nothing on, and the troubleshooting page as the link", page.includes("cfworker-boot-line") && page.includes('var pub = "https://wiki.example.com/"') && page.includes("docs/troubleshooting.md#4-troubleshooting") && page.includes("If this began after you installed or edited a plugin, a raw markup tiddler, or updated the engine"),
+  (page.match(/.{0,80}cfworker-boot-line.{0,80}/) || [])[0]);
 check("...the settings tab offers the fill of the device copy, TiddlyWiki's polling interval, and the advanced settings each with its default",
   ["$:/config/cfworker/LoadAll", "$:/config/SyncPollingInterval", "$:/config/cfworker/DraftPause", "$:/config/cfworker/FetchAhead", "$:/config/cfworker/PublishPause", "$:/config/cfworker/BackupCheckMinutes", "$:/config/cfworker/NetworkWait"].every(t => (parts[ADMIN + "/settings"]?.text || "").includes(t)) &&
   /300/.test(parts[ADMIN + "/settings"]?.text || "") && /free plan/.test(parts[ADMIN + "/settings"]?.text || ""),
@@ -506,7 +510,8 @@ async function withPublicUrl(value, run, bindings = {}) {
 }
 await withPublicUrl(undefined, async (root, instance, store, calls) => {
   const page = await instance.dispatchFetch(root + "/"), pageText = await page.text();
-  check("PUBLIC_WIKI_URL missing: a private wiki; the page is built and served, with an empty public address", page.status === 200 && part(pageText, "$:/cfworker/public-url")?.text === "" && !!(await store.head("baked.html")), `status ${page.status}`);
+  check("...and its boot-error line's script has no public origin to stand down for: the admin site is the only one", pageText.includes("cfworker-boot-line") && pageText.includes('var pub = ""'), (pageText.match(/var pub = "[^"]*"/) || [])[0]);
+check("PUBLIC_WIKI_URL missing: a private wiki; the page is built and served, with an empty public address", page.status === 200 && part(pageText, "$:/cfworker/public-url")?.text === "" && !!(await store.head("baked.html")), `status ${page.status}`);
   const plugin = "$:/plugins/test/private";
   const save = await instance.dispatchFetch(root + "/recipes/default/tiddlers/" + encodeURIComponent(plugin), { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title: plugin, type: "application/json", "plugin-type": "plugin", text: '{"tiddlers":{}}' }) });
   await save.text();
