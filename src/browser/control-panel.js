@@ -114,7 +114,7 @@ var TAB_TEXT = [
 	"",
 	"!! The worker",
 	"",
-	"<$cfworker-release/>Version {{" + RELEASE + "!!version}} (build {{" + RELEASE + "!!build}}). <$transclude tiddler='" + RELEASE + "' mode='inline'/>",
+	"<$cfworker-release/><$list filter='[[" + RELEASE + "]!has[worker]]' variable='current'>Version {{" + RELEASE + "!!version}} (build {{" + RELEASE + "!!build}}). </$list><$list filter='[[" + RELEASE + "]has[worker]]' variable='behind'>This tab runs {{" + RELEASE + "!!version}} (build {{" + RELEASE + "!!build}}); the worker runs {{" + RELEASE + "!!worker}} (build {{" + RELEASE + "!!worker-build}}): reload this tab (what you're typing is kept on the device). </$list><$transclude tiddler='" + RELEASE + "' mode='inline'/>",
 	"",
 	"!! The engine",
 	"",
@@ -174,6 +174,37 @@ exports.startup = function() {
 	// "+", the build hash after; the release check module fills in the rest when the tab is shown
 	var full = String((wiki.getTiddler(ADMIN_PLUGIN) || {fields: {}}).fields.version || ""), plus = full.indexOf("+");
 	wiki.addTiddler(new $tw.Tiddler({title: RELEASE, version: plus >= 0 ? full.slice(0,plus) : full, build: plus >= 0 ? full.slice(plus + 1) : ""}));
+
+	// A tab left open across a deploy keeps the old modules: every list answer names the worker's plugin
+	// version (X-Wiki-Plugin; a cached answer carries the version it was cached with, so it's left out),
+	// and one that isn't this page's raises TiddlyWiki's own reload bar
+	// ($:/status/RequireReloadDueToPluginChange, which the core's sync filter leaves out) and puts the
+	// worker's version on the release tiddler, for the tab's line and the release check (design 2.21).
+	// The hook sends a header so that its answer is read (list-sync.js reads the answers of the hooks
+	// that asked); the worker ignores it
+	var RELOAD_STATUS = "$:/status/RequireReloadDueToPluginChange";
+	proto.cfworkerOnListRequest({
+		headers: function() {
+			return {"X-Wiki-Plugin": "?"};
+		},
+		answer: function(xhr) {
+			if(!xhr || !xhr.getResponseHeader || xhr.getResponseHeader("X-Served-From") === "cache") {
+				return;
+			}
+			var worker = xhr.getResponseHeader("X-Wiki-Plugin");
+			if(!worker || worker === full) {
+				return;
+			}
+			var at = worker.indexOf("+"), release = wiki.getTiddler(RELEASE);
+			if(release && release.fields.worker === (at >= 0 ? worker.slice(0,at) : worker)) {
+				return;
+			}
+			wiki.addTiddler(new $tw.Tiddler(release || {title: RELEASE},{worker: at >= 0 ? worker.slice(0,at) : worker, "worker-build": at >= 0 ? worker.slice(at + 1) : ""}));
+			if(wiki.getTiddlerText(RELOAD_STATUS,"") !== "yes") {
+				wiki.addTiddler(new $tw.Tiddler({title: RELOAD_STATUS, text: "yes"}));
+			}
+		}
+	});
 
 	function say(text) {
 		if(text) {

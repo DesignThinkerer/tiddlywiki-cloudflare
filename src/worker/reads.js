@@ -2,6 +2,7 @@
 // tiddler, a file). design 1.1.
 
 import { backupReport, readBackupStatus } from "./backup/status.js";
+import { pluginVersion } from "./build.js";
 import { objectHeaders, parseEtagList, tiddlerEtag, untilDone } from "./http.js";
 import { parseList, rebuildList, rebuildingResponse } from "./list.js";
 import { LIST_KEY, TIDDLER_PREFIX } from "./storage.js";
@@ -89,9 +90,13 @@ export async function serveList(request, env, ctx, corsHeaders) {
   return new Response(JSON.stringify(list), { headers: listHeaders(object) });
 }
 
+// X-Wiki-Plugin: the plugin's version this worker builds pages with (worked out once per isolate), so
+// a tab left open across a deploy, which keeps the old modules, learns of it at its next poll: the
+// control panel module compares it with the page's and raises TiddlyWiki's reload bar (design 2.21)
 function listResponseHeaders(object, corsHeaders) {
   const headers = objectHeaders(object, corsHeaders);
   headers.set("Cache-Control", "no-cache");
   headers.set("ETag", `"${object.etag}-patched"`);
+  headers.set("X-Wiki-Plugin", pluginVersion());
   return headers;
 }

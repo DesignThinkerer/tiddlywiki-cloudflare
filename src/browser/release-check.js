@@ -29,10 +29,16 @@ var RELEASE = "$:/temp/cfworker/release",
 	asking = false;   // one request at a time, however often the tab is shown meanwhile
 
 // The worker's version, from the plugin's: package.json's date before the "+", the build hash after
+// (A tab behind the worker, told so by the list answer: the worker's version, which the release
+// tiddler then holds, is the one to compare GitHub's with, not this tab's: control-panel.js)
 function workerVersion() {
-	var plugin = $tw.wiki.getTiddler(PLUGIN),
+	var release = $tw.wiki.getTiddler(RELEASE),
+		plugin = $tw.wiki.getTiddler(PLUGIN),
 		full = plugin ? String(plugin.fields.version || "") : "",
 		plus = full.indexOf("+");
+	if(release && release.fields.worker) {
+		return { version: String(release.fields.worker), build: String(release.fields["worker-build"] || "") };
+	}
 	return { version: plus >= 0 ? full.slice(0,plus) : full, build: plus >= 0 ? full.slice(plus + 1) : "" };
 }
 

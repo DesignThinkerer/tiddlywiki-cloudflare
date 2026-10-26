@@ -400,4 +400,29 @@ check("...set under 1 (\"-1\"): counts as 1, and the fill still runs", await all
 await Y.close();
 await remove("$:/config/cfworker/FetchAhead");
 
+// --- A tab left open across a deploy (design 2.21, #157): the list answer names the worker's plugin
+// version; one that isn't this tab's raises TiddlyWiki's own reload bar and the tab's line. The route
+// adds the header to the real answer (a route turns the browser cache off for this context alone)
+{
+  const deployCtx = await browser.newContext();
+  await deployCtx.route(u => u.pathname === "/recipes/default/tiddlers.json", async route => {
+    const res = await route.fetch();
+    await route.fulfill({ response: res, headers: { ...res.headers(), "x-wiki-plugin": "2099.1.1+zzzz" } });
+  });
+  const D = await open(deployCtx, `${base}/`, "D");
+  const raised = await waitFor(() => D.evaluate(() => $tw.wiki.getTiddlerText("$:/status/RequireReloadDueToPluginChange") === "yes").catch(() => false), 15000);
+  const tabLine = await D.evaluate(t => $tw.wiki.renderTiddler("text/plain", t).replace(/\s+/g, " "), "$:/temp/cfworker/ControlPanel");
+  check("a list answer naming another plugin version than this tab's (a deploy since it loaded): TiddlyWiki's own reload bar is raised, and the Cloudflare tab's worker line says which version this tab runs and which the worker runs, to reload (what's typed is kept on the device)",
+    raised && await D.evaluate(() => !!document.querySelector(".tc-plugin-reload-warning")) && /This tab runs \S+ \(build \S+\); the worker runs 2099\.1\.1 \(build zzzz\): reload this tab \(what you're typing is kept on the device\)\./.test(tabLine),
+    `raised ${raised}: ${(tabLine.match(/The worker.{0,220}/) || [""])[0]}`);
+  // (a tab of its own: the suite's first tabs are closed by now)
+  const plainCtx = await browser.newContext();
+  const E = await open(plainCtx, `${base}/`, "E");
+  check("...and a tab whose version is the worker's raises nothing", await E.evaluate(() => $tw.wiki.getTiddlerText("$:/status/RequireReloadDueToPluginChange", "") !== "yes" && !document.querySelector(".tc-plugin-reload-warning")), "");
+  await E.close();
+  await plainCtx.close();
+  await D.close();
+  await deployCtx.close();
+}
+
 await finish({ check, results, pageErrors, browser, site });

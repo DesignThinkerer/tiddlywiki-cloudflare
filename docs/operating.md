@@ -22,7 +22,7 @@ To take an update: on GitHub, *Sync fork* on your fork; Workers Builds redeploys
 
 Nothing in the repository holds your values (`wrangler.toml` is deployed as it is, the settings live in the dashboard, [setup 2.5](setup.md#25-the-worker)), so an update never conflicts with them. [CHANGELOG.md](../CHANGELOG.md) lists, for each change, anything to do by hand — a new setting, a new zone rule; unless it says so, nothing is.
 
-After an update, reload any open admin tabs: tabs opened before it keep the old modules, and tabs older than the modules have no conflict protection.
+A tab opened before an update keeps the old modules, and the wiki tells you: at its next poll, TiddlyWiki's own "reload to apply plugin changes" bar appears at the top, and the Cloudflare tab's *The worker* line says which version this tab runs and which the worker runs; reload the tab (what you're typing is kept on the device).
 
 ## 3.2 A full backup
 
