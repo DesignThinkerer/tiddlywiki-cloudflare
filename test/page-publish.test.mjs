@@ -7,9 +7,11 @@
 import { addTiddler, createChecks, createWatcher, finish, launchBrowser, readWikiFile, settle, sleep, startSite, waitFor } from "./browser-harness.mjs";
 
 const ENGINE = readWikiFile();
+let coreAnswer = null;   // { status, body }: what the public stand-in answers for the core file instead of serving it (section 14)
 const site = await startSite({
   index: ENGINE, publicStatus: true,
   publicSite: {
+    override: key => key === "_plugins/tiddlywikicore.js" && coreAnswer ? coreAnswer : undefined,
     // ?https: the page as built for a public URL on https, visited over http (the setting travels in
     // the admin plugin's text: its quotes escaped once more)
     rewrite: (url, body) => url.searchParams.has("https")
@@ -767,5 +769,52 @@ check("the Open Graph URL and image, from $:/SiteUrl and $:/SitePreviewUrl, stay
   await L.evaluate(() => !$tw.wiki.getTiddler("$:/SiteUrl").hasField("_is_skinny")),
   `published by K ${tagsPublished}, og:url ${(/<meta property="og:url"[^>]*>/.exec(html) || ["none"])[0]}, shell puts by L ${shellPuts("L", mark)}`);
 await contextL.close();
+
+// --- 14. The public site doesn't serve the core file: the shell is refused, the page stays built from the engine ---
+// PUBLIC_WIKI_URL set before the bucket's domain answers (still initialising, mistyped, or broken
+// later): the first load builds the page from the engine and publishes a shell that loads the core
+// file from the public site. Accepted, the page built from it would load a file no site serves, and
+// neither site would start from the second load on, the admin wiki unable to publish another page.
+// The worker asks the public site for the file first (one HEAD) and refuses the shell while it isn't
+// served: the page stays built from the engine, the notification names the address and what answered,
+// and the refusal is final for that page, sent again at the next reload or change (design 1.9).
+await bucket.delete("_page/shell.html");
+await markPageOutdated();
+coreAnswer = { status: 503, body: "the domain is still initialising, say" };
+const contextNS = await browser.newContext();
+mark = requests.length;
+const { p: NS, response: firstNS } = await openAdmin("NS", contextNS);
+const firstBodyNS = await firstNS.body();
+await waitFor(async () => (await status(NS))?.state === "failed", 30000);
+const refusedNS = await status(NS);
+check("with the public site not serving the core file, the first load's page is built from the engine and its shell is refused, the notification naming the address, the answer and the setup section",
+  firstBodyNS.length > ENGINE.length / 2 && refusedNS?.state === "failed" && /doesn't serve the core file \(answered 503\)/.test(refusedNS?.text || "") && (refusedNS?.text || "").includes(PUB) &&
+  /setup 2\.2/.test(refusedNS?.text || "") && /PUBLIC_WIKI_URL/.test(refusedNS?.text || "") && !(await bucket.head("_page/shell.html")),
+  `page ${firstBodyNS.length} bytes (engine ${ENGINE.length}), shell stored ${!!(await bucket.head("_page/shell.html"))}, ${JSON.stringify(refusedNS)}`);
+mark = requests.length;
+await add(NS, { title: "Unrelated 3", text: "z" }); await settle(NS); await sleep(QUIET_WINDOW);
+check("...a save that doesn't change the page sends nothing more: the refusal is final for that page", shellPuts("NS", mark) === 0, `${shellPuts("NS", mark)} shell PUTs`);
+coreAnswer = null;
+mark = requests.length;
+await NS.reload();
+await NS.waitForFunction(() => window.$tw && $tw.wiki && $tw.rootWidget, null, { timeout: 30000 });
+const publishedNS = await waitFor(async () => !!(await bucket.head("_page/shell.html")), 30000);
+await sleep(QUIET_WINDOW);
+const shellNS = await bucket.head("_page/shell.html"), pageNS = await bucket.head("baked.html");
+check("...once the site serves the file, a reload publishes the shell and the page is built from it",
+  publishedNS && shellPuts("NS", mark) === 1 && !!shellNS && pageNS?.customMetadata?.shell === shellNS.customMetadata?.fingerprint && (await status(NS))?.state === "published",
+  `${shellPuts("NS", mark)} shell PUTs, page from ${pageNS?.customMetadata?.shell} vs shell ${shellNS?.customMetadata?.fingerprint}, ${JSON.stringify(await status(NS))}`);
+// A site that answers but doesn't serve the file (the domain of another bucket, say): the same, with
+// the status named
+coreAnswer = { status: 404, body: "Object not found" };
+await add(NS, { title: "$:/SiteSubtitle", text: "while the site answers 404" }); await settle(NS);
+await waitFor(async () => (await status(NS))?.state === "failed" && /404/.test((await status(NS)).text), 30000);
+check("a public site that answers but doesn't serve the file (404): a change to the page is refused with the status named, the stored shell unchanged",
+  /doesn't serve the core file \(answered 404\)/.test((await status(NS))?.text || "") && !(await shell()).includes("while the site answers 404"), JSON.stringify(await status(NS)));
+coreAnswer = null;
+await add(NS, { title: "$:/SiteSubtitle", text: "once the site serves it again" }); await settle(NS);
+await waitFor(async () => (await shell()).includes("once the site serves it again"), 30000);
+check("...and the next change, the file served, is published", (await shell()).includes("once the site serves it again") && (await status(NS))?.state === "published", JSON.stringify(await status(NS)));
+await contextNS.close();
 
 await finish({ check, results, pageErrors, browser, site });
