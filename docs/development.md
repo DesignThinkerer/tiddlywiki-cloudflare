@@ -61,7 +61,7 @@ GitHub runs the same two groups, as two jobs side by side, for every pull reques
 ├── worker.js                 GENERATED: the file you deploy (npm run build)
 ├── seed/empty.html           GENERATED, not committed: an empty TiddlyWiki with TiddlyWeb, what a new wiki starts from (setup 2.8), uploaded with the worker
 ├── tools/build-wiki.mjs      builds it from the tiddlywiki package (npm run build)
-├── tools/restore.mjs         merges a clone of the backup into one file any TiddlyWiki imports (setup 2.4)
+├── tools/restore.mjs         merges a clone of the backup into one file any TiddlyWiki imports, reading from the commit what the clone lacks (setup 2.4)
 ├── tools/run-suites.mjs      runs test suites, each to the end, one after the other or several at once (--parallel), with a summary (npm test); their output under test-results/, not committed
 ├── tools/screenshot.mjs      takes the README's screenshot from a wiki run through the test setup (npm run screenshot)
 ├── tools/release-notes.mjs   prints a dated block of the changelog, the release's notes (CONTRIBUTING, "Releases")
