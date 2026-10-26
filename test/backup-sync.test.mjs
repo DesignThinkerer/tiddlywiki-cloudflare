@@ -87,8 +87,17 @@ check("...that says backups are on, no full backup yet, with the button", (await
 // (The section sits in a <$list> widget: without a blank line after its opening tag, TiddlyWiki
 // parses it inline, and the heading showed as "!!! Full backup" in the text)
 const tabHtml = await A.evaluate(t => $tw.wiki.renderTiddler("text/html", t), TAB);
-check("...its Full backup heading rendered as a heading, its sentences as paragraphs", /<h3[^>]*>Full backup<\/h3>/.test(tabHtml) && !/!!!/.test(text) && /<p>A full backup makes GitHub mirror the wiki/.test(tabHtml),
+check("...its Full backup heading rendered as a heading, its sentences as paragraphs", /<h3[^>]*>Full backup<\/h3>/.test(tabHtml) && !/!!!/.test(text) && /<p>Makes GitHub match the wiki/.test(tabHtml),
   (tabHtml.match(/.{0,60}Full backup.{0,60}/) || [])[0]);
+// Each section leads with what the user acts on: the setup's one line then the button, with the cost
+// under it; the full backup's status, then the buttons, then the explanation; backups second, after
+// the setup check README step 8 sends a new user to, the worker and the engine after
+const at = s => text.indexOf(s);
+check("the tab's order: The setup, Backups to GitHub, The worker, The engine; the setup section one line then the button, the cost under the button; the full backup's status before its buttons, the explanation after; Refresh says what it refreshes",
+  at("The setup") >= 0 && at("The setup") < at("Backups to GitHub") && at("Backups to GitHub") < at("The worker") && at("The worker") < at("The engine") &&
+  /Looks at each piece set up by hand \(Access, the public site and its rules, backups and the queue, purges, this browser's offline copy\) and, for a missing one, says what to do \(operating 3\.15\)\./.test(text) && at("Looks at each piece") < at("Check the setup") && at("Check the setup") < at("Runs only when you click: the worker makes a few requests and purges the public site's status file to test the purge token.") &&
+  at("No full backup yet") < at("Back up everything to GitHub") && at("Back up everything to GitHub") < at("Refresh the status") && at("Refresh the status") < at("Makes GitHub match the wiki: commits what isn't there yet, removes what's gone. Run it once after setting backups up or after a restore; run again, it changes nothing. It goes on without this tab, at about 500 commits an hour (setup 2.4)."),
+  text.replace(/\s+/g, " ").slice(0, 700));
 await A.waitForFunction(t => $tw.wiki.tiddlerExists(t), HINT, { timeout: 10000 }).catch(() => {});
 const hint = await A.evaluate(t => { const x = $tw.wiki.getTiddler(t); return x ? { tags: x.fields.tags, text: x.fields.text } : null; }, HINT);
 check("backups on and no full backup ever: an alert says tiddlers saved before aren't on GitHub, and where the button is",

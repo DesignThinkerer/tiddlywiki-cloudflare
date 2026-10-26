@@ -60,7 +60,7 @@ Without a repository and a token, the worker skips backups: the wiki then has no
 
 It makes GitHub mirror the wiki: every stored tiddler GitHub doesn't have, or has differently, is committed, and files of tiddlers no longer in the wiki are removed; run again, it changes nothing.
 
-It runs in the backup queue, without the tab, at GitHub's pace (about 500 commits an hour), and the tab shows its progress (as of its last minute's refresh, or *Refresh*). Run it once after setting backups up, after a restore (below), after putting a tiddler in the bucket by hand, or in any doubt.
+It runs in the backup queue, without the tab, at GitHub's pace (about 500 commits an hour), and the tab shows its progress (as of its last minute's refresh, or *Refresh the status*). Run it once after setting backups up, after a restore (below), after putting a tiddler in the bucket by hand, or in any doubt.
 
 **Restoring from the backup:** the backup is the wiki, one file per tiddler, so a wiki can be rebuilt from it in a new bucket or a new account: do [2.2](#22-the-bucket-and-the-public-site) to [2.8](#28-the-first-visit) with an empty bucket, clone the backup, and drag its files onto the admin wiki, like an existing wiki's file ([2.8](#28-the-first-visit)). A clone can come up short, on Windows most of all, where no title with a `:` checks out ([limits 5](limits.md)): the tool below reads from the commit what the clone lacks, so prefer it to dragging the files. Before the full backup that follows a restore (above), check that every tiddler came through (the tool says how many, and which it read from the commit): that backup removes from the branch whatever the restore missed.
 
