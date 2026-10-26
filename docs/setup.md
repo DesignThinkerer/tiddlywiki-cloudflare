@@ -206,6 +206,8 @@ With backups set up ([2.4](#24-the-backup-repository-optional)), save one tiddle
 }
 ```
 
+**Hearing of releases.** To be told of each release by e-mail: *Watch → Custom → Releases* on this repository (DesignThinkerer/tiddlywiki-cloudflare, not your fork), or follow its [releases feed](https://github.com/DesignThinkerer/tiddlywiki-cloudflare/releases.atom). Each release's notes open with what the update asks of you, or "Nothing", and the admin wiki's Cloudflare tab says when a newer release is out, once a day, when the tab is shown ([operating 3.1](operating.md#31-updating-your-copy)).
+
 ## 2.9 A second wiki
 
 A second wiki is a second worker with its own bucket, queue, settings and, if public, its own public site: steps [2.2](#22-the-bucket-and-the-public-site) to [2.8](#28-the-first-visit) again with other names. From one repository, Wrangler environments do it: an `[env.notes]` section in `wrangler.toml` with that wiki's `name`, bucket and queue (and route, with a custom domain), deployed with `npx wrangler deploy --env notes` (as the deploy command of a second Workers Builds project, or from your computer); its settings go in that worker's dashboard like the first one's. The zone rules are per hostname, so each wiki gets its own set, and `CF_ZONE_ID` and `CF_API_TOKEN` can be shared. The free plan's limits ([limits 5](limits.md)) are per account, whichever way the wikis are deployed.

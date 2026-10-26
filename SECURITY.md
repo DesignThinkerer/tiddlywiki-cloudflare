@@ -4,7 +4,7 @@
 
 Report it privately, through GitHub: [*Report a vulnerability*](https://github.com/DesignThinkerer/tiddlywiki-cloudflare/security/advisories/new) on the repository's Security tab. Not as an issue: an issue is public, and would tell everyone before the wikis running from this repository can take the fix. You'll get a first answer within a week.
 
-A fix ships as a pull request here, with its entry in [CHANGELOG.md](CHANGELOG.md); every wiki takes it by syncing its copy of the repository ([operating 3.1](docs/operating.md#31-updating-your-copy)), and an advisory is published once that's possible.
+A fix ships as a pull request here, with its entry in [CHANGELOG.md](CHANGELOG.md), marked **Security:**; every wiki takes it by syncing its copy of the repository ([operating 3.1](docs/operating.md#31-updating-your-copy)), and an advisory is published once that's possible. An advisory reaches only those watching the repository: To be told of each release by e-mail: *Watch → Custom → Releases* on this repository (DesignThinkerer/tiddlywiki-cloudflare, not your fork), or follow its [releases feed](https://github.com/DesignThinkerer/tiddlywiki-cloudflare/releases.atom).
 
 ## What's in scope
 
@@ -23,4 +23,4 @@ Worth knowing before reporting, and before deploying:
 
 ## Supported versions
 
-`main` only, which is what *Sync fork* gives a wiki ([operating 3.1](docs/operating.md#31-updating-your-copy)): the newest release — a dated block of [CHANGELOG.md](CHANGELOG.md), tagged on GitHub ([CONTRIBUTING.md](CONTRIBUTING.md), "Releases") — and whatever has merged since, under "Unreleased". A fix lands on `main` and in the next release; the changelog says what each update asks.
+`main` only, which is what *Sync fork* gives a wiki ([operating 3.1](docs/operating.md#31-updating-your-copy)): the newest release — a dated block of [CHANGELOG.md](CHANGELOG.md), tagged on GitHub ([CONTRIBUTING.md](CONTRIBUTING.md), "Releases") — and whatever has merged since, under "Unreleased". A fix lands on `main` and in the next release; each release's notes open with what the update asks of whom, a security fix marked as one. To be told of each release by e-mail: *Watch → Custom → Releases* on this repository (DesignThinkerer/tiddlywiki-cloudflare, not your fork), or follow its [releases feed](https://github.com/DesignThinkerer/tiddlywiki-cloudflare/releases.atom).
