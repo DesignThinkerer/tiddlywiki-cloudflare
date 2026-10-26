@@ -90,7 +90,7 @@ The worker's logs are under its Logs tab in the dashboard. What the lines mean:
 
 ## 3.9 Manual purge
 
-Cloudflare dashboard → Caching → Configuration → Purge Cache → *Custom Purge* → *Hostname*, the public hostname. Use it if something on the public site looks stuck, for example after uploading files to R2 by hand, and once after a purge token was replaced or fixed: what changed while purges failed stays cached until its Edge TTL otherwise, a day with the guide's setting, and the admin wiki says so meanwhile (an alert, once a few of its reads from the public site come back stale: [design 2.20](design.md#220-the-setup-check-from-the-worker-on-demand-one-purge-as-the-tokens-test)).
+Cloudflare dashboard → Caching → Configuration → Purge Cache → *Custom Purge* → *Hostname*, the public hostname. Use it if something on the public site looks stuck, for example after uploading files to R2 by hand ([3.24](#324-images-and-files)), and once after a purge token was replaced or fixed: what changed while purges failed stays cached until its Edge TTL otherwise, a day with the guide's setting, and the admin wiki says so meanwhile (an alert, once a few of its reads from the public site come back stale: [design 2.20](design.md#220-the-setup-check-from-the-worker-on-demand-one-purge-as-the-tokens-test)).
 
 ## 3.10 Loading a big wiki
 
@@ -235,3 +235,13 @@ What makes the wiki public is the domain connected to the bucket, not the worker
 4. **The backup repository,** if it's public: make it private (on GitHub, the repository's Settings → Danger Zone → *Change visibility*), as a private wiki's has to be ([setup 2.4](setup.md#24-the-backup-repository-optional)); *Check the setup* fails the backups line until then.
 
 **Changing the domain** is the two put together, the new domain first, so that the admin wiki runs throughout: connect it and wait until it answers ([setup 2.2](setup.md#22-the-bucket-and-the-public-site)), its rules ([2.7](setup.md#27-the-zones-rules-public-site-only)), then `PUBLIC_WIKI_URL` set to it, and the admin wiki opened twice, which publishes the page for the new address ([3.22](#322-making-a-private-wiki-public), step 5); then the old domain removed from the bucket, its rules deleted and the old hostname purged once. The admin site's own address is another matter: it's in the CORS rule's value and in Access, and changes nothing of the bucket.
+
+## 3.24 Images and files
+
+A picture dragged into the wiki becomes a tiddler holding it as base64: in R2, in every tiddler list, in a GitHub commit, loaded like any tiddler, and from about 1 MB past the backup's size limit ([limits 5](limits.md)). Upload from the admin wiki is parked ([roadmap](roadmap.md)); the way by hand:
+
+1. **Upload the file to the bucket** (R2 → the bucket → Objects → *Upload*, or `npx wrangler r2 object put "<bucket>/files/<name>" --file <name> --content-type image/jpeg --remote`) under a folder of your own, `files/` say, away from the worker's keys: `index.html`, `baked.html`, `status`, `recipes/`, `_page/`, `_plugins/`, `_repair/`, `_backup/`.
+2. **A tiddler that points at it:** an image tiddler (type `image/jpeg`, say) with `_canonical_uri` set to the file's address, TiddlyWiki's external images. On a wiki with a public site, `https://wiki.example.com/files/<name>`: Cloudflare's cache serves it on both sites, no worker request. On a private wiki, `/files/<name>`: the worker serves any key of the bucket behind Access, one request per view.
+3. **A replaced file** stays as it was on the public site for the cache rule's Edge TTL ([setup 2.7](setup.md#27-the-zones-rules-public-site-only)), a day with the guide's setting, unless its URL is purged ([3.9](#39-manual-purge)).
+
+These files aren't the wiki's: they aren't backed up to GitHub, not even by a full backup ([3.2](#32-a-full-backup)), aren't kept for opening offline ([3.13](#313-opening-the-wiki-offline)), and go with the bucket ([3.21](#321-removing-the-wiki)); keep your own copy.
