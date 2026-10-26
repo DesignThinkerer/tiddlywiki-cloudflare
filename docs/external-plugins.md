@@ -1,10 +1,12 @@
 # Plugins as files the page loads
 
-These are the design notes behind [design.md 1.8](design.md#18-plugins-and-javascript-modules): the problem, the design and why it was chosen over baking plugins into the page, what it costs, the change step by step, and how to operate it.
+*Design notes written when plugin files were introduced (October 2026), kept for the record. What they decided is [design 1.8](design.md#18-plugins-and-javascript-modules) and [2.13](design.md#213-plugins-as-files-the-page-loads); how to install, update or repair a plugin is the manual's, [operating 3.4](operating.md#34-plugins) to [3.7](operating.md#37-a-plugin-with-raw-markup).*
+
+These are the design notes behind [design.md 1.8](design.md#18-plugins-and-javascript-modules): the problem, the design and why it was chosen over baking plugins into the page, what it costs, the change step by step, and its limits; operating it is in the manual ([operating 3.3](operating.md#33-updating-the-wiki-engine) to [3.7](operating.md#37-a-plugin-with-raw-markup)).
 
 The tests are in `test/plugins.test.mjs`, which runs real plugins shipped with TiddlyWiki, markdown and KaTeX, on the admin site and on a stand-in for the public site (docs/tests.md).
 
-"The external-plugins plugin" below is `$:/plugins/someone/external-plugins`, which exports plugins as standalone `.js` files for single-file wikis. The plugin files here use the same format as its export template.
+"The external-plugins plugin" below is `$:/plugins/someone/external-plugins`, which exports plugins as standalone `.js` files for single-file wikis. The plugin files here use the same format as its export template (a plugin of the author's, not published; `someone` is the manual's placeholder).
 
 ## Contents
 
@@ -242,8 +244,8 @@ These figures come from the same test machine as in section 3, so read them as p
 ## 6. Edge cases and limits
 
 - **A plugin also built into `index.html`:** the file wins, because preloaded tiddlers are added after the HTML's own. So updating such a plugin from the library works. The other way round, after uploading an `index.html` with a newer version, the stored copy still wins; delete it in the wiki to use the one in `index.html`.
-- **Updating the TiddlyWeb plugin from the library:** the conflict guard modifies some of its functions (saving, loading, deleting, the tiddler list). After an update, download `index.html`, add the new plugin to a copy and run `WIKI_HTML=… npm run test:tabs`, or simply watch for conflict alerts working as before. (Since the page is published from the admin wiki, [design 1.9](design.md#19-the-page-published-from-the-admin-wiki), an installed TiddlyWeb also stops publishing: the worker refuses a page without TiddlyWeb, and says what to do. Upgrading TiddlyWiki with a new `index.html` brings a matching TiddlyWeb instead.)
-- **`$:/core`** never gets a file: it isn't synced. Upgrade TiddlyWiki by uploading a new `index.html`.
+- **Updating the TiddlyWeb plugin from the library:** don't. The conflict guard replaces some of its functions (saving, loading, deleting, the tiddler list), and the worker refuses a page without the TiddlyWeb from `index.html` (troubleshooting, "Page not published: The page doesn't contain the TiddlyWeb plugin…"): delete it in the wiki and reload, and take a newer TiddlyWeb with the engine ([operating 3.3](operating.md#33-updating-the-wiki-engine)). (Since the page is published from the admin wiki, [design 1.9](design.md#19-the-page-published-from-the-admin-wiki), an installed TiddlyWeb also stops publishing: the worker refuses a page without TiddlyWeb, and says what to do. Upgrading TiddlyWiki with a new `index.html` brings a matching TiddlyWeb instead.)
+- **`$:/core`** never gets a file: it isn't synced. Upgrade TiddlyWiki with *Update the engine* in the Cloudflare tab ([operating 3.3](operating.md#33-updating-the-wiki-engine)).
 - **An old page loading new code:** a page cached somewhere with an old `?v=` could fetch a file that has since been overwritten, once that old URL has left Cloudflare's cache. It then simply runs the new version, which matches the tiddler list.
 - **Leftover files:** a file can outlive its plugin if two builds overlap at the moment the plugin is turned into an ordinary tiddler. Nothing loads it; delete it in R2 if you notice it.
 - **Browsers:** the file uses `??=` and `??`, like the external-plugins template, so it needs a browser from 2020 or later.

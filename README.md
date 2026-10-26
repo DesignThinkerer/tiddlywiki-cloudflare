@@ -58,7 +58,7 @@ Seven chapters, numbered across the pages: a section number means the same thing
 6. [Development and tests](docs/development.md): the build, the suites, the repository layout
 7. [Reference](docs/reference.md): the Cloudflare, GitHub and TiddlyWiki documents the design relies on
 
-How the worker works, and why it's built this way: [docs/design.md](docs/design.md). What each test suite covers: [docs/tests.md](docs/tests.md). Where it's going: [docs/roadmap.md](docs/roadmap.md).
+How the worker works, and why it's built this way: [docs/design.md](docs/design.md); the design notes from when plugin files were introduced, kept for the record: [docs/external-plugins.md](docs/external-plugins.md). What each test suite covers: [docs/tests.md](docs/tests.md). Where it's going: [docs/roadmap.md](docs/roadmap.md).
 
 ---
 
