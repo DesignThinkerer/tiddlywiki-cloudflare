@@ -1,6 +1,6 @@
 # 2. Setting up
 
-*Chapter 2 of the [manual](../README.md#the-manual). Each step names what the next ones need.*
+*Chapter 2 of the [manual](../README.md#the-manual). Each step names what the next ones need. The names used here — the engine, the page, the device copy, the outbox, the plugin — are in [chapter 1](../README.md#the-names).*
 
 About ten minutes, in this order.
 
@@ -113,7 +113,7 @@ The worker is deployed from your repository by Cloudflare's **Workers Builds**: 
 
    | Name | What |
    |---|---|
-   | `CONFLICT_GUARD` | `off` builds the page without the browser modules ([operating 3.19](operating.md#319-the-browser-modules-off-and-checking-theyre-on)). (The wiki's own settings for those modules live in the plugin's settings tab, [operating 3.17](operating.md#317-the-plugin-and-its-settings).) |
+   | `CONFLICT_GUARD` | `off` builds the page without the plugin, *TiddlyWiki on Cloudflare*: no conflict protection, no device copy or offline editing, no backup alert, no Cloudflare tab, and the page is no longer published ([operating 3.19](operating.md#319-turning-the-plugin-off-and-checking-its-on)). (The wiki's own settings live in the plugin's settings tab, [operating 3.17](operating.md#317-the-plugin-and-its-settings).) |
    | `BACKUP_RETRY_SECONDS` | the first wait before a failed backup is tried again (default 60). |
    | `BACKUP_ALERT_MINUTES` | how long backups have to keep failing before the admin wiki shows it (default 60, [design 1.7](design.md#17-github-backup)). |
    | `ACCESS` | `off` lets requests through that didn't come through Cloudflare Access, for the tests and local runs only ([2.6](#26-cloudflare-access)). |

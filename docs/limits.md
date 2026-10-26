@@ -1,6 +1,6 @@
 # 5. Known limits
 
-*Chapter 5 of the [manual](../README.md#the-manual). Real limits only, things you can hit, each with what to do about it.*
+*Chapter 5 of the [manual](../README.md#the-manual). Real limits only, things you can hit, each with what to do about it. The names used here — the engine, the page, the device copy, the outbox, the plugin — are in [chapter 1](../README.md#the-names).*
 
 - **Some titles can't be saved:** `.` and `..` (in a URL, the browser takes them for the folder or its parent, so they'd never reach the worker) and titles over 999 bytes (an R2 key holds 1,024). The admin wiki doesn't send them, which would fail and be retried forever: it keeps them on this device (the outbox, [operating 3.11](operating.md#311-editing-offline)), unsent, shows an alert asking to rename them, and asks before the tab is closed or reloaded; renamed, the tiddler is saved.
 - **A plugin, or a raw markup tiddler of yours, that breaks at boot breaks both sites** until you remove it ([operating 3.5](operating.md#35-the-published-page), [3.6](operating.md#36-if-a-plugin-breaks-the-page)); the red box on the admin site ends with a line that says so and links what to do.

@@ -1,6 +1,6 @@
 # 3. Operating it
 
-*Chapter 3 of the [manual](../README.md#the-manual). Each section is about one thing you may do or meet while running the wiki.*
+*Chapter 3 of the [manual](../README.md#the-manual). Each section is about one thing you may do or meet while running the wiki. The names used here — the engine, the page, the device copy, the outbox, the plugin — are in [chapter 1](../README.md#the-names).*
 
 ## 3.1 Updating your copy
 
@@ -59,7 +59,7 @@ When the wiki doesn't start after a plugin was installed, on both sites (TiddlyW
 1. In R2, delete `_plugins/<plugin title>.js`. R2's dashboard lists a key by its slashes as folders: `_plugins/$:/plugins/x/y.js` sits under `_plugins`, then `$:`, then `plugins`, then `x`. From a computer, under your own login, `npx wrangler r2 object delete "<bucket>/_plugins/<plugin title>.js" --remote` does the same.
 2. *(public site only)* Purge it from Cloudflare's cache: Caching → Configuration → Purge Cache → *Custom Purge* → *Hostname*, the public site's host (never *Purge Everything*, which clears every site in the zone, [design 2.10](design.md#210-targeted-purges-not-purge-everything)); or the exact URL with its `?v=`, readable with the browser's *View Source* even when the wiki doesn't start.
 3. Hard-reload the admin wiki (Ctrl+Shift+R; on a Mac, Cmd+Shift+R, or Option+Cmd+R in Safari). It starts without the plugin. TiddlyWiki may ask for a reload; ignore it.
-4. Delete or disable the plugin in the Control Panel (that plugin, not TiddlyWiki on Cloudflare's own, whose checkbox turns the browser modules off: [3.19](#319-the-browser-modules-off-and-checking-theyre-on)) and wait for the save. The page is rebuilt without it, or with it disabled.
+4. Delete or disable the plugin in the Control Panel (that plugin, not TiddlyWiki on Cloudflare's own, whose checkbox turns the browser modules off: [3.19](#319-turning-the-plugin-off-and-checking-its-on)) and wait for the save. The page is rebuilt without it, or with it disabled.
 
 On a phone, or in the installed app, there is no hard reload, and the service worker serves the plugin's file from the device's cache until step 4 rebuilds the page: do steps 3 and 4 in a private window, which starts with no service worker and no cached files (you log in to Access again), or from a computer; the other devices and the app pick up the fixed page at their next load, since it no longer loads that file. If the page is rebuilt before step 4 (by a deploy, or by saving another plugin, a startup action, `$:/theme` or a disable flag), the file is written again; delete it again.
 
@@ -96,7 +96,7 @@ Cloudflare dashboard → Caching → Configuration → Purge Cache → *Custom P
 
 A tab gets the tiddler list (every field but the text) and loads the tiddler it shows first; the rest fills in in the background, several at a time, only while the tab is visible, so that search and backlinks work on everything.
 
-Loaded tiddlers are kept in the browser (IndexedDB, like its cache: clearing the site's data removes them), so the next page load fetches only what changed since, on any device.
+Loaded tiddlers are kept in the browser (IndexedDB, like its cache: clearing the site's data removes them): the device copy, so the next page load fetches only what changed since, on any device.
 
 To skip the fill, untick it in the plugin's settings (below; it takes effect at the next page load): each tiddler then loads the moment it's shown, and nothing else is fetched, but the sidebar's text search, backlinks and the Missing and Orphans lists only see tiddlers the tab has loaded (titles, tags and fields are always searched). [Design 1.5](design.md#15-keeping-worker-requests-down).
 
@@ -104,7 +104,7 @@ To skip the fill, untick it in the plugin's settings (below; it takes effect at 
 
 With the admin wiki open, keep editing without a network. TiddlyWiki retries every few seconds; the moment the connection is back, everything reaches the worker, each save checked for conflicts as usual. Its *Network Error* alert isn't shown on the admin wiki (it would be back at every retry): the cloud icon turning red and its dropdown say it, below. TiddlyWiki's other alerts — a save the worker refuses, say — show as always.
 
-What this setup adds is that nothing is lost in between: every change is written to this device at once (the same store that keeps your tiddlers for reading), so a reload, a crash or a closed tab while offline keeps it, and the next time the wiki opens on this device it sends it — a tiddler changed elsewhere meanwhile gets a conflict copy, as online.
+What this setup adds is that nothing is lost in between: every change is written to this device at once (the same store that keeps your tiddlers for reading) — the outbox — so a reload, a crash or a closed tab while offline keeps it, and the next time the wiki opens on this device it sends it — a tiddler changed elsewhere meanwhile gets a conflict copy, as online.
 
 If the browser refuses to store a change — no room left, or storage unavailable in that window — the dropdown says so instead of promising: the change then lives only in that tab until it's sent, so keep the tab open. A draft is kept there too, never sent to the worker: after a reload, TiddlyWiki lists it at the top of the page, with the text as you left it. The browser still asks before you leave while an editor holds changes: the device takes the draft a moment behind your typing, so the very last of it may not be there yet, and it can refuse the write. (The other tabs of the same browser follow this one — what you save, the draft you're typing: "Tabs following each other", below.)
 
@@ -158,7 +158,7 @@ The public site can be installed too, as a read-only app; it has no service work
 
 ## 3.17 The plugin and its settings
 
-The admin wiki's modules travel as a plugin, `$:/plugins/cfworker/admin`, listed in Control Panel → Plugins with the worker's version, the release's date (`2026.10.20`: [the changelog](../CHANGELOG.md) has the block of that date) followed by a build hash: the worker puts it in every page it builds, so it always matches the worker, and never stores it. Its parts are shadow tiddlers, out of search and out of syncing; a part you edit is an override, as with any plugin — it stays through the worker's updates, the dialog marks it, delete it to get the worker's part back.
+The plugin, *TiddlyWiki on Cloudflare* (`$:/plugins/cfworker/admin`, the admin wiki's modules), is listed in Control Panel → Plugins with the worker's version, the release's date (`2026.10.20`: [the changelog](../CHANGELOG.md) has the block of that date) followed by a build hash: the worker puts it in every page it builds, so it always matches the worker, and never stores it. Its parts are shadow tiddlers, out of search and out of syncing; a part you edit is an override, as with any plugin — it stays through the worker's updates, the dialog marks it, delete it to get the worker's part back.
 
 The plugin's *settings* tab holds the wiki's own settings (tiddlers under `$:/config/cfworker/`, saved like any other, so they hold on every device): the fill of the device copy (above) and TiddlyWiki's polling interval (60,000 ms, a minute: about 1,440 worker requests a day for each tab left visible, of the free plan's 100,000; 30 s doubles it; a tab in the background doesn't poll, and catches up when shown) — both read once, when a tab starts, so a change applies to tabs opened after it, as the tab says. Under a warning, the advanced ones:
 
@@ -178,9 +178,9 @@ The plugin's *device* tab (Control Panel → Plugins → TiddlyWiki on Cloudflar
 
 *Forget this device's copy* removes the device copy, the outbox and the service worker's files from this browser and reloads: the wiki comes back from the worker and the copy fills again, as on a new device; it's refused while a change or a draft waits, on the device or only in this tab, naming how many, and while the worker doesn't answer (the page comes back from the worker once the copy is gone). Nothing in the tab asks the worker anything. It isn't a way to leave nothing on a computer that isn't yours: *Forget* reloads, and the reload fills the copy again, while *Logout* ends the Access session alone and leaves the copy ([setup 2.6](setup.md#26-cloudflare-access) says what to do instead, [limits 5](limits.md)). [Design 1.14](design.md#114-the-device-tab), 2.22.
 
-## 3.19 The browser modules: off, and checking they're on
+## 3.19 Turning the plugin off, and checking it's on
 
-To turn them off, set `CONFLICT_GUARD` to `off`. The next page load rebuilds `baked.html` without them. Saves then go back to TiddlyWiki's default behaviour, without protection or request savings, and the page is no longer published.
+To turn the plugin, *TiddlyWiki on Cloudflare*, off, set `CONFLICT_GUARD` to `off`. The next page load rebuilds `baked.html` without it: no conflict protection, no device copy or offline editing, no backup alert, no Cloudflare tab, and the page is no longer published; saves go back to TiddlyWiki's default behaviour, without protection or request savings.
 
 To check they're on: in the admin wiki's browser console, `$tw.syncadaptor.conflictGuardInstalled` should be `true` (the conflict guard), and `$tw.syncadaptor.cfworkerBackupAlert` too (the backup alert, which runs after the list sync).
 

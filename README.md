@@ -92,6 +92,8 @@ flowchart LR
 
 The names the manual, the admin wiki and the worker's messages use:
 
+### The names
+
 | Name | What it is |
 |---|---|
 | **The admin site**, the admin wiki | The worker's address, behind Cloudflare Access: TiddlyWiki as you edit it. |
@@ -104,7 +106,7 @@ The names the manual, the admin wiki and the worker's messages use:
 | **The tiddler list** | `recipes/default/tiddlers.json`: every tiddler's fields but the text, with its revision. |
 | **The device copy** | The tiddlers this browser has loaded, kept in its IndexedDB, so a reload fetches only what changed. |
 | **The outbox** | The changes made in this browser that the worker hasn't confirmed yet, kept on the device. |
-| **The plugin** | `$:/plugins/cfworker/admin`: the browser modules, put in every page by the worker, with a settings tab and a device tab. |
+| **The plugin,** *TiddlyWiki on Cloudflare* | `$:/plugins/cfworker/admin`: the browser modules, put in every page by the worker, with a readme, a settings tab and a device tab. Turning it off removes all of it ([operating 3.19](docs/operating.md#319-turning-the-plugin-off-and-checking-its-on)). |
 
 ---
 
