@@ -215,6 +215,24 @@ exports.startup = function() {
 		}).join(" and ") + ").";
 	}
 
+	// The worker's copy can't be read (a stored object damaged, or uploaded by hand): settled once,
+	// the way a tiddler deleted elsewhere is, rather than handed to the syncer, whose retry fetched
+	// and failed on it every few seconds, the alert's count climbing. The user's text is kept as a
+	// conflict copy; the original is left alone on the worker (design 2.5 keeps the worker's version,
+	// and writing over a damaged object would hide what's there) and marked saved in this tab, so the
+	// save isn't tried again until the tiddler is edited again; the alert, the plugin's own (outbox.js,
+	// design 2.17), names the object to replace or delete in R2
+	function settleUnreadable(title,callback) {
+		var s = $tw.syncer,
+			local = wiki.tiddlerExists(title) && wiki.getTiddler(title),
+			copyTitle = local ? makeConflictCopy(local) : null,
+			info = s.tiddlerInfo[title] || {adaptorInfo: {bag: "default"}, revision: null, timestampLastSaved: new Date()};
+		info.changeCount = wiki.getChangeCount(title);
+		s.tiddlerInfo[title] = info;
+		delete unconfirmedSaves[title];
+		callback("Unreadable copy: the worker's copy of " + lib.link(title) + " can't be read (a stored object damaged, or uploaded by hand)" + (copyTitle ? ", and your version is kept as " + lib.link(copyTitle) : "") + ". Replace or delete recipes/default/tiddlers/" + title + " in the bucket (R2 → the bucket → Objects), then save the tiddler again (" + lib.guide("troubleshooting","4") + ").");
+	}
+
 	// The server rejected our write: its copy changed, or (why) for a reason of its own. Keep our
 	// version, adopt the server's.
 	// ownEarlier(revision): for a save, called instead if the server's copy is this tab's own earlier
@@ -245,7 +263,7 @@ exports.startup = function() {
 					try {
 						serverFields = adaptor.convertTiddlerFromTiddlyWebFormat(JSON.parse(data));
 					} catch(e) {
-						return callback("Could not read the server copy of '" + title + "': " + e);
+						return settleUnreadable(title,callback);
 					}
 				}
 				var localTiddler = wiki.tiddlerExists(title) && wiki.getTiddler(title),

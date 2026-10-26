@@ -47,6 +47,8 @@ var LOAD_ALL_TITLE = "$:/config/cfworker/LoadAll",
 	CATCH_UP_AFTER = 10000,       // ms since the last list after which a tab shown again asks for one at once (as it is, not scaled)
 	PUBLIC_READ_TIMEOUT = 5000,   // ms given to a read from the public site before the worker is asked instead
 	REBUILDING_RETRY = 500,       // ms before the list is asked again while the worker rebuilds it ("rebuilding")
+	REBUILDING_NOTICE_AT = 3,     // the "rebuilding" answer after which one notification says so (a rebuild over in a second says nothing)
+	REBUILDING_NOTICE = "$:/temp/cfworker/rebuilding",   // the notification's text, for $tw.notifier
 	STAND_IN_RETRY = 1000,        // ...and after a stand-in for a missing list (the first time, then STAND_IN_RETRY_LATER)
 	STAND_IN_RETRY_LATER = 5000,
 	FORGET_TIMEOUT = 5000,        // ms given to the browser to delete the device's database (cfworkerForgetDevice)
@@ -604,6 +606,17 @@ exports.startup = function() {
 		return s.getSyncedTiddlers([title]).length > 0;
 	}
 
+	// One notification while the worker rebuilds the list, which takes a step per hundred tiddlers or
+	// so: the wiki opens empty meanwhile and the list is asked again every half second with nothing on
+	// screen, so after the third "rebuilding" answer TiddlyWiki's notification says what's going on and
+	// that the wiki fills in by itself; not a lasting alert (design 2.17), no request of its own
+	function notifyRebuilding() {
+		wiki.addTiddler(new $tw.Tiddler({title: REBUILDING_NOTICE, text: "The worker is rebuilding the tiddler list from the stored tiddlers; the wiki fills in when it's done, no reload needed."}));
+		if($tw.notifier && typeof $tw.notifier.display === "function") {
+			$tw.notifier.display(REBUILDING_NOTICE);
+		}
+	}
+
 	// Remember which revision the worker currently lists for each tiddler, fetch the list again while
 	// it's being rebuilt (isRebuilding, isListStandIn), and never pass on a list that isn't one
 	proto.getSkinnyTiddlers = function(callback) {
@@ -682,6 +695,9 @@ exports.startup = function() {
 				}
 				if(err && ++tries <= lib.REBUILD_RETRIES) {
 					if(lib.isRebuilding(request)) {
+						if(tries === REBUILDING_NOTICE_AT) {
+							notifyRebuilding();
+						}
 						return setTimeout(fetchList,lib.wait(REBUILDING_RETRY));
 					}
 					if(isListStandIn(request)) {

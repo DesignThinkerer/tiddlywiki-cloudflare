@@ -359,7 +359,7 @@ exports.startup = function() {
 	// "Sync error while processing save of '…'" under its module id: nothing is lost in a conflict,
 	// and the text names the tiddler itself. One alert per text, as TiddlyWiki's logger keeps one
 	// per text and component. TiddlyWiki's other alerts (a save the worker refuses) show as they do.
-	var CONFLICT_HEADINGS = ["Edit conflict","Delete conflict","Deleted elsewhere"],
+	var CONFLICT_HEADINGS = ["Edit conflict","Delete conflict","Deleted elsewhere","Unreadable copy"],
 		alertCount = 0;
 	function conflictHeading(err) {
 		var text = typeof err === "string" ? err : "";

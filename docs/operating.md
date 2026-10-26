@@ -64,7 +64,7 @@ If the page is rebuilt before step 4 (by a deploy, or by saving another plugin, 
 A plugin with raw markup (one with a tiddler tagged `$:/tags/RawMarkup…`) is in the page as well as in its file ([design 1.9](design.md#19-the-page-published-from-the-admin-wiki)), so deleting the file isn't enough, and a page built again writes the file again while the plugin is stored. Remove the plugin itself, in R2:
 1. Delete `recipes/default/tiddlers/<plugin title>` and `_plugins/<plugin title>.js`, then `recipes/default/tiddlers.json`, `_page/shell.html` and `baked.html`.
 2. Purge everything from Cloudflare's cache.
-3. Open the admin wiki. The worker rebuilds the tiddler list from the stored tiddlers ([design 1.2](design.md#12-storage-revisions-and-etags)) and the page from `index.html`, both without the plugin, and the admin wiki then publishes its page. The GitHub backup still has the plugin (`tiddlers/<plugin title>.json`), to install again once fixed.
+3. Open the admin wiki. The worker rebuilds the tiddler list from the stored tiddlers ([design 1.2](design.md#12-storage-revisions-and-etags)) and the page from `index.html`, both without the plugin, and the admin wiki then publishes its page. The wiki opens empty and fills in as the list is rebuilt, roughly a second per hundred tiddlers, a notification saying so after a second or two: no need to reload. The GitHub backup still has the plugin (`tiddlers/<plugin title>.json`), to install again once fixed.
 
 ## 3.8 Log lines
 

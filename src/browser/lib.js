@@ -89,7 +89,8 @@ exports.DOCS_URL = "https://github.com/DesignThinkerer/tiddlywiki-cloudflare/blo
 var GUIDE = {
 	setup: { page: "setup.md", headings: { "2.4": "The backup repository (optional)", "2.7": "The zone's rules (public site only)" } },
 	operating: { page: "operating.md", headings: { "3.1": "Updating your copy", "3.4": "Plugins", "3.13": "Opening the wiki offline", "3.14": "When your login expires", "3.15": "Checking the setup", "3.20": "When two tabs edit the same tiddler" } },
-	limits: { page: "limits.md", headings: { "5": "Known limits" } }
+	limits: { page: "limits.md", headings: { "5": "Known limits" } },
+	troubleshooting: { page: "troubleshooting.md", headings: { "4": "Troubleshooting" } }
 };
 function slug(text) {
 	return text.toLowerCase().replace(/[^\w\s-]/g,"").trim().replace(/\s+/g,"-");
