@@ -62,7 +62,7 @@ exports.startup = function() {
 
 	// The worker's answer, parsed: "off" (no backups), "ok", or encoded JSON with what there is to
 	// say: the oldest failing backup {count, title, since, error, status}, stuck (a backup cut short:
-	// {count, title, size, attempts, started}), sync (the last full backup), backups: "off". Returns
+	// {count, title, size, attempts, started, skipped}), sync (the last full backup), backups: "off". Returns
 	// { backups, problem, stuck, sync } or null for an answer it can't read.
 	function parseAnswer(answer) {
 		if(answer === "ok" || answer === "off") {
@@ -106,7 +106,7 @@ exports.startup = function() {
 				"Not retried: this worker has no backup queue, or couldn't reach it (" + lib.guide("setup","2.3") + "). Once fixed, each tiddler is backed up at its next save; with the queue bound, <$link to=\"$:/ControlPanel\">Control Panel</$link> → Saving → Cloudflare → Back up everything to GitHub sends them all." :
 				(typeof problem.next === "number" && problem.next > Date.now() ? "Next try: " + $tw.utils.formatDateString(new Date(problem.next),"DDth MMM YYYY 0hh:0mm") + ", by itself." : "They're retried by themselves.") +
 				" The wiki keeps everything meanwhile." +
-				(problem.status === 401 ? " Once the secret is replaced, <$link to=\"$:/ControlPanel\">Control Panel</$link> → Saving → Cloudflare → Back up everything to GitHub sends the current versions now; the waiting ones still arrive afterwards, as history." : "");
+				(problem.status === 401 ? " Once the secret is replaced, <$link to=\"$:/ControlPanel\">Control Panel</$link> → Saving → Cloudflare → Back up everything to GitHub sends the current versions now, those the queue dropped meanwhile included (" + lib.guide("limits","5") + "); the waiting ones still arrive afterwards, as history." : "");
 		return "Backups to GitHub have been failing since " + $tw.utils.formatDateString(new Date(problem.since),"DDth MMM YYYY 0hh:0mm") + ": " +
 			(problem.count > 1 ? problem.count + " tiddlers, " + lib.link(problem.title) + " the oldest, aren't" : lib.link(problem.title) + " isn't") +
 			" backed up yet. GitHub answered: ``" + String(problem.error).replace(/`/g,"'").replace(/[\r\n]+/g," ") + "``. " + hint + " " + retried;
@@ -173,8 +173,10 @@ exports.startup = function() {
 		}));
 	}
 
-	// The alert for a backup the runtime cut short. stuck: {count, title, size, attempts, started}
-	// of the oldest. Nothing retries it (the queue dropped it): the next save of the tiddler does.
+	// The alert for a backup the runtime cut short. stuck: {count, title, size, attempts, started,
+	// skipped} of the oldest. Nothing retries it (the queue dropped it): the next save of the tiddler
+	// does; a full backup cut short on it once skips it when its step is delivered again (skipped), and
+	// goes on without it (design 2.37)
 	function showStuck(stuck) {
 		if(!stuck) {
 			stuckKey = null;
@@ -183,7 +185,7 @@ exports.startup = function() {
 			}
 			return;
 		}
-		var key = stuck.title + " " + stuck.started;
+		var key = stuck.title + " " + stuck.started + (stuck.skipped ? " skipped" : "");
 		if(key === stuckKey) {
 			return;
 		}
@@ -193,9 +195,12 @@ exports.startup = function() {
 			tags: ["$:/tags/Alert"],
 			component: "GitHub backup",
 			modified: new Date(),
-			text: "The backup of " + lib.link(stuck.title) + " (" + sizeText(stuck.size) + ") was cut short " + stuck.attempts + " times and dropped" +
+			text: "The backup of " + lib.link(stuck.title) + " (" + sizeText(stuck.size) + ") was cut short" +
+				(stuck.skipped ? ", and the full backup went past it" : " " + stuck.attempts + " times and dropped") +
 				(stuck.count > 1 ? ", and " + (stuck.count - 1) + " more like it" : "") + ": most likely the free plan's CPU time ran out on a tiddler this size (" + lib.guide("limits","5") + "). " +
-				"GitHub keeps the last version of it that went through; the wiki keeps this one. It's tried again at the next save of it: split it, or move the worker to a paid plan."
+				"GitHub keeps the last version of it that went through; the wiki keeps this one. " +
+				(stuck.skipped ? "Split it, or move the worker to a paid plan, then run the full backup again (<$link to=\"$:/ControlPanel\">Control Panel</$link> → Saving → Cloudflare → Back up everything to GitHub)." :
+					"It's tried again at the next save of it: split it, or move the worker to a paid plan.")
 		}));
 	}
 

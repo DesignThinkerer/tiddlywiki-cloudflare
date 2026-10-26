@@ -5,15 +5,16 @@
 // also keeps a pause of every backup, { until, count }, while there's one (queue.js), the last
 // full backup (sync.js, queue.js): { id, startedAt, updatedAt, total, phase, steps, done, committed,
 // removed, failed, finished }, and a note per big version being backed up (running: title ->
-// { revision, size, started, attempt, sync }), written before the heavy part of a version over
-// BIG_BACKUP_BYTES and cleared once the run is done with it: a run the runtime cuts short (the
+// { revision, size, started, attempt, sync, skipped }), written before the heavy part of a version
+// over BIG_BACKUP_BYTES and cleared once the run is done with it: a run the runtime cuts short (the
 // free plan's CPU time, on a version of several MB) runs nothing after the cut, the queue delivers
 // it again three times the same way, then drops it, and the note is all that says why (design 1.7,
-// 2.11). Written only when something changes, read only by a batch with a failure, a version that
-// failed or waited before, or a big one, and by each step of a full backup. The admin wiki
-// (src/browser/backup-alert.js) asks with its tiddler list request (X-Backup-Status: ask) when it
-// loads, then hourly, at each request while an alert shows or a full backup runs, and shows an
-// alert, and the full backup's progress in its control panel.
+// 2.11); a full backup's step delivered again after such a cut skips the tiddler and marks the note
+// skipped (queue.js, design 2.37). Written only when something changes, read only by a batch with a
+// failure, a version that failed or waited before, or a big one, and by each step of a full backup.
+// The admin wiki (src/browser/backup-alert.js) asks with its tiddler list request (X-Backup-Status:
+// ask) when it loads, then hourly, at each request while an alert shows or a full backup runs, and
+// shows an alert, and the full backup's progress in its control panel.
 
 import { backupAlertMinutes, github } from "../settings.js";
 import { BACKUP_STATUS_KEY } from "../storage.js";
@@ -93,20 +94,29 @@ export async function recordSync(env, patch, stored) {
 // failures: from backupFailure; cleared: titles whose backup got through; pause: { until, count } of
 // a pause that starts, null when one is over, undefined when that's not known; stored: the status
 // file, if this run has read it already; finished: titles noted as under way (noteRunning) that this
-// run is done with, however it went. Never throws: an R2 error here mustn't count as a failed backup
-export async function recordBackupResults(env, failures, cleared, pause, stored, finished = []) {
+// run is done with, however it went; skipped: titles a full backup's step skipped as cut short before,
+// whose note is kept and marked (design 2.37). Never throws: an R2 error here mustn't count as a
+// failed backup
+export async function recordBackupResults(env, failures, cleared, pause, stored, finished = [], skipped = []) {
   try {
-    await updateBackupStatus(env, failures, cleared, pause, stored, finished);
+    await updateBackupStatus(env, failures, cleared, pause, stored, finished, skipped);
   } catch (e) {
     console.error("[Backup] Could not record how backups go:", e.message);
   }
 }
 
-async function updateBackupStatus(env, failures, cleared, pause, stored, finished) {
+async function updateBackupStatus(env, failures, cleared, pause, stored, finished, skipped = []) {
   const status = stored || await readBackupStatus(env, true), now = Date.now();
   const { failing, pause: storedPause, running } = status;
   let changed = false;
   for (const title of finished) changed = running.delete(title) || changed;
+  for (const title of skipped) {
+    const note = running.get(title);
+    if (note && !note.skipped) {
+      running.set(title, { ...note, skipped: true });
+      changed = true;
+    }
+  }
   for (const [title, note] of running) {
     // (A note left for a day belongs to a version no longer in the queue; also one with no time to go by)
     if (!(now - note.started <= BACKUP_STATUS_STALE)) changed = running.delete(title) || changed;
@@ -144,14 +154,15 @@ async function writeBackupStatus(env, { failing, pause, sync, running }) {
 // encoded JSON with what there is to say: the backups failing for at least BACKUP_ALERT_MINUTES (60
 // by default), as { count, title, since, error, status } of the oldest, with its next try (next, ms)
 // or direct: true for a direct backup's failure, which nothing retries; a backup cut short (a note
-// left behind by its last delivery, or for RUNNING_STALE_MS), as stuck: { count, title, size,
-// attempts, started } of the oldest; the last full backup, as sync (running or finished); and
+// left behind by its last delivery, or for RUNNING_STALE_MS, or one a full backup's step skipped,
+// marked skipped: reported at once), as stuck: { count, title, size, attempts, started, skipped } of
+// the oldest; the last full backup, as sync (running or finished); and
 // backups: "off" when both apply to a worker without them
 export function backupReport(env, { failing, sync, running }) {
   const after = backupAlertMinutes(env) * 60000;
   const now = Date.now();
   const due = [...failing].filter(([, e]) => waiting(e, now) && now - e.since >= after).sort((a, b) => a[1].since - b[1].since);
-  const cut = [...(running || [])].filter(([, n]) => now - n.started <= BACKUP_STATUS_STALE && (n.attempt > QUEUE_RETRIES || now - n.started >= RUNNING_STALE_MS)).sort((a, b) => a[1].started - b[1].started);
+  const cut = [...(running || [])].filter(([, n]) => now - n.started <= BACKUP_STATUS_STALE && (n.skipped || n.attempt > QUEUE_RETRIES || now - n.started >= RUNNING_STALE_MS)).sort((a, b) => a[1].started - b[1].started);
   const on = !!github(env);
   if (!due.length && !cut.length && !sync) return on ? "ok" : "off";
   const report = {};
@@ -161,7 +172,7 @@ export function backupReport(env, { failing, sync, running }) {
   }
   if (cut.length) {
     const [title, n] = cut[0];
-    report.stuck = { count: cut.length, title: title.slice(0, 200), size: n.size, attempts: n.attempt, started: n.started };
+    report.stuck = { count: cut.length, title: title.slice(0, 200), size: n.size, attempts: n.attempt, started: n.started, ...(n.skipped ? { skipped: true } : {}) };
   }
   if (sync) report.sync = { ...sync, running: syncRunning(sync) };
   if (!on) report.backups = "off";

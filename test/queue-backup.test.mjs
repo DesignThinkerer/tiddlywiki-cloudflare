@@ -691,6 +691,34 @@ res17 = await startSync();
 const afterLost = res17.status === 202 ? await res17.json() : null;
 check("a full backup without progress for hours counts as lost: a new one starts (202) and replaces it", res17.status === 202 && afterLost?.id !== "lost" && afterLost.total === listEntries.length + 1, `status ${res17.status} ${JSON.stringify(afterLost)}`);
 await until(async () => (await syncStatus()).finished, 60000);
+// 17b. A tiddler too big to back up doesn't stop the full backup for good (design 2.37). The step
+// that reaches it is cut short (the free plan's CPU time) right after writing its note, as a save's
+// backup is in 18; delivered again, the step finds the note (this full backup's id, this version, an
+// earlier attempt), skips the tiddler, counts it as not backed up, marks the note, and walks on: the
+// tiddlers after it in key order reach GitHub, the full backup finishes, and the alert names it at once
+const bigTitle = "$:/plugins/too-big";   // ($:/ sorts before letters: everything else comes after it)
+await storeByHand(bigTitle, "p".repeat(1300000));
+await storeByHand("Zed after 1", "stored after the big one, never on GitHub");
+await storeByHand("Zed after 2", "stored after the big one too");
+await bucket3.put("recipes/default/tiddlers.json", JSON.stringify(listEntries));
+await mf3.dispatchFetch(`${base3}/__qops`);                 // (starts a new count)
+await mf3.dispatchFetch(`${base3}/__die`, { method: "POST", body: JSON.stringify({ call: "put backup status", times: 1 }) });
+const beforeSkip = Date.now();
+res17 = await startSync();
+const skipping = res17.status === 202 ? await res17.json() : null;
+const pastBig = await until(async () => { const s = await syncStatus(); return s.id === skipping?.id && !!s.finished; }, 120000);
+const skippedSync = await syncStatus();
+const skipOps = await (await mf3.dispatchFetch(`${base3}/__qops`)).json();
+const skipNote = (await (async () => { const o = await bucket3.get("_backup/status.json"); return o ? JSON.parse(await o.text()) : null; })())?.running?.[bigTitle];
+const skipReport = await backupStatus(base3, mf3);
+check("a full backup cut short on a tiddler too big to back up goes past it: delivered again, the step skips it, counts it as not backed up, and the tiddlers after it reach GitHub",
+  pastBig && skippedSync.failed === 1 && skippedSync.committed === 2 && repoText(bigTitle) === undefined && textOf(repoText("Zed after 1")) === "stored after the big one, never on GitHub" && textOf(repoText("Zed after 2")) === "stored after the big one too",
+  `finished ${pastBig}: ${JSON.stringify(skippedSync)}, on GitHub ${repoText(bigTitle) !== undefined}`);
+check("...the note is kept and marked skipped, with the full backup's id, and reported to the admin wiki at once as stuck, not after 15 minutes",
+  !!skipNote && skipNote.skipped === true && skipNote.sync === skipping?.id && skipNote.started >= beforeSkip && !!skipReport && typeof skipReport === "object" && skipReport.stuck?.title === bigTitle && skipReport.stuck.skipped === true && skipReport.stuck.count === 1,
+  `note ${JSON.stringify(skipNote)}, report ${JSON.stringify(skipReport)}`);
+check("...the cut costs one delivery more (the queue's own), nothing else: every step sent once and acknowledged once, none delivered a third time",
+  skipOps.deliveries === skipOps.sends + 1 && skipOps.acks === skipOps.sends && skipOps.maxAttempts === 2, JSON.stringify(skipOps));
 // Without GitHub, or without the queue, the sync says what's missing
 const mfNoGitHub = makeWorker(0, true, { GITHUB_REPO: "", GITHUB_TOKEN: "" });
 const baseNoGitHub = (await mfNoGitHub.ready).toString().replace(/\/$/, "");

@@ -616,9 +616,9 @@ await K.waitForFunction(t => $tw.wiki.tiddlerExists(t), BACKUP_ALERT, { timeout:
 const backupAlert = await K.evaluate(t => { const a = $tw.wiki.getTiddler(t); return a ? { tags: a.fields.tags, text: a.fields.text } : null; }, BACKUP_ALERT);
 check("a page load asks how backups go with its first tiddler list request", firstListAsk === "ask", String(firstListAsk));
 const nextTryText = await K.evaluate(ms => $tw.utils.formatDateString(new Date(ms), "DDth MMM YYYY 0hh:0mm"), nextTry);
-check("...and failing backups show as an alert: since when, how many, the oldest, GitHub's answer, what to do, the next try, and that a full backup sends the current versions now once the secret is replaced",
+check("...and failing backups show as an alert: since when, how many, the oldest, GitHub's answer, what to do, the next try, and that a full backup sends the current versions now once the secret is replaced, those the queue dropped meanwhile included",
   !!backupAlert && (backupAlert.tags || []).includes("$:/tags/Alert") && /2 tiddlers/.test(backupAlert.text) && backupAlert.text.includes('<$link to="Alpha">') &&
-  backupAlert.text.includes("Bad credentials") && backupAlert.text.includes("GITHUB_TOKEN") && backupAlert.text.includes("Next try: " + nextTryText) && /sends the current versions now/.test(backupAlert.text),
+  backupAlert.text.includes("Bad credentials") && backupAlert.text.includes("GITHUB_TOKEN") && backupAlert.text.includes("Next try: " + nextTryText) && /sends the current versions now/.test(backupAlert.text) && /dropped meanwhile/.test(backupAlert.text),
   JSON.stringify(backupAlert));
 const alertStamp = () => K.evaluate(t => { const a = $tw.wiki.getTiddler(t); return a ? $tw.utils.stringifyDate(a.fields.modified) : null; }, BACKUP_ALERT);
 const stampShown = await alertStamp();
@@ -658,6 +658,19 @@ await bucket.delete("_backup/status.json");
 await sync(K2);
 check("...and goes once the note is gone (each list request asks while it shows)", !(await K2.evaluate(t => $tw.wiki.tiddlerExists(t), BACKUP_STUCK)));
 await K2.close();
+// A note a full backup's step skipped (the tiddler too big to back up: the step cut short on it once,
+// delivered again, went past it, design 2.37): reported at once, a minute old and at its first
+// attempt, where a save's note waits for its fourth or 15 minutes; the alert says what the full
+// backup did and what to do
+await bucket.put("_backup/status.json", JSON.stringify({ failing: {}, running: { "Delta": { revision: "1791000000001", size: 3500000, started: Date.now() - 60000, attempt: 1, sync: "full-1", skipped: true } } }));
+const K3 = await openTab("K3");
+await K3.waitForFunction(t => $tw.wiki.tiddlerExists(t), BACKUP_STUCK, { timeout: 10000 }).catch(() => {});
+const skippedAlert = await K3.evaluate(t => { const a = $tw.wiki.getTiddler(t); return a ? a.fields.text : null; }, BACKUP_STUCK);
+check("a note a full backup skipped (a tiddler too big, cut short once) shows at once: the alert names the tiddler and its size, says the full backup went past it, to split it or move the worker to a paid plan, then run the full backup again",
+  !!skippedAlert && skippedAlert.includes('<$link to="Delta">') && /3\.[0-9] MB/.test(skippedAlert) && /full backup went past it/.test(skippedAlert) && /run the full backup again/.test(skippedAlert) && /paid plan/.test(skippedAlert) && !/dropped/.test(skippedAlert),
+  JSON.stringify(skippedAlert));
+await bucket.delete("_backup/status.json");
+await K3.close();
 
 // --- 17. A tiddler changed before its text has loaded keeps its text -------------------------------
 // After a page load, TiddlyWiki has each tiddler's fields from the list, and loads the texts one by

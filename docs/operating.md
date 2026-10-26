@@ -16,11 +16,13 @@ After an update, reload any open admin tabs: tabs opened before it keep the old 
 
 ## 3.2 A full backup
 
-Control Panel → Saving → Cloudflare, *Back up everything to GitHub*: run it whenever GitHub might not mirror the wiki — backups set up after content existed, a restore, a tiddler put in R2 by hand, a backup that failed for good and was fixed.
+Control Panel → Saving → Cloudflare, *Back up everything to GitHub*: run it whenever GitHub might not mirror the wiki — backups set up after content existed, a restore, a tiddler put in R2 by hand, a backup that failed for good and was fixed, backups the queue dropped (the day's operations used up during a big import, [limits 5](limits.md)).
 
 It commits only what differs and removes files of tiddlers that are gone, so running it in doubt costs little: a step of about 20 tiddlers every few seconds, 3 queue operations a step, and GitHub calls only for what's missing ([design 1.7](design.md#17-github-backup)).
 
 If the tab says the last one stopped without finishing, or didn't go through (the queue refused the job), start it again.
+
+A tiddler too big to back up ([limits 5](limits.md)) doesn't stop it: cut short on it once, the full backup goes past it, counts it among the tiddlers not backed up, and the alert names it, saying so. Split the tiddler, or move the worker to a paid plan, then run the full backup again.
 
 ## 3.3 Updating the wiki engine
 
@@ -73,6 +75,7 @@ The worker's logs are under its Logs tab in the dashboard. What the lines mean:
 | `[Backup] '<title>' not backed up yet (<reason>); retrying in Ns` | A GitHub call failed. It will be retried, and nothing is lost. |
 | `[Backup] Could not queue '<title>', backing up directly` | The queue was unavailable, so the backup ran directly. |
 | `[Backup] '<title>' could not be backed up` | A direct backup (no queue bound, or the queue unavailable) failed 3 times. That version isn't on GitHub, and nothing retries it: the admin wiki's alert says so after an hour. Save the tiddler again once the cause is fixed, or bind the queue ([setup 2.3](setup.md#23-the-backup-queue)) and run a full backup ([setup 2.4](setup.md#24-the-backup-repository-optional)). |
+| `[Backup] Full backup: '<title>' (<n> bytes) was cut short at the delivery before: skipped` | A full backup's step, delivered again after the runtime cut it short on this tiddler (too big to back up, [limits 5](limits.md)), went past it: the tiddler counts among those not backed up, and the admin wiki's alert names it. Split it, or move the worker to a paid plan, then run the full backup again. |
 | `Cache purge failed (<status>)` | The purge API refused; check the `CF_API_TOKEN` permission. |
 | `[Tiddler list] Write conflict detected, retrying` | Two saves updated the tiddler list at once. This is normal and retried automatically; a save that loses five such races in a row is answered "The tiddler list couldn't be updated", and TiddlyWiki sends it again by itself. |
 | `The tiddler list can't be read: rebuilding it from the stored tiddlers` | The list was damaged, and the worker is rebuilding it ([design 1.2](design.md#12-storage-revisions-and-etags)). The damaged copy is in `_repair/`. |

@@ -235,7 +235,9 @@ export async function processBackupBatch(batch, env) {
 // "sync", id, startedAt, phase, after, pending, total, done, committed, removed, failed, steps, time, tries }.
 // The push phase walks the stored tiddlers in key order (after: the last key walked), each through the
 // same backup as a save (backupJob): nothing is committed for one GitHub has the same bytes of, and a
-// file GitHub refuses is reported like a save's would be, the walk going on. Then the prune phase lists
+// file GitHub refuses is reported like a save's would be, the walk going on; so is one the runtime cut
+// the step short on (too big to back up: the note it left, noteBigVersion), skipped when the step is
+// delivered again and counted as failed (design 2.37). Then the prune phase lists
 // GitHub's tiddler files in one call (the tree) and removes those whose titles are no longer stored
 // (pending: the ones left to remove). Each step stays within a run's budgets: the GitHub calls the
 // saves of the same run left (GITHUB_CALLS_PER_RUN), the bytes (BACKUP_BYTES_PER_RUN); a step records
@@ -270,12 +272,12 @@ async function syncStep(env, body, work, budget, delivery) {
   const used = () => work.calls - callsAtStart;
   let { done = 0, committed = 0, removed = 0, failed = 0, steps = 0, total = null } = body;
   steps++;
-  const failures = [], through = [], finished = [];   // what GitHub refused, the titles it took or already had, the big ones noted
+  const failures = [], through = [], finished = [], skipped = [];   // what GitHub refused, the titles it took or already had, the big ones noted, the ones skipped as cut short before
   let next;
   try {
-    next = await syncWork(env, github, body, work, budget, used, counts => ({ done, committed, removed, failed } = counts), failures, through, finished, delivery);
+    next = await syncWork(env, github, body, work, budget, used, counts => ({ done, committed, removed, failed } = counts), failures, through, finished, skipped, delivery, stored);
   } catch (e) {
-    if (finished.length) await recordBackupResults(env, [], [], undefined, undefined, finished);
+    if (finished.length || skipped.length) await recordBackupResults(env, [], [], undefined, undefined, finished, skipped);
     await recordSync(env, { id: body.id, error: String(e.detail || e.message || e).slice(0, 200) }, stored).catch(() => {});
     throw e;
   }
@@ -284,7 +286,7 @@ async function syncStep(env, body, work, budget, delivery) {
   const cleared = through.filter(title => stored.failing.has(title));
   noteFailing(failures);
   if (failingTitles) for (const title of cleared) failingTitles.delete(title);
-  if (failures.length || cleared.length || finished.length) await recordBackupResults(env, failures, cleared, undefined, undefined, finished);
+  if (failures.length || cleared.length || finished.length || skipped.length) await recordBackupResults(env, failures, cleared, undefined, undefined, finished, skipped);
   const startedAt = body.startedAt || body.time;
   await recordSync(env, { id: body.id, startedAt, total, phase: next ? next.phase : "prune", steps, done, committed, removed, failed, error: undefined, ...(next ? {} : { finished: Date.now() }) });
   return next ? { action: "sync", id: body.id, startedAt, total, done, committed, removed, failed, steps, time: Date.now(), tries: 0, ...next } : null;
@@ -292,10 +294,11 @@ async function syncStep(env, body, work, budget, delivery) {
 
 // The step's work: the next slice of the push, or of the prune. report(counts) hands back the counts
 // as they stand (also when an error stops the step partway); through gets the titles GitHub took or
-// already had; finished the big ones noted as under way (noteBigVersion) and done with; delivery:
-// the step's message's attempt and the full backup's id, for the notes. Returns what the next step
-// is, or null.
-async function syncWork(env, github, body, work, budget, used, report, failures, through, finished, delivery) {
+// already had; finished the big ones noted as under way (noteBigVersion) and done with; skipped the
+// ones an earlier delivery of this step was cut short on, skipped (below); delivery: the step's
+// message's attempt and the full backup's id, for the notes; stored: the status file as the step read
+// it, for the notes left. Returns what the next step is, or null.
+async function syncWork(env, github, body, work, budget, used, report, failures, through, finished, skipped, delivery, stored) {
   let { done = 0, committed = 0, removed = 0, failed = 0 } = body;
   const counts = () => report({ done, committed, removed, failed });
   if (body.phase === "push") {
@@ -310,24 +313,36 @@ async function syncWork(env, github, body, work, budget, used, report, failures,
         const title = item.key.slice(TIDDLER_PREFIX.length);
         // (What the list leaves out is left out here too: an object not in the stored layout)
         if (item.customMetadata?.layout === FLAT_LAYOUT && !isEphemeralTitle(title)) {
-          const obj = await env.WIKI_BUCKET.get(item.key);
-          if (obj) {
-            const job = { action: "save", title, revision: revisionOf(obj), time: Date.now() };
-            let noted = await noteBigVersion(env, job, obj.size, delivery);
-            job.content = new Uint8Array(await obj.arrayBuffer());
-            try {
-              if (await backupJob(env, job, work) === "committed") committed++;
-              through.push(title);
-            } catch (e) {
-              if (noted) {
-                finished.push(title);   // (done with it, however it went: the note goes with the step's record)
-                noted = false;
+          const note = stored.running.get(title);
+          if (note && note.sync === body.id && note.revision === revisionOf(item) && (note.skipped || (delivery && note.attempt < delivery.attempt))) {
+            // An earlier delivery of this step wrote this note, then was cut short on this version
+            // (the free plan's CPU time, a tiddler of several MB: nothing after the cut ran, and the
+            // queue delivers the step again the same way). Tried again, it would be cut again, and
+            // the full backup would stop here for good: skipped without being read, counted as not
+            // backed up, the note kept and marked for the alert, and the walk goes on (design 2.37)
+            console.error(`[Backup] Full backup: '${title}' (${item.size} bytes) was cut short at the delivery before: skipped`);
+            failed++;
+            skipped.push(title);
+          } else {
+            const obj = await env.WIKI_BUCKET.get(item.key);
+            if (obj) {
+              const job = { action: "save", title, revision: revisionOf(obj), time: Date.now() };
+              let noted = await noteBigVersion(env, job, obj.size, delivery);
+              job.content = new Uint8Array(await obj.arrayBuffer());
+              try {
+                if (await backupJob(env, job, work) === "committed") committed++;
+                through.push(title);
+              } catch (e) {
+                if (noted) {
+                  finished.push(title);   // (done with it, however it went: the note goes with the step's record)
+                  noted = false;
+                }
+                if (!isRefusal(e)) throw e;
+                failed++;
+                failures.push(backupFailure(job, e));
               }
-              if (!isRefusal(e)) throw e;
-              failed++;
-              failures.push(backupFailure(job, e));
+              if (noted) finished.push(title);
             }
-            if (noted) finished.push(title);
           }
         }
         done++;

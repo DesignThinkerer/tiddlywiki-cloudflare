@@ -86,7 +86,9 @@ await A.waitForFunction(() => window.$tw && $tw.syncer, null, { timeout: 30000 }
 await settle(A);
 const body = await reloaded.body();
 const loadRequests = requests.slice(mark).filter(r => r.tag === "A" && r.origin === "worker" && !r.cached).map(r => `${r.method} ${r.path.split("?")[0]}`);
-check("an admin reload gets the light page, with the core file from the public site", body.length < ENGINE.length / 5 && body.toString().includes(`<script src="${CORE_URL}"`) &&
+// (A quarter of the engine's size, 2.8 MB: the admin page is the shell with the browser modules' text
+// built in, about 550 KB; what the check is for is the core not being in it)
+check("an admin reload gets the light page, with the core file from the public site", body.length < ENGINE.length / 4 && body.toString().includes(`<script src="${CORE_URL}"`) &&
   requests.slice(mark).some(r => r.tag === "A" && r.origin === "public" && r.path.startsWith("/_plugins/tiddlywikicore.js")), `${body.length} bytes`);
 check("...still 2 worker requests (the page, the tiddler list), and nothing published again", loadRequests.length === 2 && shellPuts("A", mark) === 0 && corePuts("A", mark) === 0, JSON.stringify(loadRequests));
 check("...TiddlyWiki started, with TiddlyWeb's offline snapshot setting unchanged",
