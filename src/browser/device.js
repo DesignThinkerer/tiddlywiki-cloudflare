@@ -95,23 +95,26 @@ exports.startup = function() {
 	// to keep, which is in the tab only, design 1.10) and the wiki's drafts (one the device refused
 	// the same): the larger count of each, since the table and the tab overlap
 	function waitingCounts(entries) {
-		var changes = 0, drafts = 0, status = wiki.getTiddler(OUTBOX_STATUS);
+		var changes = 0, drafts = 0, status = wiki.getTiddler(OUTBOX_STATUS), titles = [];
 		$tw.utils.each(entries || [],function(entry) {
 			if(entry.kind === "draft") {
 				drafts++;
 			} else {
 				changes++;
+				titles.push(String(entry.title || ""));
 			}
 		});
 		changes = Math.max(changes,status ? parseInt(status.fields.waiting,10) || 0 : 0);
 		drafts = Math.max(drafts,wiki.filterTiddlers("[is[draft]]").length);
-		return {changes: changes, drafts: drafts, unkept: !!status && status.fields.kept === "no"};
+		return {changes: changes, drafts: drafts, titles: titles.join(", "), unkept: !!status && status.fields.kept === "no"};
 	}
 	function outboxLine(counts) {
 		if(!counts.changes && !counts.drafts) {
 			return "nothing waiting in the outbox";
 		}
-		return (counts.changes ? count(counts.changes,"change") : "") + (counts.changes && counts.drafts ? " and " : "") + (counts.drafts ? count(counts.drafts,"draft") : "") + " waiting in the outbox" +
+		// A draft is kept here only, never sent: said apart from the changes, which "waiting" would hide
+		return (counts.changes ? count(counts.changes,"change") + " waiting to be sent" + (counts.titles ? " (" + counts.titles + ")" : "") : "") + (counts.changes && counts.drafts ? ", and " : "") + (counts.drafts ? count(counts.drafts,"draft") + " kept on this device only (a draft is never sent: click ✓ done to save it)" : "") +
+			(!counts.changes && counts.drafts ? "" : "") +
 			(counts.unkept ? " (some of it the device refused to keep: it lives in this tab until it's sent)" : "");
 	}
 

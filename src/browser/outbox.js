@@ -75,13 +75,13 @@ var STATUS = "$:/temp/cfworker/outbox",
 // block, and these are sentences (design 2.21).
 var LOGIN_LINK = "<a class='tc-tiddlylink-external' href='/' target='_blank' rel='noopener noreferrer'>Log in again</a>";
 var ITEM_TEXT = [
-	"<$list filter='[[" + STATUS + "]get[waiting]!match[0]] [[" + STATUS + "]get[login]match[expired]] [[" + STATUS + "]get[online]match[no]] +[limit[1]]' variable='show'>",
+	"<$list filter='[[" + STATUS + "]get[waiting]!match[0]] [[" + STATUS + "]get[login]match[expired]] [[" + STATUS + "]get[online]match[no]] [[" + STATUS + "]get[drafts]!match[0]] +[limit[1]]' variable='show'>",
 	"<div class='tc-drop-down-info cfworker-outbox'>",
 	"<$list filter='[[" + STATUS + "]get[waiting]!match[0]]' variable='n'>",
-	"<$text text={{{ [[" + STATUS + "]get[waiting]] }}}/> <$text text={{{ [[" + STATUS + "]get[waiting]compare:number:eq[1]then[change]else[changes]] }}}/> waiting since <$view tiddler='" + STATUS + "' field='since' format='date' template='0hh:0mm'/><br/>",
+	"<$text text={{{ [[" + STATUS + "]get[waiting]] }}}/> <$text text={{{ [[" + STATUS + "]get[waiting]compare:number:eq[1]then[change]else[changes]] }}}/> waiting since <$text text={{{ [[" + STATUS + "]get[since-said]] }}}/><$list filter='[[" + STATUS + "]has[titles]]' variable='named'>: <$list filter='[list[" + STATUS + "!!titles]]' join=', '><$link to=<<currentTiddler>>><$text text=<<currentTiddler>>/></$link></$list><$list filter='[[" + STATUS + "]get[waiting]compare:number:gt[3]]' variable='more'> and <$text text={{{ [[" + STATUS + "]get[waiting]subtract[3]] }}}/> more</$list></$list><br/>",
 	"<$list filter='[[" + STATUS + "]get[login]match[expired]]' variable='expired'><$list filter='[[" + STATUS + "]get[kept]!match[no]]' variable='kept'>''your login has expired'': kept on this device until you log in again</$list><$list filter='[[" + STATUS + "]get[kept]match[no]]' variable='unkept'>''your login has expired'', and ''not kept on this device'': the browser refused to store it (no room left, or storage off here). Keep this tab open and log in again.</$list></$list>",
 	"<$list filter='[[" + STATUS + "]get[login]!match[expired]]' variable='loggedin'>",
-	"<$list filter='[[" + STATUS + "]get[online]match[no]]' variable='off'><$list filter='[[" + STATUS + "]get[kept]!match[no]]' variable='kept'>offline: kept on this device until sent</$list><$list filter='[[" + STATUS + "]get[kept]match[no]]' variable='unkept'>offline, and ''not kept on this device'': the browser refused to store it (no room left, or storage off here). Keep this tab open until the network is back.</$list></$list>",
+	"<$list filter='[[" + STATUS + "]get[online]match[no]]' variable='off'><$list filter='[[" + STATUS + "]get[kept]!match[no]]' variable='kept'>offline: kept on this device; sent the next time this wiki is open here with a network</$list><$list filter='[[" + STATUS + "]get[kept]match[no]]' variable='unkept'>offline, and ''not kept on this device'': the browser refused to store it (no room left, or storage off here). Keep this tab open until the network is back.</$list></$list>",
 	"<$list filter='[[" + STATUS + "]get[online]match[yes]]' variable='on'><$list filter='[[" + STATUS + "]get[kept]!match[no]]' variable='kept'>sending (kept on this device until then)</$list><$list filter='[[" + STATUS + "]get[kept]match[no]]' variable='unkept'>sending — ''not kept on this device'' (the browser refused to store it): keep this tab open until it's sent.</$list></$list>",
 	"</$list>",
 	"<$list filter='[[" + STATUS + "]get[rename]!match[0]]' variable='r'><br/><$text text={{{ [[" + STATUS + "]get[rename]] }}}/> to rename before <$text text={{{ [[" + STATUS + "]get[rename]compare:number:eq[1]then[it]else[they]] }}}/> can be sent (an alert says which).</$list>",
@@ -92,6 +92,8 @@ var ITEM_TEXT = [
 	"<$list filter='[[" + STATUS + "]get[waiting]match[0]]' variable='nothing'>''Your login has expired'': changes made on other devices no longer reach this tab, and one made here would wait on this device.</$list>",
 	"<br/>" + LOGIN_LINK + " (a new tab; this one then sends what waits by itself), or reload this page: what waits is kept on this device through it.",
 	"</$list>",
+	// A draft is the device's and never sent: said last, apart from what waits, whatever else the item says
+	"<$list filter='[[" + STATUS + "]get[drafts]!match[0]]' variable='d'><$list filter='[[" + STATUS + "]get[waiting]!match[0]] [[" + STATUS + "]get[login]match[expired]] [[" + STATUS + "]get[online]match[no]] +[limit[1]]' variable='sep'><br/></$list><$text text={{{ [[" + STATUS + "]get[drafts]] }}}/> <$text text={{{ [[" + STATUS + "]get[drafts]compare:number:eq[1]then[tiddler]else[tiddlers]] }}}/> still open in the editor here: not saved, and not on other devices until you click ✓ done</$list>",
 	"</div>",
 	"<hr/>",
 	"</$list>"
@@ -189,7 +191,9 @@ exports.startup = function() {
 			statusTimer = null;
 			var waiting = 0,
 				since = null,
-				unkept = false;
+				unkept = false,
+				drafts = 0,
+				titles = [];   // what waits (saves, deletes, renames; a draft is never sent), the first few named
 			$tw.utils.each(entries,function(entry) {
 				if(entry.kept === false) {
 					unkept = true;
@@ -199,17 +203,28 @@ exports.startup = function() {
 					if(since === null || entry.time < since) {
 						since = entry.time;
 					}
+					if(titles.length < 3) {
+						titles.push(String(entry.title || ""));
+					}
+				} else {
+					drafts++;
 				}
 			});
-			var fields = {title: STATUS, waiting: String(waiting), rename: String(toRename()), online: online ? "yes" : "no", login: login, kept: unkept ? "no" : "yes"},
+			var fields = {title: STATUS, waiting: String(waiting), drafts: String(drafts), rename: String(toRename()), online: online ? "yes" : "no", login: login, kept: unkept ? "no" : "yes"},
 				current = wiki.getTiddler(STATUS);
 			if(since !== null) {
 				fields.since = $tw.utils.stringifyDate(new Date(since));
+				// The day shown whenever it isn't today (Tuesday's wait read as this morning's on Thursday)
+				var then = new Date(since), now = new Date();
+				fields["since-said"] = $tw.utils.formatDateString(then,then.toDateString() === now.toDateString() ? "0hh:0mm" : "ddd DDth MMM, 0hh:0mm");
+			}
+			if(titles.length) {
+				fields.titles = $tw.utils.stringifyList(titles);
 			}
 			if(storage) {
 				fields.storage = storage;
 			}
-			if(!current || current.fields.waiting !== fields.waiting || current.fields.online !== fields.online || current.fields.login !== fields.login || current.fields.since !== fields.since || current.fields.storage !== fields.storage || current.fields.kept !== fields.kept || current.fields.rename !== fields.rename) {
+			if(!current || current.fields.waiting !== fields.waiting || current.fields.drafts !== fields.drafts || current.fields.titles !== fields.titles || current.fields["since-said"] !== fields["since-said"] || current.fields.online !== fields.online || current.fields.login !== fields.login || current.fields.since !== fields.since || current.fields.storage !== fields.storage || current.fields.kept !== fields.kept || current.fields.rename !== fields.rename) {
 				wiki.addTiddler(new $tw.Tiddler(fields));
 			}
 		},0);

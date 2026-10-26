@@ -486,7 +486,7 @@ check("while a change waits and the browser hasn't promised, the cloud dropdown 
   /hasn't promised/.test(item) && (item.includes(encodeURIComponent(DEVICE)) || item.includes(DEVICE)), item.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").slice(0, 240));
 const offlineMeasure = await measure(A);
 check("Measure, offline: the first line says 1 change waits to be sent", offlineMeasure.done && /^Opens with no network: .*1 change waits to be sent\./.test(offlineMeasure.text), offlineMeasure.text.slice(0, 200));
-check("Measure, offline: the change waiting in the outbox is counted (the tab needs no network)", offlineMeasure.done && /1 change\b.* waiting in the outbox/.test(offlineMeasure.text), offlineMeasure.text.slice(0, 300));
+check("Measure, offline: the change waiting in the outbox is counted (the tab needs no network)", offlineMeasure.done && /1 change waiting to be sent \(Device note\)/.test(offlineMeasure.text), offlineMeasure.text.slice(0, 300));
 await online(contextA);
 await waitFor(async () => (await status(A))?.waiting === "0", 15000);
 await settle(A);
@@ -567,7 +567,7 @@ await A.evaluate(() => { window.__stillHere = 1; $tw.rootWidget.dispatchEvent({ 
 await waitFor(async () => /waiting/.test(await saidOrNot()), 10000);
 await sleep(500);
 check("Forget, with a change and a draft the device refused to keep (in this tab only, the outbox's table without them): refused all the same, saying both wait, in this tab; nothing removed, no reload",
-  unkeptWaits && unkeptRows === 0 && /1 change and 1 draft waiting.*lives in this tab/.test(await saidOrNot()) && (await A.evaluate(() => window.__stillHere).catch(() => undefined)) === 1 && (await deviceCount(A)) > 0 && (await cached(A)).length === keysBefore.length,
+  unkeptWaits && unkeptRows === 0 && /1 change waiting to be sent(?: \([^)]*\))?, and 1 draft kept on this device only.*lives in this tab/.test(await saidOrNot()) && (await A.evaluate(() => window.__stillHere).catch(() => undefined)) === 1 && (await deviceCount(A)) > 0 && (await cached(A)).length === keysBefore.length,
   `waits ${unkeptWaits}, outbox rows ${unkeptRows}, kept ${await keptSaid()}: ${await saidOrNot()}`);
 await A.evaluate(() => { window.__refuseOutbox = false; $tw.wiki.deleteTiddler("Draft of 'Unkept note'"); }).catch(() => {});
 await online(contextA);
