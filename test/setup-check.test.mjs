@@ -228,7 +228,7 @@ api.private = true;
 check("...a private one: said so", ok(items, "backups") === true && /a private repository/.test(text(items, "backups")), line(items, "backups"));
 api.repo = 401;
 ({ items } = await run());
-check("GitHub refusing the token (401): the backups line says so, with setup 2.4", ok(items, "backups") === false && /401|token/.test(text(items, "backups")) && guide(items, "backups") === "2.4", line(items, "backups"));
+check("GitHub refusing the token (401): the backups line says so, with setup 2.4, and ends where the fix is: GitHub's token page, regenerate or make a new one (Contents: read and write, this repository only), then the GITHUB_TOKEN secret in the worker's Variables and Secrets", ok(items, "backups") === false && /401|token/.test(text(items, "backups")) && /Settings → Developer settings → Personal access tokens → Fine-grained tokens/.test(text(items, "backups")) && /regenerate it/.test(text(items, "backups")) && /Contents: read and write, this repository only/.test(text(items, "backups")) && /replace the GITHUB_TOKEN secret in the worker's Variables and Secrets/.test(text(items, "backups")) && guide(items, "backups") === "2.4", line(items, "backups"));
 api.repo = 404;
 ({ items } = await run());
 check("GitHub not finding the repository with the token (404): named", ok(items, "backups") === false && /404|find/.test(text(items, "backups")), line(items, "backups"));

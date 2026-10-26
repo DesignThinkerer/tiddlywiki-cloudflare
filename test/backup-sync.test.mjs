@@ -114,6 +114,43 @@ const nextTryText = await A.evaluate(ms => $tw.utils.formatDateString(new Date(m
 check("backups failing: the tab says since when, how many, the oldest, GitHub's answer, what to do and the next try, in place of \"every save is committed\", and the hint waits",
   /Backups to GitHub have been failing since/.test(text) && /2 tiddlers/.test(text) && /Old 01/.test(text) && /Bad credentials/.test(text) && /GITHUB_TOKEN/.test(text) &&
   text.includes("Next try: " + nextTryText) && /sends the current versions now/.test(text) && !/committed to GitHub as it happens/.test(text) && !(await exists(A, HINT)), text.slice(0, 600));
+// Each hint ends where the fix is (design 2.36): the token page and the secret for a 401, the check
+// that tells the causes apart for a 403 or 404, the tiddler to edit and the key to revoke for a 409
+// or 422, which GitHub refuses for good (no "retried by themselves" there)
+const ALERT = "$:/temp/cfworker/backup-alert", STUCK = "$:/temp/cfworker/backup-stuck";
+const alertText = async (p, t) => { await sleep(200); return p.evaluate(t => $tw.wiki.getTiddlerText(t, ""), t); };
+const noteProblem = (p, status, error, title) => p.evaluate(([status, error, title, since]) => $tw.syncadaptor.cfworkerNoteBackupStatus({ backups: "on", problem: { count: 1, title, since, error, status, next: Date.now() + 3600000 }, stuck: null, sync: null }), [status, error, title, Date.now() - 2 * 3600000 - status]);
+await noteProblem(A, 401, "Bad credentials", "Old 02");
+const hint401 = await alertText(A, ALERT);
+check("a 401's hint ends where the fix is: GitHub's token page (Settings → Developer settings → Personal access tokens → Fine-grained tokens), regenerate or make a new one as setup 2.4 says (Contents: read and write, this repository only), then replace the GITHUB_TOKEN secret under Variables and Secrets",
+  /Settings → Developer settings → Personal access tokens → Fine-grained tokens/.test(hint401) && /regenerate it/.test(hint401) && /Contents: read and write, this repository only/.test(hint401) && /\[\[setup 2\.4\|/.test(hint401) && /replace the GITHUB_TOKEN secret, in the worker's Settings → Variables and Secrets/.test(hint401) && /sends the current versions now/.test(hint401),
+  hint401.slice(0, 500));
+await noteProblem(A, 403, "Resource not accessible by personal access token", "Old 03");
+const hint403 = await alertText(A, ALERT);
+check("a 403 or 404's hint sends to Check the setup, which tells a missing repository from a missing branch, and names the permission the token lacks if the check passes",
+  /Check the setup/.test(hint403) && /tells a missing repository or branch/.test(hint403) && /the token lacks Contents: read and write on that repository/.test(hint403) && /\[\[setup 2\.4\|/.test(hint403) && !/may not be allowed/.test(hint403),
+  hint403.slice(0, 500));
+await noteProblem(A, 422, "Invalid request. Path contains a malformed path component.", "Old 04");
+const hint422 = await alertText(A, ALERT);
+check("a 409 or 422's hint says GitHub refuses this version for good (push protection, or a path it can't take), that on a public wiki the key is public and to revoke it, to remove it or rename the tiddler and save again, that the other backups go on; no \"retried by themselves\", no next try",
+  /refuses this version of the tiddler for good/.test(hint422) && /push protection/.test(hint422) && /revoke that key/.test(hint422) && /rename the tiddler/.test(hint422) && /the other backups go on meanwhile/.test(hint422) && !/retried by themselves|Next try/.test(hint422) && !/refuses that file/.test(hint422),
+  hint422.slice(0, 500));
+// The cut-short alert's remedy by the tiddler's kind, from the fields the tab has: a plugin can be
+// installed again; an image is better kept outside the wiki (_canonical_uri); anything else split
+await A.evaluate(() => { $tw.wiki.addTiddler(new $tw.Tiddler({ title: "$:/plugins/test/big-one", "plugin-type": "plugin", type: "application/json", text: "{}" })); $tw.wiki.addTiddler(new $tw.Tiddler({ title: "big-picture", type: "image/png", text: "" })); $tw.wiki.addTiddler(new $tw.Tiddler({ title: "big-note", text: "big" })); });
+const noteStuck = (p, title) => p.evaluate(([title, started]) => $tw.syncadaptor.cfworkerNoteBackupStatus({ backups: "on", problem: null, stuck: { count: 1, title, size: 4200000, attempts: 4, started }, sync: null }), [title, Date.now() - 900000 - title.length]);
+await noteStuck(A, "$:/plugins/test/big-one");
+const stuckPlugin = await alertText(A, STUCK);
+await noteStuck(A, "big-picture");
+const stuckImage = await alertText(A, STUCK);
+await noteStuck(A, "big-note");
+const stuckNote = await alertText(A, STUCK);
+check("the cut-short alert's remedy follows the tiddler's kind: a plugin can be installed again from where it came from, so GitHub missing this version costs little; an image is better kept outside the wiki with _canonical_uri; another tiddler is split; a paid plan for all; and \"the last version that went through, if one did\"",
+  /a plugin can be installed again from where it came from/i.test(stuckPlugin) && !/[Ss]plit it/.test(stuckPlugin) && /_canonical_uri/.test(stuckImage) && !/[Ss]plit it/.test(stuckImage) && /[Ss]plit it/.test(stuckNote) && [stuckPlugin, stuckImage, stuckNote].every(t => /paid plan/.test(t) && /the last version of it that went through, if one did/.test(t)),
+  `plugin: ${stuckPlugin.slice(0, 260)} | image: ${stuckImage.slice(0, 260)} | note: ${stuckNote.slice(0, 200)}`);
+await A.evaluate(() => { ["$:/plugins/test/big-one", "big-picture", "big-note"].forEach(t => $tw.wiki.deleteTiddler(t)); });
+await A.evaluate(([since, next]) => $tw.syncadaptor.cfworkerNoteBackupStatus({ backups: "on", problem: { count: 2, title: "Old 01", since, error: "Bad credentials", status: 401, next }, stuck: null, sync: null }), [failingSince, nextTry]);
+await sleep(200);
 await A.evaluate(() => $tw.syncadaptor.cfworkerNoteBackupStatus({ backups: "on", sync: null }));
 await sleep(200);
 text = await tabText(A);

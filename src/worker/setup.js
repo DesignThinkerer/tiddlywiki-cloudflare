@@ -204,7 +204,7 @@ async function checkBackups(env, site, add) {
   };
   const repo = await ask("");
   if (repo.status === 401) {
-    add("backups", false, `GitHub refuses the token for ${gh.repo} (401${repo.message ? `, ${repo.message}` : ""}): the GITHUB_TOKEN secret is wrong or has expired. Make a new one and put it in the secret.`, SECTION.backups);
+    add("backups", false, `GitHub refuses the token for ${gh.repo} (401${repo.message ? `, ${repo.message}` : ""}): the GITHUB_TOKEN secret is wrong or has expired. On GitHub (${TOKENS}), regenerate it (it keeps its repository and permission) or make a new one as in setup 2.4 (Contents: read and write, this repository only; the guide's link opens GitHub's form filled in), then replace the GITHUB_TOKEN secret ${VARS}.`, SECTION.backups);
   } else if (repo.status === 404) {
     add("backups", false, `GitHub doesn't find ${gh.repo} with this token (404): the repository doesn't exist under that name, or the token isn't allowed to see it. Check GITHUB_REPO (owner/repo, as in the repository's address), then the token's Repository access on GitHub (${TOKENS}): it must name that repository.`, SECTION.backups);
   } else if (repo.status !== 200) {
