@@ -12,7 +12,7 @@
 import { guideText } from "./docs.js";
 import { EXTERNAL_SCRIPTS_MARKER, PAGE_ETAG_SUFFIX, bakeVersion, charStart, coreFileUrl, engineVersion, pageDecoder, rebakeHtml } from "./build.js";
 import { parseEtagList, refusal, untilDone } from "./http.js";
-import { waitMs } from "./settings.js";
+import { publicSite, waitMs } from "./settings.js";
 import { CORE_KEY, INDEX_KEY, PAGE_KEY, SHELL_KEY, STATUS_KEY, markPageOutdated, putIfAbsent } from "./storage.js";
 
 function pageHeaders(htmlHeaders, page) {
@@ -193,6 +193,18 @@ export async function publishCoreFile(request, env, url, corsHeaders) {
   return new Response(null, { status: 204, headers: corsHeaders });
 }
 
+// What keeps the public site from serving the stored core file, or null: what it answered when not
+// 200, or the error when it didn't answer. The body, if any, is dropped unread.
+async function publicCoreFileProblem(env, version) {
+  try {
+    const res = await fetch(coreFileUrl(env, version), { method: "HEAD", redirect: "follow" });
+    if (res.body) await res.body.cancel().catch(() => {});
+    return res.ok ? null : `answered ${res.status}`;
+  } catch (e) {
+    return `no answer: ${e && e.message ? e.message : String(e)}`;
+  }
+}
+
 // PUT /page/shell: the page rendered by the admin wiki, without the core. X-Page-Fingerprint: its
 // fingerprint (computed by the admin wiki); X-Page-Index: the index.html the admin page was built
 // for; X-Page-Shell: the stored shell the page was built from, or last published over (its ETag, ""
@@ -241,6 +253,18 @@ export async function publishShell(request, env, ctx, corsHeaders) {
   if (!version) return refusal("There's no core file yet: publish it first.", corsHeaders);
   if (!text.includes(`<script src="${coreFileUrl(env, version)}"`)) {
     return refusal(`The shell doesn't load the stored core file (${coreFileUrl(env, version)}).`, corsHeaders);
+  }
+  // The public site has to serve that file, or the page built from this shell would load a core file
+  // no site serves, and neither site would start from the second load on, the admin wiki unable to
+  // publish another page (PUBLIC_WIKI_URL set before the bucket's domain answers, or a domain broken
+  // since). One HEAD, for a public wiki only (a private wiki's core comes from this worker); refused
+  // with 400, so the admin wiki sends the page again once it changes or at the next reload, not at
+  // every save, and the page stays built from index.html, which has the core inline (design 1.9).
+  if (publicSite(env)) {
+    const problem = await publicCoreFileProblem(env, version);
+    if (problem) {
+      return refusal(`The public site at ${publicSite(env)} doesn't serve the core file (${problem}): is its domain active (${guideText("setup", "2.2")}), and PUBLIC_WIKI_URL its address (setup 2.5)? The page stays built from the engine meanwhile.`, corsHeaders);
+    }
   }
   // Over the shell checked above, or none: two tabs sending at once can't both win
   const storedShell = await env.WIKI_BUCKET.put(SHELL_KEY, bytes, {

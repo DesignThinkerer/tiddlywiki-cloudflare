@@ -78,9 +78,12 @@ export async function startSite({ index, publicStatus = false, bindings = {}, ou
       const key = decodeURIComponent(url.pathname.slice(1)) || "baked.html";
       const wait = publicSite.delay ? publicSite.delay(url) : 0;
       if (wait > 0) await new Promise(r => setTimeout(r, wait));
-      let body = publicSite.override ? publicSite.override(key, url) : undefined;
+      // (override: a body, or { body, headers, status }: a status other than 200, with a body, is a
+      // public site that answers but doesn't serve that file)
+      let body = publicSite.override ? publicSite.override(key, url) : undefined, status = 200;
       if (body !== undefined && typeof body === "object" && !Buffer.isBuffer(body)) {
         Object.assign(headers, body.headers || {});
+        status = body.status || 200;
         body = body.body;
       }
       if (body === undefined) {
@@ -98,7 +101,7 @@ export async function startSite({ index, publicStatus = false, bindings = {}, ou
         headers["Content-Type"] = "application/json";
       }
       if (publicSite.rewrite) body = publicSite.rewrite(url, Buffer.from(body));
-      res.writeHead(200, headers);
+      res.writeHead(status, headers);
       res.end(body);
     } catch (e) {
       console.error("public stand-in:", e.message);

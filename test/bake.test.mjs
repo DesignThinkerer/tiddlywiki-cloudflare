@@ -11,11 +11,16 @@ const WORKER = fileURLToPath(new URL("../worker.js", import.meta.url));
 // The worker's modules: worker.js, and the empty wiki as a text module (seed/empty.html), as Wrangler uploads them
 const MODULE_RULES = [{ type: "ESModule", include: ["**/*.js", "**/*.mjs"] }, { type: "Text", include: ["**/*.html"] }];
 
+// The worker's own requests: the public site serves the bucket, so a HEAD for the core file answers
+// 200 (asked before a shell is accepted, design 2.34), whatever the address a test sets; anything
+// else (a purge) answers 404
+const servesCoreFile = req => req.method === "HEAD" && new URL(req.url).pathname === "/_plugins/tiddlywikicore.js";
+const outbound = async req => servesCoreFile(req) ? new Response(null, { status: 200 }) : new Response("{}", { status: 404 });
 const mf = new Miniflare({
   modules: true, scriptPath: WORKER, modulesRules: MODULE_RULES, compatibilityDate: "2024-09-23", r2Buckets: ["WIKI_BUCKET"], port: 0,
   // No Cloudflare Access in front of the tests, and the public site's address (see the end of this file)
   bindings: { ACCESS: "off", PUBLIC_WIKI_URL: "https://wiki.example.com" },
-  outboundService: async () => new Response("{}", { status: 404 }),
+  outboundService: outbound,
 });
 const base = (await mf.ready).toString().replace(/\/$/, "");
 const bucket = await mf.getR2Bucket("WIKI_BUCKET");
@@ -308,7 +313,7 @@ check("...the settings tab offers the fill of the device copy, TiddlyWiki's poll
     const instance = new Miniflare({
       modules: true, script, scriptPath: WORKER, modulesRules: MODULE_RULES, compatibilityDate: "2024-09-23", r2Buckets: ["WIKI_BUCKET"], port: 0,
       bindings: { ACCESS: "off", PUBLIC_WIKI_URL: "https://wiki.example.com" },
-      outboundService: async () => new Response("{}", { status: 404 }),
+      outboundService: outbound,
     });
     const root = (await instance.ready).toString().replace(/\/$/, "");
     const store = await instance.getR2Bucket("WIKI_BUCKET");
@@ -388,7 +393,7 @@ check("...and a shell for it is used once published", res.status === 204 && page
 const mfOff = new Miniflare({
   modules: true, scriptPath: WORKER, modulesRules: MODULE_RULES, compatibilityDate: "2024-09-23", r2Buckets: ["WIKI_BUCKET"], port: 0,
   bindings: { ACCESS: "off", PUBLIC_WIKI_URL: "https://wiki.example.com", CONFLICT_GUARD: "off" },
-  outboundService: async () => new Response("{}", { status: 404 }),
+  outboundService: outbound,
 });
 const baseOff = (await mfOff.ready).toString().replace(/\/$/, "");
 await (await mfOff.getR2Bucket("WIKI_BUCKET")).put("index.html", html("engine without the modules"));
@@ -404,7 +409,7 @@ await mfOff.dispose();
 // ctx.access, so this instance, without the switch, must refuse everything, and build nothing.
 const mfClosed = new Miniflare({
   modules: true, scriptPath: WORKER, modulesRules: MODULE_RULES, compatibilityDate: "2024-09-23", r2Buckets: ["WIKI_BUCKET"], port: 0,
-  outboundService: async () => new Response("{}", { status: 404 }),
+  outboundService: outbound,
 });
 const baseClosed = (await mfClosed.ready).toString().replace(/\/$/, "");
 const bucketClosed = await mfClosed.getR2Bucket("WIKI_BUCKET");
@@ -454,7 +459,7 @@ async function withPublicUrl(value, run, bindings = {}) {
   const instance = new Miniflare({
     modules: true, scriptPath: WORKER, modulesRules: MODULE_RULES, compatibilityDate: "2024-09-23", r2Buckets: ["WIKI_BUCKET"], port: 0,
     bindings: { ACCESS: "off", ...(value === undefined ? {} : { PUBLIC_WIKI_URL: value }), ...bindings },
-    outboundService: async req => { calls.push(req.url); return new Response("{}", { status: 404 }); },
+    outboundService: async req => { calls.push(req.method + " " + req.url); return outbound(req); },
   });
   const root = (await instance.ready).toString().replace(/\/$/, "");
   const store = await instance.getR2Bucket("WIKI_BUCKET");
@@ -505,7 +510,7 @@ for (const [value, oldSrc, newSrc, why] of [
   [undefined, coreUrl(CORE_V), rootCoreSrc, "a public wiki made private"],
   ["https://wiki.example.com", rootCoreSrc, coreUrl(CORE_V), "a private wiki given a public site"]
 ]) {
-  await withPublicUrl(value, async (root, instance, store) => {
+  await withPublicUrl(value, async (root, instance, store, calls) => {
     const index = (await store.head("index.html")).etag;
     await store.put("_plugins/tiddlywikicore.js", fakeCore(), { httpMetadata: { contentType: "application/javascript" }, customMetadata: { v: CORE_V } });
     const oldShell = await store.put("_page/shell.html", fakeShell().split(coreUrl(CORE_V)).join(oldSrc), { httpMetadata: { contentType: "text/html" }, customMetadata: { index, fingerprint: "f1" } });
@@ -520,6 +525,12 @@ for (const [value, oldSrc, newSrc, why] of [
     check(`...a shell published for this address is accepted and built from (${why})`,
       res.status === 204 && res.headers.get("X-Page-Shell") === (await store.head("_page/shell.html")).etag && rebuilt.includes(`<script src="${newSrc}"`) && rebuilt.includes("Published title"),
       `status ${res.status}, core ${rebuilt.match(/<script src="[^"]*tiddlywikicore[^"]*"/)?.[0]}`);
+    // (Before accepting it, the worker asked the public site for the file the shell names, once: a
+    // site that doesn't serve it would have refused the shell, page-publish 14; a private wiki's core
+    // comes from the worker, nothing to ask)
+    const asked = calls.filter(c => c.startsWith("HEAD "));
+    check(value === undefined ? `...with no public site, nothing was asked of one (${why})` : `...the public site was asked for the core file first, one HEAD (${why})`,
+      value === undefined ? asked.length === 0 : asked.length === 1 && asked[0] === "HEAD " + newSrc, asked.join(", ") || "no HEAD");
   });
 }
 // TiddlyWiki's link-preview tags (its social metadata template) read the site URL, the domain and the
@@ -545,7 +556,7 @@ function withAssets(extra = {}) {
   return new Miniflare({
     modules: true, scriptPath: WORKER, modulesRules: MODULE_RULES, compatibilityDate: "2024-09-23", r2Buckets: ["WIKI_BUCKET"], port: 0,
     bindings: { ACCESS: "off", PUBLIC_WIKI_URL: "https://wiki.example.com" },
-    outboundService: async () => new Response("{}", { status: 404 }),
+    outboundService: outbound,
     ...extra,
   });
 }
@@ -597,7 +608,7 @@ function withAssets(extra = {}) {
   const mfNoAsset = new Miniflare({
     modules: [{ type: "ESModule", path: WORKER, contents: fs.readFileSync(WORKER, "utf8") }], compatibilityDate: "2024-09-23", r2Buckets: ["WIKI_BUCKET"], port: 0,
     bindings: { ACCESS: "off", PUBLIC_WIKI_URL: "https://wiki.example.com" },
-    outboundService: async () => new Response("{}", { status: 404 }),
+    outboundService: outbound,
   });
   const root = (await mfNoAsset.ready).toString().replace(/\/$/, "");
   const none = await mfNoAsset.dispatchFetch(root + "/"), noneText = await none.text();

@@ -30,6 +30,8 @@ The names, and where each goes. With the defaults, nothing in the repository nee
    - **Public Development URL (`r2.dev`):** keep it disabled. It's a second public address that skips the zone's cache and rules.
    - **CORS Policy:** leave it empty. A transform rule handles CORS instead ([2.7](#27-the-zones-rules-public-site-only)).
 
+   Wait for the domain before going on. Custom Domains shows it *Initializing*, then *Active*, within a few minutes (refresh the page to see it change; if it stays, *Retry connection* in the domain's menu). Then open `https://wiki.example.com/status` in a browser: a page from R2 means the domain answers (a 404, *Object not found*, while the bucket is empty; the status file's JSON after the first visit), while a connection error or an error page from Cloudflare means not yet. Set `PUBLIC_WIKI_URL` ([2.5](#25-the-worker)) only then: set while the domain doesn't answer, the admin wiki can't publish its page, and says so until the site does.
+
 With a custom domain, everything in the bucket is public through it, including every tiddler, the tiddler list and the page. That's intended: nothing private belongs in a public wiki's bucket. Secrets live in the worker's settings.
 
 ## 2.3 The backup queue
@@ -76,7 +78,7 @@ The worker is deployed from your repository by Cloudflare's **Workers Builds**: 
 
    | Name | What |
    |---|---|
-   | `PUBLIC_WIKI_URL` | *(public site only)* the public site's address, `https://` and the bucket's custom domain ([2.2](#22-the-bucket-and-the-public-site)), nothing after the hostname. The page loads its plugin files and TiddlyWiki's core from it, and the admin wiki reads tiddlers from it. **Leave it out for a private wiki:** the worker then serves all of that itself. Set wrongly — an address that isn't a site's, or the worker's own — every request answers `500` saying so. Changed later, or removed, it works the same way as setting it: the next page load rebuilds the page from the engine, and the admin wiki publishes it again for the new address. |
+   | `PUBLIC_WIKI_URL` | *(public site only)* the public site's address, `https://` and the bucket's custom domain ([2.2](#22-the-bucket-and-the-public-site)), nothing after the hostname. The page loads its plugin files and TiddlyWiki's core from it, and the admin wiki reads tiddlers from it. **Leave it out for a private wiki:** the worker then serves all of that itself. Set wrongly — an address that isn't a site's, or the worker's own — every request answers `500` saying so. Set before the domain answers ([2.2](#22-the-bucket-and-the-public-site)), the admin wiki can't publish its page until it does, and says so; the wiki starts from the engine meanwhile. Changed later, or removed, it works the same way as setting it: the next page load rebuilds the page from the engine, and the admin wiki publishes it again for the new address. |
    | `CF_ZONE_ID` | *(public site only)* the zone ID of the public site's domain (on the domain's overview page), for the public site's purges |
    | `CF_API_TOKEN` | *(public site only) secret:* an API token (**My Profile → API Tokens**) with *Zone → Cache Purge* on that zone. Without it and `CF_ZONE_ID`, no purges. |
    | `GITHUB_REPO`, `GITHUB_BRANCH` | `owner/repo` of the backup repository ([2.4](#24-the-backup-repository-optional)), and its branch (default `main`) |
