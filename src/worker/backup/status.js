@@ -20,8 +20,10 @@ import { BACKUP_STATUS_KEY } from "../storage.js";
 import { backupRetryDelay, isRateLimit } from "./github.js";
 
 // An entry not retried for a day belongs to a backup no longer waiting (one still waiting is retried
-// at least every 6 hours: BACKUP_MAX_DELAY), and is dropped
+// at least every 6 hours: BACKUP_MAX_DELAY), and is dropped. Not a direct backup's (direct: nothing
+// retries it): kept until the tiddler's next save, or a full backup, clears it
 const BACKUP_STATUS_STALE = 24 * 3600 * 1000;
+const waiting = (entry, now) => !!entry.direct || now - entry.last <= BACKUP_STATUS_STALE;
 
 // The queue's retry limit, which the worker can't read: Cloudflare's default (setup 2.3: leave it)
 export const QUEUE_RETRIES = 3;
@@ -32,8 +34,10 @@ export const BIG_BACKUP_BYTES = 1024 * 1024;
 // this long (a backup takes seconds; the queue's retries follow within minutes)
 const RUNNING_STALE_MS = 15 * 60 * 1000;
 
-export function backupFailure(job, e) {
-  return { title: job.title, since: job.time || Date.now(), error: String(e.detail || e.message || e).slice(0, 200), status: e.status || 0 };
+// about: { next } (ms), when the message was put back to be tried then; { direct: true } for the direct
+// backup's failure, which nothing retries (design 2.36)
+export function backupFailure(job, e, about = {}) {
+  return { title: job.title, since: job.time || Date.now(), error: String(e.detail || e.message || e).slice(0, 200), status: e.status || 0, ...about };
 }
 
 // { failing: title -> entry, pause, sync, running: title -> note }. strict: an R2 error throws,
@@ -112,14 +116,15 @@ async function updateBackupStatus(env, failures, cleared, pause, stored, finishe
   if (keptPause && now - keptPause.until >= PAUSE_CONTINUES) keptPause = null;
   if (JSON.stringify(keptPause) !== JSON.stringify(storedPause)) changed = true;
   for (const title of cleared) changed = failing.delete(title) || changed;
-  for (const { title, since, error, status } of failures) {
+  for (const { title, since, error, status, next, direct } of failures) {
     const entry = failing.get(title);
-    failing.set(title, { since: entry ? Math.min(entry.since, since) : since, last: now, error, status });
+    // (next and direct from this failure alone: a queued retry replaces a direct failure's entry)
+    failing.set(title, { since: entry ? Math.min(entry.since, since) : since, last: now, error, status, ...(typeof next === "number" ? { next } : {}), ...(direct ? { direct: true } : {}) });
     changed = true;
   }
   for (const [title, entry] of failing) {
     // (Also an entry that isn't one: no time to go by)
-    if (!(now - entry.last <= BACKUP_STATUS_STALE)) changed = failing.delete(title) || changed;
+    if (!waiting(entry, now)) changed = failing.delete(title) || changed;
   }
   if (!changed) return;
   await writeBackupStatus(env, { failing, pause: keptPause, sync: status.sync, running });
@@ -137,21 +142,22 @@ async function writeBackupStatus(env, { failing, pause, sync, running }) {
 
 // What the admin wiki is told: "off" (no backups: GITHUB_REPO or GITHUB_TOKEN missing), "ok", or
 // encoded JSON with what there is to say: the backups failing for at least BACKUP_ALERT_MINUTES (60
-// by default), as { count, title, since, error, status } of the oldest; a backup cut short (a note
+// by default), as { count, title, since, error, status } of the oldest, with its next try (next, ms)
+// or direct: true for a direct backup's failure, which nothing retries; a backup cut short (a note
 // left behind by its last delivery, or for RUNNING_STALE_MS), as stuck: { count, title, size,
 // attempts, started } of the oldest; the last full backup, as sync (running or finished); and
 // backups: "off" when both apply to a worker without them
 export function backupReport(env, { failing, sync, running }) {
   const after = backupAlertMinutes(env) * 60000;
   const now = Date.now();
-  const due = [...failing].filter(([, e]) => now - e.last <= BACKUP_STATUS_STALE && now - e.since >= after).sort((a, b) => a[1].since - b[1].since);
+  const due = [...failing].filter(([, e]) => waiting(e, now) && now - e.since >= after).sort((a, b) => a[1].since - b[1].since);
   const cut = [...(running || [])].filter(([, n]) => now - n.started <= BACKUP_STATUS_STALE && (n.attempt > QUEUE_RETRIES || now - n.started >= RUNNING_STALE_MS)).sort((a, b) => a[1].started - b[1].started);
   const on = !!github(env);
   if (!due.length && !cut.length && !sync) return on ? "ok" : "off";
   const report = {};
   if (due.length) {
     const [title, e] = due[0];
-    Object.assign(report, { count: due.length, title: title.slice(0, 200), since: e.since, error: e.error, status: e.status });
+    Object.assign(report, { count: due.length, title: title.slice(0, 200), since: e.since, error: e.error, status: e.status, ...(e.direct ? { direct: true } : typeof e.next === "number" ? { next: e.next } : {}) });
   }
   if (cut.length) {
     const [title, n] = cut[0];

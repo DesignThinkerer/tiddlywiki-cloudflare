@@ -103,6 +103,25 @@ await A.evaluate(() => $tw.syncadaptor.cfworkerNoteBackupStatus({ backups: "on",
 await sleep(200);
 check("...the hint goes when backups are reported off, and is back when they're on again: the module's own removal isn't a closing",
   goneWhenOff && (await exists(A, HINT)), `gone when off ${goneWhenOff}, back ${await exists(A, HINT)}`);
+// While backups fail, the tab says so in place of "every save is committed", from the same answer the
+// alert comes from, and the hint waits; a full backup's answer, which says nothing of problems, leaves
+// the lines as they are; the worker reporting none brings the sentence and the hint back
+const failingSince = Date.now() - 3 * 3600 * 1000, nextTry = Date.now() + 2 * 3600 * 1000;
+await A.evaluate(([since, next]) => $tw.syncadaptor.cfworkerNoteBackupStatus({ backups: "on", problem: { count: 2, title: "Old 01", since, error: "Bad credentials", status: 401, next }, stuck: null, sync: null }), [failingSince, nextTry]);
+await sleep(200);
+text = await tabText(A);
+const nextTryText = await A.evaluate(ms => $tw.utils.formatDateString(new Date(ms), "DDth MMM YYYY 0hh:0mm"), nextTry);
+check("backups failing: the tab says since when, how many, the oldest, GitHub's answer, what to do and the next try, in place of \"every save is committed\", and the hint waits",
+  /Backups to GitHub have been failing since/.test(text) && /2 tiddlers/.test(text) && /Old 01/.test(text) && /Bad credentials/.test(text) && /GITHUB_TOKEN/.test(text) &&
+  text.includes("Next try: " + nextTryText) && /sends the current versions now/.test(text) && !/committed to GitHub as it happens/.test(text) && !(await exists(A, HINT)), text.slice(0, 600));
+await A.evaluate(() => $tw.syncadaptor.cfworkerNoteBackupStatus({ backups: "on", sync: null }));
+await sleep(200);
+text = await tabText(A);
+check("...a full backup's answer, which says nothing of problems, leaves the lines as they are", /Backups to GitHub have been failing since/.test(text) && !/committed to GitHub as it happens/.test(text) && !(await exists(A, HINT)), text.slice(0, 300));
+await A.evaluate(() => $tw.syncadaptor.cfworkerNoteBackupStatus({ backups: "on", problem: null, stuck: null, sync: null }));
+await sleep(200);
+text = await tabText(A);
+check("...and once the worker reports none, \"every save is committed\" and the hint are back", /committed to GitHub as it happens/.test(text) && !/have been failing/.test(text) && (await exists(A, HINT)), text.slice(0, 300));
 await A.evaluate(t => $tw.wiki.deleteTiddler(t), HINT);
 await A.reload();
 await A.waitForFunction(() => window.$tw && $tw.syncer && $tw.syncer.timestampLastSyncFromServer);

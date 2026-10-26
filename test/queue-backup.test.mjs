@@ -464,9 +464,9 @@ const tokenTitles = Array.from({ length: 20 }, (_, i) => `Token ${i + 1}`);
 for (const t of tokenTitles) await put(t, t);
 await until(async () => (await backupStatus())?.count === 20, 10000);
 const tokenStatus = await backupStatus();
-check("all backups failing (a token GitHub refuses): reported with how many wait, the oldest, its time and GitHub's answer",
+check("all backups failing (a token GitHub refuses): reported with how many wait, the oldest, its time, GitHub's answer and the next try (the pause's end)",
   tokenStatus?.count === 20 && tokenStatus.title === "Token 1" && tokenStatus.status === 401 && tokenStatus.error === "Bad credentials" &&
-  tokenStatus.since >= tokenSaved - 1000 && tokenStatus.since <= Date.now(), JSON.stringify(tokenStatus));
+  tokenStatus.since >= tokenSaved - 1000 && tokenStatus.since <= Date.now() && typeof tokenStatus.next === "number" && tokenStatus.next >= tokenSaved && !tokenStatus.direct, JSON.stringify(tokenStatus));
 check("...not in a tiddler list request that doesn't ask (no extra R2 read there)", await backupStatus(base, mf, false) === null);
 await new Promise(r => setTimeout(r, Math.max(0, tokenSaved + 6000 - Date.now())));
 check("...and pauses every backup: a few GitHub calls in all while it lasts, not a few for each", tokenCalls() <= 8,
@@ -566,6 +566,18 @@ check("no queue bound: a backup that fails for good is recorded, and reported on
   recorded ? await (await bucket2.get("_backup/status.json")).text() : "not recorded");
 check("...after its two retries, a second then two apart in production (scaled here): recorded after those waits, and well before 3 s",
   recorded && recordedMs >= scaled(3000) && recordedMs < 2500, `recorded after ${recordedMs} ms`);
+const directEntry = recorded ? JSON.parse(await (await bucket2.get("_backup/status.json")).text()).failing?.["No queue failing"] : null;
+check("...marked as a direct backup, which nothing retries, with no next try", !!directEntry && directEntry.direct === true && directEntry.next === undefined, JSON.stringify(directEntry));
+// Once due, reported as such; and kept past the day after which a queued entry is dropped as no longer
+// waiting, since nothing retries it: the tiddler's next save, or a full backup, clears it
+const twoDaysAgo = Date.now() - 2 * 24 * 3600 * 1000;
+await bucket2.put("_backup/status.json", JSON.stringify({ failing: {
+  "No queue failing": { ...(directEntry || { error: "Bad credentials", status: 401, direct: true }), since: twoDaysAgo, last: twoDaysAgo },
+  "Queued long ago": { since: twoDaysAgo, last: twoDaysAgo, error: "Bad credentials", status: 401, next: twoDaysAgo + 3600 * 1000 } } }));
+const directReport = await backupStatus(base2, mf2);
+check("...reported as not retried once due, still two days later, while a queued entry that old is dropped as no longer waiting",
+  !!directReport && typeof directReport === "object" && directReport.count === 1 && directReport.title === "No queue failing" && directReport.direct === true && directReport.next === undefined,
+  JSON.stringify(directReport));
 faults.badCredentials = false;
 await mf2.dispose();
 

@@ -192,7 +192,7 @@ async function checkBackups(env, site, add) {
       add("backups", false, `Backups go to ${gh.repo}, branch ${gh.branch}, and the repository is public: anyone can read every tiddler of this private wiki at https://github.com/${gh.repo}, with its history. Make it private on GitHub (the repository's Settings → Danger Zone → Change visibility), or move the backup to a private repository, with a token limited to it.`, SECTION.backups);
     } else if (branch.status === 200) {
       const visibility = repo.isPublic === null ? "" : repo.isPublic ? ", a public repository, like the wiki" : ", a private repository";
-      add("backups", true, `Backups go to ${gh.repo}, branch ${gh.branch}${visibility}: GitHub accepts the token. (Whether it may write there shows at the first save; this tab reports backups that fail.)`, SECTION.backups);
+      add("backups", true, `Backups go to ${gh.repo}, branch ${gh.branch}${visibility}: GitHub accepts the token. (Whether it may write there shows at the first save; the tab's Backups section and an alert report backups that fail.)`, SECTION.backups);
     } else {
       add("backups", false, `GitHub finds ${gh.repo} but not its branch ${gh.branch} (${branch.status}${branch.message ? `, ${branch.message}` : ""}): the repository has no such branch, or is empty. Set GITHUB_BRANCH, ${VARS}, to a branch it has (main when GITHUB_BRANCH isn't set), or give an empty repository its first commit (a README added on GitHub does).`, SECTION.backups);
     }
