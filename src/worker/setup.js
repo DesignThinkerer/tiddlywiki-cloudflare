@@ -113,9 +113,12 @@ async function checkPublicSite(env, site, origin, add) {
     probe(publicUrl(env, "/" + STATUS_KEY), null),
     env.WIKI_BUCKET.head(PAGE_KEY)
   ]);
-  // (A site that's down answers through Cloudflare's edge, a 5xx page, as often as not at all)
+  // (A site that's down answers through Cloudflare's edge, a 5xx page, as often as not at all: a 530
+  // for the minutes a custom domain takes to initialise, the commonest first check. Said apart from
+  // no answer, with the wait, rather than "didn't answer (answered 530)" and the domain to connect)
   if (page.error || page.status >= 500) {
-    add("public", false, `The public site at ${site} didn't answer (${page.error || `answered ${page.status}`}): no bucket answers at PUBLIC_WIKI_URL. Connect the domain to the bucket (R2 → the bucket → Settings → Custom Domains, which creates its DNS record and turns public access on for it) and set PUBLIC_WIKI_URL, ${VARS}, to https:// and that domain, nothing after the hostname.`, SECTION.site);
+    const found = page.error ? `didn't answer (${page.error}): nothing answers at PUBLIC_WIKI_URL` : `answered ${page.status}: Cloudflare's edge, with no bucket behind the host yet`;
+    add("public", false, `The public site at ${site} ${found}. If you connected the domain to the bucket in the last few minutes, Cloudflare is still setting it up: check the setup again in a few minutes. Otherwise connect the domain to the bucket (R2 → the bucket → Settings → Custom Domains, which creates its DNS record and turns public access on for it), or correct PUBLIC_WIKI_URL, ${VARS}, now "${site}", to https:// and that domain, nothing after the hostname.`, SECTION.site);
     for (const id of PUBLIC_IDS.slice(1)) add(id, null, uncheckedLine(id), SECTION.site);
     return;
   }
@@ -126,6 +129,10 @@ async function checkPublicSite(env, site, origin, add) {
     add("rewrite", true, "The public site's / serves the wiki page (the rewrite rule / → /baked.html).", SECTION.rules);
   } else if (which === "earlier") {
     add("rewrite", true, "The public site's / serves the wiki page (the rewrite rule / → /baked.html), an earlier build of it: Cloudflare's cached copy, purged at the next save, or when the cache rule's TTL runs out.", SECTION.rules);
+  } else if (stored && !status.error && status.status === 404) {
+    // (The status file is a plain object no rule touches, written with the page at the first visit:
+    // 404 there while the bound bucket has built the page means the domain is on another bucket)
+    add("rewrite", false, `The public site at ${host} doesn't serve this worker's bucket: its /status answers 404 while the bucket bound as WIKI_BUCKET has built the page, so the domain is connected to another bucket (one made by hand under another name, say, the deploy having made the one wrangler.toml names). Connect the domain to the worker's bucket (R2 → the bucket bucket_name names in wrangler.toml → Settings → Custom Domains, after removing it from the other), or set bucket_name in wrangler.toml to the bucket the domain is on and deploy again.`, SECTION.site);
   } else {
     const found = `answered ${page.status}, ${page.etag ? `ETag ${page.etag}` : "no ETag"}, ${page.lastModified ? `Last-Modified ${page.lastModified}` : "no Last-Modified"}`;
     const known = stored ? `the stored page's are "${bareEtag(stored.httpEtag)}" and ${stored.uploaded.toUTCString()}` : "the page isn't built yet";
@@ -133,11 +140,18 @@ async function checkPublicSite(env, site, origin, add) {
   }
   const allowed = r => !r.error && (r.allowOrigin === origin || r.allowOrigin === "*");
   const found = r => r.error ? `no answer: ${r.error}` : r.allowOrigin ? `Access-Control-Allow-Origin: ${r.allowOrigin}` : "no Access-Control-Allow-Origin header";
+  // A header present with another value (a trailing slash, http, the public hostname): the rule is
+  // there and its value is wrong, so it's the value to fix, not a path to add
+  const wrongValue = r => !r.error && !!r.allowOrigin && !allowed(r);
+  const valueToFix = r => `the CORS rule sets Access-Control-Allow-Origin to ${r.allowOrigin}, and it must be exactly ${origin} (https, the admin site's address, nothing after the hostname)`;
+  const fixValue = "Fix the header's value under the domain, Rules → Transform Rules → Modify Response Header.";
   add("cors-reads", allowed(list),
     allowed(list) ? "The CORS rule lets the admin site read tiddlers from the public site (/recipes/)."
+      : wrongValue(list) ? `The public site's tiddlers (/recipes/) can't be read from the admin site, ${origin}: ${valueToFix(list)}; tiddlers load through the worker meanwhile, a request each. ${fixValue}`
       : `The public site's tiddlers (/recipes/) can't be read from the admin site, ${origin} (${found(list)}): the CORS rule is missing or doesn't cover /recipes/; tiddlers load through the worker meanwhile, a request each. Add or fix the rule under the domain, Rules → Transform Rules → Modify Response Header: when the host is ${host} and the path starts with /recipes/ or /_plugins/, set Access-Control-Allow-Origin to ${origin}.`, SECTION.rules);
   add("cors-files", allowed(core),
     allowed(core) ? "The CORS rule lets the admin site keep the core and plugin files for opening offline (/_plugins/)."
+      : wrongValue(core) ? `The public site's core and plugin files (/_plugins/) can't be kept by the admin site, ${origin}: ${valueToFix(core)}; the wiki runs online as before, and doesn't open offline on a device that doesn't have them. ${fixValue}`
       : `The public site's core and plugin files (/_plugins/) can't be kept by the admin site, ${origin} (${found(core)}): the CORS rule doesn't cover /_plugins/; the wiki runs online as before, and doesn't open offline on a device that doesn't have them. Add the path to the rule's When, under the domain's Rules → Transform Rules → Modify Response Header: the host is ${host} and the path starts with /recipes/ or /_plugins/.`, SECTION.rules);
   const cached = r => !r.error && CACHED.includes(String(r.cache || "").toUpperCase());
   const say = r => r.error ? "no answer" : r.cache || "no CF-Cache-Status header";

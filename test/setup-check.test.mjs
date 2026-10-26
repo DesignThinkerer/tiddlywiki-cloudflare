@@ -31,6 +31,9 @@ function outbound(request) {
   return new Response("not imitated: " + url.href, { status: 500 });
 }
 let corsOff = [];        // the paths the CORS header is left off (a rule scoped short): "/recipes/", "/_plugins/"
+let corsValue = null;    // the CORS header's value when not the admin site's origin (a rule set wrong)
+let edgeStatus = null;   // a status Cloudflare's edge answers every path with (530 while the domain initialises)
+let emptyBucket = false; // the domain on another bucket than the worker's: every path R2's 404
 let rewriteOff = false;  // the public site's / serving something else than the page
 let cacheStatus = "HIT";   // or a function of the URL: one status per path
 let etagOff = false, lastModifiedOff = false;   // the page's ETag, then its Last-Modified too, removed by Cloudflare
@@ -39,11 +42,13 @@ const site = await startSite({
   index: readWikiFile(), publicStatus: true, queue: true, outbound,
   bindings: { GITHUB_REPO: "someone/wiki-backup", GITHUB_TOKEN: "ghp_test", CF_ZONE_ID: "zone-1", CF_API_TOKEN: "cf_test" },
   publicSite: {
-    cors: url => !corsOff.some(prefix => url.pathname.startsWith(prefix)),
+    cors: url => !corsOff.some(prefix => url.pathname.startsWith(prefix)) && (corsValue || true),
     cacheStatus: url => typeof cacheStatus === "function" ? cacheStatus(url) : cacheStatus,
     etag: url => !(etagOff && url.pathname === "/"),
     lastModified: url => !(lastModifiedOff && url.pathname === "/"),
-    override: (key, url) => url.pathname !== "/" ? undefined : rewriteOff ? "<!doctype html><html><body>a directory listing, say</body></html>" : earlierBuild || undefined
+    override: (key, url) => edgeStatus ? { status: edgeStatus, body: `error code: ${edgeStatus}`, headers: { "Content-Type": "text/plain" } }
+      : emptyBucket ? { status: 404, body: "<Error><Code>NoSuchKey</Code><Message>Object not found</Message></Error>", headers: { "Content-Type": "application/xml" } }
+      : url.pathname !== "/" ? undefined : rewriteOff ? "<!doctype html><html><body>a directory listing, say</body></html>" : earlierBuild || undefined
   }
 });
 const { base: BASE } = site;
@@ -141,6 +146,14 @@ check("...missing on both paths: both lines fail, the reads one naming /recipes/
 check("...and the reads line ends with what to do: the rule's place (Rules → Transform Rules → Modify Response Header), the host, its two paths, and the admin site's origin to set Access-Control-Allow-Origin to",
   /Rules → Transform Rules → Modify Response Header/.test(text(items, "cors-reads")) && text(items, "cors-reads").includes(`the host is ${PUBLIC_HOST}`) && /\/recipes\/ or \/_plugins\//.test(text(items, "cors-reads")) && text(items, "cors-reads").endsWith(`set Access-Control-Allow-Origin to ${BASE}.`), line(items, "cors-reads"));
 corsOff = [];
+// A header present with the wrong value (the origin with a trailing slash, http, the public hostname):
+// the lines name the value found and the one to set, rather than calling the rule missing
+corsValue = BASE + "/";
+({ items } = await run());
+check("the CORS header present with the wrong value (the admin site's origin with a trailing slash): both lines fail naming the value found and the exact value to set, the header's value to fix, not a rule to add",
+  ok(items, "cors-reads") === false && ok(items, "cors-files") === false && [text(items, "cors-reads"), text(items, "cors-files")].every(t => t.includes(`sets Access-Control-Allow-Origin to ${BASE}/`) && t.includes(`must be exactly ${BASE}`) && /Fix the header's value/.test(t) && !/missing or doesn't cover/.test(t) && !/Add the path/.test(t)),
+  `${line(items, "cors-reads")} | ${line(items, "cors-files")}`);
+corsValue = null;
 cacheStatus = "DYNAMIC";
 ({ items } = await run());
 check("no cache rule on the public site (DYNAMIC): reported with what was found, not a failure", ok(items, "cache") === null && /DYNAMIC/.test(text(items, "cache")) && guide(items, "cache") === "2.7", line(items, "cache"));
@@ -156,12 +169,32 @@ await site.stopPublic();
 ({ items } = await run());
 check("the public site not answering: its line says so with setup 2.2, the rule lines left unchecked", ok(items, "public") === false && guide(items, "public") === "2.2" && ok(items, "rewrite") === null && ok(items, "cors-reads") === null && ok(items, "cors-files") === null,
   `${line(items, "public")} | rewrite ${ok(items, "rewrite")}`);
-check("...and the public line ends with what to do: connect the domain to the bucket (R2 → the bucket → Settings → Custom Domains) and set PUBLIC_WIKI_URL in the worker's Variables and Secrets",
-  /Connect the domain to the bucket \(R2 → the bucket → Settings → Custom Domains/.test(text(items, "public")) && /set PUBLIC_WIKI_URL, in the worker's Variables and Secrets, to https:\/\/ and that domain/.test(text(items, "public")), line(items, "public"));
+check("...and the public line ends with what to do: check again in a few minutes if the domain was just connected, else connect the domain to the bucket (R2 → the bucket → Settings → Custom Domains) or correct PUBLIC_WIKI_URL, named with its value, in the worker's Variables and Secrets",
+  /check the setup again in a few minutes/.test(text(items, "public")) && /connect the domain to the bucket \(R2 → the bucket → Settings → Custom Domains/.test(text(items, "public")) && text(items, "public").includes(`correct PUBLIC_WIKI_URL, in the worker's Variables and Secrets, now "${site.pub}", to https:// and that domain`), line(items, "public"));
 const unchecked = ["rewrite", "cors-reads", "cors-files", "cache"];
 check("...and the four unchecked lines each name their piece (the rewrite rule, the CORS rule's two paths, the cache rules), four different lines rather than one sentence four times",
   unchecked.every(id => PIECES[id].test(text(items, id)) && /not checked/i.test(text(items, id))) && new Set(unchecked.map(id => text(items, id))).size === 4, unchecked.map(id => line(items, id)).join(" | "));
 await site.startPublic();
+// Cloudflare's edge answering 5xx in the minutes after the domain is connected (530, the commonest
+// first check): named as the edge with no bucket behind the host yet, to check again in a few minutes,
+// rather than "didn't answer (answered 530)" and the domain to connect
+edgeStatus = 530;
+({ items } = await run());
+check("the public site answering 530 (Cloudflare's edge while the domain initialises): its line says so, names the edge, says to check again in a few minutes if the domain was just connected, else to connect it or correct the address, the rule lines unchecked",
+  ok(items, "public") === false && /answered 530/.test(text(items, "public")) && /Cloudflare's edge/.test(text(items, "public")) && /check the setup again in a few minutes/.test(text(items, "public")) && !/didn't answer/.test(text(items, "public")) &&
+  /connect the domain to the bucket \(R2 → the bucket → Settings → Custom Domains/.test(text(items, "public")) && text(items, "public").includes(`now "${site.pub}"`) && guide(items, "public") === "2.2" && unchecked.every(id => ok(items, id) === null),
+  line(items, "public"));
+edgeStatus = null;
+// The domain connected to another bucket than the worker's (one made by hand under another name, the
+// deploy making wiki): the site answers, / is R2's 404 and so is /status, while the bound bucket has
+// built the page. Told from a missing rewrite rule by that, with no request more
+emptyBucket = true;
+({ items } = await run());
+check("the domain on another bucket than the worker's (every path R2's 404 while the page is built): the public line passes, the rewrite line says the site doesn't serve this worker's bucket, from /status answering 404, with 2.2, to connect the domain to the bucket wrangler.toml names or bind the worker to the domain's bucket",
+  ok(items, "public") === true && ok(items, "rewrite") === false && /doesn't serve this worker's bucket/.test(text(items, "rewrite")) && /\/status answers 404/.test(text(items, "rewrite")) && /bucket_name/.test(text(items, "rewrite")) && /Custom Domains/.test(text(items, "rewrite")) &&
+  !/rewrite rule \/ → \/baked\.html is missing or wrong/.test(text(items, "rewrite")) && guide(items, "rewrite") === "2.2",
+  `${line(items, "public")} | ${line(items, "rewrite")}`);
+emptyBucket = false;
 
 // --- 3. Backups, the queue, purges ------------------------------------------------------------------
 // The repository's visibility, from the answer the check already gets: on this public wiki, said as

@@ -48,7 +48,8 @@ export const PUBLIC_STATUS = { username: "GUEST", read_only: true, anonymous: tr
 //   queue: bind the backup queue, with its consumer, as deployed (backups then run in it)
 //   privateWiki: no PUBLIC_WIKI_URL: a private wiki (setup 2.1); the stand-in still runs, so a
 //     request that reaches it shows up in publicRequests
-//   publicSite: hooks for the stand-in: cors(url) returns false to leave the CORS header out,
+//   publicSite: hooks for the stand-in: cors(url) returns false to leave the CORS header out, or
+//     a string to send as its value (a rule set wrong),
 //     cacheStatus(url) returns the CF-Cache-Status to send (HIT by default; DYNAMIC is Cloudflare's
 //     for a path no cache rule covers), etag(url) and lastModified(url) return false to leave those
 //     headers out (Cloudflare removes an HTML answer's ETag when a feature of the zone rewrites the
@@ -71,7 +72,8 @@ export async function startSite({ index, publicStatus = false, bindings = {}, ou
     publicRequests.push(decodeURIComponent(url.pathname) + url.search);
     // The CORS header as the zone's rule sends it (setup 2.7): under /recipes/ and /_plugins/ only
     const corsPath = url.pathname.startsWith("/recipes/") || url.pathname.startsWith("/_plugins/");
-    const headers = corsPath && !(publicSite.cors && !publicSite.cors(url)) ? { "Access-Control-Allow-Origin": "*" } : {};
+    const allow = corsPath ? (publicSite.cors ? publicSite.cors(url) : true) : false;
+    const headers = allow ? { "Access-Control-Allow-Origin": typeof allow === "string" ? allow : "*" } : {};
     // As Cloudflare's edge sends them: whether the cache answered, and the object's ETag
     headers["CF-Cache-Status"] = publicSite.cacheStatus ? publicSite.cacheStatus(url) : "HIT";
     try {

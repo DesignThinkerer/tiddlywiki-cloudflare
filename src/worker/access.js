@@ -1,7 +1,7 @@
 // Cloudflare Access: the worker has no login of its own; Access, in front of it, has (setup 2.6).
 
 import { guideText } from "./docs.js";
-import { accessCheckOff } from "./settings.js";
+import { accessCheckOff, isLocalHost } from "./settings.js";
 
 // Cloudflare gives a request that came through Access a ctx.access; a request without one didn't,
 // and is refused before anything is read or built. So an Access application missing, or set up on
@@ -20,8 +20,7 @@ export function withoutAccess(request, ctx, env) {
 
 // A request to a local address: what the tests (Miniflare) and wrangler dev answer
 function isLocal(request) {
-  const host = new URL(request.url).hostname;
-  return host === "localhost" || host.endsWith(".localhost") || host === "127.0.0.1" || host === "[::1]";
+  return isLocalHost(new URL(request.url).hostname);
 }
 
 export const ACCESS_REFUSED = "Refused: this request didn't come through Cloudflare Access, which must protect the admin site (" + guideText("setup", "2.6") + "). " +
