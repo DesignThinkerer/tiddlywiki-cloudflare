@@ -1,0 +1,5 @@
+\whitespace trim
+<div class="cfworker-live-region" role="status" aria-live="polite">
+<$list filter="[[$:/temp/cfworker/outbox]get[online]match[no]]" variable="offline">Offline: changes are kept on this device.</$list>
+<$list filter="[[$:/temp/cfworker/outbox]get[online]!match[no]] :filter[[$:/temp/cfworker/outbox]get[login]match[expired]]" variable="expired">Your login has expired: log in again from the cloud icon.</$list>
+</div>

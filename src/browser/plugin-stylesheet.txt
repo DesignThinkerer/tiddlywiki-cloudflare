@@ -61,3 +61,17 @@ ul.cfworker-setup-check li {
 	overflow: auto;
 	margin-top: 0.5em;
 }
+
+/* The hidden live region (the plugin's PageTemplate part, design 2.17): off the page's flow and out
+   of sight, read by a screen reader when its text changes */
+.cfworker-live-region {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	margin: -1px;
+	padding: 0;
+	border: 0;
+	overflow: hidden;
+	clip: rect(0 0 0 0);
+	white-space: nowrap;
+}

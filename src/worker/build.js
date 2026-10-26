@@ -87,7 +87,8 @@ const PAGE_SOURCE_TITLE = "$:/cfworker/page-source";
 // its parts are shadow tiddlers (out of search, out of syncing, overridden only on purpose), and
 // Control Panel → Plugins lists it with the worker's version (package.json's, plus the hash of
 // everything else in it: pluginVersion) and three tabs, a readme, the settings and the device
-// (src/browser/*.txt), plus a stylesheet, tagged $:/tags/Stylesheet (src/browser/plugin-stylesheet.txt).
+// (src/browser/*.txt), plus a stylesheet, tagged $:/tags/Stylesheet (src/browser/plugin-stylesheet.txt),
+// and a hidden live region for screen readers, tagged $:/tags/PageTemplate (plugin-live-region.txt).
 // Preloaded like the modules were: never stored, never a plugin file (tiddlers.js, page-publisher.js).
 export const ADMIN_PLUGIN_TITLE = "$:/plugins/cfworker/admin";
 const PACKAGE_VERSION = "__PACKAGE_VERSION__";   // filled by build.mjs from package.json
@@ -97,6 +98,7 @@ const PLUGIN_SETTINGS_SOURCE = "__PLUGIN_SETTINGS_SOURCE__";
 const PLUGIN_DEVICE_SOURCE = "__PLUGIN_DEVICE_SOURCE__";
 const PLUGIN_STYLESHEET_SOURCE = "__PLUGIN_STYLESHEET_SOURCE__";
 const PLUGIN_GETTING_STARTED_SOURCE = "__PLUGIN_GETTING_STARTED_SOURCE__";
+const PLUGIN_LIVE_REGION_SOURCE = "__PLUGIN_LIVE_REGION_SOURCE__";
 // Two template parts for conflict copies (design 2.5): the view of a copy and of its original, the
 // editor's line when the original changed behind an open draft (plugin-conflict-view.txt, plugin-conflict-edit.txt)
 const PLUGIN_CONFLICT_VIEW_SOURCE = "__PLUGIN_CONFLICT_VIEW_SOURCE__";
@@ -122,7 +124,7 @@ let adminPluginVersion = "";
 export function pluginVersion() {
   if (!adminPluginVersion) {
     // (The shipped TiddlyWiki version is in the page too, for the Cloudflare tab: a new one, a new page)
-    const parts = [...BROWSER_MODULES.map(m => m.source), swVersion(), PLUGIN_README_SOURCE, PLUGIN_SETTINGS_SOURCE, PLUGIN_DEVICE_SOURCE, PLUGIN_STYLESHEET_SOURCE, PLUGIN_GETTING_STARTED_SOURCE, PLUGIN_CONFLICT_VIEW_SOURCE, PLUGIN_CONFLICT_EDIT_SOURCE, SAVED_AUTOMATICALLY_TEXT, SNAPSHOT_LINE_TEXT, PLUGIN_HISTORY_BUTTON_SOURCE, JSON.stringify(PLUGIN_FIELDS), SHIPPED_VERSION];
+    const parts = [...BROWSER_MODULES.map(m => m.source), swVersion(), PLUGIN_README_SOURCE, PLUGIN_SETTINGS_SOURCE, PLUGIN_DEVICE_SOURCE, PLUGIN_STYLESHEET_SOURCE, PLUGIN_GETTING_STARTED_SOURCE, PLUGIN_LIVE_REGION_SOURCE, PLUGIN_CONFLICT_VIEW_SOURCE, PLUGIN_CONFLICT_EDIT_SOURCE, SAVED_AUTOMATICALLY_TEXT, SNAPSHOT_LINE_TEXT, PLUGIN_HISTORY_BUTTON_SOURCE, JSON.stringify(PLUGIN_FIELDS), SHIPPED_VERSION];
     adminPluginVersion = PACKAGE_VERSION + "+" + hashText(parts.join("\n")).toString(36);
   }
   return adminPluginVersion;
@@ -142,6 +144,9 @@ function adminPlugin(env, pageSource) {
   // The first screen: the plugin's GettingStarted (its priority above TiddlyWeb's, whose own would win
   // otherwise), in the project's words; an owner's edit is an override, kept through updates (design 2.21)
   tiddlers.GettingStarted = { title: "GettingStarted", text: PLUGIN_GETTING_STARTED_SOURCE };
+  // A visually hidden live region on the page (a $:/tags/PageTemplate part, off-screen by the stylesheet)
+  // saying offline, or the login expired, in words for a screen reader (design 2.17, #168)
+  tiddlers[`${ADMIN_PLUGIN_TITLE}/live-region`] = { title: `${ADMIN_PLUGIN_TITLE}/live-region`, tags: "$:/tags/PageTemplate", text: PLUGIN_LIVE_REGION_SOURCE };
   // A conflict copy says what it's a copy of and shows what it changes, its original that it has one
   // (a view-template part, above the text); an editor whose tiddler was saved elsewhere since it was
   // opened says so (an edit-template part, under the title): design 2.5. The plugin is the admin

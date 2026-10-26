@@ -163,6 +163,9 @@ const fit = await A.evaluate(t => {
   return out;
 }, ITEM);
 check("...rendered in a dropdown as the theme styles it, the item wraps within 400 px (the theme's 380 px dropdown) and its link is inline, in its sentence", fit.width > 0 && fit.width <= 400 && fit.link === "inline", JSON.stringify(fit));
+const regionExpired = await A.evaluate(() => { const el = document.querySelector(".cfworker-live-region"); return el ? { role: el.getAttribute("role"), live: el.getAttribute("aria-live"), text: el.textContent.replace(/\s+/g, " ").trim() } : null; });
+check("...the hidden live region says the login has expired, in words, for a screen reader (design 2.17, #168)",
+  !!regionExpired && regionExpired.role === "status" && regionExpired.live === "polite" && regionExpired.text === "Your login has expired: log in again from the cloud icon.", JSON.stringify(regionExpired));
 check("...and, nothing waiting, the dropdown says the login has expired and to log in again, not \"offline\"; no alert",
   noticed && s2?.online === "yes" && s2?.waiting === "0" && /login has expired/i.test(l2 || "") && /log in again/i.test(l2 || "") && !/offline/i.test(l2 || "") && a2.length === 0,
   `${JSON.stringify(s2)} ${JSON.stringify(l2)} alerts ${JSON.stringify(a2)}`);

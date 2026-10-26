@@ -72,6 +72,12 @@ await A.evaluate(() => $tw.wiki.addTiddler(new $tw.Tiddler($tw.wiki.getTiddler("
 await A.evaluate(() => $tw.wiki.deleteTiddler("Note B"));
 await waitFor(async () => (await status(A))?.waiting === "3", 10000);
 const s1 = await status(A), l1 = await line(A), a1 = await alerts(A);
+// The hidden live region (design 2.17, #168): offline said in words for a screen reader, once, keyed on
+// the status tiddler's online and login fields alone (the count changes at every save)
+const region = p => p.evaluate(() => { const el = document.querySelector(".cfworker-live-region"); if (!el) return null; const r = el.getBoundingClientRect(), s = getComputedStyle(el); return { role: el.getAttribute("role"), live: el.getAttribute("aria-live"), text: el.textContent.replace(/\s+/g, " ").trim(), offscreen: r.width <= 1 && r.height <= 1 && s.overflow === "hidden" && s.position === "absolute" }; });
+const r1 = await region(A);
+check("offline, a visually hidden live region (role=status, aria-live=polite, 1 px, out of the page's flow) says \"Offline: changes are kept on this device\" for a screen reader",
+  !!r1 && r1.role === "status" && r1.live === "polite" && r1.offscreen && r1.text === "Offline: changes are kept on this device.", JSON.stringify(r1));
 check("offline, the cloud icon's dropdown says 3 changes are waiting since when, kept on this device, offline", s1?.waiting === "3" && s1?.online === "no" && /3 changes waiting since \d\d:\d\d/.test(l1 || "") && /offline/.test(l1 || "") && /this device/.test(l1 || ""), `${JSON.stringify(s1)} ${JSON.stringify(l1)}`);
 // What waits is named (the first few titles, as links), today's wait with its time alone, and the
 // offline line says the changes go when this wiki is next open here with a network (#151)
@@ -94,6 +100,8 @@ const took = (Date.now() - back) / 1000;
 check("the network back: the three changes reach the worker at once (the online event, not the retry 20 s away)", arrived && took < 4, `${took.toFixed(1)} s`);
 await settle(A);
 await waitFor(async () => (await status(A))?.waiting === "0", 5000);
+const r2 = await region(A);
+check("...the network back: the hidden live region is empty again (nothing announced while online)", !!r2 && r2.text === "", JSON.stringify(r2));
 check("...the dropdown says nothing more, no alert, the device's outbox empty", (await line(A)) === "" && (await alerts(A)).length === 0 && JSON.stringify(await outbox(A)) === "[]" && (await status(A))?.online === "yes",
   `item ${JSON.stringify(await line(A))}, alerts ${(await alerts(A)).length}, outbox ${JSON.stringify(await outbox(A))}`);
 

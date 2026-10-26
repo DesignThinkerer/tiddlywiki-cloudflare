@@ -109,6 +109,8 @@ check("...that says backups are on, no full backup yet, with the button", (await
 // (The section sits in a <$list> widget: without a blank line after its opening tag, TiddlyWiki
 // parses it inline, and the heading showed as "!!! Full backup" in the text)
 const tabHtml = await A.evaluate(t => $tw.wiki.renderTiddler("text/html", t), TAB);
+check("...the check's result, the backup message and the engine message each sit in a live region (role=status, aria-live=polite) that is there before their content (design 2.17)",
+  (tabHtml.match(/<div(?=[^>]*role="status")(?=[^>]*aria-live="polite")[^>]*>/g) || []).length === 3, `${(tabHtml.match(/role="status"/g) || []).length} regions`);
 check("...its Full backup heading rendered as a heading, its sentences as paragraphs", /<h3[^>]*>Full backup<\/h3>/.test(tabHtml) && !/!!!/.test(text) && /<p>Makes GitHub match the wiki/.test(tabHtml),
   (tabHtml.match(/.{0,60}Full backup.{0,60}/) || [])[0]);
 // Each section leads with what the user acts on: the setup's one line then the button, with the cost

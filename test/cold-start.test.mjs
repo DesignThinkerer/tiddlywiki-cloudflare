@@ -104,6 +104,12 @@ check("...the two lines about this browser, the service worker's and the core fi
 check("...the private wiki's one line for the public site's pieces carries R2's page as a second link after the section's: Cloudflare's deep link, its text R2",
   /\(setup 2\.1\) \(R2\)/.test(setup1.tab) && setup1.html.includes('href="https://dash.cloudflare.com/?to=/:account/r2/overview"') && setup1.html.indexOf('>setup 2.1</a>') < setup1.html.indexOf('r2/overview'),
   (setup1.tab.match(/.{0,120}\(setup 2\.1\).{0,40}/) || ["no setup 2.1 line"])[0]);
+// The check's result is announced (design 2.17, #168): its list sits in a live region that exists before
+// the result does, so a screen reader says it once the lines are in; the tab's other answers the same
+const REGION = /<div(?=[^>]*role="status")(?=[^>]*aria-live="polite")[^>]*>/g;
+check("...the check's lines sit in a live region (role=status, aria-live=polite) that is there before the result, as the tab's other answers do, so a screen reader announces each once (two regions here, the check's and the engine's: the backup button's comes with the button, backups being off on this wiki)",
+  /<div(?=[^>]*role="status")(?=[^>]*aria-live="polite")[^>]*>(?:(?!<\/div>)[\s\S])*?<ul class="cfworker-setup-check"/.test(setup1.html) && (setup1.html.match(REGION) || []).length === 2,
+  `${(setup1.html.match(REGION) || []).length} regions; ${(setup1.html.match(/.{0,80}role="status".{0,80}/) || ["no live region"])[0]}`);
 check("...each mark is a span with its class and a label (fine, not checked), the glyph first in the text, in a list the stylesheet styles",
   /<span (?=[^>]*class="cfworker-mark cfworker-mark-ok")(?=[^>]*aria-label="fine")[^>]*>✓<\/span> /.test(setup1.html) && /<span (?=[^>]*class="cfworker-mark cfworker-mark-none")(?=[^>]*aria-label="not checked")[^>]*>–<\/span> /.test(setup1.html) && /<ul[^>]*class="cfworker-setup-check"[^>]*>/.test(setup1.html) && setup1.lines.length >= 5 && setup1.lines.every(l => /^[✓✗–] \S/.test(l)),
   setup1.html.replace(/\s+/g, " ").slice(0, 400));
@@ -487,6 +493,12 @@ check("while a change waits and the browser hasn't promised, the cloud dropdown 
 const offlineMeasure = await measure(A);
 check("Measure, offline: the first line says 1 change waits to be sent", offlineMeasure.done && /^Opens with no network: .*1 change waits to be sent\./.test(offlineMeasure.text), offlineMeasure.text.slice(0, 200));
 check("Measure, offline: the change waiting in the outbox is counted (the tab needs no network)", offlineMeasure.done && /1 change waiting to be sent \(Device note\)/.test(offlineMeasure.text), offlineMeasure.text.slice(0, 300));
+// The device tab's answers are announced too (design 2.17, #168): the Measure report and the keep and
+// forget messages each sit in a live region that is there before the answer
+const deviceHtml = await A.evaluate(t => $tw.wiki.renderTiddler("text/html", t), DEVICE);
+check("...the device tab's Measure report and the keep and forget messages each sit in a live region (role=status, aria-live=polite), there before the answer",
+  (deviceHtml.match(/<div(?=[^>]*role="status")(?=[^>]*aria-live="polite")[^>]*>/g) || []).length === 3 && deviceHtml.indexOf('role="status"') >= 0 && deviceHtml.indexOf('role="status"') < deviceHtml.indexOf("waiting to be sent"),
+  `${(deviceHtml.match(/role="status"/g) || []).length} regions`);
 await online(contextA);
 await waitFor(async () => (await status(A))?.waiting === "0", 15000);
 await settle(A);
