@@ -19,6 +19,7 @@ import { decodePath, invalidPath } from "./http.js";
 import { guideText } from "./docs.js";
 import { APP_ICON_SIZES, MANIFEST_KEY, serveIcon, serveManifest } from "./app.js";
 import { serveServiceWorker } from "./build.js";
+import { purgeHostname } from "./cache.js";
 import { publishCoreFile, publishShell, serveWiki, updateEngine } from "./page.js";
 import { serveList, serveObject, serveStatus } from "./reads.js";
 import { handleDelete, handleSave } from "./saves.js";
@@ -56,6 +57,8 @@ const ROUTES = [
   // The setup check (design 1.13): each piece of the setup looked at, on demand
   { methods: ["GET"], matches: path => path === "/setup/check", handle: (request, env, ctx, url, match, headers) => setupCheck(request, env, ctx, headers) },
   { methods: ["POST"], matches: path => path === "/engine/update", handle: (request, env, ctx, url, match, headers) => updateEngine(request, env, headers) },
+  // The public hostname purged on a click (design 2.10's one exception; the Cloudflare tab's button)
+  { methods: ["POST"], matches: path => path === "/purge", handle: (request, env, ctx, url, match, headers) => purgeHostname(request, env, headers) },
   // Any other read is an object of the bucket, by its key: the tiddler list, a tiddler, a file
   { methods: ["GET", "HEAD"], matches: path => decodePath(path.substring(1)), handle: (request, env, ctx, url, key, headers) =>
     key === LIST_KEY ? serveList(request, env, ctx, headers) : serveObject(request, env, key, headers) },

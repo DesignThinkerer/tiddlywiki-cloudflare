@@ -109,8 +109,8 @@ check("...that says backups are on, no full backup yet, with the button", (await
 // (The section sits in a <$list> widget: without a blank line after its opening tag, TiddlyWiki
 // parses it inline, and the heading showed as "!!! Full backup" in the text)
 const tabHtml = await A.evaluate(t => $tw.wiki.renderTiddler("text/html", t), TAB);
-check("...the check's result, the backup message and the engine message each sit in a live region (role=status, aria-live=polite) that is there before their content (design 2.17)",
-  (tabHtml.match(/<div(?=[^>]*role="status")(?=[^>]*aria-live="polite")[^>]*>/g) || []).length === 3, `${(tabHtml.match(/role="status"/g) || []).length} regions`);
+check("...the check's result, the purge button's answer, the backup message and the engine message each sit in a live region (role=status, aria-live=polite) that is there before their content (design 2.17)",
+  (tabHtml.match(/<div(?=[^>]*role="status")(?=[^>]*aria-live="polite")[^>]*>/g) || []).length === 4, `${(tabHtml.match(/role="status"/g) || []).length} regions`);
 check("...its Full backup heading rendered as a heading, its sentences as paragraphs", /<h3[^>]*>Full backup<\/h3>/.test(tabHtml) && !/!!!/.test(text) && /<p>Makes GitHub match the wiki/.test(tabHtml),
   (tabHtml.match(/.{0,60}Full backup.{0,60}/) || [])[0]);
 // Each section leads with what the user acts on: the setup's one line then the button, with the cost
@@ -322,6 +322,38 @@ check("a worker without GITHUB_REPO and GITHUB_TOKEN: the tab says backups are o
   (await field(B, STATUS, "backups")) === "off" && /Backups are off/.test(text) && /GITHUB_REPO/.test(text) && /the wiki's only history/.test(text) && !/Back up everything/.test(text) && !(await exists(B, HINT)), text.slice(0, 300));
 await B.close();
 await off.close();
+
+// 4b. The purge button (#175): under the setup check on a wiki with a public site and the purge
+// settings, one click sends one purge of the public hostname, and the worker's answer shows under it.
+// A site of its own, Cloudflare's API a stub that records what the worker sent; then a site without
+// the settings, whose answer says what to set
+{
+  const purges = [];
+  const purgeSite = await startSite({ index: readWikiFile(), publicStatus: true, bindings: { CF_ZONE_ID: "zone-1", CF_API_TOKEN: "cf_test" },
+    outbound: async req => { if (/purge_cache$/.test(req.url)) purges.push(JSON.parse(await req.text())); return new Response('{"success":true}'); } });
+  const P = await context.newPage();
+  await P.goto(purgeSite.base + "/");
+  await settle(P);
+  const before = await tabText(P);
+  purges.length = 0;
+  await press(P, "tm-cfworker-purge");
+  const said = await waitFor(async () => /Purged [^ ]+ from Cloudflare's cache/.test(await tabText(P)), 10000);
+  const host = new URL(purgeSite.pub).host;
+  check("the Cloudflare tab's \"Purge the public site's cache\" button, under the setup check on a wiki with a public site: one click, one purge of the public hostname (hosts, no files), and the worker's answer under the button names it",
+    /Purge the public site's cache/.test(before) && said && purges.filter(b => b.hosts).length === 1 && JSON.stringify(purges.find(b => b.hosts)) === JSON.stringify({ hosts: [host] }),   // (the worker's own file purges, the page's after a publish, may land in the same window)
+    `${purges.length} purges ${JSON.stringify(purges)}; ${(await tabText(P)).match(/Purg[^.]{0,160}/g)?.join(" | ") || "nothing said"}`);
+  await P.close();
+  await purgeSite.close();
+  const bare = await startSite({ index: readWikiFile(), publicStatus: true, outbound: async () => new Response('{"success":true}') });
+  const Q = await context.newPage();
+  await Q.goto(bare.base + "/");
+  await settle(Q);
+  await press(Q, "tm-cfworker-purge");
+  const refused = await waitFor(async () => /No purge settings: set CF_ZONE_ID/.test(await tabText(Q)), 10000);
+  check("...without the purge settings: the worker's refusal under the button says what to set, in the check's words", refused, (await tabText(Q)).match(/The worker answered[^.]{0,200}/)?.[0] || "nothing said");
+  await Q.close();
+  await bare.close();
+}
 
 // 5. The worker's release (design 1.17): when the tab is shown, the browser asks GitHub's releases API
 // for this repository's newest release, at most once a day per browser, and the tab says whether a

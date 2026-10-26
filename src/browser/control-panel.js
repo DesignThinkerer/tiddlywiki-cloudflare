@@ -37,6 +37,8 @@ var TAB = "$:/temp/cfworker/ControlPanel",
 	CHECK = "tm-cfworker-setup-check",
 	ENGINE = "$:/temp/cfworker/engine",
 	PAGE_STATUS = "$:/temp/cfworker/page-publisher",   // what this tab last did with the page: state, text, time (page-publisher.js)
+	PURGE = "tm-cfworker-purge",                        // the public hostname purged, once, on a click (#175)
+	PURGE_MESSAGE = "$:/temp/cfworker/purge-message",
 	ENGINE_MESSAGE = "$:/temp/cfworker/engine-message",
 	PAGE_SOURCE = "$:/cfworker/page-source",
 	PUBLIC_URL = "$:/cfworker/public-url",   // the public site's address the page carries (empty on a private wiki)
@@ -56,6 +58,15 @@ var TAB_TEXT = [
 	"<$button message='" + CHECK + "'>Check the setup</$button>",
 	"",
 	"Runs only when you click: the worker makes a few requests and purges the public site's status file to test the purge token.",
+	"",
+	"<$list filter='[[$:/cfworker/public-url]get[text]!match[]]' variable='public'><$button message='" + PURGE + "'>Purge the public site's cache</$button> (the public hostname, once: what the public site serves afresh; " + lib.guide("operating","3.9") + ")",
+	"",
+	"<div role='status' aria-live='polite'>",
+	"",
+	"<$list filter='[[" + PURGE_MESSAGE + "]has[text]]' variable='purged'>{{" + PURGE_MESSAGE + "}}</$list>",
+	"",
+	"</div>",
+	"</$list>",
 	"",
 	// (each button's answer sits in a live region that is there before the answer, so a screen
 	// reader hears it once it's in: design 2.17)
@@ -470,6 +481,29 @@ exports.startup = function() {
 			checked: $tw.utils.stringifyDate(checked || new Date())
 		}));
 	}
+	// One call purging the public hostname, with the token the worker holds (design 2.10's one exception):
+	// the answer shown under the button, as the full backup's is
+	$tw.rootWidget.addEventListener(PURGE,function() {
+		wiki.addTiddler(new $tw.Tiddler({title: PURGE_MESSAGE, text: "Purging…"}));
+		var host = ($tw.syncadaptor && $tw.syncadaptor.host) || here;
+		$tw.utils.httpRequest({
+			url: host + "purge",
+			type: "POST",
+			headers: {"X-Requested-With": "TiddlyWiki"},
+			callback: function(err,data,xhr) {
+				var status = xhr ? xhr.status : 0;
+				if(status) {
+					// The worker's words whatever the status (TiddlyWiki passes only a 2xx's body as data)
+					wiki.addTiddler(new $tw.Tiddler({title: PURGE_MESSAGE, text: (status === 200 ? "" : "The worker answered " + status + ": ") + shown(xhr.responseText || data || err)}));
+					return;
+				}
+				noAnswer(false,function(text,guide) {
+					wiki.addTiddler(new $tw.Tiddler({title: PURGE_MESSAGE, text: "The worker didn't answer: " + text + noAnswerLink(guide)}));
+				});
+			}
+		});
+		return false;
+	});
 	$tw.rootWidget.addEventListener(CHECK,function() {
 		wiki.addTiddler(new $tw.Tiddler({title: SETUP, text: "Checking…"}));
 		plainLines = [];

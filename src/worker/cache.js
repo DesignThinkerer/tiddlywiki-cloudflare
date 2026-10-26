@@ -30,6 +30,32 @@ export function listPurgeUrls(env) {
   ];
 }
 
+// POST /purge from the admin wiki's Cloudflare tab (design 2.10's one exception: a hostname purge on a
+// click, one call with the token the worker holds, never purge_everything, which clears every site in
+// the zone; no R2 operation). Only with the modules' header, since anything in the wiki can call the
+// admin origin (2.23, 2.31); refused without the purge settings, with the check's words for what to set
+export async function purgeHostname(request, env, corsHeaders) {
+  const headers = { ...corsHeaders, "Content-Type": "text/plain; charset=utf-8" };
+  if (request.headers.get("X-Requested-With") !== "TiddlyWiki") return new Response("The public site's cache is purged from the admin wiki's Cloudflare tab.", { status: 403, headers });
+  const site = publicSite(env), zone = purges(env);
+  if (!site) return new Response("No public site: nothing to purge (a private wiki).", { status: 400, headers });
+  if (!zone) return new Response("No purge settings: set CF_ZONE_ID (the zone ID on the domain's overview page) and the CF_API_TOKEN secret (a token from My Profile → API Tokens with Zone → Cache Purge on that zone) in the worker's Variables and Secrets, as Check the setup says.", { status: 400, headers });
+  const host = new URL(site).host;
+  try {
+    const res = await fetch(`https://api.cloudflare.com/client/v4/zones/${zone.zoneId}/purge_cache`, {
+      method: "POST", headers: { "Authorization": `Bearer ${zone.token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ hosts: [host] })
+    });
+    let body = null;
+    try { body = await res.json(); } catch {}
+    if (res.ok && body && body.success) return new Response(`Purged ${host} from Cloudflare's cache: every page and file of the public site is fetched afresh at its next request.`, { status: 200, headers });
+    const message = body && Array.isArray(body.errors) && body.errors.length ? body.errors.map(e => e.message).join("; ") : "";
+    return new Response(`Cloudflare refused the purge (${res.status}${message ? `: ${message}` : ""}): Check the setup tests the token and says what to replace.`, { status: 502, headers });
+  } catch (e) {
+    return new Response(`Cloudflare's API didn't answer (${e && e.message ? e.message : e}): try again in a moment.`, { status: 502, headers });
+  }
+}
+
 export async function purgePublicCache(env, urls) {
   const zone = purges(env);
   if (!zone || !publicSite(env) || urls.length === 0) return;

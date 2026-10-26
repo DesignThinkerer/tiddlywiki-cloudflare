@@ -491,6 +491,8 @@ The previous version purged the whole zone after every save and delete:
 
 Single-URL purges allow 800 URLs a second on the free plan and touch only what changed. Their one requirement is exact URLs, query strings included.
 
+- **A hostname purge on a click, the one exception** (#175). Something on the public site looks stale; the worker holds the purge token and purges at every save, the setup check purges the status file just to test it, yet a manual purge meant the zone's page of the dashboard. The Cloudflare tab's *Purge the public site's cache* sends `POST /purge`, one API call purging by the public hostname (`hosts`, never `purge_everything`, which clears every site in the zone; no R2 operation); the route takes only requests with the modules' `X-Requested-With` header, as 2.23's POST does, since anything in the wiki can call the admin origin (2.31), and is refused without the purge settings, with the check's words for what to set. The targeted purges above stay the rule for the automatic ones.
+
 ### 2.11 Backups through a queue
 
 Three alternatives were considered:

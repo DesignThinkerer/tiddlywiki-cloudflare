@@ -10,6 +10,7 @@ import { setupCheck } from "../src/worker/setup.js";
 const { check, results } = createChecks();
 
 // GitHub and Cloudflare's API, as the worker sees them; what the suite makes them answer
+const purgeBodies = [];   // what the worker sent to purge_cache, in order
 const api = { repo: 200, branch: 200, private: true, purge: { status: 200, body: { success: true } }, purgeDown: false, expires: null };   // private: the backup repository's visibility; expires: the token's expiry header, a date string, or null for none
 const calls = [];   // the worker's own requests to them: "METHOD url"
 function outbound(request) {
@@ -27,7 +28,11 @@ function outbound(request) {
     // The API not answering at all: the worker's fetch fails before any answer. (A handler that throws, or a
     // Response.error(), reaches the worker as a 500 from Miniflare; a redirect loop is a network error there too)
     if (api.purgeDown) return Response.redirect(request.url, 302);
-    return new Response(JSON.stringify(api.purge.body), { status: api.purge.status });
+    // (what the worker sent, kept for the purge route's checks: the harness awaits a promise from here)
+    return request.text().then(text => {
+      try { purgeBodies.push(JSON.parse(text)); } catch { purgeBodies.push(null); }
+      return new Response(JSON.stringify(api.purge.body), { status: api.purge.status });
+    });
   }
   return new Response("not imitated: " + url.href, { status: 500 });
 }
@@ -366,6 +371,29 @@ check("...the other way round: the backups line names GITHUB_REPO alone and says
   ok(items, "backups") === false && /has GITHUB_TOKEN but no GITHUB_REPO/.test(text(items, "backups")) && /Set GITHUB_REPO, in the worker's Variables and Secrets/.test(text(items, "backups")) &&
   ok(items, "purges") === null && /CF_ZONE_ID isn't set \(CF_API_TOKEN is\)/.test(text(items, "purges")) && /Set CF_ZONE_ID, in the worker's Variables and Secrets, to the zone ID on the domain's overview page\.$/.test(text(items, "purges")),
   `${line(items, "backups")} | ${line(items, "purges")}`);
+// --- 3b. The purge button's route (#175): one call purging the public hostname with the token the worker
+// holds, never purge_everything; only with the modules' header; refused without the settings
+{
+  const post = (headers = {}) => fetch(site.base + "/purge", { method: "POST", headers });
+  await site.setBindings({ GITHUB_REPO: "someone/wiki-backup", GITHUB_TOKEN: "ghp_test", CF_ZONE_ID: "zone-1", CF_API_TOKEN: "cf_test" });   // (the purge settings back, after the lines above unset them)
+  purgeBodies.length = 0;
+  const purged = await post({ "X-Requested-With": "TiddlyWiki" });
+  check("POST /purge with the modules' header: one purge_cache call with the public hostname in hosts (no files, no purge_everything), answered 200 in words naming the host",
+    purged.status === 200 && purgeBodies.length === 1 && JSON.stringify(purgeBodies[0]) === JSON.stringify({ hosts: [new URL(site.pub).host] }) && (await purged.text()).startsWith(`Purged ${new URL(site.pub).host} from Cloudflare's cache`),
+    `${purged.status} ${JSON.stringify(purgeBodies)}`);
+  purgeBodies.length = 0;
+  const bare = await post();
+  check("...without the header: refused (403), no call", bare.status === 403 && purgeBodies.length === 0 && /Cloudflare tab/.test(await bare.text()), `${bare.status} ${purgeBodies.length}`);
+  api.purge = { status: 403, body: { success: false, errors: [{ code: 10000, message: "Authentication error" }] } };
+  const refused = await post({ "X-Requested-With": "TiddlyWiki" });
+  check("...Cloudflare refusing: 502 saying so, with Check the setup as the test of the token", refused.status === 502 && /refused the purge \(403: Authentication error\): Check the setup tests the token/.test(await refused.text()), String(refused.status));
+  api.purge = { status: 200, body: { success: true } };
+  await site.setBindings({ GITHUB_REPO: "someone/wiki-backup", GITHUB_TOKEN: "ghp_test", CF_ZONE_ID: "", CF_API_TOKEN: "" });
+  purgeBodies.length = 0;
+  const unset = await post({ "X-Requested-With": "TiddlyWiki" });
+  check("...without the purge settings: refused (400) with the check's words for what to set, no call", unset.status === 400 && purgeBodies.length === 0 && /No purge settings: set CF_ZONE_ID \(the zone ID on the domain's overview page\) and the CF_API_TOKEN secret/.test(await unset.text()), `${unset.status} ${purgeBodies.length}`);
+  await site.setBindings({ GITHUB_REPO: "someone/wiki-backup", GITHUB_TOKEN: "ghp_test", CF_ZONE_ID: "zone-1", CF_API_TOKEN: "cf_test" });
+}
 await site.close();
 
 // --- 4. A worker without the queue, a private wiki --------------------------------------------------
