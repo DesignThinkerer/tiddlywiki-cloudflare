@@ -35,10 +35,22 @@ export function publicSiteError(env, requestOrigin) {
   if (url.pathname.replace(/\/+$/, "") !== "" || url.search || url.hash || url.username || url.password) {
     return `PUBLIC_WIKI_URL is "${value}": it must be ${expected}, nothing after the hostname.`;
   }
+  // (http on a real host: the admin page is https, so a browser refuses the core file loaded from
+  // http into it, as mixed content, and the wiki would show a blank page with nothing naming the
+  // setting; a local address, the tests' stand-in and wrangler dev, has no https: design 2.15)
+  if (url.protocol === "http:" && !isLocalHost(url.hostname)) {
+    return `PUBLIC_WIKI_URL is "${value}": the admin site is https, and a browser won't load the core file into its page from an http address (mixed content). Set it to https://${url.host} (${guideText("setup", "2.5")}).`;
+  }
   if (requestOrigin && url.origin === new URL(requestOrigin).origin) {
     return `PUBLIC_WIKI_URL is "${value}", this worker's own address: it must be the public site's, the bucket's custom domain (${guideText("setup", "2.2")}).`;
   }
   return null;
+}
+
+// A local address, where the tests (Miniflare) and wrangler dev run: what ACCESS = off counts for
+// (access.js), and where http is accepted for the public site (above)
+export function isLocalHost(hostname) {
+  return hostname === "localhost" || hostname.endsWith(".localhost") || hostname === "127.0.0.1" || hostname === "[::1]";
 }
 
 // The public site's address as set, trimmed, or "" for a private wiki

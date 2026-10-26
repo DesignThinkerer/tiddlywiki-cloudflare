@@ -489,10 +489,12 @@ await withPublicUrl(undefined, async (root, instance, store, calls) => {
   await own.text();
   check("...the plugin tiddler itself, saved, gets no file: the page carries the worker's", own.status === 204 && !(await store.head("_plugins/$:/plugins/cfworker/admin.js")) && !(await (await store.get("baked.html")).text()).includes("_plugins/%24%3A%2Fplugins%2Fcfworker%2Fadmin.js"), `status ${own.status}`);
 }, { CF_ZONE_ID: "zone", CF_API_TOKEN: "token" });
-for (const [value, why] of [["wiki.example.com", "without https://"], ["https://wiki.example.com/wiki", "with a path"]]) {
+for (const [value, why, says] of [["wiki.example.com", "without https://"], ["https://wiki.example.com/wiki", "with a path"],
+  ["http://wiki.example.com", "with http:// on a real host (the admin site is https: a browser wouldn't load the core file from it)", /https:\/\/wiki\.example\.com/]]) {
   await withPublicUrl(value, async (root, instance) => {
     const page = await instance.dispatchFetch(root + "/"), pageText = await page.text();
-    check(`PUBLIC_WIKI_URL ${why} (${value}): 500, naming the variable and the value`, page.status === 500 && pageText.includes("PUBLIC_WIKI_URL") && pageText.includes(value), `status ${page.status}: ${pageText.slice(0, 80)}`);
+    check(`PUBLIC_WIKI_URL ${why} (${value}): 500, naming the variable and the value${says ? ", and the https address to set" : ""}`,
+      page.status === 500 && pageText.includes("PUBLIC_WIKI_URL") && pageText.includes(value) && (!says || says.test(pageText)), `status ${page.status}: ${pageText.slice(0, 120)}`);
   });
 }
 await withPublicUrl("https://wiki.example.com/", async (root, instance) => {
@@ -540,10 +542,12 @@ check("$:/SiteUrl, $:/SiteDomain and $:/SitePreviewUrl are startup tiddlers, pre
   ["$:/SiteUrl", "$:/SiteDomain", "$:/SitePreviewUrl"].every(t => isStartupTiddler({ title: t })) && !isStartupTiddler({ title: "$:/SiteUrl/other" }));
 // The check itself, including the case Miniflare can't show: the address being this worker's own
 const site = (value, origin = "https://admin.example.com") => { try { return publicSiteError(value === undefined ? {} : { PUBLIC_WIKI_URL: value }, origin); } catch { return "error"; } };
-check("the public site's address: a site is accepted, with or without a trailing slash", site("https://wiki.example.com") === null && site("https://wiki.example.com/") === null && site("http://127.0.0.1:8787") === null);
+check("the public site's address: a site is accepted, with or without a trailing slash, and http on a local address (the tests' stand-in, wrangler dev)",
+  site("https://wiki.example.com") === null && site("https://wiki.example.com/") === null && site("http://127.0.0.1:8787") === null && site("http://localhost:8787") === null && site("http://wiki.localhost") === null && site("http://[::1]:8787") === null);
 check("...and so is none at all, or blank: a private wiki", site(undefined) === null && site("") === null && site("  ") === null);
 check("...the worker's own address is refused, saying so", /own address|this worker/.test(site("https://admin.example.com") || "") && /own address|this worker/.test(site("https://admin.example.com/", "https://admin.example.com") || ""));
-check("...and so are no scheme, another scheme, a path, a query", ["wiki.example.com", "ftp://wiki.example.com", "https://wiki.example.com/wiki", "https://wiki.example.com/?x"].every(v => typeof site(v) === "string" && site(v).includes("PUBLIC_WIKI_URL")));
+check("...and so are no scheme, another scheme, a path, a query, and http on a real host, which says to set https", ["wiki.example.com", "ftp://wiki.example.com", "https://wiki.example.com/wiki", "https://wiki.example.com/?x", "http://wiki.example.com"].every(v => typeof site(v) === "string" && site(v).includes("PUBLIC_WIKI_URL")) &&
+  /https:\/\/wiki\.example\.com/.test(site("http://wiki.example.com")) && /mixed content|https/.test(site("http://wiki.example.com")));
 
 // --- The first visit ------------------------------------------------------------------------------
 // A new bucket is empty. The build makes seed/empty.html (an empty TiddlyWiki with the TiddlyWeb
