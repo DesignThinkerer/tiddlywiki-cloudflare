@@ -42,10 +42,10 @@ Create the queue before the worker's first deploy ([2.5](#25-the-worker)): Wrang
 
 ## 2.4 The backup repository (optional)
 
-- **A repository of its own** for the backup, one per wiki, private if you like. Files go in `tiddlers/`. Never use the repository the worker is deployed from: its token would let anyone who got it change the worker's code.
+- **A repository of its own** for the backup, one per wiki. **Private, for a private wiki:** a public repository publishes every save, with its history, for anyone to read, and *Check the setup* says so ([operating 3.15](operating.md#315-checking-the-setup)); for a public wiki, as you like. Files go in `tiddlers/`. Never use the repository the worker is deployed from: its token would let anyone who got it change the worker's code.
 - **A fine-grained personal access token** limited to that repository, with *Contents: read and write*. [This link](https://github.com/settings/personal-access-tokens/new?name=wiki+backup&description=One+commit+per+save+into+the+backup+repository+%28tiddlywiki-cloudflare%2C+setup+2.4%29&expires_in=366&contents=write) opens GitHub's form with the name, the permission and the longest expiry the form allows (a year) filled in; what's left is *Repository access → Only select repositories* → the backup repository, then *Generate token*. You'll store it as the `GITHUB_TOKEN` secret ([2.5](#25-the-worker)). When it expires, the admin wiki shows the backup alert (`Bad credentials`): make a new one the same way and replace the secret.
 
-Without a repository and a token, the worker skips backups.
+Without a repository and a token, the worker skips backups: the wiki then has no history, since the bucket keeps the current version of each tiddler alone, and a deletion or an overwrite is final.
 
 **A wiki that already has content** when backups are set up — an imported wiki, say — has nothing on GitHub until a **full backup** runs: the admin wiki reminds you once, and the button is in the Control Panel → Saving → **Cloudflare** tab, *Back up everything to GitHub*.
 

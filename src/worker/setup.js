@@ -34,6 +34,8 @@ const uncheckedLine = id => `${PIECE[id]}: not checked, the public site didn't a
 const VARS = "in the worker's Variables and Secrets";
 // GitHub's page for a fine-grained token: its permissions and the repositories it may see
 const TOKENS = "Settings → Developer settings → Personal access tokens → Fine-grained tokens";
+// What a wiki without backups lacks, said wherever they're called optional (the Cloudflare tab says the same)
+const HISTORY = "the wiki's only history: the bucket keeps the current version of each tiddler alone, and a deletion or an overwrite is final";
 // What Cloudflare's cache answered for a path a cache rule covers (DYNAMIC: none does)
 const CACHED = ["HIT", "MISS", "EXPIRED", "STALE", "UPDATING", "REVALIDATED"];
 
@@ -52,7 +54,7 @@ export async function setupCheck(request, env, ctx, corsHeaders) {
   } else {
     for (const id of PUBLIC_IDS) add(id, null, privateLine(id), SECTION.private);
   }
-  await checkBackups(env, add);
+  await checkBackups(env, site, add);
   add("queue", !!env.BACKUP_QUEUE, env.BACKUP_QUEUE
     ? "The backup queue is bound (BACKUP_QUEUE): saves are queued for backup, and a full backup can run."
     : "The backup queue isn't bound: the worker was deployed without BACKUP_QUEUE, so nothing can be queued for backup. Deploy it with the queue wrangler.toml names.", SECTION.queue);
@@ -148,25 +150,30 @@ async function checkPublicSite(env, site, origin, add) {
       (all ? "" : ` DYNAMIC, or no header, means no cache rule covers it, and the public site goes to the bucket for it at every request. To cache it (optional), add under the domain's Rules → Cache Rules: ${rules.join(", ")}.`), SECTION.rules);
 }
 
-async function checkBackups(env, add) {
+// site: the public site's address, "" for a private wiki, whose backup repository must be private too
+async function checkBackups(env, site, add) {
   const gh = github(env);
   if (!gh) {
     const has = env.GITHUB_REPO ? `GITHUB_REPO (${env.GITHUB_REPO}) but no GITHUB_TOKEN` : env.GITHUB_TOKEN ? "GITHUB_TOKEN but no GITHUB_REPO" : "no GITHUB_REPO and no GITHUB_TOKEN";
     const todo = env.GITHUB_REPO ? `Make a fine-grained token limited to that repository, with Contents read and write, and put it in the GITHUB_TOKEN secret, ${VARS}.`
       : env.GITHUB_TOKEN ? `Set GITHUB_REPO, ${VARS}, to the backup repository's owner/repo, the one the token is limited to.`
         : `Create a repository for the backup and a fine-grained token limited to it, with Contents read and write, then set GITHUB_REPO (owner/repo) and the GITHUB_TOKEN secret ${VARS}.`;
-    add("backups", false, `Backups aren't set up: the worker has ${has} (optional; with ${env.GITHUB_REPO || env.GITHUB_TOKEN ? "it" : "them"}, every save is committed to GitHub). ${todo}`, SECTION.backups);
+    add("backups", false, `Backups aren't set up: the worker has ${has} (optional; with ${env.GITHUB_REPO || env.GITHUB_TOKEN ? "it" : "them"}, every save is committed to GitHub, ${HISTORY}). ${todo}`, SECTION.backups);
     return;
   }
   const headers = { Authorization: `Bearer ${gh.token}`, Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "TiddlyWiki-Cloudflare-Worker" };
+  // What came back: the status, GitHub's message, and for the repository its visibility (public: true or
+  // false; null when the answer doesn't say). GitHub's "visibility" first: "internal", on an enterprise
+  // plan, isn't public though "private" reads false there; "private" when the field is missing (design 2.35)
   const ask = async path => {
     try {
       const res = await fetch(`https://api.github.com/repos/${gh.repo}${path}`, { headers });
-      let message = "";
-      try { message = String((await res.json()).message || ""); } catch {}
-      return { status: res.status, message };
+      let message = "", body = null;
+      try { body = await res.json(); message = String(body.message || ""); } catch {}
+      const isPublic = body && typeof body.visibility === "string" ? body.visibility === "public" : body && typeof body.private === "boolean" ? !body.private : null;
+      return { status: res.status, message, isPublic };
     } catch (e) {
-      return { status: 0, message: e && e.message ? e.message : String(e) };
+      return { status: 0, message: e && e.message ? e.message : String(e), isPublic: null };
     }
   };
   const repo = await ask("");
@@ -178,8 +185,14 @@ async function checkBackups(env, add) {
     add("backups", false, `GitHub answered ${repo.status || "nothing"} for ${gh.repo}${repo.message ? ` (${repo.message})` : ""}. Check the setup again in a moment: a rate limit, or no answer, passes by itself; an answer that stays is GitHub's reason, and the token's permissions (Contents: read and write) and Repository access, on GitHub under ${TOKENS}, are where to look.`, SECTION.backups);
   } else {
     const branch = await ask(`/branches/${encodeURIComponent(gh.branch)}`);
-    if (branch.status === 200) {
-      add("backups", true, `Backups go to ${gh.repo}, branch ${gh.branch}: GitHub accepts the token. (Whether it may write there shows at the first save; this tab reports backups that fail.)`, SECTION.backups);
+    if (branch.status === 200 && repo.isPublic && !site) {
+      // A private wiki's backup in a public repository: every save readable by anyone, with its history,
+      // against what a private wiki promises (README, "Private, or public"). Failed, with GitHub's place to
+      // change it; on a public wiki (below) the visibility is said and nothing fails (design 2.35)
+      add("backups", false, `Backups go to ${gh.repo}, branch ${gh.branch}, and the repository is public: anyone can read every tiddler of this private wiki at https://github.com/${gh.repo}, with its history. Make it private on GitHub (the repository's Settings → Danger Zone → Change visibility), or move the backup to a private repository, with a token limited to it.`, SECTION.backups);
+    } else if (branch.status === 200) {
+      const visibility = repo.isPublic === null ? "" : repo.isPublic ? ", a public repository, like the wiki" : ", a private repository";
+      add("backups", true, `Backups go to ${gh.repo}, branch ${gh.branch}${visibility}: GitHub accepts the token. (Whether it may write there shows at the first save; this tab reports backups that fail.)`, SECTION.backups);
     } else {
       add("backups", false, `GitHub finds ${gh.repo} but not its branch ${gh.branch} (${branch.status}${branch.message ? `, ${branch.message}` : ""}): the repository has no such branch, or is empty. Set GITHUB_BRANCH, ${VARS}, to a branch it has (main when GITHUB_BRANCH isn't set), or give an empty repository its first commit (a README added on GitHub does).`, SECTION.backups);
     }

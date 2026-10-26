@@ -9,7 +9,7 @@ import { createChecks, readWikiFile, startSite } from "./browser-harness.mjs";
 const { check, results } = createChecks();
 
 // GitHub and Cloudflare's API, as the worker sees them; what the suite makes them answer
-const api = { repo: 200, branch: 200, purge: { status: 200, body: { success: true } }, purgeDown: false };
+const api = { repo: 200, branch: 200, private: true, purge: { status: 200, body: { success: true } }, purgeDown: false };   // private: the backup repository's visibility
 const calls = [];   // the worker's own requests to them: "METHOD url"
 function outbound(request) {
   const url = new URL(request.url);
@@ -18,7 +18,7 @@ function outbound(request) {
     const branch = url.pathname.match(/\/repos\/[^/]+\/[^/]+\/branches\/(.+)$/);
     if (branch) return new Response(api.branch === 200 ? JSON.stringify({ name: branch[1] }) : JSON.stringify({ message: "Branch not found" }), { status: api.branch });
     if (/^\/repos\/[^/]+\/[^/]+$/.test(url.pathname)) {
-      return new Response(api.repo === 200 ? JSON.stringify({ full_name: url.pathname.slice(7), default_branch: "main" }) : JSON.stringify({ message: api.repo === 401 ? "Bad credentials" : api.repo === 403 ? "API rate limit exceeded" : "Not Found" }), { status: api.repo });
+      return new Response(api.repo === 200 ? JSON.stringify({ full_name: url.pathname.slice(7), default_branch: "main", private: api.private, visibility: api.private ? "private" : "public" }) : JSON.stringify({ message: api.repo === 401 ? "Bad credentials" : api.repo === 403 ? "API rate limit exceeded" : "Not Found" }), { status: api.repo });
     }
     return new Response("{}", { status: 404 });
   }
@@ -163,6 +163,15 @@ check("...and the four unchecked lines each name their piece (the rewrite rule, 
 await site.startPublic();
 
 // --- 3. Backups, the queue, purges ------------------------------------------------------------------
+// The repository's visibility, from the answer the check already gets: on this public wiki, said as
+// information either way (a private wiki's case is in section 4)
+api.private = false;
+({ items } = await run());
+check("a public backup repository on a public wiki: the backups line passes and says the repository is public, like the wiki",
+  ok(items, "backups") === true && /a public repository, like the wiki/.test(text(items, "backups")), line(items, "backups"));
+api.private = true;
+({ items } = await run());
+check("...a private one: said so", ok(items, "backups") === true && /a private repository/.test(text(items, "backups")), line(items, "backups"));
 api.repo = 401;
 ({ items } = await run());
 check("GitHub refusing the token (401): the backups line says so, with setup 2.4", ok(items, "backups") === false && /401|token/.test(text(items, "backups")) && guide(items, "backups") === "2.4", line(items, "backups"));
@@ -200,6 +209,8 @@ check("backups not set up: the line says so with setup 2.4; no purge token: an o
   `${line(items, "backups")} | ${line(items, "purges")}`);
 check("...and the backups line ends with what to do: a repository and a fine-grained token with Contents read and write, then GITHUB_REPO (owner/repo) and the GITHUB_TOKEN secret in the worker's Variables and Secrets; backups said to be optional",
   /no GITHUB_REPO and no GITHUB_TOKEN \(optional/.test(text(items, "backups")) && /fine-grained token limited to it, with Contents read and write/.test(text(items, "backups")) && /set GITHUB_REPO \(owner\/repo\) and the GITHUB_TOKEN secret in the worker's Variables and Secrets\.$/.test(text(items, "backups")), line(items, "backups"));
+check("...and says what a wiki without backups lacks: a history, the bucket keeping the current version of each tiddler alone",
+  /the wiki's only history/.test(text(items, "backups")) && /a deletion or an overwrite is final/.test(text(items, "backups")), line(items, "backups"));
 check("...and the purges line ends with what to set: CF_ZONE_ID (the zone ID on the domain's overview page) and the CF_API_TOKEN secret (a token from My Profile → API Tokens with Zone → Cache Purge), in the worker's Variables and Secrets",
   /CF_ZONE_ID and CF_API_TOKEN aren't set/.test(text(items, "purges")) && /CF_ZONE_ID \(the zone ID on the domain's overview page\)/.test(text(items, "purges")) && /CF_API_TOKEN secret \(a token from My Profile → API Tokens with Zone → Cache Purge on that zone\) in the worker's Variables and Secrets\.$/.test(text(items, "purges")), line(items, "purges"));
 check("(the queue is bound here)", ok(items, "queue") === true, line(items, "queue"));
@@ -226,7 +237,7 @@ await (await fetch(noQueue.base + "/")).arrayBuffer();
   check("the queue not bound: its line says so, with setup 2.3", items.queue && ok(items, "queue") === false && guide(items, "queue") === "2.3", line(items, "queue"));
 }
 await noQueue.close();
-const priv = await startSite({ index: readWikiFile(), publicStatus: true, privateWiki: true, outbound });
+const priv = await startSite({ index: readWikiFile(), publicStatus: true, privateWiki: true, outbound, bindings: { GITHUB_REPO: "someone/wiki-backup", GITHUB_TOKEN: "ghp_test" } });
 await (await fetch(priv.base + "/")).arrayBuffer();
 {
   const res = await fetch(priv.base + "/setup/check");
@@ -240,6 +251,17 @@ await (await fetch(priv.base + "/")).arrayBuffer();
   check("...and each of the five public-site lines names its piece (the site, the rewrite rule, the CORS rule's two paths, the cache rules), five different lines rather than one sentence five times, each with setup 2.1",
     Object.entries(PIECES).every(([id, re]) => re.test(text(items, id)) && /nothing to check/.test(text(items, id)) && guide(items, id) === "2.1") && new Set(privateTexts).size === 5,
     privateTexts.join(" | "));
+  // The backup repository's visibility matters here: a public one publishes every tiddler of a private
+  // wiki, with its history, against what a private wiki promises (README, "Private, or public")
+  const privCheck = async () => Object.fromEntries(((await (await fetch(priv.base + "/setup/check")).json()).checks || []).map(c => [c.id, c]));
+  api.private = false;
+  let again = await privCheck();
+  check("a private wiki whose backup repository is public: the backups line fails, says anyone can read every tiddler there with its history, and ends with GitHub's place to change the visibility, with setup 2.4",
+    ok(again, "backups") === false && /anyone can read every tiddler of this private wiki at https:\/\/github\.com\/someone\/wiki-backup, with its history/.test(text(again, "backups")) &&
+    /Settings → Danger Zone → Change visibility/.test(text(again, "backups")) && guide(again, "backups") === "2.4", line(again, "backups"));
+  api.private = true;
+  again = await privCheck();
+  check("...a private one passes, said so", ok(again, "backups") === true && /a private repository/.test(text(again, "backups")), line(again, "backups"));
 }
 await priv.close();
 

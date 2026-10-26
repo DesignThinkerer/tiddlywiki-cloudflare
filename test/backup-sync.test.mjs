@@ -198,8 +198,8 @@ const B = await (async () => {
   return page;
 })();
 text = await tabText(B);
-check("a worker without GITHUB_REPO and GITHUB_TOKEN: the tab says backups are off, names them, shows no button, no hint",
-  (await field(B, STATUS, "backups")) === "off" && /Backups are off/.test(text) && /GITHUB_REPO/.test(text) && !/Back up everything/.test(text) && !(await exists(B, HINT)), text.slice(0, 200));
+check("a worker without GITHUB_REPO and GITHUB_TOKEN: the tab says backups are off, names them, says what the wiki lacks without them (a history), shows no button, no hint",
+  (await field(B, STATUS, "backups")) === "off" && /Backups are off/.test(text) && /GITHUB_REPO/.test(text) && /the wiki's only history/.test(text) && !/Back up everything/.test(text) && !(await exists(B, HINT)), text.slice(0, 300));
 await B.close();
 await off.close();
 

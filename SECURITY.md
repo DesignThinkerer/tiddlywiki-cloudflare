@@ -18,7 +18,7 @@ Worth knowing before reporting, and before deploying:
 
 - **Cloudflare Access in front of the admin site.** The worker refuses every request that didn't come through Access ([setup 2.6](docs/setup.md#26-cloudflare-access)); `ACCESS = off` is only honoured on a local address, for tests and local runs.
 - **Secrets are worker secrets.** The GitHub token and the Cloudflare API token are entered in the worker's dashboard, never in `wrangler.toml`, which is deployed as it is ([setup 2.5](docs/setup.md#25-the-worker)). The GitHub token is a fine-grained one, limited to the backup repository ([setup 2.4](docs/setup.md#24-the-backup-repository-optional)).
-- **A public site is public by design.** With a public site set up, everything saved in the bucket is readable by anyone at the bucket's custom domain the moment it's saved, drafts excepted (README, "Private, or public"). Without one, nothing in the bucket is reachable by anyone else.
+- **A public site is public by design.** With a public site set up, everything saved in the bucket is readable by anyone at the bucket's custom domain the moment it's saved, drafts excepted (README, "Private, or public"). Without one, nothing in the bucket is reachable by anyone else; the backup repository is outside the bucket, so for a private wiki it must be private too, and the setup check says when it isn't ([setup 2.4](docs/setup.md#24-the-backup-repository-optional)).
 - **A plugin is code.** A plugin installed in the admin wiki runs as JavaScript in every visitor's browser, on both sites: install what you trust.
 
 ## Supported versions
