@@ -10,7 +10,7 @@ import { setupCheck } from "../src/worker/setup.js";
 const { check, results } = createChecks();
 
 // GitHub and Cloudflare's API, as the worker sees them; what the suite makes them answer
-const api = { repo: 200, branch: 200, private: true, purge: { status: 200, body: { success: true } }, purgeDown: false };   // private: the backup repository's visibility
+const api = { repo: 200, branch: 200, private: true, purge: { status: 200, body: { success: true } }, purgeDown: false, expires: null };   // private: the backup repository's visibility; expires: the token's expiry header, a date string, or null for none
 const calls = [];   // the worker's own requests to them: "METHOD url"
 function outbound(request) {
   const url = new URL(request.url);
@@ -19,7 +19,7 @@ function outbound(request) {
     const branch = url.pathname.match(/\/repos\/[^/]+\/[^/]+\/branches\/(.+)$/);
     if (branch) return new Response(api.branch === 200 ? JSON.stringify({ name: branch[1] }) : JSON.stringify({ message: "Branch not found" }), { status: api.branch });
     if (/^\/repos\/[^/]+\/[^/]+$/.test(url.pathname)) {
-      return new Response(api.repo === 200 ? JSON.stringify({ full_name: url.pathname.slice(7), default_branch: "main", private: api.private, visibility: api.private ? "private" : "public" }) : JSON.stringify({ message: api.repo === 401 ? "Bad credentials" : api.repo === 403 ? "API rate limit exceeded" : "Not Found" }), { status: api.repo });
+      return new Response(api.repo === 200 ? JSON.stringify({ full_name: url.pathname.slice(7), default_branch: "main", private: api.private, visibility: api.private ? "private" : "public" }) : JSON.stringify({ message: api.repo === 401 ? "Bad credentials" : api.repo === 403 ? "API rate limit exceeded" : "Not Found" }), { status: api.repo, headers: api.expires ? { "github-authentication-token-expiration": api.expires } : {} });
     }
     return new Response("{}", { status: 404 });
   }
@@ -297,6 +297,21 @@ check("the branch missing: named", ok(items, "backups") === false && /branch/.te
 check("...and the line ends with what to do: set GITHUB_BRANCH, in the worker's Variables and Secrets, to a branch the repository has, or give an empty repository its first commit",
   /Set GITHUB_BRANCH, in the worker's Variables and Secrets/.test(text(items, "backups")) && /first commit/.test(text(items, "backups")), line(items, "backups"));
 api.branch = 200;
+// The token's expiry, from the header GitHub sends with every fine-grained-token answer (#156): the
+// date on the passing line; within a month, the renewal as the line's todo, still a pass; no header, nothing
+const dateIn = days => new Date(Date.now() + days * 86400000);
+const isoDay = d => d.toISOString().slice(0, 10);
+api.expires = dateIn(300).toUTCString();
+({ items } = await run());
+check("the backup token expiring in 300 days: the passing backups line ends with the date and to make a new one before then (setup 2.4), no todo",
+  ok(items, "backups") === true && said(items, "backups").endsWith(`The token expires on ${isoDay(dateIn(300))}: make a new one before then, as in setup 2.4.`) && !todoOf(items, "backups"), line(items, "backups"));
+api.expires = dateIn(20).toUTCString();
+({ items } = await run());
+check("...in 20 days: still a pass, the date in the text, and the renewal as its todo (Regenerate token keeps the repository and the permission, set a year, replace the GITHUB_TOKEN secret)",
+  ok(items, "backups") === true && said(items, "backups").endsWith(`The token expires on ${isoDay(dateIn(20))}.`) && /^Make a new one now, as in setup 2\.4 \(on GitHub, Regenerate token keeps the repository and the permission; set a year\), and replace the GITHUB_TOKEN secret in the worker's Variables and Secrets\.$/.test(todoOf(items, "backups")), `${line(items, "backups")} | todo ${todoOf(items, "backups")}`);
+api.expires = null;
+({ items } = await run());
+check("...no expiry header (a token without one): nothing about expiry", ok(items, "backups") === true && !/expires/.test(text(items, "backups")), line(items, "backups"));
 api.purge = { status: 403, body: { success: false, errors: [{ code: 10000, message: "Authentication error" }] } };
 ({ items } = await run());
 check("Cloudflare refusing the purge: the purges line says so, with the token's section, and ends with the hostname to purge once after the fix (Purge Cache → Custom Purge → Hostname, the public host, operating 3.9), since what changed while purges failed stays cached until its Edge TTL", ok(items, "purges") === false && /Authentication error|403/.test(text(items, "purges")) && guide(items, "purges") === "2.5" && new RegExp(`Then purge the public hostname once \\(Caching → Configuration → Purge Cache → Custom Purge → Hostname, ${PUBLIC_HOST.replace(/\./g, "\\.")}; operating 3\\.9\\): what changed while purges failed stays cached until its Edge TTL otherwise\\.$`).test(text(items, "purges")), line(items, "purges"));

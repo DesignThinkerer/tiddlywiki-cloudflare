@@ -246,10 +246,23 @@ async function checkBackups(env, site, add) {
       let message = "", body = null;
       try { body = await res.json(); message = String(body.message || ""); } catch {}
       const isPublic = body && typeof body.visibility === "string" ? body.visibility === "public" : body && typeof body.private === "boolean" ? !body.private : null;
-      return { status: res.status, message, isPublic };
+      // (GitHub answers every fine-grained-token request with the token's expiry, a date; absent for a
+      // token without one: nothing to say then)
+      const expiresAt = Date.parse(res.headers.get("github-authentication-token-expiration") || "");
+      return { status: res.status, message, isPublic, expires: Number.isFinite(expiresAt) ? expiresAt : null };
     } catch (e) {
-      return { status: 0, message: e && e.message ? e.message : String(e), isPublic: null };
+      return { status: 0, message: e && e.message ? e.message : String(e), isPublic: null, expires: null };
     }
+  };
+  // The token's expiry, said on the passing line: the date, and within a month of it the renewal as
+  // the line's todo (a pass still: no ✗, no alert, design 2.20), since the day it expires backups pause
+  // silently until the alert, an hour later, and a save made while away can outlast the queue
+  const expiry = (expires, visibility) => {
+    if (!expires) return { text: "", todo: null };
+    const when = new Date(expires).toISOString().slice(0, 10), days = (expires - Date.now()) / 86400000;
+    return days < 30
+      ? { text: ` The token expires on ${when}${days < 0 ? ", which has passed" : ""}.`, todo: `Make a new one now, as in setup 2.4 (on GitHub, Regenerate token keeps the repository and the permission; set a year), and replace the GITHUB_TOKEN secret ${VARS}.` }
+      : { text: ` The token expires on ${when}: make a new one before then, as in setup 2.4.`, todo: null };
   };
   const repo = await ask("");
   if (repo.status === 401) {
@@ -272,7 +285,8 @@ async function checkBackups(env, site, add) {
     } else if (branch.status === 200) {
       const visibility = repo.isPublic === null ? "" : repo.isPublic ? ", a public repository, like the wiki" : ", a private repository";
       // (What the check can't test, writing, said with the next step rather than taken back in a parenthesis)
-      add("backups", true, `Backups go to ${gh.repo}, branch ${gh.branch}${visibility}: GitHub accepts the token. The check can't test writing: save any tiddler, and if GitHub refuses it, the tab's Backups section and an alert say so within minutes.`, SECTION.backups, null,
+      const until = expiry(repo.expires);
+      add("backups", true, `Backups go to ${gh.repo}, branch ${gh.branch}${visibility}: GitHub accepts the token. The check can't test writing: save any tiddler, and if GitHub refuses it, the tab's Backups section and an alert say so within minutes.${until.text}`, SECTION.backups, until.todo,
         { text: "its commits on GitHub", url: `https://github.com/${gh.repo}/commits/${encodeURIComponent(gh.branch)}` });
     } else {
       add("backups", false, `GitHub finds ${gh.repo} but not its branch ${gh.branch} (${branch.status}${branch.message ? `, ${branch.message}` : ""}): the repository has no such branch, or is empty.`, SECTION.backups,
