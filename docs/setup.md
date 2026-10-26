@@ -47,7 +47,7 @@ Create the queue before the worker's first deploy ([2.5](#25-the-worker)): Wrang
 
 Without a repository and a token, the worker skips backups: the wiki then has no history, since the bucket keeps the current version of each tiddler alone, and a deletion or an overwrite is final.
 
-**A wiki that already has content** when backups are set up — an imported wiki, say — has nothing on GitHub until a **full backup** runs: the admin wiki reminds you once, and the button is in the Control Panel → Saving → **Cloudflare** tab, *Back up everything to GitHub*.
+**A wiki that already has content** when backups are set up — an imported wiki, say — has nothing on GitHub until a **full backup** runs: the admin wiki reminds you once, and the button is in the Control Panel → Saving → **Cloudflare** tab, *Back up everything to GitHub*. For a big wiki, more than about 1,500 tiddlers, that's the cheaper order anyway: import first, then set the repository and the token ([2.8](#28-the-first-visit)).
 
 It makes GitHub mirror the wiki: every stored tiddler GitHub doesn't have, or has differently, is committed, and files of tiddlers no longer in the wiki are removed; run again, it changes nothing.
 
@@ -152,7 +152,11 @@ A "Bypass cache" rule for the admin hostname is optional: Cloudflare never cache
 
 Open the admin site (`https://wiki-admin.<your subdomain>.workers.dev`, or your custom domain). Access asks you to log in, then the worker puts an empty TiddlyWiki in the bucket as `index.html` (the engine; your content lives in the tiddler files) with the public site's `status` file (written for a private wiki too, for the day it gets a public site), builds the page, and the wiki opens. That first load also publishes TiddlyWiki's core file and the page, for both sites. With a public site, open `https://wiki.example.com` to see it. Then Control Panel → Saving → Cloudflare → *Check the setup* looks at each piece (Access, the public site's rules, backups, the queue, purges) and, for one that's missing, says what to do and names the section of this guide with the full steps ([operating 3.15](operating.md#315-checking-the-setup)).
 
+With backups set up ([2.4](#24-the-backup-repository-optional)), save one tiddler next and look for its commit in the backup repository a minute later: the check tells whether GitHub accepts the token and finds the repository and its branch, not whether the token may write there, which the first backup shows (the admin wiki's alert says so after an hour if it doesn't, [troubleshooting 4](troubleshooting.md)). Then import.
+
 **An existing wiki:** drag its `.html` file onto the admin wiki. TiddlyWiki's import saves every tiddler, plugins included, and each goes to R2 and to the backup. Don't upload your wiki as `index.html` instead: TiddlyWiki deletes, at the first sync, every tiddler the page came with that the server doesn't list, so the content would vanish from view, and the file itself would be public.
+
+**A big wiki,** more than about 1,500 tiddlers: import it before backups are set up, and run one full backup after. A save's backup is 3 of the free plan's 10,000 queue operations a day, more when GitHub's rate limit (about 500 commits an hour) makes the queue deliver it again, so an import of 3,000 tiddlers spends the day's operations before it's through; past them the queue takes no more messages, each save's backup runs directly, three quick tries GitHub's rate limit refuses, and nothing retries them ([limits 5](limits.md)). So leave `GITHUB_REPO` and `GITHUB_TOKEN` unset ([2.5](#25-the-worker)) until the import is done, then set them and run *Back up everything to GitHub* once ([2.4](#24-the-backup-repository-optional)): 3 operations per step of about 20 tiddlers. Until it finishes, the bucket is the only copy.
 
 **A pasted worker** (`worker.js` alone, without the empty wiki, [2.5](#25-the-worker)): upload `seed/empty.html` (made by `npm run build`) to the bucket as `index.html`, and a file `status` with this content, the TiddlyWeb status for the public site (without it, public tabs don't know the recipe and can't load the tiddler list):
 

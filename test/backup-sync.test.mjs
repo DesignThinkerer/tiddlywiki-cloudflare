@@ -137,8 +137,8 @@ check("the button starts a full backup: the tab shows it running, with the total
 const finished = await waitFor(async () => { await press(A, "tm-cfworker-backup-status"); await settle(A); return !!(await field(A, STATUS, "sync-finished")); }, 60000);
 text = await tabText(A);
 const allThere = [...predating].every(([title, body]) => files.get(`tiddlers/${title}.json`)?.text === body);
-check("...it finishes: every tiddler is on GitHub, byte for byte, the file of a title not in the wiki removed, and the tab says so",
-  finished && allThere && !files.has("tiddlers/Gone.json") && /Last full backup:/.test(text) && new RegExp(`${entries.length} committed, 1 removed, 0 refused`).test(text), `finished ${finished}, all there ${allThere}: ${text.slice(0, 300)}`);
+check("...it finishes: every tiddler is on GitHub, byte for byte, the file of a title not in the wiki removed, and the tab says so, counting the tiddlers not backed up (refused by GitHub, or too big to back up)",
+  finished && allThere && !files.has("tiddlers/Gone.json") && /Last full backup:/.test(text) && new RegExp(`${entries.length} committed, 1 removed, 0 not backed up \\(refused by GitHub, or too big`).test(text), `finished ${finished}, all there ${allThere}: ${text.slice(0, 300)}`);
 check("...the hint is gone for good", !(await exists(A, HINT)));
 // A second run changes nothing
 const commitsBefore = commits.length;

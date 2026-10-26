@@ -30,7 +30,7 @@ The eight steps, each with its section in the setup guide:
 1. **Fork this repository** ([setup 2.1](docs/setup.md#21-before-you-start)). Nothing in the fork is edited: the worker is deployed as it is, your settings go in the dashboard, and an update is GitHub's *Sync fork*.
 2. **The bucket,** `wiki`, in R2; for a public site, its custom domain ([setup 2.2](docs/setup.md#22-the-bucket-and-the-public-site)).
 3. **The queue,** `wiki-backup` ([setup 2.3](docs/setup.md#23-the-backup-queue)).
-4. **A backup repository and a token for it,** if you want every save committed to GitHub, the wiki's only history ([setup 2.4](docs/setup.md#24-the-backup-repository-optional), optional; private, for a private wiki).
+4. **A backup repository and a token for it,** if you want every save committed to GitHub, the wiki's only history ([setup 2.4](docs/setup.md#24-the-backup-repository-optional), optional; private, for a private wiki; for a big wiki to import, after the import: [setup 2.8](docs/setup.md#28-the-first-visit)).
 5. **The worker,** `wiki-admin`, built from your copy by Workers Builds, with the settings and the two secrets in its dashboard ([setup 2.5](docs/setup.md#25-the-worker)).
 6. **Cloudflare Access** in front of it ([setup 2.6](docs/setup.md#26-cloudflare-access)).
 7. **The zone's rules** — the rewrite, the cache rules, the CORS header — for a public site only ([setup 2.7](docs/setup.md#27-the-zones-rules-public-site-only)).
