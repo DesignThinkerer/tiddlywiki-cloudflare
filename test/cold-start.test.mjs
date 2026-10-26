@@ -521,7 +521,7 @@ check("...and asks the worker nothing (the publisher's own page publish apart)",
 await A.evaluate(() => $tw.rootWidget.dispatchEvent({ type: "tm-cfworker-device-keep" }));
 await waitFor(async () => /promise/i.test(await said(A)), 10000);
 check("the button asks the browser to keep the site's data (one call, on the click) and says what it answered: not promised, here",
-  (await A.evaluate(() => window.__persistCalls)) === 1 && /didn't promise|hasn't promised/.test(await said(A)) && (await storageSaid(A)) === "best-effort", `calls ${await A.evaluate(() => window.__persistCalls)}: ${await said(A)}`);
+  (await A.evaluate(() => window.__persistCalls)) === 1 && /didn't promise|hasn't promised/.test(await said(A)) && /Chrome: a site used often, installed or bookmarked; after some days of using the wiki, or once installed, ask again/.test(await said(A)) && /Firefox: your answer to its question/.test(await said(A)) && /Safari on an iPhone or iPad \(every browser there\): add the wiki to the Home Screen \(Share → Add to Home Screen\), which keeps its data; otherwise Safari may clear them after days without a visit/.test(await said(A)) && /operating 3\.16/.test(await said(A)) && !/Ask again later/.test(await said(A)) && (await storageSaid(A)) === "best-effort", `calls ${await A.evaluate(() => window.__persistCalls)}: ${await said(A)}`);
 await A.evaluate(() => { window.__persistAnswer = true; $tw.wiki.deleteTiddler("$:/temp/cfworker/device-message"); $tw.rootWidget.dispatchEvent({ type: "tm-cfworker-device-keep" }); });
 await waitFor(async () => /promise/i.test(await said(A)), 10000);
 await offline(contextA);

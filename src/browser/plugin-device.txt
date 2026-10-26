@@ -10,7 +10,7 @@ What this browser keeps of the wiki, for opening and editing offline ([[operatin
 
 ! Keeping it
 
-A browser short of space may clear a site's storage, a change waiting in the outbox with it, unless it has promised to keep it. Firefox asks you; Chrome and Safari decide by their own rules (a site used often, installed or bookmarked) and answer at once.
+A browser short of space may clear a site's storage, a change waiting in the outbox with it, unless it has promised to keep it; Safari also clears a site not visited for a week, unless the wiki is installed on the Home Screen. Firefox asks you; Chrome and Safari decide by their own rules (a site used often, installed or bookmarked) and answer at once.
 
 <$list filter="[[$:/temp/cfworker/outbox]get[storage]match[persistent]]" variable="kept">This browser has promised to keep this site's data.</$list><$list filter="[[$:/temp/cfworker/outbox]get[storage]!match[persistent]]" variable="notyet"><$button message="tm-cfworker-device-keep">Ask the browser to keep this site's data</$button></$list>
 

@@ -232,7 +232,9 @@ exports.startup = function() {
 		say("keep","Asking…");
 		proto.cfworkerStorageKept(true).then(function(granted) {
 			say("keep",granted === true ? "The browser has promised to keep this site's data." :
-				granted === false ? "The browser didn't promise: it decides by its own rules (Chrome: a site used often, installed, or bookmarked; Firefox: your answer to its question). Ask again later, or install the wiki as an app." :
+				// (Each browser's rule, and the step that keeps the data on an iPhone or iPad: Safari also clears a
+				// site not visited for a week, the promise notwithstanding; only the Home Screen app escapes it)
+				granted === false ? "The browser didn't promise: it decides by its own rules. Chrome: a site used often, installed or bookmarked; after some days of using the wiki, or once installed, ask again. Firefox: your answer to its question. Safari on an iPhone or iPad (every browser there): add the wiki to the Home Screen (Share → Add to Home Screen), which keeps its data; otherwise Safari may clear them after days without a visit (" + lib.guide("operating","3.16") + ")." :
 				"This browser can't be asked (it has no such promise to make).");
 		});
 		return false;
