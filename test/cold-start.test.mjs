@@ -113,6 +113,15 @@ const closeBox = closeShown ? await A.evaluate(() => { const r = document.queryS
 check("on a narrow screen (390 px), an alert's close button is at least 32 px each way", !!closeBox && closeBox.w >= 32 && closeBox.h >= 32, JSON.stringify(closeBox));
 await A.evaluate(() => $tw.wiki.deleteTiddler("$:/temp/cfworker/test-alert"));
 await A.setViewportSize(viewport);
+// The check answered with Cloudflare's error page (the worker threw, or ran out of CPU, which can't be
+// caught): the line says so, with the worker's logs as the place to look and operating 3.8 as the
+// link, and none of the page's HTML
+await A.route("**/setup/check", route => route.fulfill({ status: 500, contentType: "text/html", body: "<!DOCTYPE html><html><head><title>Worker threw exception | 127.0.0.1 | Cloudflare</title></head><body>Error 1101</body></html>" }));
+const errorPage = await setupCheck(A);
+check("the check answered with Cloudflare's error page: the line says the worker answered 500 with Cloudflare's error page, not its words, that the reason is in the worker's logs, with operating 3.8 as the link, and shows none of the HTML",
+  errorPage.done && errorPage.lines.some(l => /^✗ The worker answered 500: Cloudflare's error page, not the worker's words \(the worker threw, or ran out of CPU\): the reason is in the worker's logs\. \(operating 3\.8\)/.test(l)) && !/DOCTYPE|<html/.test(errorPage.lines.join(" ")),
+  errorPage.lines.filter(l => /^✗/.test(l)).join(" | "));
+await A.unroute("**/setup/check");
 // --- 1b. The script at a new address (a new version): the next load registers it over the old one ---
 // (The worker serves the same script whatever version is asked for: an older address registered by
 // hand stands in for the one an earlier deploy left in charge of the page)

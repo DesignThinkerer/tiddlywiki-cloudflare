@@ -347,6 +347,31 @@ check("...and a stylesheet part, tagged $:/tags/Stylesheet, CSS: the dropdown it
       res.status === 200 && res.headers.get("X-Wiki-Page") === baked.customMetadata.bakeVersion && stored?.etag === baked.etag && version === baseline?.version,
       `bake ${res.headers.get("X-Wiki-Page")} vs ${baked.customMetadata.bakeVersion}, version ${version} vs ${baseline?.version}`);
   }
+  // No empty wiki among the modules (a pasted worker, or a build that skipped the seed step) and an
+  // empty bucket: the no-wiki page puts the usual fix first (the build log, a retry), the pasted
+  // worker's upload second, and cites setup 2.8 once, at the end
+  {
+    // (An instance of its own with an empty bucket: startVariant seeds its bucket with the engine)
+    const seedless = new Miniflare({ modules: true, script: variant('await import("./seed/empty.html")', 'Promise.reject(new Error("no seed (test)"))'), scriptPath: WORKER, modulesRules: MODULE_RULES, compatibilityDate: "2024-09-23", r2Buckets: ["WIKI_BUCKET"], port: 0, bindings: { ACCESS: "off", PUBLIC_WIKI_URL: "https://wiki.example.com" } });
+    const seedlessBase = (await seedless.ready).toString().replace(/\/$/, "");
+    const res = await seedless.dispatchFetch(seedlessBase + "/"), text = await res.text();
+    await seedless.dispose();
+    check("no empty wiki among the modules, an empty bucket: 404 saying what was found, the Workers Builds path first (Settings → Builds, the build command, seed/empty.html in the build log, retry; or npm run build and npx wrangler deploy from a computer), the pasted worker's upload second (seed/empty.html as index.html, a TiddlyWiki with the TiddlyWeb plugin, with the status file), setup 2.8 cited once at the end",
+      res.status === 404 && /^There's no wiki yet: the bucket has no index\.html, and this worker was deployed without the empty wiki that would go there by itself\./.test(text) && /Deployed by Workers Builds\? Under the worker's Settings → Builds, check that the build command is npm run build and that the last build log names seed\/empty\.html, then retry the build; from a computer, npm run build then npx wrangler deploy ships it\./.test(text) && /A worker pasted into the dashboard carries no file: upload seed\/empty\.html, which npm run build makes, to the bucket as index\.html \(a TiddlyWiki with the TiddlyWeb plugin\), with the status file\./.test(text) && /Then open this page again \(setup 2\.8: https:\/\/[^)]+#28-the-first-visit\)\.$/.test(text.trim()) && (text.match(/setup 2\.8/g) || []).length === 1,
+      `${res.status} ${text.slice(0, 220)}`);
+  }
+  // The bucket binding missing (a worker deployed without it, or pasted into the dashboard without
+  // the bindings): every request answers a plain-text 500 naming WIKI_BUCKET, not Cloudflare's page
+  {
+    const unbound = new Miniflare({ modules: true, scriptPath: WORKER, modulesRules: MODULE_RULES, compatibilityDate: "2024-09-23", port: 0, bindings: { ACCESS: "off", PUBLIC_WIKI_URL: "https://wiki.example.com" } });
+    const unboundBase = (await unbound.ready).toString().replace(/\/$/, "");
+    const res = await unbound.dispatchFetch(unboundBase + "/"), text = await res.text();
+    const list = await unbound.dispatchFetch(unboundBase + "/recipes/default/tiddlers.json"), listText = await list.text();
+    check("a worker without the bucket binding: every request answers 500 in plain text naming WIKI_BUCKET, the deploy with wrangler.toml's bucket or the binding to add, with setup 2.5; not Cloudflare's error page",
+      res.status === 500 && /^text\/plain/.test(res.headers.get("content-type") || "") && /^The bucket isn't bound: the worker has no WIKI_BUCKET binding\. Deploy it with the bucket wrangler\.toml names, or add the binding in the worker's settings \(setup 2\.5: https:/.test(text) && list.status === 500 && /WIKI_BUCKET/.test(listText),
+      `${res.status} ${res.headers.get("content-type") || ""} ${text.slice(0, 160)}`);
+    await unbound.dispose();
+  }
 }
 // Two admin tabs: the shell says which stored shell its page was built from, or last published over
 // (X-Page-Shell). One from a page older than the shell stored is refused, with the current version

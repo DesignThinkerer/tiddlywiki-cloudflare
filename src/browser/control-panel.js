@@ -186,7 +186,16 @@ exports.startup = function() {
 	}
 	// A worker answer in a message: the worker's own words as they are (plain text, with a link to
 	// the manual in them), and anything else (an error page from the edge: HTML) as text, not markup
+	// An answer that's a page rather than words: Cloudflare's error page, for an exception the worker
+	// couldn't catch or its CPU limit, said so, with where the reason is (the dashboard's logs)
+	var ERROR_PAGE = "Cloudflare's error page, not the worker's words (the worker threw, or ran out of CPU): the reason is in the worker's logs.";
+	function isErrorPage(answer) {
+		return /^\s*<(!doctype|html)/i.test(String(answer || ""));
+	}
 	function shown(answer) {
+		if(isErrorPage(answer)) {
+			return ERROR_PAGE + " (" + lib.guide("operating","3.8") + ")";
+		}
 		return String(answer || "").slice(0,300).replace(/</g,"&lt;");
 	}
 
@@ -359,7 +368,9 @@ exports.startup = function() {
 					return done();
 				}
 				if(status) {
-					lines.push(line("✗","The worker answered " + status + ": " + String(data || err || "").slice(0,300),""));
+					lines.push(isErrorPage(data) ?
+						line("✗","The worker answered " + status + ": " + ERROR_PAGE,lib.guideLink("operating","3.8")) :
+						line("✗","The worker answered " + status + ": " + String(data || err || "").slice(0,300),""));
 					return done();
 				}
 				// No answer at all: said in words (noAnswer), with the section as a link

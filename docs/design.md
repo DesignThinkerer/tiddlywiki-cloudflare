@@ -16,6 +16,7 @@ The design of the worker: what each part does, and the reasons behind the choice
 | Request | What happens |
 |---|---|
 | any, without Cloudflare Access | `403`, before anything else: the request didn't come through Access ([setup 2.6](setup.md#26-cloudflare-access)). |
+| any, without the bucket binding, or when a handler throws (an R2 call failing: the bucket gone, an outage) | `500`, plain text, in the project's words: the binding to add ([setup 2.5](setup.md#25-the-worker)), or the error named with the bucket to check ([setup 2.2](setup.md#22-the-bucket-and-the-public-site)); the logs keep the error. Cloudflare's own page stays for what the worker can't catch, its CPU limit on a run. The check's line and the tab's buttons say when an answer is that page, with the logs as the place to look. |
 | any, with `PUBLIC_WIKI_URL` wrong | `500`, next: the worker isn't set up ([setup 2.5](setup.md#25-the-worker)). Missing, the wiki is private (2.15): the worker serves everything itself. |
 | `OPTIONS *` | CORS headers (allows `If-Match`, `If-None-Match`, `X-Tiddler-Layout`, exposes `ETag`, `X-Tiddler-List` and `Retry-After`). |
 | `GET /status` | TiddlyWeb status: user `admin`, writable, recipe `default`. Kept by the browser for a week (`Cache-Control: private, max-age=604800`), so admin pages rarely ask (1.5). There's no `/logout`: the dropdown's *Logout* goes to Access's logout page (2.12). |
