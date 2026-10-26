@@ -3,6 +3,9 @@
 // changed; the rest fills in the background, several at a time, only while the tab is shown, without
 // holding the page publisher; and the fill can be turned off (design 1.5).
 // Run: npm run test:lazy
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createChecks, createWatcher, finish, launchBrowser, readWikiFile, settle, sleep, startSite, waitFor } from "./browser-harness.mjs";
 
 const N = 120;
@@ -273,6 +276,45 @@ check("with $:/config/cfworker/LoadAll set to no, only the tiddler shown is fetc
   `${JSON.stringify(offGets.slice(0, 5))}, ${await pending(D)} pending, ${await loadedCount(D)} loaded`);
 check("...the others are there, skinny: titles and fields, no text", (await D.evaluate(() => $tw.wiki.filterTiddlers("[prefix[Tiddler ]]").length)) === expected.size &&
   await D.evaluate(() => $tw.wiki.getTiddler("Tiddler 51").hasField("_is_skinny")));
+// The wiki as one file (design 2.39): the dropdown's line after "Save snapshot for offline use" counts
+// the tiddlers not loaded yet, whose text a snapshot taken now wouldn't hold; a snapshot taken from
+// this tab has them hollow, titles and fields with no text; opened from disk, the file starts as a
+// plain TiddlyWiki, the plugin's modules quiet without the TiddlyWeb adaptor the snapshot leaves out
+const SNAPSHOT_LINE = "$:/plugins/cfworker/admin/snapshot-line";
+const snapshotLine = page => page.evaluate(t => $tw.wiki.renderTiddler("text/plain", t).replace(/\s+/g, " ").trim(), SNAPSHOT_LINE);
+const skinnyD = await D.evaluate(() => $tw.wiki.filterTiddlers("[has:field[_is_skinny]]").length);
+check("the cloud icon's dropdown, with tiddlers not loaded yet, has a line after \"Save snapshot\": how many, and that a snapshot taken now won't hold their text, with operating 3.26",
+  skinnyD > 100 && (await snapshotLine(D)) === `Not loaded yet: ${skinnyD} tiddlers, whose text a snapshot taken now won't hold (operating 3.26).` &&
+  await D.evaluate(t => { const f = $tw.wiki.getTiddler(t).fields; return f.tags.includes("$:/tags/SyncerDropdown") && f["list-after"] === "$:/plugins/tiddlywiki/tiddlyweb/syncer-actions/save-snapshot"; }, SNAPSHOT_LINE),
+  `${skinnyD} skinny: ${JSON.stringify(await snapshotLine(D))}`);
+const [hollow] = await Promise.all([D.waitForEvent("download", { timeout: 15000 }), D.evaluate(() => $tw.rootWidget.dispatchEvent({ type: "tm-download-file", param: "$:/plugins/tiddlywiki/tiddlyweb/save/offline" }))]);
+const hollowDir = mkdtempSync(join(tmpdir(), "cfworker-snapshot-")), hollowPath = join(hollowDir, "snapshot.html");
+await hollow.saveAs(hollowPath);   // (Playwright's own copy has no extension, which Chromium would show as text)
+const disk = await browser.newContext();
+const F0 = await disk.newPage();
+const diskErrors = [];
+F0.on("pageerror", e => diskErrors.push(String(e.message || e)));
+await F0.goto("file://" + hollowPath);
+const booted = await waitFor(() => F0.evaluate(() => !!(window.$tw && $tw.wiki && $tw.rootWidget && document.querySelector(".tc-story-river"))), 30000);
+check("...a snapshot taken then, opened from disk: a plain TiddlyWiki that starts without an error, the plugin in it quiet (no TiddlyWeb adaptor, so no outbox and no sync), the tiddlers not loaded hollow, the loaded one whole",
+  booted && diskErrors.length === 0 && await F0.evaluate(() => !document.querySelector(".tc-error-form") && !$tw.syncadaptor && !$tw.wiki.tiddlerExists("$:/temp/cfworker/outbox") && $tw.wiki.tiddlerExists("$:/plugins/cfworker/admin") && !$tw.wiki.tiddlerExists("$:/plugins/tiddlywiki/tiddlyweb") && $tw.wiki.getTiddlerText("Tiddler 51", null) === null && $tw.wiki.getTiddler("Tiddler 51").hasField("_is_skinny") && $tw.wiki.getTiddlerText("Tiddler 50", null).startsWith("Tiddler 50 text.")),
+  `booted ${booted}, errors ${JSON.stringify(diskErrors.slice(0, 2))}, Tiddler 51 ${JSON.stringify(await F0.evaluate(() => window.$tw && $tw.wiki.getTiddlerText("Tiddler 51", null)).catch(() => "?"))}`);
+await disk.close();
+rmSync(hollowDir, { recursive: true, force: true });
+// Ctrl+S on the admin site (tm-save-wiki, which the shortcut sends): saving is automatic, and the
+// shortcut says so in a notification instead of downloading a copy of the page; the download saver
+// keeps "download", which the snapshot just used
+let downloads = 0;
+const countDownload = () => downloads++;
+D.on("download", countDownload);
+await D.evaluate(() => { $tw.wiki.deleteTiddler("$:/temp/notification"); $tw.rootWidget.dispatchEvent({ type: "tm-save-wiki" }); });
+const notified = await waitFor(() => D.evaluate(() => /Saved automatically: every change goes to the worker as you make it/.test(document.querySelector(".tc-notification")?.textContent || "")), 5000);
+await sleep(1500);
+const savers = await D.evaluate(() => $tw.saverHandler.savers.map(s => `${s.info.name}:${s.info.capabilities.join("+")}`));
+check("Ctrl+S (tm-save-wiki) on the admin site downloads nothing and shows a notification: saved automatically, the snapshot is the file; the download savers keep \"download\" alone",
+  notified && downloads === 0 && !(await D.evaluate(() => !!document.querySelector(".tc-modal"))) && savers.includes("download:download") && savers.includes("manualdownload:download"),
+  `notified ${notified}, downloads ${downloads}, savers ${savers.join(", ")}`);
+D.off("download", countDownload);
 mark = requests.length;
 await D.evaluate(() => $tw.wiki.getTiddlerText("Tiddler 51"));   // what a transclusion does
 const shown51 = await waitFor(() => D.evaluate(() => $tw.wiki.getTiddlerText("Tiddler 51", null) !== null), 15000);

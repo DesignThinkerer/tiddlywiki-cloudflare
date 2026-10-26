@@ -35,7 +35,8 @@ const BROWSER_MODULES = [
   { title: "$:/cfworker/release-check.js", type: "widget", source: "__RELEASE_CHECK_SOURCE__" },
   { title: "$:/cfworker/outbox.js", type: "startup", source: "__OUTBOX_SOURCE__" },
   { title: "$:/cfworker/cold-start.js", type: "startup", source: "__COLD_START_SOURCE__" },
-  { title: "$:/cfworker/device.js", type: "startup", source: "__DEVICE_SOURCE__" }
+  { title: "$:/cfworker/device.js", type: "startup", source: "__DEVICE_SOURCE__" },
+  { title: "$:/cfworker/save-shortcut.js", type: "startup", source: "__SAVE_SHORTCUT_SOURCE__" }
 ];
 
 // The admin wiki's service worker (src/browser/service-worker.js, design 1.11): not a module of the
@@ -96,6 +97,11 @@ const PLUGIN_SETTINGS_SOURCE = "__PLUGIN_SETTINGS_SOURCE__";
 const PLUGIN_DEVICE_SOURCE = "__PLUGIN_DEVICE_SOURCE__";
 const PLUGIN_STYLESHEET_SOURCE = "__PLUGIN_STYLESHEET_SOURCE__";
 const PLUGIN_GETTING_STARTED_SOURCE = "__PLUGIN_GETTING_STARTED_SOURCE__";
+// Two more parts, wikitext short enough to live here (design 2.39): what Ctrl+S says on the admin site
+// (tm-notify shows it, $:/cfworker/save-shortcut.js), and the line under the cloud icon's "Save
+// snapshot for offline use" while tiddlers aren't loaded yet (their text wouldn't be in the file)
+const SAVED_AUTOMATICALLY_TEXT = "Saved automatically: every change goes to the worker as you make it, and the cloud icon shows what waits. For a file, use //Save snapshot for offline use// in the cloud icon's dropdown ([[operating 3.26|https://github.com/DesignThinkerer/tiddlywiki-cloudflare/blob/main/docs/operating.md#326-your-wiki-as-one-file]]).";
+const SNAPSHOT_LINE_TEXT = "<$list filter=\"[has:field[_is_skinny]limit[1]]\" variable=\"skinny\"><div class=\"cfworker-outbox tc-drop-down-info\">Not loaded yet: <$text text={{{ [has:field[_is_skinny]count[]] }}}/> <$text text={{{ [has:field[_is_skinny]count[]match[1]then[tiddler]else[tiddlers]] }}}/>, whose text a snapshot taken now won't hold ([[operating 3.26|https://github.com/DesignThinkerer/tiddlywiki-cloudflare/blob/main/docs/operating.md#326-your-wiki-as-one-file]]).</div></$list>";
 const PLUGIN_HISTORY_BUTTON_SOURCE = "__PLUGIN_HISTORY_BUTTON_SOURCE__";
 const PLUGIN_FIELDS = {
   name: "TiddlyWiki on Cloudflare", description: "The admin wiki's side of the worker: conflicts, the tiddler list and the device copy, backups, the published page, editing and opening offline",
@@ -112,7 +118,7 @@ let adminPluginVersion = "";
 export function pluginVersion() {
   if (!adminPluginVersion) {
     // (The shipped TiddlyWiki version is in the page too, for the Cloudflare tab: a new one, a new page)
-    const parts = [...BROWSER_MODULES.map(m => m.source), swVersion(), PLUGIN_README_SOURCE, PLUGIN_SETTINGS_SOURCE, PLUGIN_DEVICE_SOURCE, PLUGIN_STYLESHEET_SOURCE, PLUGIN_GETTING_STARTED_SOURCE, PLUGIN_HISTORY_BUTTON_SOURCE, JSON.stringify(PLUGIN_FIELDS), SHIPPED_VERSION];
+    const parts = [...BROWSER_MODULES.map(m => m.source), swVersion(), PLUGIN_README_SOURCE, PLUGIN_SETTINGS_SOURCE, PLUGIN_DEVICE_SOURCE, PLUGIN_STYLESHEET_SOURCE, PLUGIN_GETTING_STARTED_SOURCE, SAVED_AUTOMATICALLY_TEXT, SNAPSHOT_LINE_TEXT, PLUGIN_HISTORY_BUTTON_SOURCE, JSON.stringify(PLUGIN_FIELDS), SHIPPED_VERSION];
     adminPluginVersion = PACKAGE_VERSION + "+" + hashText(parts.join("\n")).toString(36);
   }
   return adminPluginVersion;
@@ -132,6 +138,10 @@ function adminPlugin(env, pageSource) {
   // The first screen: the plugin's GettingStarted (its priority above TiddlyWeb's, whose own would win
   // otherwise), in the project's words; an owner's edit is an override, kept through updates (design 2.21)
   tiddlers.GettingStarted = { title: "GettingStarted", text: PLUGIN_GETTING_STARTED_SOURCE };
+  // Ctrl+S's notification, and the line under the snapshot button in the cloud icon's dropdown,
+  // placed after TiddlyWeb's own item (design 2.39)
+  tiddlers[`${ADMIN_PLUGIN_TITLE}/saved-automatically`] = { title: `${ADMIN_PLUGIN_TITLE}/saved-automatically`, text: SAVED_AUTOMATICALLY_TEXT };
+  tiddlers[`${ADMIN_PLUGIN_TITLE}/snapshot-line`] = { title: `${ADMIN_PLUGIN_TITLE}/snapshot-line`, tags: "$:/tags/SyncerDropdown", "list-after": "$:/plugins/tiddlywiki/tiddlyweb/syncer-actions/save-snapshot", text: SNAPSHOT_LINE_TEXT };
   // "History on GitHub" for the tiddler shown, in TiddlyWiki's view toolbar, hidden by default (the
   // toolbar's own visibility setting, Control Panel → Appearance → Toolbars), shown only while
   // backups are on and the site isn't read-only: the file's commits, each slash of the title a folder
