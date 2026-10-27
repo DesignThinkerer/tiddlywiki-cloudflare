@@ -1,13 +1,21 @@
 /*\
-The admin wiki's service worker (design 1.11): after one visit online, the wiki opens with no
-network. Served by the worker at /sw.js?v=<its version>, registered by $:/cfworker/cold-start.js on
-the admin site. Not a TiddlyWiki module: a plain script the browser runs outside the page.
+The wiki's service worker (design 1.11, 2.40): after one visit online, the wiki opens with no
+network. On the admin site, served by the worker at /sw.js?v=<its version>; on the public site, the
+same script as a file of the bucket, written with the page, registered as /sw.js?v=<version>&site=public.
+Registered by $:/cfworker/cold-start.js on both. Not a TiddlyWiki module: a plain script the browser
+runs outside the page. Which site it serves it reads from its own address (site=public): it reads no
+tiddler.
 
 By request:
-- The page (a navigation, or /, /index.html, /baked.html): the network first, the cached page when
-  the network fails or doesn't answer in time. Only an answer carrying the worker's own mark
-  (X-Wiki-Page) is cached, so Cloudflare's login page, or the worker refusing a request, is shown as
-  it is and never kept. Online, nothing changes.
+- The page (a navigation, or /, /index.html, /baked.html). On the admin site, the network first, the
+  cached page when the network fails or doesn't answer in time. Only an answer carrying the worker's
+  own mark (X-Wiki-Page) is cached, so Cloudflare's login page, or the worker refusing a request, is
+  shown as it is and never kept. Online, nothing changes. On the public site, where no login wall can
+  make a kept page lie, the kept page at once and the current one fetched behind it for the next load
+  (stale while revalidate): the page is the slow part of a weak signal, and what changed in the wiki
+  comes through the list. The bucket adds no header, so there a page is kept only when its text
+  carries the plugin's sw-url tiddler, which Cloudflare's error pages and interstitials never do. A
+  page served stale isn't one the network wait ran out on: its first list goes to the network as usual.
 - The core file and the plugin files (_plugins/<name>.js?v=<version>, on this site or the public
   one): the cache first; their address carries their version, so a copy is never stale. One from the
   public site is asked for with CORS (the zone's rule allows the admin site, setup 2.7): a real
@@ -38,6 +46,8 @@ the tiddler list by itself, so one visit online is enough: two requests once per
 
 var CACHE = "cfworker-wiki-v1",
 	MARK = "X-Wiki-Page",
+	PAGE_MARK = "$:/cfworker/sw-url",   // in a wiki page's text: the public site's mark, where no header is ours
+	PUBLIC = /[?&]site=public(?:&|$)/.test(self.location.search),   // the public site's copy (cold-start.js registers it so)
 	FROM = "X-Served-From",
 	PAGE_PATHS = ["/", "/index.html", "/baked.html"],
 	DATA_PATHS = ["/status", "/recipes/default/tiddlers.json", "/manifest.webmanifest"],
@@ -144,7 +154,7 @@ self.addEventListener("fetch",function(event) {
 	}
 	var url = new URL(request.url);
 	if(isPage(request,url)) {
-		event.respondWith(networkFirst(event,request,PAGE_KEY,true));
+		event.respondWith(PUBLIC ? staleWhileRevalidate(event,request) : networkFirst(event,request,PAGE_KEY,true));
 	} else if(url.origin === self.location.origin && url.pathname === "/favicon.ico") {
 		event.respondWith(new Response(null,{status: 204}));
 	} else if(isFile(url)) {
@@ -171,8 +181,29 @@ function fromCache(key,page) {
 	});
 }
 
+// The public site's page: the kept page at once, the current one fetched behind it and kept for
+// the next load, when it's a wiki page (storePage); without a kept page, the network first as on the
+// admin site. A conditional fetch past the browser's copy, which a 304 from the site turns into the
+// full page: a plain fetch within the page's Browser TTL would hand back the browser's copy and
+// revalidate nothing. The kept page isn't noted as timed out: its first list goes to the network.
+function staleWhileRevalidate(event,request) {
+	return caches.open(CACHE).then(function(cache) {
+		return cache.match(PAGE_KEY).then(function(hit) {
+			if(!hit) {
+				return networkFirst(event,request,PAGE_KEY,true);
+			}
+			event.waitUntil(fetch(request.url,{cache: "no-cache", credentials: "same-origin"}).then(function(response) {
+				if(response && response.ok) {
+					return storePage(cache,response,event);
+				}
+			}).catch(function() {}));
+			return hit;
+		});
+	});
+}
+
 // The network, with the cached answer when it fails or takes too long; a good answer is kept (for
-// the page, only one that carries the worker's mark)
+// the page, only a wiki page: storePage)
 function networkFirst(event,request,key,page) {
 	return new Promise(function(resolve) {
 		var done = false,
@@ -185,7 +216,7 @@ function networkFirst(event,request,key,page) {
 			}
 		}
 		var fetching = fetch(request).then(function(response) {
-			if(response && response.ok && (!page || response.headers.get(MARK))) {
+			if(response && response.ok) {
 				var forCache = response.clone();
 				event.waitUntil(caches.open(CACHE).then(function(cache) {
 					return page ? storePage(cache,forCache,event) : cache.put(key,forCache);
@@ -297,14 +328,25 @@ function fetchFile(cache,url,event) {
 	});
 }
 
-// A page kept, with the files it refers to: any other core or plugin file in the cache goes, one
-// missing is fetched
+// A page kept, when it's a wiki page, with the files it refers to: any other core or plugin file in
+// the cache goes, one missing is fetched. A wiki page carries the worker's mark on the admin site,
+// a header; on the public site, where the bucket adds none, the plugin's sw-url tiddler in its text,
+// read before anything is written, so a 200 that isn't the wiki (an interstitial, a maintenance
+// page) is never kept. Resolves with whether the page was kept.
 function storePage(cache,response,event) {
-	var forText = response.clone();
-	return cache.put(PAGE_KEY,response).then(function() {
-		return forText.text();
-	}).then(function(html) {
-		return keepFiles(cache,html,event);
+	if(!PUBLIC && !response.headers.get(MARK)) {
+		return Promise.resolve(false);
+	}
+	var forCache = response.clone();
+	return response.text().then(function(html) {
+		if(PUBLIC && (!/text\/html/i.test(response.headers.get("Content-Type") || "") || html.indexOf(PAGE_MARK) < 0)) {
+			return false;
+		}
+		return cache.put(PAGE_KEY,forCache).then(function() {
+			return keepFiles(cache,html,event);
+		}).then(function() {
+			return true;
+		});
 	});
 }
 function keepFiles(cache,html,event) {
@@ -329,12 +371,12 @@ function keepFiles(cache,html,event) {
 	});
 }
 
-// Once in place: the page (kept if it carries the worker's mark, with its files), the status file and
+// Once in place: the page (kept if it's a wiki page, storePage, with its files), the status file and
 // the tiddler list, which the first visit loaded before this worker was there
 function fill(event) {
 	return caches.open(CACHE).then(function(cache) {
 		var page = fetch(PAGE_KEY).then(function(response) {
-			if(response.ok && response.headers.get(MARK)) {
+			if(response.ok) {
 				return storePage(cache,response,event);
 			}
 		});

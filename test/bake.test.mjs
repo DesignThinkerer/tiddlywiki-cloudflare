@@ -746,9 +746,19 @@ const dataPng = src => /^data:image\/png;base64,/.test(src || "") ? src.slice("d
   let copy = null;
   for (let i = 0; i < 20 && !copy; i++) { copy = await store.get("manifest.webmanifest"); if (!copy) await new Promise(r => setTimeout(r, 100)); }
   const copyJson = copy ? await copy.json().catch(() => null) : null;
-  check("a page build writes the manifest into the bucket for the public site, with the icons at /_app/ addresses, display browser (no service worker there: not offered as an app that can't open offline, design 2.19), and the default icons there",
-    !!copyJson && copyJson.display === "browser" && copyJson.start_url === "/" && icon(copyJson, 192)?.src === "/_app/icon-192.png" && icon(copyJson, 512)?.src === "/_app/icon-512.png" && !!(await store.head("_app/icon-192.png")) && !!(await store.head("_app/icon-512.png")) && (copy?.httpMetadata?.contentType || "").startsWith("application/manifest+json"),
+  check("a page build writes the manifest into the bucket for the public site, with the icons at /_app/ addresses, display standalone (the public site opens offline with its service worker, design 2.40), and the default icons there",
+    !!copyJson && copyJson.display === "standalone" && copyJson.start_url === "/" && icon(copyJson, 192)?.src === "/_app/icon-192.png" && icon(copyJson, 512)?.src === "/_app/icon-512.png" && !!(await store.head("_app/icon-192.png")) && !!(await store.head("_app/icon-512.png")) && (copy?.httpMetadata?.contentType || "").startsWith("application/manifest+json"),
     JSON.stringify(copyJson).slice(0, 160));
+  // The service worker's file for the public site (design 2.40, #241): written with the page, the
+  // worker's own script byte for byte, as JavaScript, cached a day, its version in the metadata
+  let swFile = null;
+  for (let i = 0; i < 20 && !swFile; i++) { swFile = await store.get("sw.js"); if (!swFile) await new Promise(r => setTimeout(r, 100)); }
+  const swText = await (await mfApp.dispatchFetch(root + "/sw.js")).text();
+  const swFileText = swFile ? await swFile.text() : "";
+  const swUrlVersion = (page.match(/\/sw\.js\?v=([\w-]+)/) || [])[1] || "";
+  check("a page build writes the service worker's script into the bucket root as sw.js for the public site: the worker's own, byte for byte, as JavaScript, cached a day, its version (the page's sw-url) in its metadata",
+    !!swFile && swFileText === swText && swText.includes("cfworker-wiki-v1") && (swFile?.httpMetadata?.contentType || "").startsWith("application/javascript") && /max-age=86400/.test(swFile?.httpMetadata?.cacheControl || "") && !!swUrlVersion && swFile?.customMetadata?.v === swUrlVersion,
+    `file ${!!swFile}, ${swFileText.length} vs ${swText.length} bytes, type ${swFile?.httpMetadata?.contentType}, v ${swFile?.customMetadata?.v} vs the page's ${swUrlVersion}`);
   // The wiki's title, once set: the name follows, and a short name when it's short
   await store.put("recipes/default/tiddlers/$:/SiteTitle", JSON.stringify({ title: "$:/SiteTitle", text: "Notes" }), { customMetadata: { revision: "1", layout: "flat" } });
   const named = await (await mfApp.dispatchFetch(root + "/manifest.webmanifest")).json();

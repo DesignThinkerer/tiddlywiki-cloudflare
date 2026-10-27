@@ -721,11 +721,13 @@ await A.evaluate(() => { $tw.syncer.processTaskQueue(); $tw.syncer.syncFromServe
 await settle(A);
 check("...and at the network's return, the worker's real answer takes the alert away", await waitFor(() => A.evaluate(t => !$tw.wiki.tiddlerExists(t), BACKUP_ALERT_T), 10000));
 
-// --- 8. The public site registers nothing --------------------------------------------------------------
+// --- 8. The public site registers the service worker too (design 2.40) --------------------------------------------------------------
 const visitors = await browser.newContext();
 const { p: V } = await open(visitors, "V", PUB + "/", { wait: false });
 await V.waitForFunction(() => window.$tw && $tw.syncer && $tw.syncer.timestampLastSyncFromServer, null, { timeout: 30000 });
-check("the public site registers no service worker", await V.evaluate(async () => !(await navigator.serviceWorker.getRegistration())) && await V.evaluate(() => $tw.wiki.getTiddlerText("$:/status/IsReadOnly") === "yes"),
-  `registration ${await V.evaluate(async () => { const r = await navigator.serviceWorker.getRegistration(); return r ? r.scope : null; })}, read-only ${await V.evaluate(() => $tw.wiki.getTiddlerText("$:/status/IsReadOnly"))}`);
+await waitFor(() => V.evaluate(async () => !!(await navigator.serviceWorker.getRegistration())).catch(() => false), 15000);
+const visitorScript = await V.evaluate(async () => { const r = await navigator.serviceWorker.getRegistration(); const w = r && (r.active || r.waiting || r.installing); return w ? w.scriptURL : null; }).catch(() => null);
+check("the public site registers the service worker too, from the bucket, with site=public (design 2.40), and is read-only", /\/sw\.js\?v=[\w-]+&site=public$/.test(visitorScript || "") && await V.evaluate(() => $tw.wiki.getTiddlerText("$:/status/IsReadOnly") === "yes"),
+  `script ${JSON.stringify(visitorScript)}, public-url ${JSON.stringify(await V.evaluate(() => $tw.wiki.getTiddlerText("$:/cfworker/public-url")))} at ${await V.evaluate(() => location.origin)}, read-only ${await V.evaluate(() => $tw.wiki.getTiddlerText("$:/status/IsReadOnly"))}`);
 
 await finish({ check, results, pageErrors, browser, site, cleanup: () => fs.rmSync(r2Dir, { recursive: true, force: true }) });

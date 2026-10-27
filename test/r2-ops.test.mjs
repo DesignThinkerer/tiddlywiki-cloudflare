@@ -37,9 +37,10 @@ const BUDGETS = {
   // Once per wiki: the page request's two reads, the engine and the status file written (create-only), the
   // engine looked up again, then the page build: its sources, the engine read in full, the missing list
   // made from the stored tiddlers (none), the page written
-  // ...and the app's files for the public site, once: the manifest (the wiki's title read for it) and the two default icons
+  // ...and the app's files for the public site, once: the manifest (the wiki's title read for it), the two default icons,
+  // and the service worker's script beside them (design 2.40; the manifest's look covers it)
   "first visit of a new wiki (empty bucket)": { "get baked.html": 1, "head index.html": 3, "put index.html": 1, "put status": 1, "get page shell": 1, "head core file": 1, "get index.html": 1, "get list": 1, "list tiddlers": 1, "get repair": 1, "put list": 2, "head baked.html": 1, "put baked.html": 1,
-    "head manifest.webmanifest": 1, "get tiddler": 1, "put manifest.webmanifest": 1, "head app icon": 2, "put app icon": 2 },
+    "head manifest.webmanifest": 1, "get tiddler": 1, "put manifest.webmanifest": 1, "head app icon": 2, "put app icon": 2, "put sw.js": 1 },
   // The page build reuses the list the save has just written. It's built from the published shell
   // when there is one for the current index.html (looked up at the same time as index.html's
   // version and the stored core file's), from index.html otherwise.
