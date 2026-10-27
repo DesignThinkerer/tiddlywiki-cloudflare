@@ -117,6 +117,14 @@ await A.reload();
 await A.waitForFunction(() => window.$tw && $tw.syncer, null, { timeout: 30000 });
 await settle(A);
 const baked = await (await bucket.get("baked.html")).text();
+// The admin site's address the shell was published from, baked into the page for the public site's
+// Log in to edit (design 2.41): the admin-url tiddler names this worker's origin (the tiddler in the
+// plugin's text, its quotes escaped once more, as the public-url rewrite above; the title alone also
+// appears in the module's own comment)
+const adminUrlTiddler = `\\"title\\":\\"$:/cfworker/admin-url\\",\\"text\\":\\"`;
+const adminUrlAt = baked.indexOf(adminUrlTiddler);
+check("the page built from the published shell carries the admin site's address, the origin the shell came from, as $:/cfworker/admin-url", adminUrlAt > 0 && baked.startsWith(BASE + "/", adminUrlAt + adminUrlTiddler.length),
+  adminUrlAt > 0 ? baked.slice(adminUrlAt, adminUrlAt + 120).replace(/\\/g, "") : "no admin-url tiddler");
 const helloTag = baked.indexOf(`${PUB}/_plugins/${encodeURIComponent(HELLO)}.js?v=`);
 check("...it works after a reload, its file loaded after the tiddlers and before the core", await A.evaluate(() => window.__helloRan === true) &&
   helloTag > baked.indexOf(MARK("Ordinary tiddlers")) && helloTag < baked.indexOf(MARK("Load external JavaScripts")), `tag at ${helloTag}`);

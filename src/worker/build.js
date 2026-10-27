@@ -36,7 +36,8 @@ const BROWSER_MODULES = [
   { title: "$:/cfworker/outbox.js", type: "startup", source: "__OUTBOX_SOURCE__" },
   { title: "$:/cfworker/cold-start.js", type: "startup", source: "__COLD_START_SOURCE__" },
   { title: "$:/cfworker/device.js", type: "startup", source: "__DEVICE_SOURCE__" },
-  { title: "$:/cfworker/save-shortcut.js", type: "startup", source: "__SAVE_SHORTCUT_SOURCE__" }
+  { title: "$:/cfworker/save-shortcut.js", type: "startup", source: "__SAVE_SHORTCUT_SOURCE__" },
+  { title: "$:/cfworker/public-site.js", type: "startup", source: "__PUBLIC_SITE_SOURCE__" }
 ];
 
 // The admin wiki's service worker (src/browser/service-worker.js, design 1.11): not a module of the
@@ -74,6 +75,10 @@ function hashText(text) {
 // worker request) and only asks the worker when that copy isn't current. Empty for a private wiki
 // (setup 2.1): the modules then know this site is the admin site, and read from the worker.
 const PUBLIC_URL_TITLE = "$:/cfworker/public-url";
+// The admin site's address, the origin the shell was published from (page.js keeps it with the shell):
+// what the public site's cloud icon links for logging in (public-site.js, design 2.41); "" on a page
+// built from index.html, before any shell
+const ADMIN_URL_TITLE = "$:/cfworker/admin-url";
 
 // What the page carries as the public address: the site with a trailing slash, or ""
 function publicAddress(env) {
@@ -135,6 +140,7 @@ function adminPlugin(env, pageSource) {
   for (const m of BROWSER_MODULES) tiddlers[m.title] = { title: m.title, type: "application/javascript", "module-type": m.type, text: m.source };
   tiddlers[PUBLIC_URL_TITLE] = { title: PUBLIC_URL_TITLE, text: publicAddress(env) };
   tiddlers[SW_URL_TITLE] = { title: SW_URL_TITLE, text: `/sw.js?v=${swVersion()}` };
+  tiddlers[ADMIN_URL_TITLE] = { title: ADMIN_URL_TITLE, text: pageSource.adminOrigin ? `${pageSource.adminOrigin}/` : "" };
   tiddlers[PAGE_SOURCE_TITLE] = { title: PAGE_SOURCE_TITLE, type: "application/json", text: JSON.stringify({ index: pageSource.index, fingerprint: pageSource.fingerprint, core: pageSource.core, shell: pageSource.shell || "", engine: engineVersion(pageSource.html), shipped: SHIPPED_VERSION }) };
   tiddlers[`${ADMIN_PLUGIN_TITLE}/readme`] = { title: `${ADMIN_PLUGIN_TITLE}/readme`, text: PLUGIN_README_SOURCE };
   tiddlers[`${ADMIN_PLUGIN_TITLE}/settings`] = { title: `${ADMIN_PLUGIN_TITLE}/settings`, text: PLUGIN_SETTINGS_SOURCE };
@@ -426,7 +432,7 @@ async function readPageSource(env) {
   if (kept) {
     const html = new Uint8Array(await kept.arrayBuffer());
     if (loadsCoreFile(html, env, core)) {
-      return { html, index: index.etag, fingerprint: kept.customMetadata.fingerprint || "", core, shellVersion: kept.uploaded.getTime(), shell: kept.etag };
+      return { html, index: index.etag, fingerprint: kept.customMetadata.fingerprint || "", core, shellVersion: kept.uploaded.getTime(), shell: kept.etag, adminOrigin: kept.customMetadata.adminOrigin || "" };
     }
     console.log("The published page loads the core file from elsewhere than the public site (or this site, for a private wiki): the page is built from index.html until the admin wiki publishes it again");
   } else if (shell) await shell.body.cancel();
