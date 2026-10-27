@@ -128,6 +128,7 @@ exports.startup = function() {
 		if(deleteBases[title] === oldBase) {
 			deleteBases[title] = newBase;
 		}
+		noteBehind();
 	}
 
 	// (A tiddler without a type, as one created in this tab, has the default one the browser module
@@ -333,6 +334,32 @@ exports.startup = function() {
 		}
 	});
 
+	// The drafts whose original changed behind them (a poll brought a revision newer than the one the
+	// draft was opened from, another device's save): their titles in the list field of
+	// $:/temp/cfworker/behind, which the plugin's editor line reads (design 2.5); a draft goes from the
+	// list with its record (saved, cancelled), or when this tab's own save rebases it
+	var BEHIND = "$:/temp/cfworker/behind";
+	function noteBehind() {
+		var behind = [];
+		$tw.utils.each(draftBases,function(record,draftTitle) {
+			// (The syncer's knowledge, as the record's base: after this tab's own save the tiddler's
+			// revision field lags until the next load from the worker, while the syncer has the new one)
+			var now = wiki.tiddlerExists(record.of) ? currentBase(record.of) : null;
+			if(typeof record.base === "string" && typeof now === "string" && now !== record.base) {
+				behind.push(draftTitle);
+			}
+		});
+		var current = wiki.getTiddler(BEHIND),
+			listed = current ? $tw.utils.stringifyList(current.fields.list || []) : "";
+		if(behind.length === 0) {
+			if(current) {
+				wiki.deleteTiddler(BEHIND);
+			}
+		} else if(listed !== $tw.utils.stringifyList(behind)) {
+			wiki.addTiddler(new $tw.Tiddler({title: BEHIND, list: behind}));
+		}
+	}
+
 	// Remember which revision each draft was opened from
 	wiki.addEventListener("change",function(changes) {
 		$tw.utils.each(changes,function(change,title) {
@@ -362,6 +389,7 @@ exports.startup = function() {
 			}
 			draftBases[title] = {of: of, base: base};
 		});
+		noteBehind();
 	});
 
 	// When a draft is confirmed, the saved tiddler inherits the draft's base revision. A rename then

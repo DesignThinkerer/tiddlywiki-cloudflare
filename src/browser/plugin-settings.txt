@@ -2,7 +2,7 @@ Settings are saved in the wiki (`$:/config/…`), so they apply on every device.
 
 ! Settings
 
-<$checkbox tiddler="$:/config/cfworker/LoadAll" field="text" checked="yes" unchecked="no" default="yes"> Load all tiddlers in the background</$checkbox> — text search and backlinks then see everything. If unchecked, a tiddler is loaded when shown. ''(Requires page reload)''
+<$checkbox tiddler="$:/config/cfworker/LoadAll" field="text" checked="yes" unchecked="no" default="yes"> Load all tiddlers in the background</$checkbox> — text search and backlinks then see everything. Unticked, on every device: a tiddler is loaded when shown, and one never opened on a device is empty there offline. ''(Requires page reload)''
 
 Sync polling interval, ms: <$edit-text tiddler="$:/config/SyncPollingInterval" tag="input" type="number" default="" placeholder="60000" size="8"/> — time between an open tab's checks for updated tiddlers. Each check is one worker request (TiddlyWiki's own setting). ''(Requires page reload)''
 
@@ -14,4 +14,4 @@ Sync polling interval, ms: <$edit-text tiddler="$:/config/SyncPollingInterval" t
 * Tiddlers fetched at once during the background fill (1 at least): <$edit-text tiddler="$:/config/cfworker/FetchAhead" tag="input" type="number" default="" placeholder="6" size="6"/>
 * Pause after a save before the page is published, ms: <$edit-text tiddler="$:/config/cfworker/PublishPause" tag="input" type="number" default="" placeholder="1000" size="6"/>
 * Minutes between backup status checks: <$edit-text tiddler="$:/config/cfworker/BackupCheckMinutes" tag="input" type="number" default="" placeholder="60" size="6"/>
-* Seconds the service worker waits for the network before serving the page it kept: <$edit-text tiddler="$:/config/cfworker/NetworkWait" tag="input" type="number" default="" placeholder="8" size="6"/> ''(Requires page reload)''
+* Seconds the service worker waits for the network before serving the page it kept (the tiddler list then comes from the kept copy at once): <$edit-text tiddler="$:/config/cfworker/NetworkWait" tag="input" type="number" default="" placeholder="8" size="6"/> ''(Requires page reload)''

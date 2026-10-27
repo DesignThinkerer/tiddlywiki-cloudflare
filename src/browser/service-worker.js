@@ -18,7 +18,8 @@ By request:
   core file, the page gets a line saying so in place of the browser's "Cannot load" alert.
 - The status file, the tiddler list and the app's manifest: the network first, the cached one when
   the network fails, with X-Served-From: cache so the list sync knows (a device copy then counts
-  whatever its revision).
+  whatever its revision). A page this worker answered from the cache for want of the network gets
+  its first list from the cache at once, the fetch going on behind (the wait paid once: design 1.11).
 - /favicon.ico: the browser asks for it at a navigation when the page has no icon link (TiddlyWiki
   sets its icon once started): answered here, empty, rather than by the worker.
 - Anything else (a tiddler's contents, a save, a delete, the page published): the network only.
@@ -41,9 +42,11 @@ var CACHE = "cfworker-wiki-v1",
 	PAGE_PATHS = ["/", "/index.html", "/baked.html"],
 	DATA_PATHS = ["/status", "/recipes/default/tiddlers.json", "/manifest.webmanifest"],
 	FILL_PATHS = ["/status", "/recipes/default/tiddlers.json"],   // taken with the page once this worker is in place
+	LIST_PATH = "/recipes/default/tiddlers.json",
 	PAGE_KEY = self.location.origin + "/",
 	SETTINGS_KEY = self.location.origin + "/__cfworker/settings",   // this worker's settings, kept in its cache (no object of that name)
 	NETWORK_WAIT = 8000,   // ms before the cached page answers instead of a network that doesn't ($:/config/cfworker/NetworkWait, told by the page)
+	TIMED_OUT_FOR = 60000,   // ms a page answered from the cache after that wait is remembered, for its first list (design 1.11)
 	NO_CORE = "No network, and no copy of TiddlyWiki's core file kept on this device: open the wiki once online first.";
 
 // The settings the page tells this worker at each load (cold-start.js): it reads no tiddler itself.
@@ -109,6 +112,31 @@ function isData(url) {
 	return url.origin === self.location.origin && DATA_PATHS.indexOf(url.pathname) >= 0;
 }
 
+// The pages answered from the cache because the network wait ran out (networkFirst's timer), by
+// client id, with when: such a page's first list request is answered from the cache at once, the
+// fetch going on behind to refresh it, so the wait isn't paid twice (design 1.11, 2.18). Keyed by the
+// client, so another tab's poll keeps its wait; consumed by that one answer; forgotten after a minute,
+// and with this worker's restart (a worker the browser stopped falls back to the wait)
+var timedOut = {};
+function noteTimedOut(clientId) {
+	var now = Date.now();
+	Object.keys(timedOut).forEach(function(id) {
+		if(now - timedOut[id] > TIMED_OUT_FOR) {
+			delete timedOut[id];
+		}
+	});
+	if(clientId) {
+		timedOut[clientId] = now;
+	}
+}
+function pageTimedOut(clientId) {
+	if(clientId && timedOut[clientId] && Date.now() - timedOut[clientId] <= TIMED_OUT_FOR) {
+		delete timedOut[clientId];
+		return true;
+	}
+	return false;
+}
+
 self.addEventListener("fetch",function(event) {
 	var request = event.request;
 	if(request.method !== "GET") {
@@ -123,7 +151,8 @@ self.addEventListener("fetch",function(event) {
 		event.respondWith(cacheFirst(event,request));
 	} else if(isData(url)) {
 		// (Keyed by path: the list is asked for with a filter in the query, which the worker doesn't read)
-		event.respondWith(networkFirst(event,request,url.origin + url.pathname,false));
+		var key = url.origin + url.pathname;
+		event.respondWith(url.pathname === LIST_PATH && pageTimedOut(event.clientId) ? cachedFirstOnce(event,request,key) : networkFirst(event,request,key,false));
 	}
 });
 
@@ -170,6 +199,9 @@ function networkFirst(event,request,key,page) {
 				timer = setTimeout(function() {
 					fromCache(key,page).then(function(hit) {
 						if(hit) {
+							if(page) {
+								noteTimedOut(event.resultingClientId);
+							}
 							serve(hit);
 						}
 					});
@@ -184,6 +216,24 @@ function networkFirst(event,request,key,page) {
 				serve(new Response("No network, and no copy of the wiki kept on this device yet: open it once online first.",{status: 503, headers: {"Content-Type": "text/plain; charset=utf-8"}}));
 			});
 		});
+	});
+}
+
+// The cached list at once, for a page the cache answered after the wait, the network's answer
+// refreshing the cache behind; without a cached list, the network first as usual (design 1.11)
+function cachedFirstOnce(event,request,key) {
+	return fromCache(key,false).then(function(hit) {
+		if(!hit) {
+			return networkFirst(event,request,key,false);
+		}
+		event.waitUntil(fetch(request).then(function(response) {
+			if(response && response.ok) {
+				return caches.open(CACHE).then(function(cache) {
+					return cache.put(key,response.clone());
+				});
+			}
+		}).catch(function() {}));
+		return hit;
 	});
 }
 

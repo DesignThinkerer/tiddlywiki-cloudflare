@@ -28,7 +28,7 @@ async function ready(p) {
 }
 const stored = async title => { const obj = await bucket.get(TIDDLER.slice(1) + title); return obj ? (await obj.json()).text : null; };
 const revisionOf = async title => { const obj = await bucket.head(TIDDLER.slice(1) + title); return obj ? obj.customMetadata.revision : null; };
-const status = p => p.evaluate(t => { const x = $tw.wiki.getTiddler(t); return x ? { waiting: x.fields.waiting, since: x.fields.since, online: x.fields.online } : null; }, STATUS);
+const status = p => p.evaluate(t => { const x = $tw.wiki.getTiddler(t); return x ? { waiting: x.fields.waiting, since: x.fields.since, online: x.fields.online, drafts: x.fields.drafts, titles: $tw.utils.parseStringArray(x.fields.titles || "") } : null; }, STATUS);
 // What the cloud icon's dropdown says about the outbox (its item, rendered)
 const line = p => p.evaluate(t => $tw.wiki.tiddlerExists(t) && $tw.wiki.getTiddler(t).fields.tags.includes("$:/tags/SyncerDropdown") ? $tw.wiki.renderTiddler("text/plain", t).replace(/\s+/g, " ").trim() : null, ITEM);
 const alerts = p => p.evaluate(() => $tw.wiki.getTiddlersWithTag("$:/tags/Alert").map(t => { const f = $tw.wiki.getTiddler(t).fields; return { component: f.component, text: String(f.text).slice(0, 60) }; }));
@@ -72,7 +72,16 @@ await A.evaluate(() => $tw.wiki.addTiddler(new $tw.Tiddler($tw.wiki.getTiddler("
 await A.evaluate(() => $tw.wiki.deleteTiddler("Note B"));
 await waitFor(async () => (await status(A))?.waiting === "3", 10000);
 const s1 = await status(A), l1 = await line(A), a1 = await alerts(A);
+// The hidden live region (design 2.17, #168): offline said in words for a screen reader, once, keyed on
+// the status tiddler's online and login fields alone (the count changes at every save)
+const region = p => p.evaluate(() => { const el = document.querySelector(".cfworker-live-region"); if (!el) return null; const r = el.getBoundingClientRect(), s = getComputedStyle(el); return { role: el.getAttribute("role"), live: el.getAttribute("aria-live"), text: el.textContent.replace(/\s+/g, " ").trim(), offscreen: r.width <= 1 && r.height <= 1 && s.overflow === "hidden" && s.position === "absolute" }; });
+const r1 = await region(A);
+check("offline, a visually hidden live region (role=status, aria-live=polite, 1 px, out of the page's flow) says \"Offline: changes are kept on this device\" for a screen reader",
+  !!r1 && r1.role === "status" && r1.live === "polite" && r1.offscreen && r1.text === "Offline: changes are kept on this device.", JSON.stringify(r1));
 check("offline, the cloud icon's dropdown says 3 changes are waiting since when, kept on this device, offline", s1?.waiting === "3" && s1?.online === "no" && /3 changes waiting since \d\d:\d\d/.test(l1 || "") && /offline/.test(l1 || "") && /this device/.test(l1 || ""), `${JSON.stringify(s1)} ${JSON.stringify(l1)}`);
+// What waits is named (the first few titles, as links), today's wait with its time alone, and the
+// offline line says the changes go when this wiki is next open here with a network (#151)
+check("...and names what waits (the titles of the three, as links) and says the changes are sent the next time this wiki is open here with a network", /3 changes waiting since \d\d:\d\d: .+/.test(l1 || "") && (s1?.titles || []).length === 3 && /sent the next time this wiki is open here with a network/.test(l1 || ""), `${JSON.stringify(s1?.titles)} ${JSON.stringify(l1)}`);
 // (TiddlyWiki's own "Network Error" alert isn't shown on the admin wiki: the red cloud icon and its dropdown say it, design 2.17)
 check("...TiddlyWiki retried a save, and no alert is shown: the icon and the dropdown say offline (TiddlyWiki's network alert would come back at every retry)", sent("A", "PUT", "Offline 1", mark).length + sent("A", "PUT", "Note A", mark).length >= 1 && a1.length === 0, JSON.stringify(a1));
 const o1 = await outbox(A);
@@ -91,6 +100,8 @@ const took = (Date.now() - back) / 1000;
 check("the network back: the three changes reach the worker at once (the online event, not the retry 20 s away)", arrived && took < 4, `${took.toFixed(1)} s`);
 await settle(A);
 await waitFor(async () => (await status(A))?.waiting === "0", 5000);
+const r2 = await region(A);
+check("...the network back: the hidden live region is empty again (nothing announced while online)", !!r2 && r2.text === "", JSON.stringify(r2));
 check("...the dropdown says nothing more, no alert, the device's outbox empty", (await line(A)) === "" && (await alerts(A)).length === 0 && JSON.stringify(await outbox(A)) === "[]" && (await status(A))?.online === "yes",
   `item ${JSON.stringify(await line(A))}, alerts ${(await alerts(A)).length}, outbox ${JSON.stringify(await outbox(A))}`);
 
@@ -186,6 +197,7 @@ await contextA.setOffline(true);
 const draftTitle = "Draft of 'Note A'";
 await A2.evaluate(([title, draft]) => $tw.wiki.addTiddler(new $tw.Tiddler($tw.wiki.getTiddler(title), { title: draft, "draft.of": title, "draft.title": title, text: "typing offline, not saved yet" })), ["Note A", draftTitle]);
 await waitFor(async () => ((await outbox(A2)) || []).some(e => e.title === draftTitle && e.kind === "draft"), 10000);
+check("...the dropdown says a tiddler is still open in the editor here, not saved and not on other devices until ✓ done", (await status(A2))?.drafts === "1" && /1 tiddler still open in the editor here: not saved, and not on other devices until you click ✓ done/.test((await line(A2)) || ""), JSON.stringify(await line(A2)));
 check("a draft is kept on the device as a draft, and doesn't count as a change waiting (the dropdown says offline alone)", (await status(A2))?.waiting === "0" && /^Offline:/.test((await line(A2)) || "") && !/waiting|kept/.test((await line(A2)) || ""), `${JSON.stringify(await status(A2))} ${JSON.stringify(await line(A2))}`);
 await contextA.setOffline(false);
 await A2.reload();

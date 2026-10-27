@@ -16,6 +16,14 @@
 	padding: 0;
 	width: auto;
 }
+/* (the Reload button in the item's sentence, where the theme makes a dropdown's button a block) */
+.tc-drop-down .cfworker-outbox button.cfworker-reload {
+	display: inline;
+	width: auto;
+	padding: 0 0.4em;
+	margin: 0;
+	text-align: inherit;
+}
 
 /* The setup check's list: no bullets before the marks; each mark a span, a word for a screen reader
    (its aria-label), coloured, the glyph staying what says it */
@@ -48,4 +56,30 @@ ul.cfworker-setup-check li {
 		padding: 10px;
 		margin: -10px;
 	}
+}
+
+/* A conflict copy's box, its original's line and the editor's line (the plugin's template parts,
+   design 2.5): the theme's message box; the comparison and the current version scroll in place */
+.cfworker-conflict {
+	margin: 0.5em 0;
+}
+.cfworker-conflict-diff,
+.cfworker-behind-current {
+	max-height: 24em;
+	overflow: auto;
+	margin-top: 0.5em;
+}
+
+/* The hidden live region (the plugin's PageTemplate part, design 2.17): off the page's flow and out
+   of sight, read by a screen reader when its text changes */
+.cfworker-live-region {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	margin: -1px;
+	padding: 0;
+	border: 0;
+	overflow: hidden;
+	clip: rect(0 0 0 0);
+	white-space: nowrap;
 }

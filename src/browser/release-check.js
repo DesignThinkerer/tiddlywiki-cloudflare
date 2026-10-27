@@ -29,10 +29,16 @@ var RELEASE = "$:/temp/cfworker/release",
 	asking = false;   // one request at a time, however often the tab is shown meanwhile
 
 // The worker's version, from the plugin's: package.json's date before the "+", the build hash after
+// (A tab behind the worker, told so by the list answer: the worker's version, which the release
+// tiddler then holds, is the one to compare GitHub's with, not this tab's: control-panel.js)
 function workerVersion() {
-	var plugin = $tw.wiki.getTiddler(PLUGIN),
+	var release = $tw.wiki.getTiddler(RELEASE),
+		plugin = $tw.wiki.getTiddler(PLUGIN),
 		full = plugin ? String(plugin.fields.version || "") : "",
 		plus = full.indexOf("+");
+	if(release && release.fields.worker) {
+		return { version: String(release.fields.worker), build: String(release.fields["worker-build"] || "") };
+	}
 	return { version: plus >= 0 ? full.slice(0,plus) : full, build: plus >= 0 ? full.slice(plus + 1) : "" };
 }
 
@@ -106,7 +112,7 @@ function show(record) {
 	note({
 		state: order > 0 ? "newer" : order === 0 ? "same" : "ahead",
 		latest: record.latest, url: record.url, checked: checked, error: undefined,
-		text: order > 0 ? "A newer release is out: " + link + " (the link opens its notes). To take it, update your copy (" + lib.guide("operating","3.1") + "): Workers Builds redeploys, and the next page load runs it." :
+		text: order > 0 ? "A newer release is out: " + link + " (the link opens its notes). To take it, update your copy (" + lib.guide("operating","3.1") + "): Workers Builds redeploys, and the next page load runs it. Every release since yours, with anything to do by hand, is in [[the changelog|https://github.com/DesignThinkerer/tiddlywiki-cloudflare/blob/main/CHANGELOG.md]]." :
 			order === 0 ? "This is the newest release, checked at " + CHECKED + "." :
 			"Newer than the newest release (" + link + "): a copy synced past it. Checked at " + CHECKED + "."
 	});

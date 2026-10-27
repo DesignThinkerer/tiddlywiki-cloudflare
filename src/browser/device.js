@@ -84,7 +84,9 @@ exports.startup = function() {
 		}
 		var name = a.origin === origin ? a.pathname : a.host + a.pathname;
 		if(a.origin === origin && a.pathname === "/") {
-			name = "/ (the page)";
+			name = "the page (/)";
+		} else if(/\/_plugins\/tiddlywikicore\.js/.test(a.pathname)) {
+			name = "TiddlyWiki's core (" + name + ")";
 		}
 		return name;
 	}
@@ -93,23 +95,26 @@ exports.startup = function() {
 	// to keep, which is in the tab only, design 1.10) and the wiki's drafts (one the device refused
 	// the same): the larger count of each, since the table and the tab overlap
 	function waitingCounts(entries) {
-		var changes = 0, drafts = 0, status = wiki.getTiddler(OUTBOX_STATUS);
+		var changes = 0, drafts = 0, status = wiki.getTiddler(OUTBOX_STATUS), titles = [];
 		$tw.utils.each(entries || [],function(entry) {
 			if(entry.kind === "draft") {
 				drafts++;
 			} else {
 				changes++;
+				titles.push(String(entry.title || ""));
 			}
 		});
 		changes = Math.max(changes,status ? parseInt(status.fields.waiting,10) || 0 : 0);
 		drafts = Math.max(drafts,wiki.filterTiddlers("[is[draft]]").length);
-		return {changes: changes, drafts: drafts, unkept: !!status && status.fields.kept === "no"};
+		return {changes: changes, drafts: drafts, titles: titles.join(", "), unkept: !!status && status.fields.kept === "no"};
 	}
 	function outboxLine(counts) {
 		if(!counts.changes && !counts.drafts) {
 			return "nothing waiting in the outbox";
 		}
-		return (counts.changes ? count(counts.changes,"change") : "") + (counts.changes && counts.drafts ? " and " : "") + (counts.drafts ? count(counts.drafts,"draft") : "") + " waiting in the outbox" +
+		// A draft is kept here only, never sent: said apart from the changes, which "waiting" would hide
+		return (counts.changes ? count(counts.changes,"change") + " waiting to be sent" + (counts.titles ? " (" + counts.titles + ")" : "") : "") + (counts.changes && counts.drafts ? ", and " : "") + (counts.drafts ? count(counts.drafts,"draft") + " kept on this device only (a draft is never sent: click ✓ done to save it)" : "") +
+			(!counts.changes && counts.drafts ? "" : "") +
 			(counts.unkept ? " (some of it the device refused to keep: it lives in this tab until it's sent)" : "");
 	}
 
@@ -163,6 +168,26 @@ exports.startup = function() {
 		]).then(function(results) {
 			var copy = results[0], outbox = results[1], files = results[2], browser = results[3],
 				lines = [];
+			// The question first, in words, from what was read already (no request, design 2.22): opens with
+			// no network when the page and TiddlyWiki's core are kept; what would be empty offline; what waits
+			var pageKept = !!files && files.some(function(file) { return file.name === "the page (/)"; }),
+				coreKept = !!files && files.some(function(file) { return /^TiddlyWiki's core \(/.test(file.name); }),
+				fillOff = wiki.getTiddlerText("$:/config/cfworker/LoadAll","yes") === "no",
+				counts = waitingCounts(outbox),
+				notLoaded = 0;
+			if(copy) {
+				var keptSet = Object.create(null);
+				$tw.utils.each(copy,function(entry) { keptSet[entry.title] = true; });
+				$tw.utils.each(proto.cfworkerListedTitles(),function(title) {
+					var t = wiki.getTiddler(title);
+					if(!keptSet[title] && !(t && !t.hasField("_is_skinny"))) {
+						notLoaded++;
+					}
+				});
+			}
+			lines.push("''Opens with no network:'' " + (pageKept && coreKept ? "yes, the page and TiddlyWiki's core are kept." : files === null ? "no, this browser has no cache storage here." : "not yet: " + (!pageKept && !coreKept ? "neither the page nor TiddlyWiki's core is kept" : !pageKept ? "the page isn't kept" : "TiddlyWiki's core isn't kept") + " (reload once, online).") +
+				(copy ? (notLoaded ? " " + count(notLoaded,"tiddler") + " not loaded yet would be empty offline" + (fillOff ? " (the fill is off: a tiddler loads when first shown online, " + lib.guide("operating","3.10") + ")." : " (they load while this tab is open and visible, " + lib.guide("operating","3.13") + ").") : " Every listed tiddler is kept.") : "") +
+				(counts.changes ? " " + count(counts.changes,"change") + " waits to be sent." : " Nothing waits to be sent."), "");
 			if(copy) {
 				// Of the tiddlers listed and not kept: the ones the page itself carries (the site title,
 				// the default tiddlers, the settings: baked in by the worker, in full, so TiddlyWiki never

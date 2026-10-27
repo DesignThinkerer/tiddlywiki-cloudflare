@@ -282,6 +282,13 @@ check("the page preloads the admin plugin: plugin-type plugin, a name, a descrip
 check("...its readme opens with what the disable checkbox does on every device, and how to turn the modules off on purpose (CONFLICT_GUARD) and get them back, with operating 3.19",
   /^''Disabling it here turns all of this off at the next load, on every device:''/.test(parts[ADMIN + "/readme"]?.text || "") && /saves can overwrite each other, offline changes aren't kept, no backup alert shows, the page isn't published, and the Cloudflare tab is gone/.test(parts[ADMIN + "/readme"]?.text || "") && /CONFLICT_GUARD/.test(parts[ADMIN + "/readme"]?.text || "") && /tick the plugin on again and reload/.test(parts[ADMIN + "/readme"]?.text || "") && /operating\.md#319-turning-the-plugin-off-and-checking-its-on/.test(parts[ADMIN + "/readme"]?.text || ""),
   (parts[ADMIN + "/readme"]?.text || "").slice(0, 160));
+// The worker's plugin version travels on every tiddler list answer, as a header (no request, no R2
+// read: worked out once per isolate), so a tab left open across a deploy can tell it runs old modules
+// (design 2.21, #157)
+{
+  const listAnswer = await mf.dispatchFetch(base + "/recipes/default/tiddlers.json");
+  check("...and the tiddler list's answer carries the plugin's version, the one the page preloads, in X-Wiki-Plugin", !!plugin && listAnswer.headers.get("x-wiki-plugin") === plugin.version, `${listAnswer.status} ${listAnswer.headers.get("x-wiki-plugin")} (page: ${plugin && plugin.version})`);
+}
 check("...its parts are the ten browser modules, each the right kind of module, each a JavaScript tiddler, and the page's settings (the public address, the service worker's address, the page's source)",
   BROWSER_MODULES.every(([title, kind]) => { const t = parts[title]; return t && t["module-type"] === kind && t.type === "application/javascript" && t.text.length > 200; }) &&
   !!parts["$:/cfworker/public-url"] && /^\/sw\.js\?v=/.test(parts["$:/cfworker/sw-url"]?.text || "") && !!parts["$:/cfworker/page-source"],
@@ -739,8 +746,8 @@ const dataPng = src => /^data:image\/png;base64,/.test(src || "") ? src.slice("d
   let copy = null;
   for (let i = 0; i < 20 && !copy; i++) { copy = await store.get("manifest.webmanifest"); if (!copy) await new Promise(r => setTimeout(r, 100)); }
   const copyJson = copy ? await copy.json().catch(() => null) : null;
-  check("a page build writes the manifest into the bucket for the public site, with the icons at /_app/ addresses, and the default icons there",
-    !!copyJson && copyJson.start_url === "/" && icon(copyJson, 192)?.src === "/_app/icon-192.png" && icon(copyJson, 512)?.src === "/_app/icon-512.png" && !!(await store.head("_app/icon-192.png")) && !!(await store.head("_app/icon-512.png")) && (copy?.httpMetadata?.contentType || "").startsWith("application/manifest+json"),
+  check("a page build writes the manifest into the bucket for the public site, with the icons at /_app/ addresses, display browser (no service worker there: not offered as an app that can't open offline, design 2.19), and the default icons there",
+    !!copyJson && copyJson.display === "browser" && copyJson.start_url === "/" && icon(copyJson, 192)?.src === "/_app/icon-192.png" && icon(copyJson, 512)?.src === "/_app/icon-512.png" && !!(await store.head("_app/icon-192.png")) && !!(await store.head("_app/icon-512.png")) && (copy?.httpMetadata?.contentType || "").startsWith("application/manifest+json"),
     JSON.stringify(copyJson).slice(0, 160));
   // The wiki's title, once set: the name follows, and a short name when it's short
   await store.put("recipes/default/tiddlers/$:/SiteTitle", JSON.stringify({ title: "$:/SiteTitle", text: "Notes" }), { customMetadata: { revision: "1", layout: "flat" } });

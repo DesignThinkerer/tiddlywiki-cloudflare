@@ -37,8 +37,11 @@ var TAB = "$:/temp/cfworker/ControlPanel",
 	CHECK = "tm-cfworker-setup-check",
 	ENGINE = "$:/temp/cfworker/engine",
 	PAGE_STATUS = "$:/temp/cfworker/page-publisher",   // what this tab last did with the page: state, text, time (page-publisher.js)
+	PURGE = "tm-cfworker-purge",                        // the public hostname purged, once, on a click (#175)
+	PURGE_MESSAGE = "$:/temp/cfworker/purge-message",
 	ENGINE_MESSAGE = "$:/temp/cfworker/engine-message",
 	PAGE_SOURCE = "$:/cfworker/page-source",
+	PUBLIC_URL = "$:/cfworker/public-url",   // the public site's address the page carries (empty on a private wiki)
 	RELEASE = "$:/temp/cfworker/release",
 	ADMIN_PLUGIN = "$:/plugins/cfworker/admin",
 	UPDATE = "tm-cfworker-engine-update",
@@ -56,8 +59,30 @@ var TAB_TEXT = [
 	"",
 	"Runs only when you click: the worker makes a few requests and purges the public site's status file to test the purge token.",
 	"",
+	"<$list filter='[[$:/cfworker/public-url]get[text]!match[]]' variable='public'><$button message='" + PURGE + "'>Purge the public site's cache</$button> (the public hostname, once: what the public site serves afresh; " + lib.guide("operating","3.9") + ")",
+	"",
+	"<div role='status' aria-live='polite'>",
+	"",
+	"<$list filter='[[" + PURGE_MESSAGE + "]has[text]]' variable='purged'>{{" + PURGE_MESSAGE + "}}</$list>",
+	"",
+	"</div>",
+	"</$list>",
+	"",
+	// (each button's answer sits in a live region that is there before the answer, so a screen
+	// reader hears it once it's in: design 2.17)
+	"<div role='status' aria-live='polite'>",
+	"",
 	"<$list filter='[[" + SETUP + "]has[text]]' variable='checked'>",
 	"{{" + SETUP + "}}",
+	"</$list>",
+	"",
+	"</div>",
+	"<$list filter='[[" + SETUP + "]has[report]]' variable='report'>",
+	"",
+	"<$button message='tm-copy-to-clipboard' param={{" + SETUP + "!!report}}>Copy for a bug report</$button> <$button message='tm-copy-to-clipboard' param={{" + SETUP + "!!report-anonymised}}>Copy with the addresses replaced</$button>",
+	"",
+	"The lines above as plain text, with the worker's version, the engine, whether the wiki is public, and the browser; the second puts admin.example and wiki.example in place of your addresses (" + lib.guide("operating","3.15") + ").",
+	"",
 	"</$list>",
 	"",
 	"!! Backups to GitHub",
@@ -77,7 +102,7 @@ var TAB_TEXT = [
 	"</$list>",
 	"<$list filter='[[" + STATUS + "]!has[problem-since]]' variable='fine'>",
 	"",
-	"Every save is committed to GitHub as it happens (" + lib.guide("setup","2.4") + ").",
+	"<$list filter='[[" + STATUS + "]has[commits]]' variable='linked'>Every save is committed to GitHub as it happens: <a href={{{ [[" + STATUS + "]get[commits]] }}} target='_blank' rel='noopener noreferrer'>the commits</a> (" + lib.guide("setup","2.4") + ").</$list><$list filter='[[" + STATUS + "]!has[commits]]' variable='plain'>Every save is committed to GitHub as it happens (" + lib.guide("setup","2.4") + ").</$list>",
 	"",
 	"</$list>",
 	"!!! Full backup",
@@ -104,9 +129,13 @@ var TAB_TEXT = [
 	"",
 	"<$button message='" + START + "'>Back up everything to GitHub</$button> <$button message='" + REFRESH + "'>Refresh the status</$button>",
 	"",
+	"<div role='status' aria-live='polite'>",
+	"",
 	"<$list filter='[[" + MESSAGE + "]has[text]]' variable='said'>",
 	"{{" + MESSAGE + "}}",
 	"</$list>",
+	"",
+	"</div>",
 	"",
 	"Makes GitHub match the wiki: commits what isn't there yet, removes what's gone. Run it once after setting backups up or after a restore; run again, it changes nothing. It goes on without this tab, at about 500 commits an hour (" + lib.guide("setup","2.4") + ").",
 	"",
@@ -114,7 +143,7 @@ var TAB_TEXT = [
 	"",
 	"!! The worker",
 	"",
-	"<$cfworker-release/>Version {{" + RELEASE + "!!version}} (build {{" + RELEASE + "!!build}}). <$transclude tiddler='" + RELEASE + "' mode='inline'/>",
+	"<$cfworker-release/><$list filter='[[" + RELEASE + "]!has[worker]]' variable='current'>Version {{" + RELEASE + "!!version}} (build {{" + RELEASE + "!!build}}). </$list><$list filter='[[" + RELEASE + "]has[worker]]' variable='behind'>This tab runs {{" + RELEASE + "!!version}} (build {{" + RELEASE + "!!build}}); the worker runs {{" + RELEASE + "!!worker}} (build {{" + RELEASE + "!!worker-build}}): reload this tab (what you're typing is kept on the device). </$list><$transclude tiddler='" + RELEASE + "' mode='inline'/>",
 	"",
 	"!! The engine",
 	"",
@@ -131,10 +160,14 @@ var TAB_TEXT = [
 	"",
 	"</$reveal>",
 	"</$list>",
+	"<div role='status' aria-live='polite'>",
+	"",
 	"<$list filter='[[" + ENGINE_MESSAGE + "]has[text]]' variable='said'>",
 	"",
 	"{{" + ENGINE_MESSAGE + "}}",
 	"</$list>",
+	"",
+	"</div>",
 	"",
 	"!! The page",
 	"",
@@ -174,6 +207,37 @@ exports.startup = function() {
 	// "+", the build hash after; the release check module fills in the rest when the tab is shown
 	var full = String((wiki.getTiddler(ADMIN_PLUGIN) || {fields: {}}).fields.version || ""), plus = full.indexOf("+");
 	wiki.addTiddler(new $tw.Tiddler({title: RELEASE, version: plus >= 0 ? full.slice(0,plus) : full, build: plus >= 0 ? full.slice(plus + 1) : ""}));
+
+	// A tab left open across a deploy keeps the old modules: every list answer names the worker's plugin
+	// version (X-Wiki-Plugin; a cached answer carries the version it was cached with, so it's left out),
+	// and one that isn't this page's raises TiddlyWiki's own reload bar
+	// ($:/status/RequireReloadDueToPluginChange, which the core's sync filter leaves out) and puts the
+	// worker's version on the release tiddler, for the tab's line and the release check (design 2.21).
+	// The hook sends a header so that its answer is read (list-sync.js reads the answers of the hooks
+	// that asked); the worker ignores it
+	var RELOAD_STATUS = "$:/status/RequireReloadDueToPluginChange";
+	proto.cfworkerOnListRequest({
+		headers: function() {
+			return {"X-Wiki-Plugin": "?"};
+		},
+		answer: function(xhr) {
+			if(!xhr || !xhr.getResponseHeader || xhr.getResponseHeader("X-Served-From") === "cache") {
+				return;
+			}
+			var worker = xhr.getResponseHeader("X-Wiki-Plugin");
+			if(!worker || worker === full) {
+				return;
+			}
+			var at = worker.indexOf("+"), release = wiki.getTiddler(RELEASE);
+			if(release && release.fields.worker === (at >= 0 ? worker.slice(0,at) : worker)) {
+				return;
+			}
+			wiki.addTiddler(new $tw.Tiddler(release || {title: RELEASE},{worker: at >= 0 ? worker.slice(0,at) : worker, "worker-build": at >= 0 ? worker.slice(at + 1) : ""}));
+			if(wiki.getTiddlerText(RELOAD_STATUS,"") !== "yes") {
+				wiki.addTiddler(new $tw.Tiddler({title: RELOAD_STATUS, text: "yes"}));
+			}
+		}
+	});
 
 	function say(text) {
 		if(text) {
@@ -321,11 +385,13 @@ exports.startup = function() {
 	// lines are read (the suites, troubleshooting)
 	// todo: the one thing to do, on its own line under what was found (the worker's own field, or the
 	// browser's lines' below), before the link, so the reader finds the verb (design 2.20)
+	var plainLines = [];   // each line of the last check as plain text, in order, for the bug report (noteReport)
 	// link: a second link after the section's, {text, url}: the page the line's action is on, the
 	// dashboard's or GitHub's (the worker's own field, design 2.20)
 	function line(mark,text,guide,todo,link) {
 		var kind = mark === "✓" ? "ok" : mark === "✗" ? "bad" : "none",
 			label = kind === "ok" ? "fine" : kind === "bad" ? "missing or wrong" : "not checked";
+		plainLines.push(mark + " " + text + (todo ? " To do: " + todo : "") + (guide ? " (" + guide.text + ")" : ""));
 		return "<li><span class='cfworker-mark cfworker-mark-" + kind + "' aria-label='" + label + "'>" + mark + "</span> <$text text=\"\"\"" + text + "\"\"\"/>" +
 			(todo ? " <br/>''To do:'' <$text text=\"\"\"" + todo + "\"\"\"/>" : "") +
 			(guide ? " ([[" + guide.text + "|" + guide.url + "]])" : "") +
@@ -373,6 +439,41 @@ exports.startup = function() {
 			then(lines);
 		});
 	}
+	// The check's lines as plain text for a bug report (design 2.20): the marks and lines, the worker's
+	// version and build, the engine, whether the wiki is public, and the browser, on the check's tiddler
+	// (report); a second copy with the admin and public addresses replaced by admin.example and
+	// wiki.example (report-anonymised), for a report that keeps them private. No request, and no
+	// prefilled issue address: it would carry the addresses to GitHub before they could be replaced
+	function noteReport() {
+		var release = wiki.getTiddler(RELEASE),
+			engine = wiki.getTiddler(ENGINE),
+			publicUrl = wiki.getTiddlerText(PUBLIC_URL,"").trim(),
+			report = ["Check the setup (" + $tw.utils.formatDateString(new Date(),"YYYY-0MM-0DD 0hh:0mm") + "):"].concat(plainLines).concat([
+				"Worker: version " + ((release && release.fields.version) || "?") + " (build " + ((release && release.fields.build) || "?") + ")",
+				"Engine: TiddlyWiki " + ((engine && engine.fields.engine) || "?") + " (the worker ships " + ((engine && engine.fields.shipped) || "?") + ")",
+				"Wiki: " + (publicUrl ? "public (" + publicUrl + ")" : "private (no public site)"),
+				"Browser: " + (typeof navigator === "object" && navigator.userAgent ? navigator.userAgent : "?")
+			]).join("\n"),
+			anonymised = report,
+			admin = here.replace(/\/$/,""),
+			site = publicUrl.replace(/\/$/,""),
+			hostOf = function(address) {
+				try {
+					return address ? new URL(address).host : "";
+				} catch(e) {
+					return "";
+				}
+			};
+		$tw.utils.each([[admin,"https://admin.example"],[site,"https://wiki.example"],[hostOf(admin),"admin.example"],[hostOf(site),"wiki.example"]],function(pair) {
+			if(pair[0]) {
+				anonymised = anonymised.split(pair[0]).join(pair[1]);
+			}
+		});
+		var current = wiki.getTiddler(SETUP);
+		if(current) {
+			wiki.addTiddler(new $tw.Tiddler(current,{report: report, "report-anonymised": anonymised}));
+		}
+	}
 	function show(lines,checked) {
 		wiki.addTiddler(new $tw.Tiddler({
 			title: SETUP,
@@ -380,8 +481,32 @@ exports.startup = function() {
 			checked: $tw.utils.stringifyDate(checked || new Date())
 		}));
 	}
+	// One call purging the public hostname, with the token the worker holds (design 2.10's one exception):
+	// the answer shown under the button, as the full backup's is
+	$tw.rootWidget.addEventListener(PURGE,function() {
+		wiki.addTiddler(new $tw.Tiddler({title: PURGE_MESSAGE, text: "Purging…"}));
+		var host = ($tw.syncadaptor && $tw.syncadaptor.host) || here;
+		$tw.utils.httpRequest({
+			url: host + "purge",
+			type: "POST",
+			headers: {"X-Requested-With": "TiddlyWiki"},
+			callback: function(err,data,xhr) {
+				var status = xhr ? xhr.status : 0;
+				if(status) {
+					// The worker's words whatever the status (TiddlyWiki passes only a 2xx's body as data)
+					wiki.addTiddler(new $tw.Tiddler({title: PURGE_MESSAGE, text: (status === 200 ? "" : "The worker answered " + status + ": ") + shown(xhr.responseText || data || err)}));
+					return;
+				}
+				noAnswer(false,function(text,guide) {
+					wiki.addTiddler(new $tw.Tiddler({title: PURGE_MESSAGE, text: "The worker didn't answer: " + text + noAnswerLink(guide)}));
+				});
+			}
+		});
+		return false;
+	});
 	$tw.rootWidget.addEventListener(CHECK,function() {
 		wiki.addTiddler(new $tw.Tiddler({title: SETUP, text: "Checking…"}));
+		plainLines = [];
 		var host = ($tw.syncadaptor && $tw.syncadaptor.host) || here;
 		$tw.utils.httpRequest({
 			url: host + "setup/check",
@@ -398,6 +523,7 @@ exports.startup = function() {
 				var done = function() {
 					browserLines(corsFiles,function(own) {
 						show(lines.concat(own));
+						noteReport();
 					});
 				};
 				if(body && Array.isArray(body.checks)) {

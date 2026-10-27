@@ -5,8 +5,9 @@
 // and never cached. A real TiddlyWiki in Chromium, the network cut and restored.
 // Run: npm run test:cold
 import fs from "node:fs";
+import http from "node:http";
 import path from "node:path";
-import { addTiddler, createChecks, createWatcher, finish, launchBrowser, readWikiFile, settle, sleep, startSite, waitFor } from "./browser-harness.mjs";
+import { addTiddler, createChecks, createWatcher, finish, launchBrowser, listen, readWikiFile, settle, sleep, startSite, waitFor } from "./browser-harness.mjs";
 
 // R2 on disk: "no network" here is the worker and the public stand-in taken down (the browser's
 // offline mode doesn't cut a service worker's own requests), then brought back with the same data
@@ -16,16 +17,16 @@ const site = await startSite({ index: readWikiFile(), publicStatus: true, privat
 const { base: BASE, pub: PUB } = site;
 const { check, results } = createChecks();
 const browser = await launchBrowser({ serviceWorkers: "allow" });
-const { pageErrors, watch } = createWatcher(site);
+const { requests, pageErrors, watch } = createWatcher(site);
 const CACHE = "cfworker-wiki-v1";
-const responses = [];   // every response a page got: { tag, url, status, fromSW }
+const responses = [];   // every response a page got: { tag, url, status, fromSW, served (X-Served-From), at }
 const dialogs = [];     // every browser dialog a page showed (the "Cannot load" alert of TiddlyWiki's page, say)
 
 async function open(context, tag, url = BASE + "/", { wait = true } = {}) {
   const p = await context.newPage();
   await watch(p, tag);
   p.on("console", m => { if (m.type() === "error" && !m.text().startsWith("Failed to load resource")) pageErrors.push(`${tag} console: ${m.text()}`); });
-  p.on("response", r => responses.push({ tag, url: r.url(), status: r.status(), fromSW: r.fromServiceWorker() }));
+  p.on("response", r => responses.push({ tag, url: r.url(), status: r.status(), fromSW: r.fromServiceWorker(), served: r.headers()["x-served-from"] || null, at: Date.now() }));
   p.on("dialog", d => { dialogs.push(`${tag}: ${d.message()}`); d.accept(); });
   const response = await p.goto(url);
   if (wait) await ready(p);
@@ -104,9 +105,26 @@ check("...the two lines about this browser, the service worker's and the core fi
 check("...the private wiki's one line for the public site's pieces carries R2's page as a second link after the section's: Cloudflare's deep link, its text R2",
   /\(setup 2\.1\) \(R2\)/.test(setup1.tab) && setup1.html.includes('href="https://dash.cloudflare.com/?to=/:account/r2/overview"') && setup1.html.indexOf('>setup 2.1</a>') < setup1.html.indexOf('r2/overview'),
   (setup1.tab.match(/.{0,120}\(setup 2\.1\).{0,40}/) || ["no setup 2.1 line"])[0]);
+// The check's result is announced (design 2.17, #168): its list sits in a live region that exists before
+// the result does, so a screen reader says it once the lines are in; the tab's other answers the same
+const REGION = /<div(?=[^>]*role="status")(?=[^>]*aria-live="polite")[^>]*>/g;
+check("...the check's lines sit in a live region (role=status, aria-live=polite) that is there before the result, as the tab's other answers do, so a screen reader announces each once (two regions here, the check's and the engine's: the backup button's comes with the button, backups being off on this wiki)",
+  /<div(?=[^>]*role="status")(?=[^>]*aria-live="polite")[^>]*>(?:(?!<\/div>)[\s\S])*?<ul class="cfworker-setup-check"/.test(setup1.html) && (setup1.html.match(REGION) || []).length === 2,
+  `${(setup1.html.match(REGION) || []).length} regions; ${(setup1.html.match(/.{0,80}role="status".{0,80}/) || ["no live region"])[0]}`);
 check("...each mark is a span with its class and a label (fine, not checked), the glyph first in the text, in a list the stylesheet styles",
   /<span (?=[^>]*class="cfworker-mark cfworker-mark-ok")(?=[^>]*aria-label="fine")[^>]*>✓<\/span> /.test(setup1.html) && /<span (?=[^>]*class="cfworker-mark cfworker-mark-none")(?=[^>]*aria-label="not checked")[^>]*>–<\/span> /.test(setup1.html) && /<ul[^>]*class="cfworker-setup-check"[^>]*>/.test(setup1.html) && setup1.lines.length >= 5 && setup1.lines.every(l => /^[✓✗–] \S/.test(l)),
   setup1.html.replace(/\s+/g, " ").slice(0, 400));
+// Copy for a bug report (design 2.20, #171): the check's lines as plain text on the check's tiddler, with
+// the worker's version and build, the engine, whether the wiki is public and the browser; a second copy
+// with the addresses replaced; two buttons under the lines sending each to the clipboard
+const reportOf = p => p.evaluate(t => { const f = $tw.wiki.getTiddler(t).fields; return { report: f.report || "", anonymised: f["report-anonymised"] || "" }; }, SETUP);
+const report1 = await reportOf(A);
+const reportLines = report1.report.split("\n");
+check("the check's tiddler carries a plain-text report for a bug report: a dated heading, each line's mark and text, the worker's version and build, the engine, the wiki private, the browser; the tab offers it under the lines, plain and with the addresses replaced",
+  /^Check the setup \(\d{4}-\d\d-\d\d \d\d:\d\d\):$/.test(reportLines[0]) && reportLines.filter(l => /^[✓✗–] /.test(l)).length === setup1.lines.length && reportLines.some(l => /^✓ .*Access/.test(l)) &&
+  /^Worker: version \S+ \(build \S+\)$/m.test(report1.report) && /^Engine: TiddlyWiki 5\.\d+\.\d+ \(the worker ships 5\.\d+\.\d+\)$/m.test(report1.report) && /^Wiki: private \(no public site\)$/m.test(report1.report) && /^Browser: .*Chrome/m.test(report1.report) &&
+  report1.anonymised.length > 0 && /Copy for a bug report/.test(setup1.tab) && /Copy with the addresses replaced/.test(setup1.tab),
+  report1.report.slice(0, 400) || "no report");
 // An alert's close button on a narrow screen: TiddlyWiki's is the icon's 14 × 17 px; the
 // stylesheet gives it a thumb's hit area under a narrow-screen media rule
 const viewport = A.viewportSize();
@@ -373,6 +391,66 @@ await settle(A);
 await reload(A);
 check("...cleared: back to the default at the next load", (await swSettings(A))?.networkWait === 8000, JSON.stringify(await swSettings(A)));
 
+// --- 6d. A worker that hangs rather than goes down: the wait paid once, for the page, not again for
+// the list (design 1.11, #169). A proxy in front of the worker holds the page and the list as long as
+// told: the service worker answers the page from its cache after the wait, and that page's first list
+// from the cache at once, the fetch going on behind; a tab whose page the network answered keeps the
+// wait for its list, and so does the same tab's next poll (once, not a state)
+let hold = 0;   // ms the proxy holds the page and the list before forwarding them
+const forwarded = [];   // what reached the worker through the proxy: { path, at }
+const slowProxy = http.createServer((req, res) => {
+  const url = new URL(req.url, "http://slow");
+  const held = hold > 0 && req.method === "GET" && (url.pathname === "/" || url.pathname === "/recipes/default/tiddlers.json") ? hold : 0;
+  setTimeout(() => {
+    const target = new URL(req.url, BASE);
+    forwarded.push({ path: url.pathname, at: Date.now() });
+    const out = http.request({ hostname: target.hostname, port: target.port, path: req.url, method: req.method, headers: { ...req.headers, host: target.host } }, answer => { res.writeHead(answer.statusCode, answer.headers); answer.pipe(res); });
+    out.on("error", () => { if (!res.headersSent) res.writeHead(502); res.end(); });
+    req.pipe(out);
+  }, held);
+});
+const SLOW = await listen(slowProxy);
+const contextS = await browser.newContext();
+const { p: S } = await open(contextS, "S", SLOW + "/");
+await reload(S);
+await addTiddler(S, { title: "$:/config/cfworker/NetworkWait", text: "2" });
+await settle(S);
+await reload(S);
+check("(through a proxy that can hold the worker's answers: the wiki opens, the service worker controls the page, the wait set to 2 s)", (await controller(S)) !== null && (await swSettings(S))?.networkWait === 2000, `${await controller(S)} ${JSON.stringify(await swSettings(S))}`);
+const { p: S2 } = await open(contextS, "S2", SLOW + "/");   // (a second tab, its page answered by the network)
+// A list request's answer: from where, and how long it took (the watcher's request against the page's response)
+const listAnswer = (tag, from) => {
+  const q = requests.find(r => r.tag === tag && r.at >= from && /\/recipes\/default\/tiddlers\.json/.test(r.url));
+  const a = responses.find(r => r.tag === tag && r.at >= from && /\/recipes\/default\/tiddlers\.json/.test(r.url));
+  return q && a ? { served: a.served, took: a.at - q.at, fromSW: a.fromSW } : null;
+};
+hold = 6000;
+const t0 = Date.now();
+await reload(S);
+const first = listAnswer("S", t0);
+check("the worker holding its answers: the page comes from the cache after the 2 s wait, and that page's first tiddler list from the cache at once (X-Served-From: cache, no second wait)",
+  responses.some(r => r.tag === "S" && r.at >= t0 && r.url === SLOW + "/" && r.fromSW) && !!first && first.served === "cache" && first.took < 1000,
+  `page ${JSON.stringify(responses.filter(r => r.tag === "S" && r.at >= t0 && r.url === SLOW + "/").map(r => r.fromSW))}, list ${JSON.stringify(first)}`);
+const t1 = Date.now();
+await S2.evaluate(() => $tw.syncer.syncFromServer());
+await waitFor(() => listAnswer("S2", t1) !== null, 15000);
+const other = listAnswer("S2", t1);
+check("...another tab, whose page the network answered, keeps the wait for its list: the cache after the 2 s, not at once (keyed by the tab)", !!other && other.served === "cache" && other.took >= 1500, JSON.stringify(other));
+const t2 = Date.now();
+await S.evaluate(() => $tw.syncer.syncFromServer());
+await waitFor(() => listAnswer("S", t2) !== null, 15000);
+const again = listAnswer("S", t2);
+check("...and the same tab's next poll waits again: the cached list answered the page's first request alone (once, not a state)", !!again && again.served === "cache" && again.took >= 1500, JSON.stringify(again));
+const refreshed = await waitFor(() => forwarded.some(f => f.path === "/recipes/default/tiddlers.json" && f.at >= t0), 20000);
+check("...the first list's fetch went on behind and reached the worker, to refresh the cache", refreshed, JSON.stringify(forwarded.filter(f => f.at >= t0).map(f => f.path)));
+hold = 0;
+await S.evaluate(() => $tw.wiki.deleteTiddler("$:/config/cfworker/NetworkWait"));
+await settle(S);
+await S2.close();
+await S.close();
+await contextS.close();
+await new Promise(r => slowProxy.close(r));
+
 // --- 7. A public wiki: the core and plugin files come from the public site, and are cached too -------
 await site.setBindings({ PUBLIC_WIKI_URL: PUB });
 await reload(A);
@@ -396,6 +474,10 @@ check("...kept as real answers, asked for with CORS, never opaque (the browser w
   publicFiles.length >= 2 && types.every(t => t === "cors"), `${publicFiles.length} files: ${types.join(", ")}`);
 await online(contextA);
 const setupPublic = await setupCheck(A);
+const reportPublic = await reportOf(A);
+check("on a public wiki, the report says so with the public address, and the copy with the addresses replaced has wiki.example in its place (admin.example for the admin site's)",
+  new RegExp("^Wiki: public \\(" + PUB.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "/?\\)$", "m").test(reportPublic.report) && reportPublic.report.includes(new URL(PUB).host) && !reportPublic.anonymised.includes(new URL(PUB).host) && /wiki\.example/.test(reportPublic.anonymised) && !reportPublic.anonymised.includes(new URL(BASE).host),
+  (reportPublic.anonymised.match(/^Wiki: .*$/m) || ["no Wiki line"])[0]);
 check("the setup check on a public wiki: the public site answering with the page, the CORS rule covering the reads and the files, this browser keeping the core file",
   setupPublic.done && setupPublic.lines.some(l => /^✓ .*rewrite/i.test(l)) && setupPublic.lines.some(l => /^✓ .*\/recipes\//.test(l)) && setupPublic.lines.some(l => /^✓ .*\/_plugins\//.test(l)) && setupPublic.lines.some(l => /^✓ .*core file/.test(l)),
   setupPublic.lines.join(" | ") || `done ${setupPublic.done}`);
@@ -485,7 +567,14 @@ const item = await A.evaluate(t => $tw.wiki.renderTiddler("text/html", t), ITEM)
 check("while a change waits and the browser hasn't promised, the cloud dropdown says so, with a link to the device tab",
   /hasn't promised/.test(item) && (item.includes(encodeURIComponent(DEVICE)) || item.includes(DEVICE)), item.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").slice(0, 240));
 const offlineMeasure = await measure(A);
-check("Measure, offline: the change waiting in the outbox is counted (the tab needs no network)", offlineMeasure.done && /1 change\b.* waiting in the outbox/.test(offlineMeasure.text), offlineMeasure.text.slice(0, 300));
+check("Measure, offline: the first line says 1 change waits to be sent", offlineMeasure.done && /^Opens with no network: .*1 change waits to be sent\./.test(offlineMeasure.text), offlineMeasure.text.slice(0, 200));
+check("Measure, offline: the change waiting in the outbox is counted (the tab needs no network)", offlineMeasure.done && /1 change waiting to be sent \(Device note\)/.test(offlineMeasure.text), offlineMeasure.text.slice(0, 300));
+// The device tab's answers are announced too (design 2.17, #168): the Measure report and the keep and
+// forget messages each sit in a live region that is there before the answer
+const deviceHtml = await A.evaluate(t => $tw.wiki.renderTiddler("text/html", t), DEVICE);
+check("...the device tab's Measure report and the keep and forget messages each sit in a live region (role=status, aria-live=polite), there before the answer",
+  (deviceHtml.match(/<div(?=[^>]*role="status")(?=[^>]*aria-live="polite")[^>]*>/g) || []).length === 3 && deviceHtml.indexOf('role="status"') >= 0 && deviceHtml.indexOf('role="status"') < deviceHtml.indexOf("waiting to be sent"),
+  `${(deviceHtml.match(/role="status"/g) || []).length} regions`);
 await online(contextA);
 await waitFor(async () => (await status(A))?.waiting === "0", 15000);
 await settle(A);
@@ -493,10 +582,15 @@ await waitFor(async () => (await deviceCount(A)) >= await listedCount(), 15000);
 const onlineMeasure = await measure(A);
 const kept = await deviceCount(A), listed = await listedCount();
 const copyLine = onlineMeasure.text.match(/(\d+) of (\d+) tiddlers/);
+// The first line answers the question in words (#150): whether the wiki opens with no network, what
+// would be empty offline, what waits; the files are named in words, the path in brackets
+check("Measure opens with one line that says the wiki opens with no network (the page and TiddlyWiki's core kept), that every listed tiddler is kept, and that nothing waits to be sent; the page and the core named in words in the file list",
+  onlineMeasure.done && /^Opens with no network: yes, the page and TiddlyWiki's core are kept\. Every listed tiddler is kept\. Nothing waits to be sent\./.test(onlineMeasure.text) && /the page \(\/\)/.test(onlineMeasure.text) && /TiddlyWiki's core \([^)]*\/_plugins\/tiddlywikicore\.js\)/.test(onlineMeasure.text),
+  onlineMeasure.text.slice(0, 220));
 check("Measure: the tiddlers kept on this device of those the worker lists, with their size; nothing waiting in the outbox",
   onlineMeasure.done && !!copyLine && Number(copyLine[1]) === kept && Number(copyLine[2]) === listed && kept > 0 && /tiddlers kept \(\d+(\.\d+)? (B|KB|MB)\)/.test(onlineMeasure.text) && /nothing waiting in the outbox/.test(onlineMeasure.text),
   `${onlineMeasure.text.slice(0, 200)} — device ${kept}, listed ${listed}`);
-check("...the files the service worker keeps, each with its size", /the page\) \(\d+(\.\d+)? (KB|MB)\)/.test(onlineMeasure.text) && /_plugins\/tiddlywikicore\.js[^)]*\(\d+(\.\d+)? (KB|MB)\)/.test(onlineMeasure.text) && /tiddlers\.json[^)]*\(\d+(\.\d+)? (B|KB|MB)\)/.test(onlineMeasure.text),
+check("...the files the service worker keeps, each with its size", /the page \(\/\) \(\d+(\.\d+)? (KB|MB)\)/.test(onlineMeasure.text) && /TiddlyWiki's core \([^)]*\/_plugins\/tiddlywikicore\.js\) \(\d+(\.\d+)? (KB|MB)\)/.test(onlineMeasure.text) && /tiddlers\.json[^)]*\(\d+(\.\d+)? (B|KB|MB)\)/.test(onlineMeasure.text),
   onlineMeasure.text.replace(/^.*?files/, "files").slice(0, 300));
 check("...and not the service worker's own settings entry, which isn't a file", !/__cfworker/.test(onlineMeasure.text), onlineMeasure.text.replace(/^.*?files/, "files").slice(0, 300));
 check("...what the browser says: this site's use of what it allows, and that it hasn't promised to keep it", /uses \d+(\.\d+)? (B|KB|MB|GB) of (the )?\d+(\.\d+)? (KB|MB|GB)/.test(onlineMeasure.text) && /hasn't promised/.test(onlineMeasure.text),
@@ -561,7 +655,7 @@ await A.evaluate(() => { window.__stillHere = 1; $tw.rootWidget.dispatchEvent({ 
 await waitFor(async () => /waiting/.test(await saidOrNot()), 10000);
 await sleep(500);
 check("Forget, with a change and a draft the device refused to keep (in this tab only, the outbox's table without them): refused all the same, saying both wait, in this tab; nothing removed, no reload",
-  unkeptWaits && unkeptRows === 0 && /1 change and 1 draft waiting.*lives in this tab/.test(await saidOrNot()) && (await A.evaluate(() => window.__stillHere).catch(() => undefined)) === 1 && (await deviceCount(A)) > 0 && (await cached(A)).length === keysBefore.length,
+  unkeptWaits && unkeptRows === 0 && /1 change waiting to be sent(?: \([^)]*\))?, and 1 draft kept on this device only.*lives in this tab/.test(await saidOrNot()) && (await A.evaluate(() => window.__stillHere).catch(() => undefined)) === 1 && (await deviceCount(A)) > 0 && (await cached(A)).length === keysBefore.length,
   `waits ${unkeptWaits}, outbox rows ${unkeptRows}, kept ${await keptSaid()}: ${await saidOrNot()}`);
 await A.evaluate(() => { window.__refuseOutbox = false; $tw.wiki.deleteTiddler("Draft of 'Unkept note'"); }).catch(() => {});
 await online(contextA);

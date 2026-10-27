@@ -10,7 +10,8 @@ import { setupCheck } from "../src/worker/setup.js";
 const { check, results } = createChecks();
 
 // GitHub and Cloudflare's API, as the worker sees them; what the suite makes them answer
-const api = { repo: 200, branch: 200, private: true, purge: { status: 200, body: { success: true } }, purgeDown: false };   // private: the backup repository's visibility
+const purgeBodies = [];   // what the worker sent to purge_cache, in order
+const api = { repo: 200, branch: 200, private: true, purge: { status: 200, body: { success: true } }, purgeDown: false, expires: null };   // private: the backup repository's visibility; expires: the token's expiry header, a date string, or null for none
 const calls = [];   // the worker's own requests to them: "METHOD url"
 function outbound(request) {
   const url = new URL(request.url);
@@ -19,7 +20,7 @@ function outbound(request) {
     const branch = url.pathname.match(/\/repos\/[^/]+\/[^/]+\/branches\/(.+)$/);
     if (branch) return new Response(api.branch === 200 ? JSON.stringify({ name: branch[1] }) : JSON.stringify({ message: "Branch not found" }), { status: api.branch });
     if (/^\/repos\/[^/]+\/[^/]+$/.test(url.pathname)) {
-      return new Response(api.repo === 200 ? JSON.stringify({ full_name: url.pathname.slice(7), default_branch: "main", private: api.private, visibility: api.private ? "private" : "public" }) : JSON.stringify({ message: api.repo === 401 ? "Bad credentials" : api.repo === 403 ? "API rate limit exceeded" : "Not Found" }), { status: api.repo });
+      return new Response(api.repo === 200 ? JSON.stringify({ full_name: url.pathname.slice(7), default_branch: "main", private: api.private, visibility: api.private ? "private" : "public" }) : JSON.stringify({ message: api.repo === 401 ? "Bad credentials" : api.repo === 403 ? "API rate limit exceeded" : "Not Found" }), { status: api.repo, headers: api.expires ? { "github-authentication-token-expiration": api.expires } : {} });
     }
     return new Response("{}", { status: 404 });
   }
@@ -27,7 +28,11 @@ function outbound(request) {
     // The API not answering at all: the worker's fetch fails before any answer. (A handler that throws, or a
     // Response.error(), reaches the worker as a 500 from Miniflare; a redirect loop is a network error there too)
     if (api.purgeDown) return Response.redirect(request.url, 302);
-    return new Response(JSON.stringify(api.purge.body), { status: api.purge.status });
+    // (what the worker sent, kept for the purge route's checks: the harness awaits a promise from here)
+    return request.text().then(text => {
+      try { purgeBodies.push(JSON.parse(text)); } catch { purgeBodies.push(null); }
+      return new Response(JSON.stringify(api.purge.body), { status: api.purge.status });
+    });
   }
   return new Response("not imitated: " + url.href, { status: 500 });
 }
@@ -105,8 +110,8 @@ check("everything in place: every piece fine, the lines saying so", IDS.every(id
 check("...a passing line carries no todo (the cache line apart, whose optional one is information), and the queue line is plain: in place, its binding named",
   ["access", "public", "rewrite", "cors-reads", "cors-files", "backups", "queue", "purges"].every(id => !todoOf(items, id)) && /^The backup queue is in place \(BACKUP_QUEUE\)\.$/.test(said(items, "queue")),
   `queue ${line(items, "queue")} | todos ${IDS.map(id => `${id}=${JSON.stringify(todoOf(items, id))}`).join(" ")}`);
-check("...and no passing line carries a dashboard page (the Access line, with Access off, names none; the cache line's goes with its Browser TTL todo)",
-  dashNone(items, IDS.filter(id => id !== "cache")) && !!dashOf(items, "cache") === !!todoOf(items, "cache"),
+check("...and no passing line carries a dashboard page (the Access line, with Access off, names none; the cache line's goes with its Browser TTL todo; the backups line's second link is the repository's commits, #143)",
+  dashNone(items, IDS.filter(id => id !== "cache" && id !== "backups")) && !!dashOf(items, "cache") === !!todoOf(items, "cache") && /\/commits\//.test(dashOf(items, "backups")?.url || ""),
   IDS.map(id => `${id}=${JSON.stringify(dashOf(items, id))}`).join(" "));
 check("...the Access line, on this local address with ACCESS = off: says the switch is on and that a deployed worker refuses without Access",
   ok(items, "access") === true && /ACCESS = off/.test(text(items, "access")) && /deployed worker refuses/.test(text(items, "access")), line(items, "access"));
@@ -136,7 +141,7 @@ check("...GitHub asked for the repository and its branch with the token, Cloudfl
   calls.some(c => c === "GET https://api.github.com/repos/someone/wiki-backup") && calls.some(c => c === "GET https://api.github.com/repos/someone/wiki-backup/branches/main") &&
   calls.some(c => c === "POST https://api.cloudflare.com/client/v4/zones/zone-1/purge_cache"), calls.join(", "));
 check("...the purges line says the status file's copy was purged, the backups line names the repository and the branch, and says what the check can't test, writing, with the next step: save any tiddler, and the tab's Backups section and an alert say if GitHub refuses it",
-  /status/.test(text(items, "purges")) && /someone\/wiki-backup/.test(text(items, "backups")) && /main/.test(text(items, "backups")) && /GitHub accepts the token\. The check can't test writing: save any tiddler, and if GitHub refuses it, the tab's Backups section and an alert say so within minutes\.$/.test(text(items, "backups")) && !/Whether it may write/.test(text(items, "backups")),
+  /status/.test(text(items, "purges")) && /someone\/wiki-backup/.test(text(items, "backups")) && /main/.test(text(items, "backups")) && /GitHub accepts the token\. The check can't test writing: save any tiddler, and if GitHub refuses it, the tab's Backups section and an alert say so within minutes\.$/.test(text(items, "backups")) && !/Whether it may write/.test(text(items, "backups")) && !!items.backups.link && items.backups.link.url === "https://github.com/someone/wiki-backup/commits/main" && items.backups.link.text === "its commits on GitHub",
   `${line(items, "purges")} ${line(items, "backups")}`);
 
 // --- 2. The public site's rules, one missing at a time --------------------------------------------
@@ -147,7 +152,7 @@ check("the rewrite rule missing (the public site's / isn't the page): named, wit
   `${line(items, "rewrite")} | public ${ok(items, "public")}`);
 check("...and the line ends with what to do: the rule's place (Rules → Transform Rules → Rewrite URL), the host, the path / rewritten to /baked.html",
   /Rules → Transform Rules → Rewrite URL/.test(text(items, "rewrite")) && text(items, "rewrite").includes(`the host is ${PUBLIC_HOST}`) && /rewrite the path to \/baked\.html\.$/.test(text(items, "rewrite")), line(items, "rewrite"));
-check("...the rewrite line carries the Rules page as its dashboard link, the other lines none", dashTo(items, "rewrite", "Rules", "/rules/overview") && dashNone(items, ["public", "cors-reads", "cors-files", "backups", "queue", "purges"]),
+check("...the rewrite line carries the Rules page as its dashboard link, the other lines none (the backups line's commits apart)", dashTo(items, "rewrite", "Rules", "/rules/overview") && dashNone(items, ["public", "cors-reads", "cors-files", "queue", "purges"]),
   IDS.map(id => `${id}=${JSON.stringify(dashOf(items, id))}`).join(" "));
 check("...that action as the line's own todo field, the text ending at what was found, the evidence (status, ETag, Last-Modified, the stored page's) after the diagnosis rather than before it",
   /^Add it under the domain, Rules → Transform Rules → Rewrite URL: when the host is /.test(todoOf(items, "rewrite")) && !/Add it under/.test(said(items, "rewrite")) && /^The public site's \/ doesn't serve the wiki page: the rewrite rule \/ → \/baked\.html is missing or wrong \(answered \d+/.test(said(items, "rewrite")) && /\.$/.test(said(items, "rewrite")),
@@ -297,6 +302,21 @@ check("the branch missing: named", ok(items, "backups") === false && /branch/.te
 check("...and the line ends with what to do: set GITHUB_BRANCH, in the worker's Variables and Secrets, to a branch the repository has, or give an empty repository its first commit",
   /Set GITHUB_BRANCH, in the worker's Variables and Secrets/.test(text(items, "backups")) && /first commit/.test(text(items, "backups")), line(items, "backups"));
 api.branch = 200;
+// The token's expiry, from the header GitHub sends with every fine-grained-token answer (#156): the
+// date on the passing line; within a month, the renewal as the line's todo, still a pass; no header, nothing
+const dateIn = days => new Date(Date.now() + days * 86400000);
+const isoDay = d => d.toISOString().slice(0, 10);
+api.expires = dateIn(300).toUTCString();
+({ items } = await run());
+check("the backup token expiring in 300 days: the passing backups line ends with the date and to make a new one before then (setup 2.4), no todo",
+  ok(items, "backups") === true && said(items, "backups").endsWith(`The token expires on ${isoDay(dateIn(300))}: make a new one before then, as in setup 2.4.`) && !todoOf(items, "backups"), line(items, "backups"));
+api.expires = dateIn(20).toUTCString();
+({ items } = await run());
+check("...in 20 days: still a pass, the date in the text, and the renewal as its todo (Regenerate token keeps the repository and the permission, set a year, replace the GITHUB_TOKEN secret)",
+  ok(items, "backups") === true && said(items, "backups").endsWith(`The token expires on ${isoDay(dateIn(20))}.`) && /^Make a new one now, as in setup 2\.4 \(on GitHub, Regenerate token keeps the repository and the permission; set a year\), and replace the GITHUB_TOKEN secret in the worker's Variables and Secrets\.$/.test(todoOf(items, "backups")), `${line(items, "backups")} | todo ${todoOf(items, "backups")}`);
+api.expires = null;
+({ items } = await run());
+check("...no expiry header (a token without one): nothing about expiry", ok(items, "backups") === true && !/expires/.test(text(items, "backups")), line(items, "backups"));
 api.purge = { status: 403, body: { success: false, errors: [{ code: 10000, message: "Authentication error" }] } };
 ({ items } = await run());
 check("Cloudflare refusing the purge: the purges line says so, with the token's section, and ends with the hostname to purge once after the fix (Purge Cache → Custom Purge → Hostname, the public host, operating 3.9), since what changed while purges failed stays cached until its Edge TTL", ok(items, "purges") === false && /Authentication error|403/.test(text(items, "purges")) && guide(items, "purges") === "2.5" && new RegExp(`Then purge the public hostname once \\(Caching → Configuration → Purge Cache → Custom Purge → Hostname, ${PUBLIC_HOST.replace(/\./g, "\\.")}; operating 3\\.9\\): what changed while purges failed stays cached until its Edge TTL otherwise\\.$`).test(text(items, "purges")), line(items, "purges"));
@@ -351,6 +371,29 @@ check("...the other way round: the backups line names GITHUB_REPO alone and says
   ok(items, "backups") === false && /has GITHUB_TOKEN but no GITHUB_REPO/.test(text(items, "backups")) && /Set GITHUB_REPO, in the worker's Variables and Secrets/.test(text(items, "backups")) &&
   ok(items, "purges") === null && /CF_ZONE_ID isn't set \(CF_API_TOKEN is\)/.test(text(items, "purges")) && /Set CF_ZONE_ID, in the worker's Variables and Secrets, to the zone ID on the domain's overview page\.$/.test(text(items, "purges")),
   `${line(items, "backups")} | ${line(items, "purges")}`);
+// --- 3b. The purge button's route (#175): one call purging the public hostname with the token the worker
+// holds, never purge_everything; only with the modules' header; refused without the settings
+{
+  const post = (headers = {}) => fetch(site.base + "/purge", { method: "POST", headers });
+  await site.setBindings({ GITHUB_REPO: "someone/wiki-backup", GITHUB_TOKEN: "ghp_test", CF_ZONE_ID: "zone-1", CF_API_TOKEN: "cf_test" });   // (the purge settings back, after the lines above unset them)
+  purgeBodies.length = 0;
+  const purged = await post({ "X-Requested-With": "TiddlyWiki" });
+  check("POST /purge with the modules' header: one purge_cache call with the public hostname in hosts (no files, no purge_everything), answered 200 in words naming the host",
+    purged.status === 200 && purgeBodies.length === 1 && JSON.stringify(purgeBodies[0]) === JSON.stringify({ hosts: [new URL(site.pub).host] }) && (await purged.text()).startsWith(`Purged ${new URL(site.pub).host} from Cloudflare's cache`),
+    `${purged.status} ${JSON.stringify(purgeBodies)}`);
+  purgeBodies.length = 0;
+  const bare = await post();
+  check("...without the header: refused (403), no call", bare.status === 403 && purgeBodies.length === 0 && /Cloudflare tab/.test(await bare.text()), `${bare.status} ${purgeBodies.length}`);
+  api.purge = { status: 403, body: { success: false, errors: [{ code: 10000, message: "Authentication error" }] } };
+  const refused = await post({ "X-Requested-With": "TiddlyWiki" });
+  check("...Cloudflare refusing: 502 saying so, with Check the setup as the test of the token", refused.status === 502 && /refused the purge \(403: Authentication error\): Check the setup tests the token/.test(await refused.text()), String(refused.status));
+  api.purge = { status: 200, body: { success: true } };
+  await site.setBindings({ GITHUB_REPO: "someone/wiki-backup", GITHUB_TOKEN: "ghp_test", CF_ZONE_ID: "", CF_API_TOKEN: "" });
+  purgeBodies.length = 0;
+  const unset = await post({ "X-Requested-With": "TiddlyWiki" });
+  check("...without the purge settings: refused (400) with the check's words for what to set, no call", unset.status === 400 && purgeBodies.length === 0 && /No purge settings: set CF_ZONE_ID \(the zone ID on the domain's overview page\) and the CF_API_TOKEN secret/.test(await unset.text()), `${unset.status} ${purgeBodies.length}`);
+  await site.setBindings({ GITHUB_REPO: "someone/wiki-backup", GITHUB_TOKEN: "ghp_test", CF_ZONE_ID: "zone-1", CF_API_TOKEN: "cf_test" });
+}
 await site.close();
 
 // --- 4. A worker without the queue, a private wiki --------------------------------------------------

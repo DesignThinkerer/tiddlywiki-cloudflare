@@ -1,0 +1,59 @@
+\define cfworker-diff-state() $:/state/cfworker/conflict-diff/$(currentTiddler)$
+
+<$list filter="[<currentTiddler>has[conflict-of]]" variable="copy">
+
+<div class="cfworker-conflict tc-message-box">
+
+A conflict copy of <$link to={{!!conflict-of}}><$text text={{!!conflict-of}}/></$link>: your text, saved when the original had changed elsewhere. Compare them, put what you want into the original, then delete this copy ([[operating 3.20|https://github.com/DesignThinkerer/tiddlywiki-cloudflare/blob/main/docs/operating.md#320-when-two-tabs-edit-the-same-tiddler]]).
+
+<$list filter="[{!!conflict-of}is[tiddler]]" variable="original">
+
+<$list filter="[<currentTiddler>!has[conflict-removed-plugin-type]!is[binary]]" variable="comparable">
+
+<$reveal state=<<cfworker-diff-state>> type="nomatch" text="open"><$button set=<<cfworker-diff-state>> setTo="open" class="tc-btn-invisible tc-tiddlylink">Show what this copy changes</$button></$reveal><$reveal state=<<cfworker-diff-state>> type="match" text="open"><$button set=<<cfworker-diff-state>> setTo="" class="tc-btn-invisible tc-tiddlylink">Hide what this copy changes</$button></$reveal>
+
+<$reveal state=<<cfworker-diff-state>> type="match" text="open">
+
+<div class="cfworker-conflict-diff">
+
+<$diff-text source={{{ [{!!conflict-of}get[text]] }}} dest={{!!text}}/>
+
+</div>
+
+</$reveal>
+
+</$list>
+
+<$list filter="[{$:/status/IsReadOnly}!match[yes]]" variable="writable">
+
+<$button message="tm-delete-tiddler" param=<<currentTiddler>>>Delete this copy</$button> <$button class="cfworker-use-text"><$action-setfield $tiddler={{!!conflict-of}} text={{!!text}}/>Use this text in the original</$button>
+
+</$list>
+
+</$list>
+
+<$list filter="[{!!conflict-of}!is[tiddler]]" variable="gone">
+
+The original no longer exists: rename this copy to its title to bring it back.
+
+<$list filter="[{$:/status/IsReadOnly}!match[yes]]" variable="writable">
+
+<$button message="tm-delete-tiddler" param=<<currentTiddler>>>Delete this copy</$button>
+
+</$list>
+
+</$list>
+
+</div>
+
+</$list>
+
+<$list filter="[all[tiddlers]field:conflict-of<currentTiddler>sort[]]" variable="copyOf">
+
+<div class="cfworker-conflict tc-message-box">
+
+A conflict copy of this tiddler, <$link to=<<copyOf>>><$text text=<<copyOf>>/></$link> from <$view tiddler=<<copyOf>> field="modified" format="date" template="DDth MMM YYYY 0hh:0mm"/>: compare, put what you want here, then delete the copy ([[operating 3.20|https://github.com/DesignThinkerer/tiddlywiki-cloudflare/blob/main/docs/operating.md#320-when-two-tabs-edit-the-same-tiddler]]).
+
+</div>
+
+</$list>
