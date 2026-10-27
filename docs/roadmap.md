@@ -16,7 +16,7 @@ A TiddlyWiki anyone hosts on Cloudflare's free plan in about ten minutes, from a
 
 Each step is one pull request, with its tests, its page in the manual, its design entry and its changelog line. "Done when" is written as behaviour, and becomes the list of tests when the step starts.
 
-The steps the goal needed are done. The last of them, a Deploy to Cloudflare button (2026-10-19, the day the repository went public), was taken out again on 2026-10-26: its copy wasn't a fork, so every update needed a script, and the fork with *Sync fork* is the one path ([design 2.30](design.md#230-the-deploy-to-cloudflare-button-three-files-the-variables-kept-out-of-them)). What comes next comes from use: an idea goes under Parked with its reason, or to an issue first. Two steps are scheduled, from use (2026-10-27):
+The steps the goal needed are done. The last of them, a Deploy to Cloudflare button (2026-10-19, the day the repository went public), was taken out again on 2026-10-26: its copy wasn't a fork, so every update needed a script, and the fork with *Sync fork* is the one path ([design 2.30](design.md#230-the-deploy-to-cloudflare-button-three-files-the-variables-kept-out-of-them)). What comes next comes from use: an idea goes under Parked with its reason, or to an issue first. Three steps are scheduled, from use (2026-10-27):
 
 ### 1. A reader's copy kept: persistent storage on the public site
 
@@ -38,6 +38,17 @@ The steps the goal needed are done. The last of them, a Deploy to Cloudflare but
 - Every line that says to make a token links GitHub's form filled in, as setup 2.4's link, the owner of `GITHUB_REPO` filled in too when GitHub's form takes it (its parameters checked against GitHub's documentation first); the token list stays the link for regenerating one.
 - The check links the repository the worker was deployed from. Open question before starting: the worker doesn't know it at run time; Workers Builds gives the build the commit and the branch (to check: whether it gives the repository's name), which `npm run build` could bake in; without it, a setting, or the project's own repository with the release line's link ([design 2.32](design.md#232-the-update-available-line-github-asked-from-the-browser-when-the-tab-is-shown-no-button-no-setting)).
 - No new request: the links come from the settings and the build; the repository suite checks each new address is listed in reference 7, as the check's other links are.
+
+### 3. The plugin's words cut down, the interface carrying the state
+
+**Why now:** the owner's own reading, setting up a demo wiki (2026-10-27): the plugin explains in sentences what its interface could show. The Cloudflare tab, *Check the setup*, the device tab, the cloud icon's dropdown and the alerts each give the state, the reason, the consequence and the manual's section in one paragraph, which reads as documentation inside the wiki; the explanations belong in the manual, which every line links already.
+
+**Done when:**
+- First, an inventory of every text the plugin shows (the modules under `src/browser/`, the plugin's tiddlers, the setup check's lines in `src/worker/setup.js`), each with what it must tell at a glance; the plan, in the user's words, approved before any rewrite (CONTRIBUTING).
+- Each line leads with its state as the interface shows it (✓, –, ✗, a badge, a button's own label), then one short sentence, at most, of what to do; the reason and the background are behind the manual's link or a disclosure, not in the line.
+- Nothing a user needs to act is lost: what to do, where, and the section with the full steps stay one click away; the alerts keep what they must say in the moment (a change kept on the device, a login expired).
+- The suites that match the plugin's words are updated with it, checking what each line means (its state, its action, its link) rather than its exact sentence where they can; the README's screenshot regenerated.
+- No new request, no new setting; the plugin no heavier than today.
 
 ## Parked
 
