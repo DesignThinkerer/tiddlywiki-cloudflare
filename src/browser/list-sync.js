@@ -47,6 +47,8 @@ var LOAD_ALL_TITLE = "$:/config/cfworker/LoadAll",
 	CATCH_UP_AFTER = 10000,       // ms since the last list after which a tab shown again asks for one at once (as it is, not scaled)
 	PUBLIC_READ_TIMEOUT = 5000,   // ms given to a read from the public site before the worker is asked instead
 	REBUILDING_RETRY = 500,       // ms before the list is asked again while the worker rebuilds it ("rebuilding")
+	REBUILDING_NOTICE_AT = 3,     // the "rebuilding" answer after which one notification says so (a rebuild over in a second says nothing)
+	REBUILDING_NOTICE = "$:/temp/cfworker/rebuilding",   // the notification's text, for $tw.notifier
 	STAND_IN_RETRY = 1000,        // ...and after a stand-in for a missing list (the first time, then STAND_IN_RETRY_LATER)
 	STAND_IN_RETRY_LATER = 5000,
 	FORGET_TIMEOUT = 5000,        // ms given to the browser to delete the device's database (cfworkerForgetDevice)
@@ -456,6 +458,35 @@ exports.startup = function() {
 				return false;
 			});
 	}
+	// Stale copies the public site served of tiddlers saved a while ago, counted here from the reads
+	// already made (no request, no write: design 2.20): the worker's revisions are save times, so a
+	// listed revision older than STALE_PUBLIC_AGE whose public copy is behind it is a purge that didn't
+	// happen (a purge token revoked or expired), not the cache's normal lag of seconds after a save;
+	// a device never refetches its own fresh saves. Past STALE_PUBLIC_ALERT_AT of them in this page's
+	// life, one alert, on the admin site, saying the public site serves old copies and where the token
+	// is tested; the admin wiki itself already works around them (the retry past the cache)
+	var STALE_PUBLIC_AGE = 5 * 60 * 1000,
+		STALE_PUBLIC_ALERT_AT = 3,
+		STALE_PUBLIC_ALERT = "$:/temp/cfworker/stale-public",
+		staleRefusals = 0,
+		staleOldest = 0;
+	function noteStaleCopy(expected) {
+		var savedAt = Number(expected);
+		if(!(savedAt >= 1e12) || Date.now() - savedAt < STALE_PUBLIC_AGE || !lib.onAdminSite(window.location.origin + "/")) {
+			return;
+		}
+		staleOldest = staleOldest ? Math.min(staleOldest,savedAt) : savedAt;
+		if(++staleRefusals !== STALE_PUBLIC_ALERT_AT) {
+			return;
+		}
+		wiki.addTiddler(new $tw.Tiddler({
+			title: STALE_PUBLIC_ALERT,
+			tags: ["$:/tags/Alert"],
+			component: "Public site",
+			modified: new Date(),
+			text: "The public site still serves old copies of tiddlers saved since " + $tw.utils.formatDateString(new Date(staleOldest),"DDth MMM YYYY 0hh:0mm") + ": Cloudflare's cache isn't being purged. Check the setup: its purges line tests the token (<$link to=\"$:/ControlPanel\">Control Panel</$link> → Saving → Cloudflare, " + lib.guide("operating","3.15") + ")."
+		}));
+	}
 	// The listed revision, fetched without the worker; a copy a cache kept from before a change is
 	// refused, and the tiddler asked for again at a URL no cache holds
 	function fetchListed(adaptor,title,expected,urgent) {
@@ -465,7 +496,11 @@ exports.startup = function() {
 		}
 		return withFetchSlot(function() {
 			return fetchRevision(adaptor,at.url,at.sameSite,title,expected).then(function(fields) {
-				return fields === null ? fetchRevision(adaptor,at.url + "?cfworker-retry=" + Date.now(),at.sameSite,title,expected) : fields;
+				if(fields === null) {
+					noteStaleCopy(expected);
+					return fetchRevision(adaptor,at.url + "?cfworker-retry=" + Date.now(),at.sameSite,title,expected);
+				}
+				return fields;
 			}).then(function(fields) {
 				return fields || null;
 			});
@@ -604,6 +639,17 @@ exports.startup = function() {
 		return s.getSyncedTiddlers([title]).length > 0;
 	}
 
+	// One notification while the worker rebuilds the list, which takes a step per hundred tiddlers or
+	// so: the wiki opens empty meanwhile and the list is asked again every half second with nothing on
+	// screen, so after the third "rebuilding" answer TiddlyWiki's notification says what's going on and
+	// that the wiki fills in by itself; not a lasting alert (design 2.17), no request of its own
+	function notifyRebuilding() {
+		wiki.addTiddler(new $tw.Tiddler({title: REBUILDING_NOTICE, text: "The worker is rebuilding the tiddler list from the stored tiddlers; the wiki fills in when it's done, no reload needed."}));
+		if($tw.notifier && typeof $tw.notifier.display === "function") {
+			$tw.notifier.display(REBUILDING_NOTICE);
+		}
+	}
+
 	// Remember which revision the worker currently lists for each tiddler, fetch the list again while
 	// it's being rebuilt (isRebuilding, isListStandIn), and never pass on a list that isn't one
 	proto.getSkinnyTiddlers = function(callback) {
@@ -663,6 +709,9 @@ exports.startup = function() {
 			}
 			function listFetched(err,tiddlers) {
 				delivered = true;
+				if(err && request && request.status) {
+					err = lib.withAnswer(err,request);   // (the worker's own sentence after the code: lib.withAnswer)
+				}
 				if(!err && !isTiddlerList(tiddlers)) {
 					err = "the tiddler list can't be read (it isn't a list of tiddlers)";
 					tiddlers = null;
@@ -679,6 +728,9 @@ exports.startup = function() {
 				}
 				if(err && ++tries <= lib.REBUILD_RETRIES) {
 					if(lib.isRebuilding(request)) {
+						if(tries === REBUILDING_NOTICE_AT) {
+							notifyRebuilding();
+						}
 						return setTimeout(fetchList,lib.wait(REBUILDING_RETRY));
 					}
 					if(isListStandIn(request)) {

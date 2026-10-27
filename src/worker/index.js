@@ -16,6 +16,7 @@ import { accessRefused, withoutAccess } from "./access.js";
 import { processBackupBatch } from "./backup/queue.js";
 import { backupSyncStatus, startBackupSync } from "./backup/sync.js";
 import { decodePath, invalidPath } from "./http.js";
+import { guideText } from "./docs.js";
 import { APP_ICON_SIZES, MANIFEST_KEY, serveIcon, serveManifest } from "./app.js";
 import { serveServiceWorker } from "./build.js";
 import { publishCoreFile, publishShell, serveWiki, updateEngine } from "./page.js";
@@ -75,13 +76,24 @@ export default {
     // nowhere); none at all is a private wiki
     const notSetUp = publicSiteError(env, url.origin);
     if (notSetUp) return plainText(notSetUp, 500);
+    // Nor without the bucket: every R2 call would throw, and Cloudflare's generic error page says
+    // nothing of the binding
+    if (!env.WIKI_BUCKET) return plainText(`The bucket isn't bound: the worker has no WIKI_BUCKET binding. Deploy it with the bucket wrangler.toml names, or add the binding in the worker's settings (${guideText("setup", "2.5")}).`, 500);
 
     for (const route of ROUTES) {
       if (!route.methods.includes(request.method)) continue;
       const match = route.matches(url.pathname);
       if (match === null) return invalidPath(CORS_HEADERS);
       if (match === false) continue;
-      return route.handle(request, env, ctx, url, match, CORS_HEADERS);
+      try {
+        return await route.handle(request, env, ctx, url, match, CORS_HEADERS);
+      } catch (e) {
+        // An R2 failure (the bucket deleted or renamed after the deploy, an outage), say: said in the
+        // project's words, as plain text, where Cloudflare's page says "Worker threw exception" and
+        // nothing else; the logs keep the error. (Its CPU limit ends a run before this: that page stays.)
+        console.error(`[Worker] ${request.method} ${url.pathname} failed:`, (e && e.stack) || e);
+        return plainText(`The worker couldn't answer: ${e && e.message ? e.message : e}. If it names the bucket, check that the bucket wrangler.toml names exists and is the one bound as WIKI_BUCKET (${guideText("setup", "2.2")}).`, 500);
+      }
     }
     return new Response("Method not allowed", { status: 405, headers: CORS_HEADERS });
   },

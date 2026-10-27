@@ -297,5 +297,6 @@ export async function rebuildList(env, ctx, damaged, { pageBuild = false } = {})
 
 export function failureResponse(what, error, corsHeaders) {
   if (error instanceof ListRebuilding) return rebuildingResponse(corsHeaders);
-  return new Response(`${what}: ${error.message}`, { status: error instanceof BadSave ? 400 : 500, headers: corsHeaders });
+  // (Plain text, said so: the admin wiki shows the sentence after TiddlyWiki's error code, never a page)
+  return new Response(`${what}: ${error.message}`, { status: error instanceof BadSave ? 400 : 500, headers: { ...corsHeaders, "Content-Type": "text/plain; charset=utf-8" } });
 }

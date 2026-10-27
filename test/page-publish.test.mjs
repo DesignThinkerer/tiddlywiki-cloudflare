@@ -684,6 +684,21 @@ await settle(A);
 await waitFor(async () => (await shell()).includes("after a rendering error"));
 check("...and the tab publishes again at its next save", (await shell()).includes("after a rendering error") && (await status(A))?.state === "published", JSON.stringify(await status(A)));
 
+// --- 10b. A publish with no answer (the network gone, or the login expired): the notice says so in
+// words, the dropdown telling which, never the XHR's "error code: 0" ----------------------------------
+await A.route("**/page/shell", route => route.abort());
+await add(A, { title: "$:/SiteSubtitle", text: "with no answer" });
+await settle(A);
+await waitFor(async () => /no network/.test((await status(A))?.text || ""), 15000);
+const noAnswer = await status(A);
+check("a publish with no answer: the notice says the worker didn't answer, no network or the login expired, that the cloud icon's dropdown says which, and that it's tried again at the next save or reload; never the XHR's code",
+  noAnswer?.state === "failed" && /^Page not published: the worker didn't answer: no network, or your login has expired; the cloud icon's dropdown says which\. It will be tried again at the next save or reload\.$/.test(noAnswer?.text || ""), JSON.stringify(noAnswer));
+await A.unroute("**/page/shell");
+await add(A, { title: "$:/SiteSubtitle", text: "answered again" });
+await settle(A);
+await waitFor(async () => (await shell()).includes("answered again"), 30000);
+check("...and the next change publishes", (await shell()).includes("answered again") && (await status(A))?.state === "published", JSON.stringify(await status(A)));
+
 // --- 11. A new index.html: the page is built from it, then published again ----------------------------
 await bucket.put("index.html", ENGINE.replace("</head>", "<!-- new upload -->\n</head>"));
 const contextD = await browser.newContext();
@@ -716,6 +731,14 @@ const tabBefore = await tabText(G);
 check("the Cloudflare tab shows the engine's version and the one the worker ships, with the Update button, when they differ",
   !!shipped && tabBefore.includes(`TiddlyWiki 5.0.0`) && tabBefore.includes(`the worker ships ${shipped}`) && tabBefore.includes("Update the engine") && await G.evaluate(t => $tw.wiki.getTiddler(t)?.fields.same === "no", ENGINE_STATE),
   tabBefore.replace(/^.*?The engine/, "The engine").slice(0, 200));
+// The ask says the swap can't be undone and what to download first, which plugin changes and when to
+// delete a copy, where to go if the wiki doesn't start, with operating 3.3 as the link (3.6 for a
+// plugin that breaks); for an older engine, this one, the button stays "Update the engine"
+await G.evaluate(t => $tw.wiki.setText(t, "ask", null, "yes"), ENGINE_STATE);
+const askText = await tabText(G);
+check("the ask: the swap can't be undone from the tab (the current index.html isn't kept), download it from R2 first if you uploaded it; to take the new engine's version of a plugin you updated, delete your copy after Replace it and before the reload, deleted later operating 3.4's steps in R2 bring it back; a new TiddlyWiki can break a plugin, operating 3.6 if the wiki doesn't start; operating 3.3 as the link",
+  /This can't be undone from the tab: the current index\.html isn't kept anywhere\. If you uploaded it yourself, download it from R2 first/.test(askText) && /delete your copy after Replace it and before you reload \(wait for the save\)/.test(askText) && /Deleted later, it's gone, and operating 3\.4's steps in R2/.test(askText) && /A new TiddlyWiki can break a plugin: if the wiki doesn't start after the reload, operating 3\.6/.test(askText) && /\(operating 3\.3\)/.test(askText) && /Replace it/.test(askText) && !/will run on/.test(askText),
+  askText.replace(/^.*?The worker replaces/, "The worker replaces").slice(0, 500));
 await G.evaluate(() => $tw.rootWidget.dispatchEvent({ type: "tm-cfworker-engine-update" }));
 await waitFor(() => G.evaluate(t => $tw.wiki.tiddlerExists(t) && !/Replacing/.test($tw.wiki.getTiddlerText(t)), ENGINE_SAID), 20000);
 const engineSaid = await G.evaluate(t => $tw.wiki.renderTiddler("text/plain", t).replace(/\s+/g, " "), ENGINE_SAID);
@@ -734,6 +757,29 @@ check("...after the reload the wiki runs the shipped engine, the tab says the ve
   (await bucket.head("_page/shell.html"))?.customMetadata?.index === (await bucket.head("index.html")).etag && await G.evaluate(() => $tw.wiki.getTiddlerText("Kept across engines") === "saved before the update"),
   `${tabAfter.replace(/^.*?The engine/, "The engine").slice(0, 160)} | shell puts ${shellPuts("G", mark)}`);
 await contextG.close();
+// An engine newer than the worker ships (uploaded by hand, or the worker's copy behind): called newer,
+// with the usual way (update the worker's copy) and troubleshooting if the page isn't published; the
+// button says "Go back", and its ask that tiddlers saved by the newer version will run on the older
+// one. The versions are compared in the tab, from the page-source tiddler, no request; an older engine
+// (above) is unchanged
+await bucket.put("index.html", ENGINE.replace(/<meta name="tiddlywiki-version" content="[^"]*"/, '<meta name="tiddlywiki-version" content="9.9.9-prerelease"'));
+const contextN = await browser.newContext();
+mark = requests.length;
+const { p: N } = await openAdmin("N", contextN);
+await waitFor(async () => shellPuts("N", mark) > 0, 30000);
+await sleep(QUIET_WINDOW);
+const tabNewer = await tabText(N);
+await N.evaluate(t => $tw.wiki.setText(t, "ask", null, "yes"), ENGINE_STATE);
+const askNewer = await tabText(N);
+check("an engine newer than the worker ships: the tab calls it newer, says you usually update your copy of the worker (operating 3.1) once it ships that version, and troubleshooting if the page isn't published; the button says \"Go back to\" the shipped version, and its ask that tiddlers saved by the newer version will run on the older one",
+  tabNewer.includes(`TiddlyWiki 9.9.9-prerelease, newer than the ${shipped} the worker ships`) && /Usually you update your copy of the worker \(operating 3\.1\) once it ships 9\.9\.9-prerelease/.test(tabNewer) && /isn't published, see troubleshooting/.test(tabNewer) && tabNewer.includes(`Go back to ${shipped}`) && !tabNewer.includes("Update the engine") && new RegExp(`tiddlers saved by 9\\.9\\.9-prerelease will run on ${shipped.replace(/\./g, "\\.")}`, "i").test(askNewer) && await N.evaluate(t => $tw.wiki.getTiddler(t)?.fields.newer === "yes", ENGINE_STATE),
+  `${tabNewer.replace(/^.*?The engine/, "The engine").slice(0, 300)} | ask: ${askNewer.replace(/^.*?The worker replaces/, "The worker replaces").slice(0, 200)}`);
+// (A prerelease ranks below its release, a missing part is 0, parts compare as numbers)
+check("the version comparison (the library's compareVersions): 5.4.1 newer than 5.4.0 and 5.4, 5.4.1-prerelease older than 5.4.1, 5.10.0 newer than 5.9.9, equal versions equal",
+  await N.evaluate(() => { const lib = $tw.modules.execute("$:/cfworker/lib.js"); const c = lib.compareVersions; return typeof c === "function" && c("5.4.1", "5.4.0") > 0 && c("5.4.1", "5.4") > 0 && c("5.4.1-prerelease", "5.4.1") < 0 && c("5.10.0", "5.9.9") > 0 && c("5.4.1", "5.4.1") === 0; }),
+  "compareVersions");
+await bucket.put("index.html", ENGINE);   // (the shipped engine back, as "Go back" puts it)
+await contextN.close();
 
 // --- 12. Safe mode publishes nothing --------------------------------------------------------------
 const contextS = await browser.newContext();

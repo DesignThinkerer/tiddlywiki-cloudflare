@@ -94,16 +94,32 @@ exports.startup = function() {
 
 	// What there is to say about backups that keep failing, for the alert and the tab alike (wikitext).
 	// problem: {count, title, since, error, status, next, direct} of the oldest
+	// Each hint ends where the fix is: the token page and the secret (401), the check that tells a
+	// missing repository from a missing branch (403, 404), the tiddler to edit and the key to revoke
+	// (409, 422: GitHub refuses that version for good, so nothing retries it usefully until it changes)
+	var TOKENS = "Settings → Developer settings → Personal access tokens → Fine-grained tokens",
+		VARS = "in the worker's Settings → Variables and Secrets";
+	function hintFor(problem) {
+		if(problem.status === 401) {
+			return "The token in the worker's GITHUB_TOKEN secret is wrong or has expired. On GitHub (" + TOKENS + "), regenerate it (it keeps its repository and permission) or make a new one as in " + lib.guide("setup","2.4") + " (Contents: read and write, this repository only; the guide's link opens GitHub's form filled in), then replace the GITHUB_TOKEN secret, " + VARS + ".";
+		}
+		if(problem.status === 403 || problem.status === 404) {
+			return "<$link to=\"$:/ControlPanel\">Control Panel</$link> → Saving → Cloudflare → Check the setup tells a missing repository or branch; if it passes, the token lacks Contents: read and write on that repository (" + lib.guide("setup","2.4") + ").";
+		}
+		if(problem.status === 409 || problem.status === 422) {
+			return "GitHub refuses this version of the tiddler for good: its push protection found what looks like a secret (a key, a token) in the text, or its title makes a path GitHub can't take. On a public wiki the tiddler is readable by anyone: revoke that key, then remove it from the tiddler (or rename the tiddler) and save it again; the other backups go on meanwhile, and this one is tried again at the tiddler's next save.";
+		}
+		return "GitHub, or the way to it, may be down.";
+	}
 	function problemText(problem) {
-		var hint = problem.status === 401 ? "The token in the worker's GITHUB_TOKEN secret is wrong or has expired: make a new one and put it in the secret." :
-			problem.status === 403 || problem.status === 404 ? "The token may not be allowed to write to the repository in GITHUB_REPO, or the repository or its branch doesn't exist." :
-			problem.status === 409 || problem.status === 422 ? "GitHub refuses that file." :
-			"GitHub, or the way to it, may be down.",
+		var hint = hintFor(problem),
+			refusal = problem.status === 409 || problem.status === 422,
 			// What becomes of them: the next try, when known (the time the queue was asked to deliver the
 			// oldest again; kept current by the tab's line, the alert keeps its first), or nothing retries
 			// a direct backup's failure (no queue, design 2.36)
 			retried = problem.direct ?
 				"Not retried: this worker has no backup queue, or couldn't reach it (" + lib.guide("setup","2.3") + "). Once fixed, each tiddler is backed up at its next save; with the queue bound, <$link to=\"$:/ControlPanel\">Control Panel</$link> → Saving → Cloudflare → Back up everything to GitHub sends them all." :
+				refusal ? "The wiki keeps this version meanwhile." :
 				(typeof problem.next === "number" && problem.next > Date.now() ? "Next try: " + $tw.utils.formatDateString(new Date(problem.next),"DDth MMM YYYY 0hh:0mm") + ", by itself." : "They're retried by themselves.") +
 				" The wiki keeps everything meanwhile." +
 				(problem.status === 401 ? " Once the secret is replaced, <$link to=\"$:/ControlPanel\">Control Panel</$link> → Saving → Cloudflare → Back up everything to GitHub sends the current versions now, those the queue dropped meanwhile included (" + lib.guide("limits","5") + "); the waiting ones still arrive afterwards, as history." : "");
@@ -190,6 +206,13 @@ exports.startup = function() {
 			return;
 		}
 		stuckKey = key;
+		// The remedy by the tiddler's kind, from the fields the tab has: a plugin can be installed again
+		// from where it came from; an image is better kept outside the wiki, the tiddler pointing at it
+		// (TiddlyWiki's external images); anything else is split. A paid plan does for all
+		var fields = (wiki.getTiddler(stuck.title) || {fields: {}}).fields,
+			remedy = fields["plugin-type"] ? "A plugin can be installed again from where it came from, so GitHub missing this version costs little; or move the worker to a paid plan" :
+				/^image\//.test(fields.type || "") ? "An image this size is better kept outside the wiki, the tiddler pointing at it with _canonical_uri (TiddlyWiki's external images); or move the worker to a paid plan" :
+				"Split it, or move the worker to a paid plan";
 		wiki.addTiddler(new $tw.Tiddler({
 			title: BACKUP_STUCK,
 			tags: ["$:/tags/Alert"],
@@ -198,9 +221,9 @@ exports.startup = function() {
 			text: "The backup of " + lib.link(stuck.title) + " (" + sizeText(stuck.size) + ") was cut short" +
 				(stuck.skipped ? ", and the full backup went past it" : " " + stuck.attempts + " times and dropped") +
 				(stuck.count > 1 ? ", and " + (stuck.count - 1) + " more like it" : "") + ": most likely the free plan's CPU time ran out on a tiddler this size (" + lib.guide("limits","5") + "). " +
-				"GitHub keeps the last version of it that went through; the wiki keeps this one. " +
-				(stuck.skipped ? "Split it, or move the worker to a paid plan, then run the full backup again (<$link to=\"$:/ControlPanel\">Control Panel</$link> → Saving → Cloudflare → Back up everything to GitHub)." :
-					"It's tried again at the next save of it: split it, or move the worker to a paid plan.")
+				"GitHub keeps the last version of it that went through, if one did; the wiki keeps this one. " +
+				(stuck.skipped ? remedy + ", then run the full backup again (<$link to=\"$:/ControlPanel\">Control Panel</$link> → Saving → Cloudflare → Back up everything to GitHub)." :
+					"It's tried again at the next save of it: " + remedy.charAt(0).toLowerCase() + remedy.slice(1) + ".")
 		}));
 	}
 

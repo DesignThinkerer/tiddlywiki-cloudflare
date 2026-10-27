@@ -151,6 +151,20 @@ check("an earlier build of the page at / (Cloudflare's cached copy, its ETag not
 delete earlierBuild.headers.ETag;
 ({ items } = await run());
 check("...with no ETag and an older Last-Modified: the same", ok(items, "rewrite") === true && /earlier build/i.test(text(items, "rewrite")), line(items, "rewrite"));
+// The page's Browser TTL, read from the cache answer's Cache-Control (no request added): long, or
+// missing (Cloudflare's default of four hours), it's said as information in the cache line, with why
+// it matters and where to set it; short, the value is named. The mark doesn't change (design 2.20)
+earlierBuild.headers["Cache-Control"] = "max-age=14400";
+({ items } = await run());
+check("the page's Browser TTL long (Cache-Control: max-age=14400): the cache line says it's 4 hours, that a visitor's browser, your own included, keeps a page that long after an edit and purges don't reach it, and to set Override, 5 minutes in the Cache public wiki rule (the line's own link, setup 2.7, says where); not a failure",
+  ok(items, "cache") === true && /The page's Browser TTL is 4 hours \(Cache-Control: max-age=14400\): a visitor's browser, your own included, keeps a page that long after an edit, and purges don't reach it\. In the "Cache public wiki" rule, set Browser TTL to Override, 5 minutes\./.test(text(items, "cache")),
+  line(items, "cache"));
+earlierBuild.headers["Cache-Control"] = "max-age=300";
+({ items } = await run());
+check("...short (max-age=300): the line names it, 5 minutes, and nothing more", ok(items, "cache") === true && /The page's Browser TTL is 5 minutes \(Cache-Control: max-age=300\)\./.test(text(items, "cache")) && !/purges don't reach it/.test(text(items, "cache")), line(items, "cache"));
+delete earlierBuild.headers["Cache-Control"];
+({ items } = await run());
+check("...missing (no Cache-Control header): Cloudflare's default of 4 hours applies, said so, with the rule to set", ok(items, "cache") === true && /The page has no Browser TTL \(no Cache-Control header\), so Cloudflare's default of 4 hours applies: a visitor's browser, your own included, keeps a page that long after an edit, and purges don't reach it\. In the "Cache public wiki" rule, set Browser TTL to Override, 5 minutes\./.test(text(items, "cache")), line(items, "cache"));
 earlierBuild = null;
 corsOff = ["/_plugins/"];
 ({ items } = await run());
@@ -181,7 +195,7 @@ check("...and the line ends with the rules to add (Rules → Cache Rules), by th
   /Rules → Cache Rules/.test(text(items, "cache")) && /\(optional\)/.test(text(items, "cache")) && /"Cache public wiki" for the page, "Cache plugin files" for the core and plugin files, "Cache status file" for the status file\.$/.test(text(items, "cache")), line(items, "cache"));
 cacheStatus = url => url.pathname.startsWith("/_plugins/") ? "DYNAMIC" : "HIT";
 ({ items } = await run());
-check("...the core file alone DYNAMIC: \"Cache plugin files\" named alone", ok(items, "cache") === null && /"Cache plugin files"/.test(text(items, "cache")) && !/"Cache public wiki"/.test(text(items, "cache")) && !/"Cache status file"/.test(text(items, "cache")), line(items, "cache"));
+check("...the core file alone DYNAMIC: \"Cache plugin files\" named alone", ok(items, "cache") === null && /"Cache plugin files"/.test(text(items, "cache")) && !/"Cache public wiki" for the page/.test(text(items, "cache")) && !/"Cache status file"/.test(text(items, "cache")), line(items, "cache"));
 cacheStatus = "HIT";
 ({ items } = await run());
 check("...cached: the line says so", ok(items, "cache") === true && /HIT/.test(text(items, "cache")), line(items, "cache"));
@@ -228,7 +242,7 @@ api.private = true;
 check("...a private one: said so", ok(items, "backups") === true && /a private repository/.test(text(items, "backups")), line(items, "backups"));
 api.repo = 401;
 ({ items } = await run());
-check("GitHub refusing the token (401): the backups line says so, with setup 2.4", ok(items, "backups") === false && /401|token/.test(text(items, "backups")) && guide(items, "backups") === "2.4", line(items, "backups"));
+check("GitHub refusing the token (401): the backups line says so, with setup 2.4, and ends where the fix is: GitHub's token page, regenerate or make a new one (Contents: read and write, this repository only), then the GITHUB_TOKEN secret in the worker's Variables and Secrets", ok(items, "backups") === false && /401|token/.test(text(items, "backups")) && /Settings → Developer settings → Personal access tokens → Fine-grained tokens/.test(text(items, "backups")) && /regenerate it/.test(text(items, "backups")) && /Contents: read and write, this repository only/.test(text(items, "backups")) && /replace the GITHUB_TOKEN secret in the worker's Variables and Secrets/.test(text(items, "backups")) && guide(items, "backups") === "2.4", line(items, "backups"));
 api.repo = 404;
 ({ items } = await run());
 check("GitHub not finding the repository with the token (404): named", ok(items, "backups") === false && /404|find/.test(text(items, "backups")), line(items, "backups"));
@@ -247,7 +261,7 @@ check("...and the line ends with what to do: set GITHUB_BRANCH, in the worker's 
 api.branch = 200;
 api.purge = { status: 403, body: { success: false, errors: [{ code: 10000, message: "Authentication error" }] } };
 ({ items } = await run());
-check("Cloudflare refusing the purge: the purges line says so, with the token's section", ok(items, "purges") === false && /Authentication error|403/.test(text(items, "purges")) && guide(items, "purges") === "2.5", line(items, "purges"));
+check("Cloudflare refusing the purge: the purges line says so, with the token's section, and ends with the hostname to purge once after the fix (Purge Cache → Custom Purge → Hostname, the public host, operating 3.9), since what changed while purges failed stays cached until its Edge TTL", ok(items, "purges") === false && /Authentication error|403/.test(text(items, "purges")) && guide(items, "purges") === "2.5" && new RegExp(`Then purge the public hostname once \\(Caching → Configuration → Purge Cache → Custom Purge → Hostname, ${PUBLIC_HOST.replace(/\./g, "\\.")}; operating 3\\.9\\): what changed while purges failed stays cached until its Edge TTL otherwise\\.$`).test(text(items, "purges")), line(items, "purges"));
 check("...and the line ends with what to check: CF_ZONE_ID against the zone ID on the domain's overview page, the token under My Profile → API Tokens, a new one put in the CF_API_TOKEN secret",
   /Check CF_ZONE_ID against the zone ID on the domain's overview page/.test(text(items, "purges")) && /My Profile → API Tokens/.test(text(items, "purges")) && /put in the CF_API_TOKEN secret/.test(text(items, "purges")), line(items, "purges"));
 api.purge = { status: 200, body: { success: true } };
@@ -258,11 +272,13 @@ check("Cloudflare's API not answering the purge at all: the line says so, with t
 api.purgeDown = false;
 await site.setBindings({ GITHUB_REPO: "", GITHUB_TOKEN: "", CF_ZONE_ID: "", CF_API_TOKEN: "" });
 ({ items } = await run());
-check("backups not set up: the line says so with setup 2.4; no purge token: a dash, not a failure",
-  ok(items, "backups") === false && guide(items, "backups") === "2.4" && /GITHUB_REPO/.test(text(items, "backups")) && ok(items, "purges") === null && /CF_ZONE_ID/.test(text(items, "purges")),
+// Backups left out are a choice, like purges: a dash with the action, not a ✗ on a line that calls
+// itself optional (design 2.20); half a pair stays a ✗, a mistake rather than a choice
+check("backups not set up (neither setting): a dash, not a failure, the line saying backups are off and optional, with setup 2.4; no purge token: a dash, not a failure",
+  ok(items, "backups") === null && guide(items, "backups") === "2.4" && /^Backups are off \(optional\): set GITHUB_REPO and the GITHUB_TOKEN secret to commit every save to GitHub, the wiki's only history/.test(text(items, "backups")) && ok(items, "purges") === null && /CF_ZONE_ID/.test(text(items, "purges")),
   `${line(items, "backups")} | ${line(items, "purges")}`);
 check("...and the backups line ends with what to do: a repository and a fine-grained token with Contents read and write, then GITHUB_REPO (owner/repo) and the GITHUB_TOKEN secret in the worker's Variables and Secrets; backups said to be optional",
-  /no GITHUB_REPO and no GITHUB_TOKEN \(optional/.test(text(items, "backups")) && /fine-grained token limited to it, with Contents read and write/.test(text(items, "backups")) && /set GITHUB_REPO \(owner\/repo\) and the GITHUB_TOKEN secret in the worker's Variables and Secrets\.$/.test(text(items, "backups")), line(items, "backups"));
+  /\(optional\)/.test(text(items, "backups")) && /fine-grained token limited to it, with Contents read and write/.test(text(items, "backups")) && /set GITHUB_REPO \(owner\/repo\) and the GITHUB_TOKEN secret in the worker's Variables and Secrets\.$/.test(text(items, "backups")), line(items, "backups"));
 check("...and says what a wiki without backups lacks: a history, the bucket keeping the current version of each tiddler alone",
   /the wiki's only history/.test(text(items, "backups")) && /a deletion or an overwrite is final/.test(text(items, "backups")), line(items, "backups"));
 check("...and the purges line ends with what to set: CF_ZONE_ID (the zone ID on the domain's overview page) and the CF_API_TOKEN secret (a token from My Profile → API Tokens with Zone → Cache Purge), in the worker's Variables and Secrets",

@@ -4,7 +4,7 @@
 // tool, and the build refusing what it can't inline. Nothing here runs the worker.
 // Run: npm run test:repository
 import fs, { mkdtempSync } from "node:fs";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { gzipSync } from "node:zlib";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -22,6 +22,18 @@ const ignored = fs.readFileSync(path.join(ROOT, ".gitignore"), "utf8").split(/\r
 const missing = [".dev.vars", ".wrangler/", "restore.json", "wiki/"].filter(p => !ignored.includes(p));
 check(".gitignore covers .dev.vars and .wrangler/, restore.json and wiki/ (what a restore leaves, setup 2.4), and not wrangler.toml", missing.length === 0 && !ignored.includes("wrangler.toml") && fs.existsSync(path.join(ROOT, "wrangler.toml")),
   missing.length ? "missing: " + missing.join(", ") : ignored.includes("wrangler.toml") ? "wrangler.toml is ignored" : fs.existsSync(path.join(ROOT, "wrangler.toml")) ? "" : "no wrangler.toml");
+// Line endings: LF in every clone, whatever Git's default on the system (Git for Windows checks text
+// out with CRLF), since check:build compares worker.js byte for byte and the browser modules are
+// embedded in it as JSON strings of their source files (development 6)
+const attributes = fs.existsSync(path.join(ROOT, ".gitattributes")) ? fs.readFileSync(path.join(ROOT, ".gitattributes"), "utf8").split(/\r?\n/).map(l => l.trim().replace(/\s+/g, " ")) : null;
+check(".gitattributes checks every text file out with LF (* text=auto eol=lf) and keeps PNG files binary, so a clone on Windows builds the same worker.js as CI and passes check:build (development 6)",
+  !!attributes && attributes.includes("* text=auto eol=lf") && attributes.includes("*.png binary"),
+  attributes ? attributes.filter(Boolean).join(" | ") : "no .gitattributes");
+// (git ls-files --eol: "i/lf w/lf attr/text=auto eol=lf  path"; i/crlf or i/mixed in the index would
+// be a file the attribute renormalises at the next add, a diff nobody made)
+const eol = execFileSync("git", ["ls-files", "--eol"], { cwd: ROOT, encoding: "utf8" }).split("\n").filter(Boolean);
+const notLf = eol.filter(l => !/^i\/(lf|-text|none)\s/.test(l)).map(l => l.trim());
+check(`every committed text file is LF in the index (git ls-files --eol, ${eol.length} files), so the attribute renormalises nothing`, eol.length > 0 && notLf.length === 0, notLf.join(" | "));
 const toml = fs.existsSync(path.join(ROOT, "wrangler.toml")) ? fs.readFileSync(path.join(ROOT, "wrangler.toml"), "utf8") : "";
 const tomlActive = toml.split(/\r?\n/).filter(l => !l.trim().startsWith("#")).join("\n");   // (what Wrangler reads: comments aside)
 check("wrangler.toml holds no secret, and every binding the worker needs",
@@ -216,7 +228,7 @@ check("...and refuses a timeout under a second", noTimeout.code === 2 && /timeou
 // The backup's files are tiddlers as stored, with their tags as a list (TiddlyWeb's layout); TiddlyWiki's
 // JSON import keeps only text fields, so they can't be imported as they are without losing every tag.
 // The tool turns a clone of the backup into one file TiddlyWiki imports, every field as text.
-const { collect, importable, stringifyList } = await import("../tools/restore.mjs");
+const { collect, importable, platformNotice, stringifyList } = await import("../tools/restore.mjs");
 const clone = mkdtempSync(path.join(tmpdir(), "backup-clone-"));
 fs.mkdirSync(path.join(clone, "tiddlers", "$:", "config"), { recursive: true });
 const storedBackup = {
@@ -256,6 +268,49 @@ try {
 }
 const oneFile = fs.existsSync(path.join(clone, "one.json")) ? JSON.parse(fs.readFileSync(path.join(clone, "one.json"), "utf8")) : null;
 check("...and does the same for a single file (one tiddler restored from its history on GitHub)", Array.isArray(oneFile) && oneFile.length === 1 && oneFile[0].title === "Hello, World" && oneFile[0].tags === "kept [[two words]]", restoreRun.slice(0, 200));
+// Nothing to restore is a failure, not "0 tiddlers, ready to drag": a wrong path, or a clone with
+// nothing checked out
+const emptyDir = mkdtempSync(path.join(tmpdir(), "backup-empty-"));
+const emptyRun = spawnSync(process.execPath, [path.join(ROOT, "tools/restore.mjs"), emptyDir, path.join(emptyDir, "restore.json")], { encoding: "utf8", timeout: 30000 });
+check("an empty folder is refused: nothing written, a non-zero exit, and the line asks whether this is the backup's clone or its tiddlers/ folder, with setup 2.4",
+  emptyRun.status === 1 && !fs.existsSync(path.join(emptyDir, "restore.json")) && /No tiddler file under .*backup-empty-.*: is this the backup's clone, or its tiddlers\/ folder\? \(setup 2\.4\)/.test(emptyRun.stderr || ""),
+  `exit ${emptyRun.status}: ${String(emptyRun.stderr || "").trim().slice(0, 200)}`);
+fs.rmSync(emptyDir, { recursive: true, force: true });
+// A clone can come up short (limits 5): the backup's files are named after the titles, and a disk
+// may not take a name. The commit has them all: what it lists (git ls-tree on HEAD) and the disk
+// lacks is read from the commit and named. The clone is made a git repository with one commit, then
+// the disk is left as a short checkout leaves it: a title with a ":" gone (Windows), and, on a
+// case-sensitive disk only (the twins can't be written otherwise), two titles differing by case
+// as one file holding the last one's content (macOS's default disk)
+for (const extra of ["restore.json", "one.json"]) fs.rmSync(path.join(clone, extra), { force: true });
+const caseSensitive = !fs.existsSync(path.join(clone, "tiddlers", "HELLO, WORLD.json"));
+if (caseSensitive) {
+  fs.writeFileSync(path.join(clone, "tiddlers", "Todo.json"), JSON.stringify({ title: "Todo", text: "lower", revision: "1", bag: "default", recipe: "default" }));
+  fs.writeFileSync(path.join(clone, "tiddlers", "TODO.json"), JSON.stringify({ title: "TODO", text: "upper", revision: "1", bag: "default", recipe: "default" }));
+}
+const git = (...args) => execFileSync("git", ["-C", clone, "-c", "user.name=test", "-c", "user.email=test@example.com", "-c", "core.autocrlf=false", "-c", "commit.gpgsign=false", ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+git("init", "-q");
+git("add", "-A");
+git("commit", "-q", "-m", "backup");
+fs.rmSync(path.join(clone, "tiddlers", "$:", "config", "Thing.json"));
+if (caseSensitive) {
+  fs.rmSync(path.join(clone, "tiddlers", "TODO.json"));
+  fs.writeFileSync(path.join(clone, "tiddlers", "Todo.json"), JSON.stringify({ title: "TODO", text: "upper", revision: "1", bag: "default", recipe: "default" }));
+}
+const shortNotes = {}, shortProblems = [];
+const fromClone = collect(clone, shortProblems, shortNotes);
+const fromCommit = shortNotes.fromCommit || [];
+check("a clone whose commit holds tiddlers the disk doesn't (a title with a ':' gone, as on Windows; two titles differing by case as one file, as on macOS's default disk) names them, read from the commit (git ls-tree on HEAD, not the index), and the restore has them with the commit's content",
+  fromCommit.join("|") === (caseSensitive ? "$:/config/Thing|Todo" : "$:/config/Thing") && fromClone.find(t => t.title === "$:/config/Thing")?.text === "cfg" && (!caseSensitive || (fromClone.find(t => t.title === "Todo")?.text === "lower" && fromClone.find(t => t.title === "TODO")?.text === "upper")) && fromClone.length === (caseSensitive ? 5 : 3) && shortProblems.length === 2,
+  `from the commit: ${fromCommit.join("|")}; titles: ${fromClone.map(t => t.title).join("|")}; problems: ${shortProblems.join(" / ")}`);
+const shortRun = spawnSync(process.execPath, [path.join(ROOT, "tools/restore.mjs"), clone, path.join(clone, "restore.json")], { encoding: "utf8", timeout: 30000 });
+const shortFile = fs.existsSync(path.join(clone, "restore.json")) ? JSON.parse(fs.readFileSync(path.join(clone, "restore.json"), "utf8")) : null;
+check("...run as a command, each such title is named as read from the commit, and the last line says how many tiddlers and how many came from the commit rather than the disk, with limits 5",
+  shortRun.status === 0 && /^Read from the commit, not from the disk: \$:\/config\/Thing$/m.test(shortRun.stderr || "") && new RegExp(`restore\\.json: ${caseSensitive ? 5 : 3} tiddlers, ${caseSensitive ? 2 : 1} read from the commit \\(the disk lacked them: limits 5\\), ready to drag onto the admin wiki \\(setup 2\\.4\\)`).test(shortRun.stdout || "") && Array.isArray(shortFile) && shortFile.some(t => t.title === "$:/config/Thing" && t.text === "cfg"),
+  `exit ${shortRun.status}: ${String(shortRun.stdout || "").trim()} | ${String(shortRun.stderr || "").trim().slice(0, 300)}`);
+check("the Windows notice (platformNotice): a clone there lacks every title with a ':', the system tiddlers among them, which the tool reads from the commit, with limits 5; nothing on other systems",
+  typeof platformNotice === "function" && /':'/.test(platformNotice("win32")) && /commit/.test(platformNotice("win32")) && /limits 5/.test(platformNotice("win32")) && platformNotice("linux") === "" && platformNotice("darwin") === "",
+  typeof platformNotice === "function" ? platformNotice("win32") : "no platformNotice export");
 fs.rmSync(clone, { recursive: true, force: true });
 
 // --- 8. The build refuses what it can't inline -----------------------------------------------------

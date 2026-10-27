@@ -2,7 +2,9 @@
 
 *Chapter 6 of the [manual](../README.md#the-manual). The process for a change is in [CONTRIBUTING.md](../CONTRIBUTING.md).*
 
-Requirements: Node.js 22 or newer (Wrangler 4 needs it) and a Chromium for the browser tests. (`npm run build` also makes `seed/empty.html`, the empty wiki the browser tests start from.)
+Requirements: Node.js 22 or newer (Wrangler 4 needs it), a Chromium for the browser tests, and Linux, macOS or WSL, as for the backup's clone ([limits 5](limits.md)): CI runs Linux, and the suites aren't tried in a plain Windows shell. (`npm run build` also makes `seed/empty.html`, the empty wiki the browser tests start from.)
+
+Line endings are LF throughout, and have to be: `npm run check:build` compares `worker.js` byte for byte with a fresh build, and the browser modules are embedded in it as JSON strings of their source files, so a clone with CRLF would fail the check untouched, and a `worker.js` rebuilt from it would differ from CI's and fail the same check in the pull request. Git for Windows checks text out with CRLF by default; `.gitattributes` checks every text file out with LF whatever the system's default (and keeps the PNGs binary), so a clone on Windows builds the same `worker.js`. A clone made before that file arrived has CRLF files until they're checked out again: with no uncommitted change (`git status` clean; commit or stash first, since this discards changes), `git rm -r --cached . && git reset --hard`; or clone again.
 
 ```bash
 npm install
@@ -59,7 +61,7 @@ GitHub runs the same two groups, as two jobs side by side, for every pull reques
 ├── worker.js                 GENERATED: the file you deploy (npm run build)
 ├── seed/empty.html           GENERATED, not committed: an empty TiddlyWiki with TiddlyWeb, what a new wiki starts from (setup 2.8), uploaded with the worker
 ├── tools/build-wiki.mjs      builds it from the tiddlywiki package (npm run build)
-├── tools/restore.mjs         merges a clone of the backup into one file any TiddlyWiki imports (setup 2.4)
+├── tools/restore.mjs         merges a clone of the backup into one file any TiddlyWiki imports, reading from the commit what the clone lacks (setup 2.4)
 ├── tools/run-suites.mjs      runs test suites, each to the end, one after the other or several at once (--parallel), with a summary (npm test); their output under test-results/, not committed
 ├── tools/screenshot.mjs      takes the README's screenshot from a wiki run through the test setup (npm run screenshot)
 ├── tools/release-notes.mjs   prints a dated block of the changelog, the release's notes (CONTRIBUTING, "Releases")

@@ -220,11 +220,20 @@ exports.startup = function() {
 		}
 	}
 
+	// A sentence as the notice shows it: the worker's words end with their period, TiddlyWiki's error
+	// strings don't
+	function sentence(text) {
+		var said = String(text || "").trim();
+		return /[.!?]$/.test(said) ? said : said + ".";
+	}
 	// (The worker may have kept the page all the same, an answer lost on the way, say: which page is
-	// published is no longer known)
+	// published is no longer known.) No answer at all is the network gone, or the login expired, which
+	// the outbox tells apart for the cloud icon's dropdown: said so, never as the XHR's "error code: 0"
 	function failed(done,message) {
 		published = "";
-		report("failed","Page not published: " + message + " It will be tried again at the next save or reload.");
+		var said = message === $tw.language.getString("Error/XMLHttpRequest") + ": 0" ?
+			"the worker didn't answer: no network, or your login has expired; the cloud icon's dropdown says which." : sentence(message);
+		report("failed","Page not published: " + said + " It will be tried again at the next save or reload.");
 		done();
 	}
 
@@ -246,7 +255,7 @@ exports.startup = function() {
 			} else {
 				refused = print + " " + coreVersion;
 			}
-			report("failed","Page not published: " + err + (core ? " It will be sent again at the next reload." : " It will be sent again once it changes, or at the next reload."));
+			report("failed","Page not published: " + sentence(err) + (core ? " It will be sent again at the next reload." : " It will be sent again once it changes, or at the next reload."));
 			return done();
 		}
 		failed(done,err);

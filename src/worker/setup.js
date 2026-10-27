@@ -81,7 +81,7 @@ async function probe(url, origin, keep) {
     const res = await fetch(url, { headers: origin ? { Origin: origin } : {}, redirect: "follow" });
     const h = name => res.headers.get(name);
     if (!keep && res.body) await res.body.cancel();
-    return { status: res.status, etag: h("ETag"), lastModified: h("Last-Modified"), allowOrigin: h("Access-Control-Allow-Origin"), cache: h("CF-Cache-Status"), type: h("Content-Type"), res: keep ? res : null };
+    return { status: res.status, etag: h("ETag"), lastModified: h("Last-Modified"), allowOrigin: h("Access-Control-Allow-Origin"), cache: h("CF-Cache-Status"), cacheControl: h("Cache-Control"), type: h("Content-Type"), res: keep ? res : null };
   } catch (e) {
     return { error: e && e.message ? e.message : String(e) };
   }
@@ -172,8 +172,23 @@ async function checkPublicSite(env, site, origin, add) {
   const rules = [!cached(page) && '"Cache public wiki" for the page', !cached(core) && '"Cache plugin files" for the core and plugin files', !cached(status) && '"Cache status file" for the status file'].filter(Boolean);
   add("cache", all ? true : null,
     `Cloudflare's cache answered for the page: ${say(page)}, the core file: ${say(core)}, the status file: ${say(status)}.` +
-      (all ? "" : ` DYNAMIC, or no header, means no cache rule covers it, and the public site goes to the bucket for it at every request. To cache it (optional), add under the domain's Rules → Cache Rules: ${rules.join(", ")}.`), SECTION.rules);
+      (all ? "" : ` DYNAMIC, or no header, means no cache rule covers it, and the public site goes to the bucket for it at every request. To cache it (optional), add under the domain's Rules → Cache Rules: ${rules.join(", ")}.`) +
+      (cached(page) ? browserTtl(page) : ""), SECTION.rules);
   return cached(page);
+}
+
+// The page's Browser TTL, from the cache answer's Cache-Control (no request added): the one field of
+// the cache rule whose mistake is invisible at setup and felt daily. Long (over 15 minutes), or
+// missing (Cloudflare's default of four hours), said with why it matters and where to set it, as
+// information (the mark doesn't change, design 2.20); short, the value is named
+const BROWSER_TTL_LONG = 15 * 60;
+function browserTtl(page) {
+  const match = /(?:^|,)\s*max-age=(\d+)/i.exec(page.cacheControl || "");
+  if (!match) return ` The page has no Browser TTL (no Cache-Control header), so Cloudflare's default of 4 hours applies: a visitor's browser, your own included, keeps a page that long after an edit, and purges don't reach it. In the "Cache public wiki" rule, set Browser TTL to Override, 5 minutes.`;
+  const seconds = Number(match[1]);
+  const said = seconds % 3600 === 0 && seconds >= 3600 ? `${seconds / 3600} hour${seconds === 3600 ? "" : "s"}` : seconds % 60 === 0 && seconds >= 60 ? `${seconds / 60} minute${seconds === 60 ? "" : "s"}` : `${seconds} seconds`;
+  if (seconds <= BROWSER_TTL_LONG) return ` The page's Browser TTL is ${said} (Cache-Control: ${page.cacheControl.trim()}).`;
+  return ` The page's Browser TTL is ${said} (Cache-Control: ${page.cacheControl.trim()}): a visitor's browser, your own included, keeps a page that long after an edit, and purges don't reach it. In the "Cache public wiki" rule, set Browser TTL to Override, 5 minutes.`;
 }
 
 // site: the public site's address, "" for a private wiki, whose backup repository must be private too
@@ -184,7 +199,13 @@ async function checkBackups(env, site, add) {
     const todo = env.GITHUB_REPO ? `Make a fine-grained token limited to that repository, with Contents read and write, and put it in the GITHUB_TOKEN secret, ${VARS}.`
       : env.GITHUB_TOKEN ? `Set GITHUB_REPO, ${VARS}, to the backup repository's owner/repo, the one the token is limited to.`
         : `Create a repository for the backup and a fine-grained token limited to it, with Contents read and write, then set GITHUB_REPO (owner/repo) and the GITHUB_TOKEN secret ${VARS}.`;
-    add("backups", false, `Backups aren't set up: the worker has ${has} (optional; with ${env.GITHUB_REPO || env.GITHUB_TOKEN ? "it" : "them"}, every save is committed to GitHub, ${HISTORY}). ${todo}`, SECTION.backups);
+    // Neither setting: backups left out, a choice like purges, a dash with the action (design 2.20);
+    // one of the pair: a mistake, a failure naming the missing one
+    if (!env.GITHUB_REPO && !env.GITHUB_TOKEN) {
+      add("backups", null, `Backups are off (optional): set GITHUB_REPO and the GITHUB_TOKEN secret to commit every save to GitHub, ${HISTORY}. ${todo}`, SECTION.backups);
+      return;
+    }
+    add("backups", false, `Backups aren't set up: the worker has ${has} (optional; with it, every save is committed to GitHub, ${HISTORY}). ${todo}`, SECTION.backups);
     return;
   }
   const headers = { Authorization: `Bearer ${gh.token}`, Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "TiddlyWiki-Cloudflare-Worker" };
@@ -204,7 +225,7 @@ async function checkBackups(env, site, add) {
   };
   const repo = await ask("");
   if (repo.status === 401) {
-    add("backups", false, `GitHub refuses the token for ${gh.repo} (401${repo.message ? `, ${repo.message}` : ""}): the GITHUB_TOKEN secret is wrong or has expired. Make a new one and put it in the secret.`, SECTION.backups);
+    add("backups", false, `GitHub refuses the token for ${gh.repo} (401${repo.message ? `, ${repo.message}` : ""}): the GITHUB_TOKEN secret is wrong or has expired. On GitHub (${TOKENS}), regenerate it (it keeps its repository and permission) or make a new one as in setup 2.4 (Contents: read and write, this repository only; the guide's link opens GitHub's form filled in), then replace the GITHUB_TOKEN secret ${VARS}.`, SECTION.backups);
   } else if (repo.status === 404) {
     add("backups", false, `GitHub doesn't find ${gh.repo} with this token (404): the repository doesn't exist under that name, or the token isn't allowed to see it. Check GITHUB_REPO (owner/repo, as in the repository's address), then the token's Repository access on GitHub (${TOKENS}): it must name that repository.`, SECTION.backups);
   } else if (repo.status !== 200) {
@@ -258,7 +279,7 @@ async function checkPurges(env, site, add, pageCached) {
       add("purges", true, "Purges work: the public site's status file was purged from Cloudflare's cache to check (CF_ZONE_ID, CF_API_TOKEN).", SECTION.worker);
     } else {
       const message = body && Array.isArray(body.errors) && body.errors.length ? body.errors.map(e => e.message).join("; ") : "";
-      add("purges", false, `Cloudflare refused the purge (${res.status}${message ? `: ${message}` : ""}): CF_API_TOKEN needs Zone → Cache Purge on the zone CF_ZONE_ID names. Check CF_ZONE_ID against the zone ID on the domain's overview page, and the token under My Profile → API Tokens (its permissions, its zone, whether it has expired or was revoked); a new token there, put in the CF_API_TOKEN secret, replaces it.`, SECTION.worker);
+      add("purges", false, `Cloudflare refused the purge (${res.status}${message ? `: ${message}` : ""}): CF_API_TOKEN needs Zone → Cache Purge on the zone CF_ZONE_ID names. Check CF_ZONE_ID against the zone ID on the domain's overview page, and the token under My Profile → API Tokens (its permissions, its zone, whether it has expired or was revoked); a new token there, put in the CF_API_TOKEN secret, replaces it. Then purge the public hostname once (Caching → Configuration → Purge Cache → Custom Purge → Hostname, ${new URL(site).host}; operating 3.9): what changed while purges failed stays cached until its Edge TTL otherwise.`, SECTION.worker);
     }
   } catch (e) {
     add("purges", false, `Cloudflare's API didn't answer the purge (${e && e.message ? e.message : e}): the request to api.cloudflare.com failed before any answer. Check the setup again in a moment; if it keeps failing, see cloudflarestatus.com.`, SECTION.worker);

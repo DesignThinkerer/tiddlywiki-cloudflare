@@ -219,6 +219,15 @@ await mfNew.dispose();
 const engineUpdate = await measure("engine update", () => mf.dispatchFetch(base + "/engine/update", { method: "POST", headers: { "X-Requested-With": "TiddlyWiki" } }));
 check("...answered 200", engineUpdate.status === 200, `status ${engineUpdate.status}`);
 
+// An R2 call that fails (the bucket deleted or renamed after the deploy, an R2 outage): the worker
+// answers a plain-text 500 in the project's words, naming the error and the bucket to check, where an
+// uncaught exception gave Cloudflare's generic page; the logs keep the error
+await mf.dispatchFetch(`${base}/__r2fail`, { method: "POST", body: JSON.stringify({ call: "get list" }) });
+const failed = await mf.dispatchFetch(`${base}/recipes/default/tiddlers.json`), failedText = await failed.text();
+check("an R2 call that fails answers a plain-text 500 naming the error, with the bucket wrangler.toml names to check (setup 2.2), not Cloudflare's error page",
+  failed.status === 500 && /^text\/plain/.test(failed.headers.get("content-type") || "") && /^The worker couldn't answer: R2 get list failed \(test\)\. If it names the bucket, check that the bucket wrangler\.toml names exists and is the one bound as WIKI_BUCKET \(setup 2\.2: https:/.test(failedText),
+  `${failed.status} ${failed.headers.get("content-type")} ${failedText.slice(0, 200)}`);
+
 console.log(`\n${results.filter(Boolean).length}/${results.length} passed`);
 await mf.dispose();
 process.exit(results.every(Boolean) ? 0 : 1);

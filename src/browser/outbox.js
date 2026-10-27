@@ -66,14 +66,17 @@ var STATUS = "$:/temp/cfworker/outbox",
 	STORY = "$:/StoryList",
 	IDENTITY = "/cdn-cgi/access/get-identity";   // Access's own path on the admin site: the session's identity, answered at the edge
 
-// In the cloud icon's dropdown ($:/tags/SyncerDropdown), under "You are logged in": what waits, and
-// the login once it has expired (shown then with nothing waiting too: a tab that only reads is the
-// one that would never learn it's cut off). The link opens the admin site in a new tab, which Access
-// meets with its login page; logged in there, this tab's own retries go through.
+// In the cloud icon's dropdown ($:/tags/SyncerDropdown), under "You are logged in": what waits, the
+// login once it has expired (shown then with nothing waiting too: a tab that only reads is the one
+// that would never learn it's cut off), and offline with nothing waiting one line saying so (the
+// dropdown says it, no alert: design 2.17). The link opens the admin site in a new tab, which Access
+// meets with its login page; logged in there, this tab's own retries go through. The item's class
+// is the plugin's stylesheet's: the theme gives a dropdown no wrapping and makes every link in it a
+// block, and these are sentences (design 2.21).
 var LOGIN_LINK = "<a class='tc-tiddlylink-external' href='/' target='_blank' rel='noopener noreferrer'>Log in again</a>";
 var ITEM_TEXT = [
-	"<$list filter='[[" + STATUS + "]get[waiting]!match[0]] [[" + STATUS + "]get[login]match[expired]] +[limit[1]]' variable='show'>",
-	"<div class='tc-drop-down-info'>",
+	"<$list filter='[[" + STATUS + "]get[waiting]!match[0]] [[" + STATUS + "]get[login]match[expired]] [[" + STATUS + "]get[online]match[no]] +[limit[1]]' variable='show'>",
+	"<div class='tc-drop-down-info cfworker-outbox'>",
 	"<$list filter='[[" + STATUS + "]get[waiting]!match[0]]' variable='n'>",
 	"<$text text={{{ [[" + STATUS + "]get[waiting]] }}}/> <$text text={{{ [[" + STATUS + "]get[waiting]compare:number:eq[1]then[change]else[changes]] }}}/> waiting since <$view tiddler='" + STATUS + "' field='since' format='date' template='0hh:0mm'/><br/>",
 	"<$list filter='[[" + STATUS + "]get[login]match[expired]]' variable='expired'><$list filter='[[" + STATUS + "]get[kept]!match[no]]' variable='kept'>''your login has expired'': kept on this device until you log in again</$list><$list filter='[[" + STATUS + "]get[kept]match[no]]' variable='unkept'>''your login has expired'', and ''not kept on this device'': the browser refused to store it (no room left, or storage off here). Keep this tab open and log in again.</$list></$list>",
@@ -82,8 +85,9 @@ var ITEM_TEXT = [
 	"<$list filter='[[" + STATUS + "]get[online]match[yes]]' variable='on'><$list filter='[[" + STATUS + "]get[kept]!match[no]]' variable='kept'>sending (kept on this device until then)</$list><$list filter='[[" + STATUS + "]get[kept]match[no]]' variable='unkept'>sending — ''not kept on this device'' (the browser refused to store it): keep this tab open until it's sent.</$list></$list>",
 	"</$list>",
 	"<$list filter='[[" + STATUS + "]get[rename]!match[0]]' variable='r'><br/><$text text={{{ [[" + STATUS + "]get[rename]] }}}/> to rename before <$text text={{{ [[" + STATUS + "]get[rename]compare:number:eq[1]then[it]else[they]] }}}/> can be sent (an alert says which).</$list>",
-	"<$list filter='[[" + STATUS + "]get[storage]match[best-effort]]' variable='risk'><br/>''This browser hasn't promised to keep the device's copy'' (it may clear it when short of space): get back online soon, or <$link to='$:/plugins/cfworker/admin/device'>ask it to keep this site's data</$link>.</$list>",
+	"<$list filter='[[" + STATUS + "]get[storage]match[best-effort]]' variable='risk'><br/>''This browser hasn't promised to keep the device's copy'' (it may clear it when short of space): get back online soon, or ask it to keep this site's data: <$link to='$:/plugins/cfworker/admin/device'>the device tab</$link></$list>",
 	"</$list>",
+	"<$list filter='[[" + STATUS + "]get[waiting]match[0]]' variable='quiet'><$list filter='[[" + STATUS + "]get[online]match[no]]' variable='off'><$list filter='[[" + STATUS + "]get[login]!match[expired]]' variable='in'>Offline: what this device has loaded is here; a tiddler never opened on it is empty, and changes made elsewhere come when the network is back.</$list></$list></$list>",
 	"<$list filter='[[" + STATUS + "]get[login]match[expired]]' variable='expired'>",
 	"<$list filter='[[" + STATUS + "]get[waiting]match[0]]' variable='nothing'>''Your login has expired'': changes made on other devices no longer reach this tab, and one made here would wait on this device.</$list>",
 	"<br/>" + LOGIN_LINK + " (a new tab; this one then sends what waits by itself), or reload this page: what waits is kept on this device through it.",
@@ -350,10 +354,41 @@ exports.startup = function() {
 	// waits, that it's kept on this device): the alert is logged instead, and the browser marked
 	// offline, a failed load or list included, or the login expired once Access has been asked
 	// (noteNoAnswer). TiddlyWiki's other alerts (a save refused by the worker, say) show as they do.
+	// A conflict's alert is the plugin's own (design 2.17): headed by what happened, the guard's
+	// first words (conflict-guard.js), with the guard's text as it is, in place of TiddlyWiki's
+	// "Sync error while processing save of '…'" under its module id: nothing is lost in a conflict,
+	// and the text names the tiddler itself. One alert per text, as TiddlyWiki's logger keeps one
+	// per text and component. TiddlyWiki's other alerts (a save the worker refuses) show as they do.
+	var CONFLICT_HEADINGS = ["Edit conflict","Delete conflict","Deleted elsewhere","Unreadable copy"],
+		alertCount = 0;
+	function conflictHeading(err) {
+		var text = typeof err === "string" ? err : "";
+		for(var i = 0; i < CONFLICT_HEADINGS.length; i++) {
+			if(text.indexOf(CONFLICT_HEADINGS[i] + ": ") === 0) {
+				return CONFLICT_HEADINGS[i];
+			}
+		}
+		return null;
+	}
+	function conflictAlert(heading,text) {
+		var shown = wiki.getTiddlersWithTag("$:/tags/Alert").some(function(title) {
+			var fields = wiki.getTiddler(title).fields;
+			return fields.component === heading && fields.text === text;
+		});
+		if(!shown) {
+			wiki.addTiddler(new $tw.Tiddler({title: "$:/temp/cfworker/alerts/" + (++alertCount), tags: ["$:/tags/Alert"], component: heading, modified: new Date(), text: text}));
+		}
+	}
 	var originalDisplayError = $tw.Syncer.prototype.displayError;
 	$tw.Syncer.prototype.displayError = function(msg,err) {
 		if(err === $tw.language.getString("Error/XMLHttpRequest") + ": 0") {
 			noteNoAnswer();
+			this.logger.log(msg + ":",err);
+			return;
+		}
+		var heading = conflictHeading(err);
+		if(heading) {
+			conflictAlert(heading,err);
 			this.logger.log(msg + ":",err);
 			return;
 		}

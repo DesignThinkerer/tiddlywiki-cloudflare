@@ -62,11 +62,13 @@ var TAB_TEXT = [
 	"!! The engine",
 	"",
 	"<$list filter='[[" + ENGINE + "]get[same]match[yes]]' variable='same'>TiddlyWiki {{" + ENGINE + "!!engine}}, the version the worker ships.</$list>",
-	"<$list filter='[[" + ENGINE + "]get[same]match[no]]' variable='differs'>TiddlyWiki <$list filter='[[" + ENGINE + "]has[engine]]' variable='known' emptyMessage='of an unknown version (the engine has no version tag)'>{{" + ENGINE + "!!engine}}</$list> — the worker ships {{" + ENGINE + "!!shipped}}. <$list filter='[[" + ENGINE + "]!field:replaced[yes]]' variable='pending'><$button set='" + ENGINE + "!!ask' setTo='yes'>Update the engine</$button></$list>",
+	"<$list filter='[[" + ENGINE + "]get[same]match[no]]' variable='differs'>",
+	"<$list filter='[[" + ENGINE + "]get[newer]match[no]]' variable='older'>TiddlyWiki <$list filter='[[" + ENGINE + "]has[engine]]' variable='known' emptyMessage='of an unknown version (the engine has no version tag)'>{{" + ENGINE + "!!engine}}</$list> — the worker ships {{" + ENGINE + "!!shipped}}. <$list filter='[[" + ENGINE + "]!field:replaced[yes]]' variable='pending'><$button set='" + ENGINE + "!!ask' setTo='yes'>Update the engine</$button></$list></$list>",
+	"<$list filter='[[" + ENGINE + "]get[newer]match[yes]]' variable='newer'>TiddlyWiki {{" + ENGINE + "!!engine}}, newer than the {{" + ENGINE + "!!shipped}} the worker ships. Usually you update your copy of the worker (" + lib.guide("operating","3.1") + ") once it ships {{" + ENGINE + "!!engine}}; if the page isn't published, see troubleshooting (" + lib.guide("troubleshooting","4") + "). <$list filter='[[" + ENGINE + "]!field:replaced[yes]]' variable='pending'><$button set='" + ENGINE + "!!ask' setTo='yes'>Go back to {{" + ENGINE + "!!shipped}}</$button></$list></$list>",
 	"",
 	"<$reveal state='" + ENGINE + "!!ask' type='match' text='yes'>",
 	"",
-	"The worker replaces the engine (`index.html`) with the one it ships, TiddlyWiki {{" + ENGINE + "!!shipped}}; the next page load runs it, publishes it and purges the public copy. Your tiddlers, the plugins you installed and the published page stay. What goes: a plugin that came with the current engine and wasn't installed from the wiki (an engine you uploaded yourself, say). A plugin you updated from the library keeps your version (" + lib.guide("operating","3.4") + ").",
+	"The worker replaces the engine (`index.html`) with the one it ships, TiddlyWiki {{" + ENGINE + "!!shipped}}; the next page load runs it, publishes it and purges the public copy. This can't be undone from the tab: the current `index.html` isn't kept anywhere. If you uploaded it yourself, download it from R2 first (R2 → the bucket → Objects → index.html). <$list filter='[[" + ENGINE + "]get[newer]match[yes]]' variable='back'>Tiddlers saved by {{" + ENGINE + "!!engine}} will run on {{" + ENGINE + "!!shipped}}. </$list>Your tiddlers, the plugins you installed and the published page stay. What goes: a plugin that came with the current engine and wasn't installed from the wiki (an engine you uploaded yourself, say). A plugin you updated from the library keeps your version: to take the new engine's, delete your copy after Replace it and before you reload (wait for the save). Deleted later, it's gone, and operating 3.4's steps in R2 (delete `_page/shell.html` and `baked.html`, open the admin wiki) bring the new engine's version back. A new TiddlyWiki can break a plugin: if the wiki doesn't start after the reload, " + lib.guide("operating","3.6") + " (" + lib.guide("operating","3.3") + ").",
 	"",
 	"<$button message='" + UPDATE + "'>Replace it</$button> <$button set='" + ENGINE + "!!ask' setTo='no'>Not now</$button>",
 	"",
@@ -83,7 +85,7 @@ var TAB_TEXT = [
 	"Not known yet: the worker hasn't said whether backups are on. It's asked with the page's first tiddler list request; with no network, the answer waits for it.",
 	"</$list>",
 	"<$list filter='[[" + STATUS + "]get[backups]match[off]]' variable='off'>",
-	"Backups are off: the worker has no `GITHUB_REPO` and `GITHUB_TOKEN` (" + lib.guide("setup","2.4") + "). Set them, and every save is committed to GitHub: the wiki's only history, since the bucket keeps the current version of each tiddler alone, and a deletion or an overwrite is final.",
+	"Backups are off (optional): set `GITHUB_REPO` and the `GITHUB_TOKEN` secret (" + lib.guide("setup","2.4") + ") to commit every save to GitHub: the wiki's only history, since the bucket keeps the current version of each tiddler alone, and a deletion or an overwrite is final.",
 	"</$list>",
 	"<$list filter='[[" + STATUS + "]get[backups]match[on]]' variable='on'>",
 	"",
@@ -163,9 +165,39 @@ exports.startup = function() {
 			wiki.deleteTiddler(MESSAGE);
 		}
 	}
+	// A request of this tab's own that got no answer at all (status 0): the network gone, the worker
+	// unreachable, or the Access session expired (its login page, on another origin, is blocked by the
+	// browser). The outbox tells the login from the rest by asking Access (design 2.26), and the
+	// browser knows when it's offline. then(text, guide): the words, in the manual's, and the section
+	// to link; never the XHR's "error code: 0". forCheck: the setup check's own wording
+	function noAnswer(forCheck,then) {
+		var adaptor = $tw.syncadaptor,
+			asked = adaptor && typeof adaptor.cfworkerNoAnswer === "function" ? adaptor.cfworkerNoAnswer() : Promise.resolve(null);
+		asked.then(function(login) {
+			if(login === "expired") {
+				return then("your login has expired, and Cloudflare Access sent the request to its login page instead. Log in again (the cloud icon's dropdown has the link), then " + (forCheck ? "check" : "try") + " again.",lib.guideLink("operating","3.14"));
+			}
+			if(typeof navigator === "object" && navigator.onLine === false) {
+				return then("you're offline: the worker couldn't be asked." + (forCheck ? " Only this browser's two lines below were checked; check again once the network is back." : " Try again once the network is back."),lib.guideLink("operating","3.13"));
+			}
+			then("no network, or the worker can't be reached. Try again in a moment; the cloud icon's dropdown says which it was, once it knows.",lib.guideLink("operating",forCheck ? "3.15" : "3.13"));
+		});
+	}
+	function noAnswerLink(guide) {
+		return " ([[" + guide.text + "|" + guide.url + "]])";
+	}
 	// A worker answer in a message: the worker's own words as they are (plain text, with a link to
 	// the manual in them), and anything else (an error page from the edge: HTML) as text, not markup
+	// An answer that's a page rather than words: Cloudflare's error page, for an exception the worker
+	// couldn't catch or its CPU limit, said so, with where the reason is (the dashboard's logs)
+	var ERROR_PAGE = "Cloudflare's error page, not the worker's words (the worker threw, or ran out of CPU): the reason is in the worker's logs.";
+	function isErrorPage(answer) {
+		return /^\s*<(!doctype|html)/i.test(String(answer || ""));
+	}
 	function shown(answer) {
+		if(isErrorPage(answer)) {
+			return ERROR_PAGE + " (" + lib.guide("operating","3.8") + ")";
+		}
 		return String(answer || "").slice(0,300).replace(/</g,"&lt;");
 	}
 
@@ -192,7 +224,13 @@ exports.startup = function() {
 					say("No full backup yet.");
 					return;
 				}
-				say((status ? "The worker answered " + status + ": " : "The worker didn't answer: ") + shown(data || err));
+				if(status) {
+					say("The worker answered " + status + ": " + shown(data || err));
+					return;
+				}
+				noAnswer(false,function(text,guide) {
+					say("The worker didn't answer: " + text + noAnswerLink(guide));
+				});
 			}
 		});
 	}
@@ -209,8 +247,11 @@ exports.startup = function() {
 	try {
 		source = JSON.parse(wiki.getTiddlerText(PAGE_SOURCE,"") || "null");
 	} catch(e) {}
-	var engine = (source && source.engine) || "", shipped = (source && source.shipped) || "";
-	wiki.addTiddler(new $tw.Tiddler({title: ENGINE, engine: engine, shipped: shipped, same: engine && engine === shipped ? "yes" : "no", ask: "no"}));
+	// (newer: the engine ahead of the one the worker ships, uploaded by hand or the worker's copy
+	// behind: the button then says "go back", since the update would be a downgrade)
+	var engine = (source && source.engine) || "", shipped = (source && source.shipped) || "",
+		newer = engine && shipped && lib.compareVersions(engine,shipped) > 0 ? "yes" : "no";
+	wiki.addTiddler(new $tw.Tiddler({title: ENGINE, engine: engine, shipped: shipped, same: engine && engine === shipped ? "yes" : "no", newer: newer, ask: "no"}));
 
 	function engineSay(text) {
 		wiki.addTiddler(new $tw.Tiddler({title: ENGINE_MESSAGE, text: text}));
@@ -233,7 +274,13 @@ exports.startup = function() {
 					engineSay("Engine replaced: TiddlyWiki " + (body.from || "(unknown)") + " → " + body.to + ". <$button message='" + RELOAD + "'>Reload</$button> to run it: that load builds the page from it and publishes it.");
 					return;
 				}
-				engineSay("The engine wasn't replaced. " + (status ? "The worker answered " + status + ": " : "The worker didn't answer: ") + shown(data || err));
+				if(status) {
+					engineSay("The engine wasn't replaced. The worker answered " + status + ": " + shown(data || err));
+					return;
+				}
+				noAnswer(false,function(text,guide) {
+					engineSay("The engine wasn't replaced. The worker didn't answer: " + text + noAnswerLink(guide));
+				});
 			}
 		});
 		return false;
@@ -251,9 +298,14 @@ exports.startup = function() {
 
 	// One line per piece: a mark (✓ fine, ✗ missing or wrong, – nothing to check or optional), the
 	// worker's text, shown as text whatever it contains (addresses, quotes), and the section of the
-	// manual that fixes it as a link ({ text, url }, the worker's or lib.guideLink's)
+	// manual that fixes it as a link ({ text, url }, the worker's or lib.guideLink's). The mark is a
+	// span with its class, which the plugin's stylesheet colours (never the only signal: the glyph
+	// stays), and a label a screen reader says as a word; the glyph first, a space after it, as the
+	// lines are read (the suites, troubleshooting)
 	function line(mark,text,guide) {
-		return "<li><$text text=\"\"\"" + mark + " " + text + "\"\"\"/>" + (guide ? " ([[" + guide.text + "|" + guide.url + "]])" : "") + "</li>";
+		var kind = mark === "✓" ? "ok" : mark === "✗" ? "bad" : "none",
+			label = kind === "ok" ? "fine" : kind === "bad" ? "missing or wrong" : "not checked";
+		return "<li><span class='cfworker-mark cfworker-mark-" + kind + "' aria-label='" + label + "'>" + mark + "</span> <$text text=\"\"\"" + text + "\"\"\"/>" + (guide ? " ([[" + guide.text + "|" + guide.url + "]])" : "") + "</li>";
 	}
 	function mark(ok) {
 		return ok === true ? "✓" : ok === false ? "✗" : "–";
@@ -321,18 +373,14 @@ exports.startup = function() {
 					return done();
 				}
 				if(status) {
-					lines.push(line("✗","The worker answered " + status + ": " + String(data || err || "").slice(0,300),""));
+					lines.push(isErrorPage(data) ?
+						line("✗","The worker answered " + status + ": " + ERROR_PAGE,lib.guideLink("operating","3.8")) :
+						line("✗","The worker answered " + status + ": " + String(data || err || "").slice(0,300),""));
 					return done();
 				}
-				// No answer at all: no network, or the Access session has expired (its login page, on
-				// another origin, is blocked by the browser). The outbox tells the two apart by asking
-				// Access (design 2.26), and learns it at the same time, for the cloud icon's dropdown
-				var adaptor = $tw.syncadaptor,
-					asked = adaptor && typeof adaptor.cfworkerNoAnswer === "function" ? adaptor.cfworkerNoAnswer() : Promise.resolve(null);
-				asked.then(function(login) {
-					lines.push(login === "expired" ?
-						line("✗","The worker didn't answer: your login has expired, and Cloudflare Access sent the request to its login page instead. Log in again (the cloud icon's dropdown has the link), then check again.",lib.guideLink("operating","3.14")) :
-						line("✗","The worker didn't answer (no network, or it can't be reached): " + String(err || "").slice(0,300),""));
+				// No answer at all: said in words (noAnswer), with the section as a link
+				noAnswer(true,function(text,guide) {
+					lines.push(line("✗","The worker didn't answer: " + text,guide));
 					done();
 				});
 			}

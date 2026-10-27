@@ -148,6 +148,21 @@ check("the next list poll is redirected to the login page, which the browser blo
   since(refused, refusedMark).some(r => r.path === "/recipes/default/tiddlers.json") && since(listAnswers, listMark).some(a => a.tag === "A" && a.fromCache) && arrived.length === mark,
   `refused ${since(refused, refusedMark).map(r => r.method + " " + r.path).join(", ")}; lists ${JSON.stringify(since(listAnswers, listMark))}; arrived ${arrived.length - mark}`);
 check("...the tab asked Access once whether the session stands, and was told it doesn't (400, \"no app token set\")", since(probes, probesMark).length === 1 && probes[probesMark]?.status === 400, JSON.stringify(since(probes, probesMark)));
+// The item rendered in a dropdown as the theme styles it (a 380 px minimum width, no wrapping, every
+// link a block of its own) fits the screen with the plugin's stylesheet: the sentences wrap, and the
+// link sits in its sentence
+const fit = await A.evaluate(t => {
+  const host = document.createElement("div");
+  host.className = "tc-drop-down";
+  host.style.position = "absolute"; host.style.left = "0"; host.style.top = "0";
+  host.innerHTML = $tw.wiki.renderTiddler("text/html", t);
+  document.body.appendChild(host);
+  const item = host.querySelector(".tc-drop-down-info"), link = host.querySelector("a");
+  const out = { width: item ? Math.round(item.getBoundingClientRect().width) : -1, link: link ? getComputedStyle(link).display : "none", text: item ? item.textContent.replace(/\s+/g, " ").trim().slice(0, 80) : "" };
+  host.remove();
+  return out;
+}, ITEM);
+check("...rendered in a dropdown as the theme styles it, the item wraps within 400 px (the theme's 380 px dropdown) and its link is inline, in its sentence", fit.width > 0 && fit.width <= 400 && fit.link === "inline", JSON.stringify(fit));
 check("...and, nothing waiting, the dropdown says the login has expired and to log in again, not \"offline\"; no alert",
   noticed && s2?.online === "yes" && s2?.waiting === "0" && /login has expired/i.test(l2 || "") && /log in again/i.test(l2 || "") && !/offline/i.test(l2 || "") && a2.length === 0,
   `${JSON.stringify(s2)} ${JSON.stringify(l2)} alerts ${JSON.stringify(a2)}`);
@@ -196,6 +211,14 @@ check("\"Check the setup\" gets no answer (its request sent to the login page): 
   setup5.done && setup5.lines.some(l => /^✗ .*login has expired/i.test(l) && /operating 3\.14/.test(l)) && !setup5.lines.some(l => /^✗/.test(l) && /no network/i.test(l)) && since(probes, probesMark).length === 1,
   `${setup5.lines.join(" | ")}; ${since(probes, probesMark).length} probes`);
 check("...and the dropdown says so from then on", await loginIs(A, "expired") && /login has expired/i.test((await line(A)) || ""), JSON.stringify(await line(A)));
+// The tab's two buttons with the session expired: each says the login has expired and to log in
+// again, with the section as a link, never the XHR's "error code: 0" (the check's helper, shared)
+await A.evaluate(() => { $tw.rootWidget.dispatchEvent({ type: "tm-cfworker-backup-sync" }); $tw.rootWidget.dispatchEvent({ type: "tm-cfworker-engine-update" }); });
+const buttonsSaid = await waitFor(() => A.evaluate(() => /expired/.test($tw.wiki.getTiddlerText("$:/temp/cfworker/backup-sync-message", "")) && /expired/.test($tw.wiki.getTiddlerText("$:/temp/cfworker/engine-message", ""))), 15000);
+const [backupSaid, engineSaid] = await A.evaluate(() => [$tw.wiki.getTiddlerText("$:/temp/cfworker/backup-sync-message", ""), $tw.wiki.getTiddlerText("$:/temp/cfworker/engine-message", "")]);
+check("the tab's two buttons with the session expired: \"Back up everything\" and \"Update the engine\" each say the worker didn't answer because the login has expired, and to log in again, with operating 3.14 as a link, never the XHR's code",
+  buttonsSaid && [backupSaid, engineSaid].every(t => /The worker didn't answer: your login has expired/.test(t) && /\[\[operating 3\.14\|https:\/\/[^\]|]+#314-when-your-login-expires\]\]/.test(t) && !/XMLHttpRequest/.test(t)),
+  JSON.stringify({ backupSaid, engineSaid }));
 await pollEvery(A, 1000);
 
 // --- A reload instead: the login page, then the wiki with the change sent ------------------------------
@@ -217,9 +240,9 @@ proxy.closeAllConnections();
 await new Promise(resolve => proxy.close(resolve));
 const wentOffline = await waitFor(async () => (await status(A))?.online === "no", 15000);
 const s6 = await status(A);
-check("no network: the probe gets no answer either, the status says offline and the login stands; nothing in the dropdown while nothing waits", wentOffline && s6?.online === "no" && s6?.login === "ok" && (await line(A)) === "", `${JSON.stringify(s6)} ${JSON.stringify(await line(A))}`);
+check("no network: the probe gets no answer either, the status says offline and the login stands; the dropdown says offline in one line, nothing of the login", wentOffline && s6?.online === "no" && s6?.login === "ok" && /^Offline: what this device has loaded is here/.test((await line(A)) || "") && !/login/i.test((await line(A)) || ""), `${JSON.stringify(s6)} ${JSON.stringify(await line(A))}`);
 const setup6 = await setupCheck(A);
-check("...\"Check the setup\" then says the worker didn't answer, no network, and nothing of the login", setup6.done && setup6.lines.some(l => /^✗ .*didn't answer/.test(l) && /no network/i.test(l)) && !setup6.lines.some(l => /login/i.test(l)), setup6.lines.join(" | "));
+check("...\"Check the setup\" then says the worker didn't answer, no network or the worker can't be reached, with operating 3.15 as the link and never the XHR's code, and nothing of the login", setup6.done && setup6.lines.some(l => /^✗ The worker didn't answer: no network, or the worker can't be reached/.test(l) && /\(operating 3\.15\)/.test(l)) && !setup6.lines.some(l => /XMLHttpRequest/.test(l)) && setup6.lines.some(l => /^✗ .*didn't answer/.test(l) && /no network/i.test(l)) && !setup6.lines.some(l => /login/i.test(l)), setup6.lines.join(" | "));
 await addTiddler(A, { title: "Offline note", text: "typed with the network gone" });
 await waitFor(async () => (await status(A))?.waiting === "1", 10000);
 const l6 = await line(A);

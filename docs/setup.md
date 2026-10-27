@@ -6,9 +6,20 @@ About ten minutes, in this order.
 
 ## 2.1 Before you start
 
-**A private wiki, or a public one.** A private wiki skips the public site: in [2.2](#22-the-bucket-and-the-public-site) only the bucket, no custom domain; no zone rules ([2.7](#27-the-zones-rules-public-site-only)); in [2.5](#25-the-worker) no `PUBLIC_WIKI_URL`, `CF_ZONE_ID` or `CF_API_TOKEN`. About five minutes. The steps marked *(public site only)* don't apply. Its first load on a new device reads every tiddler from the worker ([limits 5](limits.md)); after that, only what changed. To make it public later, do those steps then, in the order of [operating 3.22](operating.md#322-making-a-private-wiki-public): nothing moves, but everything written so far becomes public with the domain, so a public wiki can't hold private tiddlers: delete them first, or move them to a second wiki that stays private ([2.9](#29-a-second-wiki)).
+**A private wiki, or a public one.** Choose first: each path has its sections.
 
-**By hand, from a fork.** Fork this repository on GitHub: Cloudflare deploys the worker from the fork's `main` branch with Workers Builds ([2.5](#25-the-worker)), and from then on every push to it deploys. Nothing in the fork is edited, so an update is GitHub's *Sync fork* ([operating 3.1](operating.md#31-updating-your-copy)). Then do [2.2](#22-the-bucket-and-the-public-site) to [2.8](#28-the-first-visit) in order; the names below apply throughout. *Check the setup* ([2.8](#28-the-first-visit)) then shows every line fine from the second load (the first leaves the core file's copy for the service worker to take).
+| | A private wiki | A public wiki |
+|---|---|---|
+| What it is | the admin site alone, behind Access, at the worker's own address; nothing in the bucket reachable by anyone else | the same, plus the public site: the bucket's custom domain, where every tiddler you save is readable by anyone at once |
+| The sections | [2.2](#22-the-bucket-and-the-public-site) (the bucket alone), [2.3](#23-the-backup-queue), [2.4](#24-the-backup-repository-optional) (optional; a private repository), [2.5](#25-the-worker) (without `PUBLIC_WIKI_URL`, `CF_ZONE_ID` and `CF_API_TOKEN`), [2.6](#26-cloudflare-access), [2.8](#28-the-first-visit); the steps marked *(public site only)* don't apply | [2.2](#22-the-bucket-and-the-public-site) to [2.8](#28-the-first-visit), the steps marked *(public site only)* included |
+| It takes | about five minutes | about ten, and a domain on the account |
+
+A private wiki's first load on a new device reads every tiddler from the worker, then only what changed ([limits 5](limits.md)). It can be made public later, in the order of [operating 3.22](operating.md#322-making-a-private-wiki-public): nothing moves, but everything written so far becomes public with the domain, so what shouldn't be is deleted first, or moved to a second wiki that stays private (2.9).
+
+**By hand, from a fork:**
+
+1. **Fork this repository** on GitHub. Cloudflare deploys the worker from the fork's `main` branch, and from then on every push to it deploys; nothing in the fork is edited, so an update is GitHub's *Sync fork* ([operating 3.1](operating.md#31-updating-your-copy)).
+2. **Do [2.2](#22-the-bucket-and-the-public-site) to [2.8](#28-the-first-visit) in order,** with the names below, which apply throughout.
 
 The names, and where each goes. With the defaults, nothing in the repository needs editing: the worker is deployed as it is, and your settings are entered in the dashboard ([2.5](#25-the-worker)).
 
@@ -51,13 +62,13 @@ It makes GitHub mirror the wiki: every stored tiddler GitHub doesn't have, or ha
 
 It runs in the backup queue, without the tab, at GitHub's pace (about 500 commits an hour), and the tab shows its progress (as of its last minute's refresh, or *Refresh*). Run it once after setting backups up, after a restore (below), after putting a tiddler in the bucket by hand, or in any doubt.
 
-**Restoring from the backup:** the backup is the wiki, one file per tiddler, so a wiki can be rebuilt from it in a new bucket or a new account: do [2.2](#22-the-bucket-and-the-public-site) to [2.8](#28-the-first-visit) with an empty bucket, clone the backup, and drag its files onto the admin wiki, like an existing wiki's file ([2.8](#28-the-first-visit)).
+**Restoring from the backup:** the backup is the wiki, one file per tiddler, so a wiki can be rebuilt from it in a new bucket or a new account: do [2.2](#22-the-bucket-and-the-public-site) to [2.8](#28-the-first-visit) with an empty bucket, clone the backup, and drag its files onto the admin wiki, like an existing wiki's file ([2.8](#28-the-first-visit)). A clone can come up short, on Windows most of all, where no title with a `:` checks out ([limits 5](limits.md)): the tool below reads from the commit what the clone lacks, so prefer it to dragging the files. Before the full backup that follows a restore (above), check that every tiddler came through (the tool says how many, and which it read from the commit): that backup removes from the branch whatever the restore missed.
 
 The admin wiki knows these files: TiddlyWiki's own JSON import keeps only text fields, and a stored tiddler has its tags as a list, so dropped onto any other TiddlyWiki they would lose every tag; the admin wiki's restore-import module turns them back into tiddlers, tags included, without the old revision, bag and recipe.
 
 Every tiddler is then saved again, plugins included, each created anew and backed up. A thousand tiddlers take a few minutes to save and, at GitHub's pace, a couple of hours to commit ([limits 5](limits.md)).
 
-For a whole clone, rather than dropping a thousand files, `node tools/restore.mjs <the clone>` (from a clone of this repository, Node 22) merges them into one `restore.json`, which you drag instead; it also makes a file any TiddlyWiki imports, and a single-file wiki out of a backup, for reading it anywhere: `npx tiddlywiki@5.4.1 wiki --init empty && npx tiddlywiki@5.4.1 wiki --load restore.json --build index` makes `wiki/output/index.html`.
+For a whole clone, rather than dropping a thousand files, `node tools/restore.mjs <the clone>` (from a clone of this repository, Node 22) merges them into one `restore.json`, which you drag instead: it refuses an empty folder, names each tiddler the commit has and the disk doesn't and reads it from the commit (git is asked; a download that isn't a clone is taken as it is), and on Windows says so first. It also makes a file any TiddlyWiki imports, and a single-file wiki out of a backup, for reading it anywhere: `npx tiddlywiki@5.4.1 wiki --init empty && npx tiddlywiki@5.4.1 wiki --load restore.json --build index` makes `wiki/output/index.html`.
 
 To get back one tiddler, or one of its past versions: download its file from GitHub (its history has every version) and drop it onto the admin wiki.
 
@@ -150,7 +161,7 @@ A "Bypass cache" rule for the admin hostname is optional: Cloudflare never cache
 
 ## 2.8 The first visit
 
-Open the admin site (`https://wiki-admin.<your subdomain>.workers.dev`, or your custom domain). Access asks you to log in (with your Cloudflare account, or a code sent to your e-mail, [2.6](#26-cloudflare-access)), then the worker puts an empty TiddlyWiki in the bucket as `index.html` (the engine; your content lives in the tiddler files) with the public site's `status` file (written for a private wiki too, for the day it gets a public site), builds the page, and the wiki opens. That first load also publishes TiddlyWiki's core file and the page, for both sites. With a public site, open `https://wiki.example.com` to see it. Then Control Panel → Saving → Cloudflare → *Check the setup* looks at each piece (Access, the public site's rules, backups, the queue, purges) and, for one that's missing, says what to do and names the section of this guide with the full steps ([operating 3.15](operating.md#315-checking-the-setup)).
+Open the admin site (`https://wiki-admin.<your subdomain>.workers.dev`, or your custom domain). Access asks you to log in (with your Cloudflare account, or a code sent to your e-mail, [2.6](#26-cloudflare-access)), then the worker puts an empty TiddlyWiki in the bucket as `index.html` (the engine; your content lives in the tiddler files) with the public site's `status` file (written for a private wiki too, for the day it gets a public site), builds the page, and the wiki opens. That first load also publishes TiddlyWiki's core file and the page, for both sites. With a public site, open `https://wiki.example.com` to see it. Then Control Panel → Saving → Cloudflare → *Check the setup* looks at each piece (Access, the public site's rules, backups, the queue, purges) and, for one that's missing, says what to do and names the section of this guide with the full steps ([operating 3.15](operating.md#315-checking-the-setup)). Every line is fine from the second load: the first leaves the core file's copy for the service worker to take, and the line about it says so until then.
 
 With backups set up ([2.4](#24-the-backup-repository-optional)), save one tiddler next and look for its commit in the backup repository a minute later: the check tells whether GitHub accepts the token and finds the repository and its branch, not whether the token may write there, which the first backup shows (the admin wiki's alert says so after an hour if it doesn't, [troubleshooting 4](troubleshooting.md)). Then import.
 

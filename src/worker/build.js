@@ -85,7 +85,7 @@ const PAGE_SOURCE_TITLE = "$:/cfworker/page-source";
 // its parts are shadow tiddlers (out of search, out of syncing, overridden only on purpose), and
 // Control Panel → Plugins lists it with the worker's version (package.json's, plus the hash of
 // everything else in it: pluginVersion) and three tabs, a readme, the settings and the device
-// (src/browser/*.txt).
+// (src/browser/*.txt), plus a stylesheet, tagged $:/tags/Stylesheet (src/browser/plugin-stylesheet.txt).
 // Preloaded like the modules were: never stored, never a plugin file (tiddlers.js, page-publisher.js).
 export const ADMIN_PLUGIN_TITLE = "$:/plugins/cfworker/admin";
 const PACKAGE_VERSION = "__PACKAGE_VERSION__";   // filled by build.mjs from package.json
@@ -93,6 +93,7 @@ export const SHIPPED_VERSION = "__TIDDLYWIKI_VERSION__";   // the TiddlyWiki ver
 const PLUGIN_README_SOURCE = "__PLUGIN_README_SOURCE__";
 const PLUGIN_SETTINGS_SOURCE = "__PLUGIN_SETTINGS_SOURCE__";
 const PLUGIN_DEVICE_SOURCE = "__PLUGIN_DEVICE_SOURCE__";
+const PLUGIN_STYLESHEET_SOURCE = "__PLUGIN_STYLESHEET_SOURCE__";
 const PLUGIN_FIELDS = {
   name: "TiddlyWiki on Cloudflare", description: "The admin wiki's side of the worker: conflicts, the tiddler list and the device copy, backups, the published page, editing and opening offline",
   author: "https://github.com/DesignThinkerer/tiddlywiki-cloudflare", "core-version": ">=5.3.0", list: "readme settings device"
@@ -100,13 +101,13 @@ const PLUGIN_FIELDS = {
 let adminPluginVersion = "";
 
 // package.json's version, plus the hash of everything else in the plugin that doesn't depend on
-// the wiki: the modules, the service worker's address, the three tabs and the fields above. So the
-// version changes whenever any of them does, and the page, which carries the plugin, is rebuilt
-// (bakeVersion). Worked out once while the worker runs.
+// the wiki: the modules, the service worker's address, the three tabs, the stylesheet and the fields
+// above. So the version changes whenever any of them does, and the page, which carries the plugin,
+// is rebuilt (bakeVersion). Worked out once while the worker runs.
 export function pluginVersion() {
   if (!adminPluginVersion) {
     // (The shipped TiddlyWiki version is in the page too, for the Cloudflare tab: a new one, a new page)
-    const parts = [...BROWSER_MODULES.map(m => m.source), swVersion(), PLUGIN_README_SOURCE, PLUGIN_SETTINGS_SOURCE, PLUGIN_DEVICE_SOURCE, JSON.stringify(PLUGIN_FIELDS), SHIPPED_VERSION];
+    const parts = [...BROWSER_MODULES.map(m => m.source), swVersion(), PLUGIN_README_SOURCE, PLUGIN_SETTINGS_SOURCE, PLUGIN_DEVICE_SOURCE, PLUGIN_STYLESHEET_SOURCE, JSON.stringify(PLUGIN_FIELDS), SHIPPED_VERSION];
     adminPluginVersion = PACKAGE_VERSION + "+" + hashText(parts.join("\n")).toString(36);
   }
   return adminPluginVersion;
@@ -121,6 +122,8 @@ function adminPlugin(env, pageSource) {
   tiddlers[`${ADMIN_PLUGIN_TITLE}/readme`] = { title: `${ADMIN_PLUGIN_TITLE}/readme`, text: PLUGIN_README_SOURCE };
   tiddlers[`${ADMIN_PLUGIN_TITLE}/settings`] = { title: `${ADMIN_PLUGIN_TITLE}/settings`, text: PLUGIN_SETTINGS_SOURCE };
   tiddlers[`${ADMIN_PLUGIN_TITLE}/device`] = { title: `${ADMIN_PLUGIN_TITLE}/device`, text: PLUGIN_DEVICE_SOURCE };
+  // (A shadow tiddler tagged $:/tags/Stylesheet is applied like any stylesheet; text/css isn't wikified)
+  tiddlers[`${ADMIN_PLUGIN_TITLE}/stylesheet`] = { title: `${ADMIN_PLUGIN_TITLE}/stylesheet`, tags: "$:/tags/Stylesheet", type: "text/css", text: PLUGIN_STYLESHEET_SOURCE };
   return {
     title: ADMIN_PLUGIN_TITLE, "plugin-type": "plugin", type: "application/json", ...PLUGIN_FIELDS, version: pluginVersion(),
     text: JSON.stringify({ tiddlers })

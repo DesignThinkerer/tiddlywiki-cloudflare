@@ -8,13 +8,80 @@
 // so every tag would be lost; the stored revision, bag and recipe belong to the old wiki, not the
 // new one. And a whole clone is better dragged as one file than as a thousand.
 //
+// A clone can come up short (limits 5): the backup's files are named after the titles, and a disk
+// may not take a name. On Windows git checks out no title with a ":" (every system tiddler); macOS's
+// default disk ignores case, so two titles differing by case check out as one file, holding the
+// last; a title, or a part of it between slashes, longer than a file name may be fails the
+// checkout. The commit has them all: on a git clone, its file list (git ls-tree on HEAD) is compared
+// with the titles read, and what the disk lacks is read from the commit (git cat-file) and named.
+// An empty folder is refused. Design 2.38.
+//
 // Usage: node tools/restore.mjs <a clone of the backup, or one of its files> [restore.json]
 // Then drag restore.json onto the admin wiki (setup 2.4), or build a single-file wiki from it:
 //   npx tiddlywiki@5.4.1 wiki --init empty && npx tiddlywiki@5.4.1 wiki --load restore.json --build index
 
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+
+const FILES = "tiddlers/";   // the backup's files: tiddlers/<title>.json
+const titleOf = file => file.slice(FILES.length, -".json".length);
+
+// Said first on Windows, where the clone lacks every title with a ":" whatever the tool does next,
+// and a drag of the clone's files would too
+export function platformNotice(platform = process.platform) {
+  return platform === "win32"
+    ? "On Windows, git can't check out a title with a ':', which every system tiddler has (settings, themes and installed plugins among them): the clone lacks them, and so would a drag of its files (limits 5). From a git clone, this tool reads them from the commit instead, and says which; from a download that isn't a clone, they're missing: clone the backup with git, or run this on Linux, macOS or WSL."
+    : "";
+}
+
+// The commit's tiddler files (git ls-tree on HEAD: the commit, not the index, which a checkout that
+// failed leaves short), or null when the directory isn't a git clone, or git isn't there
+export function committedFiles(root) {
+  const run = spawnSync("git", ["-C", root, "ls-tree", "-r", "-z", "--name-only", "HEAD", "--", "tiddlers"], { maxBuffer: 256 * 1024 * 1024 });
+  if (run.error || run.status !== 0) return null;
+  return run.stdout.toString("utf8").split("\0").filter(file => file.startsWith(FILES) && file.endsWith(".json") && !file.includes("\n"));
+}
+
+// The text of these files as committed, file -> text, read in one git process (cat-file --batch:
+// a header line "<sha> blob <size>" and the content for each, in the order asked; a file it
+// doesn't find answers "… missing" with nothing after)
+export function readCommitted(root, files) {
+  const texts = new Map();
+  if (!files.length) return texts;
+  const run = spawnSync("git", ["-C", root, "cat-file", "--batch"], { input: Buffer.from(files.map(file => `HEAD:${file}\n`).join(""), "utf8"), maxBuffer: 1024 * 1024 * 1024 });
+  if (run.error || run.status !== 0) return texts;
+  const out = run.stdout;
+  let at = 0;
+  for (const file of files) {
+    const end = out.indexOf(10, at);
+    if (end < 0) break;
+    const found = /^\S+ \S+ (\d+)$/.exec(out.toString("utf8", at, end));
+    at = end + 1;
+    if (!found) continue;
+    const size = Number(found[1]);
+    texts.set(file, out.toString("utf8", at, at + size));
+    at += size + 1;
+  }
+  return texts;
+}
+
+// The tiddler of a stored file's text, into tiddlers, or the reason into problems
+function take(text, where, tiddlers, problems) {
+  let stored;
+  try {
+    stored = JSON.parse(text);
+  } catch (e) {
+    problems.push(`${where}: not JSON (${e.message})`);
+    return null;
+  }
+  const fileProblems = [];
+  const fields = importable(stored, fileProblems);
+  problems.push(...fileProblems.map(p => `${where}: ${p}`));
+  if (fields) tiddlers.push(fields);
+  return fields;
+}
 
 // A list field as TiddlyWiki writes it: items with a space in double brackets ($tw.utils.stringifyList)
 export function stringifyList(items) {
@@ -61,22 +128,35 @@ function jsonFiles(target) {
 }
 
 // The importable tiddlers of a backup clone (its tiddlers/ directory, or the clone itself), or of
-// one file; sorted by title. problems: what was left out, and why.
-export function collect(target, problems = []) {
-  const dir = fs.statSync(target).isDirectory() && fs.existsSync(path.join(target, "tiddlers")) ? path.join(target, "tiddlers") : target;
-  const tiddlers = [];
+// one file; sorted by title. problems: what was left out, and why. notes.fromCommit: the titles the
+// disk lacked, read from the commit (a git clone only; a download, or a machine without git, is
+// taken as it is). Compared by title, not by path: on a case-insensitive disk the twin that
+// collided has a path, the other's, with the last one's content in it. A file that isn't a tiddler
+// (not JSON, no title) is reported once, not read from the commit again.
+export function collect(target, problems = [], notes = {}) {
+  const isDir = fs.statSync(target).isDirectory();
+  const dir = isDir && fs.existsSync(path.join(target, "tiddlers")) ? path.join(target, "tiddlers") : target;
+  const root = isDir && path.basename(dir) === "tiddlers" ? path.dirname(dir) : null;   // the clone, if this is its tiddlers/
+  const tiddlers = [], read = new Set(), bad = new Set();
   for (const file of jsonFiles(dir)) {
-    let stored;
-    try {
-      stored = JSON.parse(fs.readFileSync(file, "utf8"));
-    } catch (e) {
-      problems.push(`${file}: not JSON (${e.message})`);
-      continue;
+    const fields = take(fs.readFileSync(file, "utf8"), file, tiddlers, problems);
+    if (fields) read.add(fields.title);
+    else bad.add(path.relative(root || path.dirname(dir), file).split(path.sep).join("/"));
+  }
+  notes.fromCommit = [];
+  const committed = root ? committedFiles(root) : null;
+  if (committed) {
+    const lacking = committed.filter(file => !read.has(titleOf(file)) && !bad.has(file));
+    const texts = readCommitted(root, lacking);
+    for (const file of lacking) {
+      if (!texts.has(file)) {
+        problems.push(`${file}: in the commit, but git couldn't read it`);
+        continue;
+      }
+      const fields = take(texts.get(file), `${file} (in the commit, not on the disk)`, tiddlers, problems);
+      if (fields) notes.fromCommit.push(fields.title);
     }
-    const fileProblems = [];
-    const fields = importable(stored, fileProblems);
-    problems.push(...fileProblems.map(p => `${file}: ${p}`));
-    if (fields) tiddlers.push(fields);
+    notes.fromCommit.sort();
   }
   tiddlers.sort((a, b) => (a.title < b.title ? -1 : a.title > b.title ? 1 : 0));
   return tiddlers;
@@ -88,9 +168,22 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     console.error("Usage: node tools/restore.mjs <a clone of the backup, or one of its files> [restore.json]");
     process.exit(2);
   }
-  const problems = [];
-  const tiddlers = collect(target, problems);
-  fs.writeFileSync(out, JSON.stringify(tiddlers, null, 1));
+  if (!fs.existsSync(target)) {
+    console.error(`${target}: no such file or folder.`);
+    process.exit(1);
+  }
+  const notice = platformNotice();
+  if (notice) console.error(notice);
+  const problems = [], notes = {};
+  const tiddlers = collect(target, problems, notes);
   for (const problem of problems) console.error("Left out: " + problem);
-  console.log(`${out}: ${tiddlers.length} tiddlers, ready to drag onto the admin wiki (setup 2.4)`);
+  for (const title of notes.fromCommit) console.error(`Read from the commit, not from the disk: ${title}`);
+  // (Nothing to restore is a wrong path, or a clone with nothing checked out, never a wiki)
+  if (!tiddlers.length) {
+    console.error(fs.statSync(target).isDirectory() ? `No tiddler file under ${target}: is this the backup's clone, or its tiddlers/ folder? (setup 2.4)` : `${target} isn't a tiddler file (setup 2.4).`);
+    process.exit(1);
+  }
+  fs.writeFileSync(out, JSON.stringify(tiddlers, null, 1));
+  const fromCommit = notes.fromCommit.length ? `, ${notes.fromCommit.length} read from the commit (the disk lacked them: limits 5)` : "";
+  console.log(`${out}: ${tiddlers.length} tiddlers${fromCommit}, ready to drag onto the admin wiki (setup 2.4)`);
 }

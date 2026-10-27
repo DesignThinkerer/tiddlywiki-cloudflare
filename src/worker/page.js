@@ -72,9 +72,13 @@ export async function serveWiki(request, env, ctx, corsHeaders) {
 
 const PUBLIC_STATUS = { username: "GUEST", read_only: true, anonymous: true, logout_is_available: false, space: { recipe: "default" } };
 
-const NO_WIKI = "There's no wiki yet: the bucket has no index.html, and this worker was deployed without the empty wiki that would " +
-  "go there by itself (a deploy through Wrangler or Workers Builds ships it, " + guideText("setup", "2.8") + "). Upload an index.html, a TiddlyWiki " +
-  "with the TiddlyWeb plugin, and the status file (setup 2.8), then open this page again.";
+// (What was found, the usual fix first, the pasted worker's path second, one cite at the end: a deploy
+// through Workers Builds or Wrangler ships the empty wiki as a module only when the build made it)
+const NO_WIKI = "There's no wiki yet: the bucket has no index.html, and this worker was deployed without the empty wiki that would go there by itself. " +
+  "Deployed by Workers Builds? Under the worker's Settings → Builds, check that the build command is npm run build and that the last build log names seed/empty.html, " +
+  "then retry the build; from a computer, npm run build then npx wrangler deploy ships it. " +
+  "A worker pasted into the dashboard carries no file: upload seed/empty.html, which npm run build makes, to the bucket as index.html (a TiddlyWiki with the TiddlyWeb plugin), with the status file. " +
+  "Then open this page again (" + guideText("setup", "2.8") + ").";
 
 // The empty wiki module, or null without it (logged)
 async function loadSeed() {
