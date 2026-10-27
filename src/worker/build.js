@@ -8,6 +8,7 @@
 import { APP_HEAD, ensureAppFiles } from "./app.js";
 import { concatBytes, encoder } from "./bytes.js";
 import { PUBLIC_PAGE_PATHS, purgePublicCache } from "./cache.js";
+import { DOCS_URL } from "./docs.js";
 import { hasNestedFields } from "./layout.js";
 import { readableList } from "./list.js";
 import { pluginScriptTags } from "./plugins.js";
@@ -94,9 +95,12 @@ const PLUGIN_README_SOURCE = "__PLUGIN_README_SOURCE__";
 const PLUGIN_SETTINGS_SOURCE = "__PLUGIN_SETTINGS_SOURCE__";
 const PLUGIN_DEVICE_SOURCE = "__PLUGIN_DEVICE_SOURCE__";
 const PLUGIN_STYLESHEET_SOURCE = "__PLUGIN_STYLESHEET_SOURCE__";
+const PLUGIN_GETTING_STARTED_SOURCE = "__PLUGIN_GETTING_STARTED_SOURCE__";
 const PLUGIN_FIELDS = {
   name: "TiddlyWiki on Cloudflare", description: "The admin wiki's side of the worker: conflicts, the tiddler list and the device copy, backups, the published page, editing and opening offline",
-  author: "https://github.com/DesignThinkerer/tiddlywiki-cloudflare", "core-version": ">=5.3.0", list: "readme settings device"
+  author: "https://github.com/DesignThinkerer/tiddlywiki-cloudflare", "core-version": ">=5.3.0", list: "readme settings device",
+  // (Above TiddlyWeb's 10, so the plugin's GettingStarted is the one shown, not TiddlyWeb's; a missing priority counts as 1)
+  "plugin-priority": "20"
 };
 let adminPluginVersion = "";
 
@@ -107,7 +111,7 @@ let adminPluginVersion = "";
 export function pluginVersion() {
   if (!adminPluginVersion) {
     // (The shipped TiddlyWiki version is in the page too, for the Cloudflare tab: a new one, a new page)
-    const parts = [...BROWSER_MODULES.map(m => m.source), swVersion(), PLUGIN_README_SOURCE, PLUGIN_SETTINGS_SOURCE, PLUGIN_DEVICE_SOURCE, PLUGIN_STYLESHEET_SOURCE, JSON.stringify(PLUGIN_FIELDS), SHIPPED_VERSION];
+    const parts = [...BROWSER_MODULES.map(m => m.source), swVersion(), PLUGIN_README_SOURCE, PLUGIN_SETTINGS_SOURCE, PLUGIN_DEVICE_SOURCE, PLUGIN_STYLESHEET_SOURCE, PLUGIN_GETTING_STARTED_SOURCE, JSON.stringify(PLUGIN_FIELDS), SHIPPED_VERSION];
     adminPluginVersion = PACKAGE_VERSION + "+" + hashText(parts.join("\n")).toString(36);
   }
   return adminPluginVersion;
@@ -124,6 +128,9 @@ function adminPlugin(env, pageSource) {
   tiddlers[`${ADMIN_PLUGIN_TITLE}/device`] = { title: `${ADMIN_PLUGIN_TITLE}/device`, text: PLUGIN_DEVICE_SOURCE };
   // (A shadow tiddler tagged $:/tags/Stylesheet is applied like any stylesheet; text/css isn't wikified)
   tiddlers[`${ADMIN_PLUGIN_TITLE}/stylesheet`] = { title: `${ADMIN_PLUGIN_TITLE}/stylesheet`, tags: "$:/tags/Stylesheet", type: "text/css", text: PLUGIN_STYLESHEET_SOURCE };
+  // The first screen: the plugin's GettingStarted (its priority above TiddlyWeb's, whose own would win
+  // otherwise), in the project's words; an owner's edit is an override, kept through updates (design 2.21)
+  tiddlers.GettingStarted = { title: "GettingStarted", text: PLUGIN_GETTING_STARTED_SOURCE };
   return {
     title: ADMIN_PLUGIN_TITLE, "plugin-type": "plugin", type: "application/json", ...PLUGIN_FIELDS, version: pluginVersion(),
     text: JSON.stringify({ tiddlers })
@@ -259,7 +266,49 @@ async function preloadedTiddlers(env, entries, pageSource) {
 // screen). In a full index.html, where TiddlyWiki starts from code inside the page, from <head>.
 // (Only a shell is searched: in index.html, the marker is only in TiddlyWiki's templates, so the
 // search would decode the whole page for nothing, and one in raw markup isn't the place.)
-function pageWithPreloads(pageSource, store, pluginTags) {
+// One line under TiddlyWiki's error box when the boot fails: on the admin origin only (the public
+// origin stands down), the page's first two minutes are watched for .tc-error-form (a boot-time
+// error: a plugin, a raw markup tiddler, the engine; a runtime error later shows the same box and
+// gets nothing), and one line is appended to it naming those causes with the troubleshooting page's
+// link, where the box's own advice, "refresh", repeats the error (design 2.13). No request, nothing
+// of TiddlyWiki touched, and little watched: TiddlyWiki inserts the box as a direct child of the
+// body, so the body's children alone are observed, once it exists (this script is in the head)
+function bootErrorLine(env) {
+  return `<script>
+          (function() {
+            var pub = ${JSON.stringify(publicAddress(env))};
+            if (pub && location.origin + "/" === pub) return;
+            if (typeof MutationObserver !== "function") return;
+            var observer = null, added = false;
+            function look() {
+              var box = added ? null : document.querySelector(".tc-error-form");
+              if (!box || box.querySelector(".cfworker-boot-line")) return;
+              var line = document.createElement("p"), link = document.createElement("a");
+              line.className = "cfworker-boot-line";
+              line.appendChild(document.createTextNode("If this began after you installed or edited a plugin, a raw markup tiddler, or updated the engine: "));
+              link.href = ${JSON.stringify(`${DOCS_URL}/troubleshooting.md#4-troubleshooting`)};
+              link.target = "_blank";
+              link.rel = "noopener noreferrer";
+              link.appendChild(document.createTextNode("what to do (troubleshooting 4)"));
+              line.appendChild(link);
+              box.appendChild(line);
+              added = true;
+              if (observer) observer.disconnect();
+            }
+            function watch() {
+              if (!document.body) return;
+              look();
+              if (added) return;
+              observer = new MutationObserver(look);
+              observer.observe(document.body, { childList: true });
+              setTimeout(function() { observer.disconnect(); }, 120000);
+            }
+            if (document.body) watch(); else document.addEventListener("DOMContentLoaded", watch);
+          })();
+        </script>`;
+}
+
+function pageWithPreloads(env, pageSource, store, pluginTags) {
   let html = pageSource.html;
   let pluginsPlaced = false;
   if (pluginTags && pageSource.fingerprint) {
@@ -281,6 +330,7 @@ function pageWithPreloads(pageSource, store, pluginTags) {
       `;
   }
   if (pluginTags && !pluginsPlaced) injected += `\n${pluginTags}\n`;
+  injected += `\n${bootErrorLine(env)}\n`;
   // The app's manifest and icon, for the browser to install the wiki (app.js)
   injected += `\n${APP_HEAD}\n`;
   html = insertAfterHead(html, `\n${injected}\n`);
@@ -303,7 +353,7 @@ export async function rebakeHtml(env, ctx, list = null, source = null) {
       preloadedTiddlers(env, entries, pageSource),
       pluginScriptTags(env, entries.filter(t => t.title && needsPluginFile(t)))
     ]);
-    const html = pageWithPreloads(pageSource, store, pluginTags);
+    const html = pageWithPreloads(env, pageSource, store, pluginTags);
     const stored = await storePage(env, html, {
       bakeVersion: bakeVersion(env),
       sourceEtag: pageSource.index,

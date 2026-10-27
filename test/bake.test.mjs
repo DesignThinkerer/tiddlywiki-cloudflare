@@ -277,15 +277,26 @@ check("the page preloads the admin plugin: plugin-type plugin, a name, a descrip
   !!plugin && plugin["plugin-type"] === "plugin" && plugin.type === "application/json" && !!plugin.name && !!plugin.description && plugin.author === "https://github.com/DesignThinkerer/tiddlywiki-cloudflare" && typeof packageVersion === "string" && new RegExp("^" + packageVersion.replace(/\./g, "\\.") + "\\+[0-9a-z]+$").test(plugin.version || "") &&
   ["readme", "settings", "device"].every(tab => (plugin.list || "").split(" ").includes(tab) && !!parts[ADMIN + "/" + tab]),
   plugin ? `version ${plugin.version}, list ${plugin.list}, parts ${Object.keys(parts).length}` : "no plugin tiddler");
+// The readme sits beside TiddlyWiki's disable checkbox, which saves a flag the worker bakes into the
+// next page: off on every device, the page looking the same (design 2.21). The readme says so first
+check("...its readme opens with what the disable checkbox does on every device, and how to turn the modules off on purpose (CONFLICT_GUARD) and get them back, with operating 3.19",
+  /^''Disabling it here turns all of this off at the next load, on every device:''/.test(parts[ADMIN + "/readme"]?.text || "") && /saves can overwrite each other, offline changes aren't kept, no backup alert shows, the page isn't published, and the Cloudflare tab is gone/.test(parts[ADMIN + "/readme"]?.text || "") && /CONFLICT_GUARD/.test(parts[ADMIN + "/readme"]?.text || "") && /tick the plugin on again and reload/.test(parts[ADMIN + "/readme"]?.text || "") && /operating\.md#319-the-browser-modules-off-and-checking-theyre-on/.test(parts[ADMIN + "/readme"]?.text || ""),
+  (parts[ADMIN + "/readme"]?.text || "").slice(0, 160));
 check("...its parts are the ten browser modules, each the right kind of module, each a JavaScript tiddler, and the page's settings (the public address, the service worker's address, the page's source)",
   BROWSER_MODULES.every(([title, kind]) => { const t = parts[title]; return t && t["module-type"] === kind && t.type === "application/javascript" && t.text.length > 200; }) &&
   !!parts["$:/cfworker/public-url"] && /^\/sw\.js\?v=/.test(parts["$:/cfworker/sw-url"]?.text || "") && !!parts["$:/cfworker/page-source"],
   Object.keys(parts).join(", "));
 check("...and no loose $:/cfworker/ tiddler is preloaded beside it", !preloaded.some(t => t.title.startsWith("$:/cfworker/")), preloaded.filter(t => t.title.startsWith("$:/cfworker/")).map(t => t.title).join(", "));
-check("...the settings tab offers the fill of the device copy, TiddlyWiki's polling interval, and the advanced settings each with its default",
-  ["$:/config/cfworker/LoadAll", "$:/config/SyncPollingInterval", "$:/config/cfworker/DraftPause", "$:/config/cfworker/FetchAhead", "$:/config/cfworker/PublishPause", "$:/config/cfworker/BackupCheckMinutes", "$:/config/cfworker/NetworkWait"].every(t => (parts[ADMIN + "/settings"]?.text || "").includes(t)) &&
-  /300/.test(parts[ADMIN + "/settings"]?.text || "") && /free plan/.test(parts[ADMIN + "/settings"]?.text || ""),
-  (parts[ADMIN + "/settings"]?.text || "").slice(0, 120));
+// One line under TiddlyWiki's error box when the boot fails (design 2.13): an inline script in the
+// page, with the public origin, so it does nothing on the public site, and the troubleshooting page's link
+check("the page carries the boot-error line's script, with the public origin it does nothing on, and the troubleshooting page as the link", page.includes("cfworker-boot-line") && page.includes('var pub = "https://wiki.example.com/"') && page.includes("docs/troubleshooting.md#4-troubleshooting") && page.includes("If this began after you installed or edited a plugin, a raw markup tiddler, or updated the engine"),
+  (page.match(/.{0,80}cfworker-boot-line.{0,80}/) || [])[0]);
+const settingsText = parts[ADMIN + "/settings"]?.text || "";
+check("...the settings tab offers the fill of the device copy, TiddlyWiki's polling interval, and the advanced settings each with its default once (in the field), each label before its field, and a warning in user words that links where the trades are (operating 3.17)",
+  ["$:/config/cfworker/LoadAll", "$:/config/SyncPollingInterval", "$:/config/cfworker/DraftPause", "$:/config/cfworker/FetchAhead", "$:/config/cfworker/PublishPause", "$:/config/cfworker/BackupCheckMinutes", "$:/config/cfworker/NetworkWait"].every(t => settingsText.includes(t)) &&
+  /placeholder="300"/.test(settingsText) && !/\(300\)/.test(settingsText) && settingsText.indexOf("Sync polling interval, ms:") >= 0 && settingsText.indexOf("Sync polling interval, ms:") < settingsText.indexOf("$:/config/SyncPollingInterval") && settingsText.indexOf("Pause before a draft is saved to the device, ms:") >= 0 && settingsText.indexOf("Pause before a draft is saved to the device, ms:") < settingsText.indexOf("$:/config/cfworker/DraftPause") &&
+  /The defaults fit the Cloudflare free plan and are the values this project is tested with: change one only knowing what it trades \(\[\[operating 3\.17\|[^\]]*operating\.md#317-the-plugin-and-its-settings\]\]\)\. An empty field is the default\./.test(settingsText) && !/in parentheses/.test(settingsText) && !/what the tests run/.test(settingsText),
+  settingsText.slice(0, 160));
 // The plugin's stylesheet (design 2.21): a part tagged $:/tags/Stylesheet, for what the theme's rules
 // don't fit: the dropdown item's wrapping and inline links, the check's marks, the alert's close button
 const stylesheet = parts[ADMIN + "/stylesheet"];
@@ -308,7 +319,7 @@ check("...and a stylesheet part, tagged $:/tags/Stylesheet, CSS: the dropdown it
   const baked = await bucket.get("baked.html"), engine = await bucket.get("index.html");
   const bakedBytes = await baked.arrayBuffer(), engineBytes = await engine.arrayBuffer();
   const variants = [
-    ["the settings tab", variant("Leave a field empty to use the default value in parentheses.", "Leave a field empty to use the default value in parentheses. (changed)"), text => (part(text, ADMIN + "/settings")?.text || "").includes("(changed)")],
+    ["the settings tab", variant("An empty field is the default.", "An empty field is the default. (changed)"), text => (part(text, ADMIN + "/settings")?.text || "").includes("(changed)")],
     ["the readme", variant("The admin wiki's side of [[TiddlyWiki on Cloudflare|", "The admin wiki's side (changed) of [[TiddlyWiki on Cloudflare|"), text => (part(text, ADMIN + "/readme")?.text || "").includes("(changed)")],
     ["the stylesheet", variant("white-space: normal;", "white-space: normal; /* changed */"), text => (part(text, ADMIN + "/stylesheet")?.text || "").includes("/* changed */")],
     ["a plugin field (the author)", variant('author: "https://github.com/DesignThinkerer/tiddlywiki-cloudflare"', 'author: "https://example.com/a-fork"'), text => preloads(text).find(t => t.title === ADMIN)?.author === "https://example.com/a-fork"],
@@ -506,7 +517,8 @@ async function withPublicUrl(value, run, bindings = {}) {
 }
 await withPublicUrl(undefined, async (root, instance, store, calls) => {
   const page = await instance.dispatchFetch(root + "/"), pageText = await page.text();
-  check("PUBLIC_WIKI_URL missing: a private wiki; the page is built and served, with an empty public address", page.status === 200 && part(pageText, "$:/cfworker/public-url")?.text === "" && !!(await store.head("baked.html")), `status ${page.status}`);
+  check("...and its boot-error line's script has no public origin to stand down for: the admin site is the only one", pageText.includes("cfworker-boot-line") && pageText.includes('var pub = ""'), (pageText.match(/var pub = "[^"]*"/) || [])[0]);
+check("PUBLIC_WIKI_URL missing: a private wiki; the page is built and served, with an empty public address", page.status === 200 && part(pageText, "$:/cfworker/public-url")?.text === "" && !!(await store.head("baked.html")), `status ${page.status}`);
   const plugin = "$:/plugins/test/private";
   const save = await instance.dispatchFetch(root + "/recipes/default/tiddlers/" + encodeURIComponent(plugin), { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title: plugin, type: "application/json", "plugin-type": "plugin", text: '{"tiddlers":{}}' }) });
   await save.text();

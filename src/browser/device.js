@@ -214,7 +214,7 @@ exports.startup = function() {
 			lines.push("", "''The browser:'' " + (estimate && typeof estimate.usage === "number" && typeof estimate.quota === "number" ?
 				"this site uses " + size(estimate.usage) + " of the " + size(estimate.quota) + " it allows" + (parts.length ? " (" + parts.join(", ") + ")" : "") :
 				"it doesn't say how much this site uses or may use") + "; it " + (browser.kept === true ? "has promised to keep it." : browser.kept === false ? "hasn't promised to keep it (ask it below)." : "doesn't say whether it will keep it."));
-			lines.push("", "Measured at <$view tiddler='" + MEASURE + "' field='measured' format='date' template='0hh:0mm:0ss'/>.");
+			lines.push("", "Measured at <$view tiddler='" + MEASURE + "' field='measured' format='date' template='DDth MMM 0hh:0mm'/>.");
 			wiki.addTiddler(new $tw.Tiddler({title: MEASURE, text: lines.join("\n"), measured: $tw.utils.stringifyDate(new Date())}));
 		}).catch(function(e) {
 			// (Each source answers null when it fails; this is for anything else, rather than "Measuring…" for good)
@@ -232,7 +232,9 @@ exports.startup = function() {
 		say("keep","Asking…");
 		proto.cfworkerStorageKept(true).then(function(granted) {
 			say("keep",granted === true ? "The browser has promised to keep this site's data." :
-				granted === false ? "The browser didn't promise: it decides by its own rules (Chrome: a site used often, installed, or bookmarked; Firefox: your answer to its question). Ask again later, or install the wiki as an app." :
+				// (Each browser's rule, and the step that keeps the data on an iPhone or iPad: Safari also clears a
+				// site not visited for a week, the promise notwithstanding; only the Home Screen app escapes it)
+				granted === false ? "The browser didn't promise: it decides by its own rules. Chrome: a site used often, installed or bookmarked; after some days of using the wiki, or once installed, ask again. Firefox: your answer to its question. Safari on an iPhone or iPad (every browser there): add the wiki to the Home Screen (Share → Add to Home Screen), which keeps its data; otherwise Safari may clear them after days without a visit (" + lib.guide("operating","3.16") + ")." :
 				"This browser can't be asked (it has no such promise to make).");
 		});
 		return false;

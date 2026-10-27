@@ -66,11 +66,15 @@ async function run() {
 }
 const line = (items, id) => items[id] ? `${items[id].ok} "${items[id].text}"` : "missing";
 const ok = (items, id) => items[id] ? items[id].ok : "missing";
-const text = (items, id) => items[id] ? items[id].text : "";
+// A line's words: what was found and, when the worker gives one, the one thing to do, its own field
+// `todo`, which the tab shows on its own line (design 2.20); `said` is the text alone
+const text = (items, id) => items[id] ? items[id].text + (items[id].todo ? " " + items[id].todo : "") : "";
+const said = (items, id) => items[id] ? items[id].text : "";
+const todoOf = (items, id) => items[id] && typeof items[id].todo === "string" ? items[id].todo : "";
 const guide = (items, id) => items[id] && items[id].guide ? items[id].guide.section : "";
 const PUBLIC_HOST = new URL(site.pub).host;   // what the zone's rules name: "when the host is …"
-// The five public-site lines, each naming the piece it stands for, on a private wiki and when the
-// public site doesn't answer, so the list doesn't read as one sentence five times
+// The five public-site lines, each naming the piece it stands for, when the public site doesn't
+// answer, so the list doesn't read as one sentence five times (a private wiki gets one line: section 4)
 const PIECES = { public: /^The public site:/, rewrite: /^The rewrite rule:/, "cors-reads": /^The CORS rule, tiddler reads:/, "cors-files": /^The CORS rule, files:/, cache: /^The cache rules:/ };
 
 // --- 1. Everything in place -------------------------------------------------------------------------
@@ -88,6 +92,11 @@ check("each line's link points at the heading of docs/setup.md its section numbe
 }), IDS.map(id => `${id}: ${items[id] && items[id].guide ? items[id].guide.url : "none"}`).join(" "));
 check("everything in place: every piece fine, the lines saying so", IDS.every(id => items[id] && items[id].ok === true),
   IDS.filter(id => !items[id] || items[id].ok !== true).map(id => `${id}: ${line(items, id)}`).join(" | "));
+// The one thing to do is the worker's own field, todo, beside the text (the tab shows it on its own
+// line): a passing line has none, but the cache line, information, may carry its optional one
+check("...a passing line carries no todo (the cache line apart, whose optional one is information), and the queue line is plain: in place, its binding named",
+  ["access", "public", "rewrite", "cors-reads", "cors-files", "backups", "queue", "purges"].every(id => !todoOf(items, id)) && /^The backup queue is in place \(BACKUP_QUEUE\)\.$/.test(said(items, "queue")),
+  `queue ${line(items, "queue")} | todos ${IDS.map(id => `${id}=${JSON.stringify(todoOf(items, id))}`).join(" ")}`);
 check("...the Access line, on this local address with ACCESS = off: says the switch is on and that a deployed worker refuses without Access",
   ok(items, "access") === true && /ACCESS = off/.test(text(items, "access")) && /deployed worker refuses/.test(text(items, "access")), line(items, "access"));
 // A request Access did authenticate, which Miniflare can't make: the worker's own function, with the
@@ -113,8 +122,8 @@ check("...the public site asked for the page, the tiddler list, the core file an
 check("...GitHub asked for the repository and its branch with the token, Cloudflare asked to purge the status file's cached copy",
   calls.some(c => c === "GET https://api.github.com/repos/someone/wiki-backup") && calls.some(c => c === "GET https://api.github.com/repos/someone/wiki-backup/branches/main") &&
   calls.some(c => c === "POST https://api.cloudflare.com/client/v4/zones/zone-1/purge_cache"), calls.join(", "));
-check("...the purges line says the status file's copy was purged, the backups line names the repository and the branch, and says the tab's Backups section and an alert report backups that fail",
-  /status/.test(text(items, "purges")) && /someone\/wiki-backup/.test(text(items, "backups")) && /main/.test(text(items, "backups")) && /the tab's Backups section and an alert report backups that fail/.test(text(items, "backups")),
+check("...the purges line says the status file's copy was purged, the backups line names the repository and the branch, and says what the check can't test, writing, with the next step: save any tiddler, and the tab's Backups section and an alert say if GitHub refuses it",
+  /status/.test(text(items, "purges")) && /someone\/wiki-backup/.test(text(items, "backups")) && /main/.test(text(items, "backups")) && /GitHub accepts the token\. The check can't test writing: save any tiddler, and if GitHub refuses it, the tab's Backups section and an alert say so within minutes\.$/.test(text(items, "backups")) && !/Whether it may write/.test(text(items, "backups")),
   `${line(items, "purges")} ${line(items, "backups")}`);
 
 // --- 2. The public site's rules, one missing at a time --------------------------------------------
@@ -125,6 +134,9 @@ check("the rewrite rule missing (the public site's / isn't the page): named, wit
   `${line(items, "rewrite")} | public ${ok(items, "public")}`);
 check("...and the line ends with what to do: the rule's place (Rules → Transform Rules → Rewrite URL), the host, the path / rewritten to /baked.html",
   /Rules → Transform Rules → Rewrite URL/.test(text(items, "rewrite")) && text(items, "rewrite").includes(`the host is ${PUBLIC_HOST}`) && /rewrite the path to \/baked\.html\.$/.test(text(items, "rewrite")), line(items, "rewrite"));
+check("...that action as the line's own todo field, the text ending at what was found, the evidence (status, ETag, Last-Modified, the stored page's) after the diagnosis rather than before it",
+  /^Add it under the domain, Rules → Transform Rules → Rewrite URL: when the host is /.test(todoOf(items, "rewrite")) && !/Add it under/.test(said(items, "rewrite")) && /^The public site's \/ doesn't serve the wiki page: the rewrite rule \/ → \/baked\.html is missing or wrong \(answered \d+/.test(said(items, "rewrite")) && /\.$/.test(said(items, "rewrite")),
+  `text ${JSON.stringify(said(items, "rewrite"))} | todo ${JSON.stringify(todoOf(items, "rewrite"))}`);
 rewriteOff = false;
 // Cloudflare removes an HTML answer's ETag when a feature of the zone rewrites the page (Email Address
 // Obfuscation is on by default): the page is then known by its date, and failing that by its content
@@ -173,6 +185,8 @@ check("the CORS header missing under /_plugins/ only: the files line fails namin
   `${line(items, "cors-files")} | ${line(items, "cors-reads")}`);
 check("...and the files line ends with what to do: add the path to the rule's When (Rules → Transform Rules → Modify Response Header), the host and both paths named",
   /Add the path to the rule's When/.test(text(items, "cors-files")) && /Rules → Transform Rules → Modify Response Header/.test(text(items, "cors-files")) && text(items, "cors-files").includes(`the host is ${PUBLIC_HOST}`) && /\/recipes\/ or \/_plugins\/\.$/.test(text(items, "cors-files")), line(items, "cors-files"));
+check("...as its own todo field, the text ending at the consequence", /^Add the path to the rule's When/.test(todoOf(items, "cors-files")) && /doesn't open offline on a device that doesn't have them\.$/.test(said(items, "cors-files")) && !/Add the path/.test(said(items, "cors-files")),
+  `text ${JSON.stringify(said(items, "cors-files"))} | todo ${JSON.stringify(todoOf(items, "cors-files"))}`);
 corsOff = ["/recipes/", "/_plugins/"];
 ({ items } = await run());
 check("...missing on both paths: both lines fail, the reads one naming /recipes/", ok(items, "cors-files") === false && ok(items, "cors-reads") === false && /recipes/.test(text(items, "cors-reads")),
@@ -205,6 +219,8 @@ check("the public site not answering: its line says so with setup 2.2, the rule 
   `${line(items, "public")} | rewrite ${ok(items, "rewrite")}`);
 check("...and the public line ends with what to do: check again in a few minutes if the domain was just connected, else connect the domain to the bucket (R2 → the bucket → Settings → Custom Domains) or correct PUBLIC_WIKI_URL, named with its value, in the worker's Variables and Secrets",
   /check the setup again in a few minutes/.test(text(items, "public")) && /connect the domain to the bucket \(R2 → the bucket → Settings → Custom Domains/.test(text(items, "public")) && text(items, "public").includes(`correct PUBLIC_WIKI_URL, in the worker's Variables and Secrets, now "${site.pub}", to https:// and that domain`), line(items, "public"));
+check("...as its own todo field, the text one sentence on what was found", /^If you connected the domain to the bucket in the last few minutes/.test(todoOf(items, "public")) && /^The public site at \S+ (didn't answer \(.*\): nothing answers at PUBLIC_WIKI_URL|answered \d+: Cloudflare's edge, with no bucket behind the host yet)\.$/.test(said(items, "public")),
+  `text ${JSON.stringify(said(items, "public"))} | todo ${JSON.stringify(todoOf(items, "public"))}`);
 const unchecked = ["rewrite", "cors-reads", "cors-files", "cache"];
 check("...and the four unchecked lines each name their piece (the rewrite rule, the CORS rule's two paths, the cache rules), four different lines rather than one sentence four times",
   unchecked.every(id => PIECES[id].test(text(items, id)) && /not checked/i.test(text(items, id))) && new Set(unchecked.map(id => text(items, id))).size === 4, unchecked.map(id => line(items, id)).join(" | "));
@@ -243,6 +259,8 @@ check("...a private one: said so", ok(items, "backups") === true && /a private r
 api.repo = 401;
 ({ items } = await run());
 check("GitHub refusing the token (401): the backups line says so, with setup 2.4, and ends where the fix is: GitHub's token page, regenerate or make a new one (Contents: read and write, this repository only), then the GITHUB_TOKEN secret in the worker's Variables and Secrets", ok(items, "backups") === false && /401|token/.test(text(items, "backups")) && /Settings → Developer settings → Personal access tokens → Fine-grained tokens/.test(text(items, "backups")) && /regenerate it/.test(text(items, "backups")) && /Contents: read and write, this repository only/.test(text(items, "backups")) && /replace the GITHUB_TOKEN secret in the worker's Variables and Secrets/.test(text(items, "backups")) && guide(items, "backups") === "2.4", line(items, "backups"));
+check("...the fix as its own todo field, the text ending at the diagnosis", /^On GitHub \(Settings → Developer settings/.test(todoOf(items, "backups")) && /the GITHUB_TOKEN secret is wrong or has expired\.$/.test(said(items, "backups")),
+  `text ${JSON.stringify(said(items, "backups"))} | todo ${JSON.stringify(todoOf(items, "backups"))}`);
 api.repo = 404;
 ({ items } = await run());
 check("GitHub not finding the repository with the token (404): named", ok(items, "backups") === false && /404|find/.test(text(items, "backups")), line(items, "backups"));
@@ -264,6 +282,8 @@ api.purge = { status: 403, body: { success: false, errors: [{ code: 10000, messa
 check("Cloudflare refusing the purge: the purges line says so, with the token's section, and ends with the hostname to purge once after the fix (Purge Cache → Custom Purge → Hostname, the public host, operating 3.9), since what changed while purges failed stays cached until its Edge TTL", ok(items, "purges") === false && /Authentication error|403/.test(text(items, "purges")) && guide(items, "purges") === "2.5" && new RegExp(`Then purge the public hostname once \\(Caching → Configuration → Purge Cache → Custom Purge → Hostname, ${PUBLIC_HOST.replace(/\./g, "\\.")}; operating 3\\.9\\): what changed while purges failed stays cached until its Edge TTL otherwise\\.$`).test(text(items, "purges")), line(items, "purges"));
 check("...and the line ends with what to check: CF_ZONE_ID against the zone ID on the domain's overview page, the token under My Profile → API Tokens, a new one put in the CF_API_TOKEN secret",
   /Check CF_ZONE_ID against the zone ID on the domain's overview page/.test(text(items, "purges")) && /My Profile → API Tokens/.test(text(items, "purges")) && /put in the CF_API_TOKEN secret/.test(text(items, "purges")), line(items, "purges"));
+check("...as its own todo field (the check, the new token, the hostname purge after), the text ending at what the token needs", /^Check CF_ZONE_ID against the zone ID/.test(todoOf(items, "purges")) && /Then purge the public hostname once/.test(todoOf(items, "purges")) && /CF_API_TOKEN needs Zone → Cache Purge on the zone CF_ZONE_ID names\.$/.test(said(items, "purges")),
+  `text ${JSON.stringify(said(items, "purges"))} | todo ${JSON.stringify(todoOf(items, "purges"))}`);
 api.purge = { status: 200, body: { success: true } };
 api.purgeDown = true;
 ({ items } = await run());
@@ -300,13 +320,13 @@ await site.setBindings({ GITHUB_REPO: "someone/wiki-backup", GITHUB_TOKEN: "", C
 ({ items } = await run());
 check("the token missing of each pair, the other set: the backups line names GITHUB_TOKEN alone, with the repository, and says to make a token limited to it; the purges line names CF_API_TOKEN alone and says to set that secret",
   ok(items, "backups") === false && /has GITHUB_REPO \(someone\/wiki-backup\) but no GITHUB_TOKEN/.test(text(items, "backups")) && /Make a fine-grained token limited to that repository/.test(text(items, "backups")) && /put it in the GITHUB_TOKEN secret/.test(text(items, "backups")) &&
-  ok(items, "purges") === null && /CF_API_TOKEN isn't set \(CF_ZONE_ID is\)/.test(text(items, "purges")) && /set the CF_API_TOKEN secret, in the worker's Variables and Secrets/.test(text(items, "purges")) && !/overview page/.test(text(items, "purges")),
+  ok(items, "purges") === null && /CF_API_TOKEN isn't set \(CF_ZONE_ID is\)/.test(text(items, "purges")) && /Set the CF_API_TOKEN secret, in the worker's Variables and Secrets/.test(text(items, "purges")) && !/overview page/.test(text(items, "purges")),
   `${line(items, "backups")} | ${line(items, "purges")}`);
 await site.setBindings({ GITHUB_REPO: "", GITHUB_TOKEN: "ghp_test", CF_ZONE_ID: "", CF_API_TOKEN: "cf_test" });
 ({ items } = await run());
 check("...the other way round: the backups line names GITHUB_REPO alone and says to set it to the repository the token is limited to; the purges line names CF_ZONE_ID alone and where its value is",
   ok(items, "backups") === false && /has GITHUB_TOKEN but no GITHUB_REPO/.test(text(items, "backups")) && /Set GITHUB_REPO, in the worker's Variables and Secrets/.test(text(items, "backups")) &&
-  ok(items, "purges") === null && /CF_ZONE_ID isn't set \(CF_API_TOKEN is\)/.test(text(items, "purges")) && /set CF_ZONE_ID, in the worker's Variables and Secrets, to the zone ID on the domain's overview page\.$/.test(text(items, "purges")),
+  ok(items, "purges") === null && /CF_ZONE_ID isn't set \(CF_API_TOKEN is\)/.test(text(items, "purges")) && /Set CF_ZONE_ID, in the worker's Variables and Secrets, to the zone ID on the domain's overview page\.$/.test(text(items, "purges")),
   `${line(items, "backups")} | ${line(items, "purges")}`);
 await site.close();
 
@@ -324,21 +344,19 @@ await (await fetch(priv.base + "/")).arrayBuffer();
 {
   const res = await fetch(priv.base + "/setup/check");
   const items = Object.fromEntries(((await res.json()).checks || []).map(c => [c.id, c]));
-  check("a private wiki: the public site's lines say there's nothing to check (setup 2.1), Access fine, purges nothing to purge",
-    ["public", "rewrite", "cors-reads", "cors-files", "cache", "purges"].every(id => items[id] && items[id].ok === null) && /private/i.test(text(items, "public")) && ok(items, "access") === true,
+  // One line for the public site's five pieces and the purges, since none exists to check: five
+  // dashes, one per piece, plus the purges' dash were noise before the lines that can fail (design 2.20)
+  check("a private wiki: one line for the public site's pieces (no public site, so no rewrite, CORS or cache rules and no purges to check; setup 2.1), no per-piece lines and no purges line, Access fine",
+    items.public && items.public.ok === null && /^No public site \(PUBLIC_WIKI_URL isn't set: a private wiki\), so no rewrite, CORS or cache rules and no purges to check\./.test(said(items, "public")) && guide(items, "public") === "2.1" && ["rewrite", "cors-reads", "cors-files", "cache", "purges"].every(id => !items[id]) && ok(items, "access") === true,
     ["public", "rewrite", "cors-reads", "cors-files", "cache", "purges"].map(id => `${id}: ${line(items, id)}`).join(" | "));
-  // (Five slots, one per piece, as on a public wiki; each names the piece it stands for, so the list
-  // doesn't read as one sentence five times)
-  const privateTexts = Object.keys(PIECES).map(id => text(items, id));
-  check("...and each of the five public-site lines names its piece (the site, the rewrite rule, the CORS rule's two paths, the cache rules), five different lines rather than one sentence five times, each with setup 2.1",
-    Object.entries(PIECES).every(([id, re]) => re.test(text(items, id)) && /nothing to check/.test(text(items, id)) && guide(items, id) === "2.1") && new Set(privateTexts).size === 5,
-    privateTexts.join(" | "));
   // The worker can't see the bucket's domains: a custom domain, or the development URL, left on the
-  // bucket serves the wiki whatever the setting says (operating 3.23), so the site's line says so in
-  // words, with where to remove it, or the setting to set to the domain
-  check("...and the public site's line says a custom domain or the development URL left on the bucket still serves the wiki, with where to remove it (R2 → the bucket → Settings → Custom Domains), or PUBLIC_WIKI_URL to set to the domain",
-    /custom domain still connected to the bucket, or its development URL \(r2\.dev\) left on, serves the wiki/.test(text(items, "public")) && /R2 → the bucket → Settings → Custom Domains/.test(text(items, "public")) && /set PUBLIC_WIKI_URL to the domain/.test(text(items, "public")) && /nothing to check/.test(text(items, "public")),
+  // bucket serves the wiki whatever the setting says (operating 3.23), so the line says so in words,
+  // with where to remove it, or the setting to set to the domain
+  check("...and the line says a custom domain or the development URL left on the bucket still serves the wiki, with where to remove it (R2 → the bucket → Settings → Custom Domains), or PUBLIC_WIKI_URL to set to the domain",
+    /custom domain still connected to the bucket, or its development URL \(r2\.dev\) left on, serves the wiki/.test(text(items, "public")) && /R2 → the bucket → Settings → Custom Domains/.test(text(items, "public")) && /set PUBLIC_WIKI_URL to the domain/.test(text(items, "public")),
     line(items, "public"));
+  check("...the queue, not bound on this worker: its line says so, the deploy with the queue as its own todo", ok(items, "queue") === false && /^Deploy it with the queue wrangler\.toml names\.$/.test(todoOf(items, "queue")) && !/Deploy it/.test(said(items, "queue")),
+    `${line(items, "queue")} | todo ${JSON.stringify(todoOf(items, "queue"))}`);
   // The backup repository's visibility matters here: a public one publishes every tiddler of a private
   // wiki, with its history, against what a private wiki promises (README, "Private, or public")
   const privCheck = async () => Object.fromEntries(((await (await fetch(priv.base + "/setup/check")).json()).checks || []).map(c => [c.id, c]));

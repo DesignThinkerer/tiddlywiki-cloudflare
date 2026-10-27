@@ -36,6 +36,7 @@ var TAB = "$:/temp/cfworker/ControlPanel",
 	REFRESH = "tm-cfworker-backup-status",
 	CHECK = "tm-cfworker-setup-check",
 	ENGINE = "$:/temp/cfworker/engine",
+	PAGE_STATUS = "$:/temp/cfworker/page-publisher",   // what this tab last did with the page: state, text, time (page-publisher.js)
 	ENGINE_MESSAGE = "$:/temp/cfworker/engine-message",
 	PAGE_SOURCE = "$:/cfworker/page-source",
 	RELEASE = "$:/temp/cfworker/release",
@@ -47,12 +48,66 @@ var TAB = "$:/temp/cfworker/ControlPanel",
 var TAB_TEXT = [
 	"!! The setup",
 	"",
-	"What's set up by hand, looked at: Cloudflare Access; the public site, its rewrite rule, its CORS rule (both paths) and its cache rules; backups and the queue; purges; and this browser's copy for opening offline. A missing piece names the section of the setup guide that fixes it, with a link. It runs only when asked (the worker makes a few requests of its own, and purges the public site's status file to test the purge token).",
+	"Looks at each piece set up by hand (Access, the public site and its rules, backups and the queue, purges, this browser's offline copy) and, for a missing one, says what to do (" + lib.guide("operating","3.15") + ").",
 	"",
 	"<$button message='" + CHECK + "'>Check the setup</$button>",
 	"",
+	"Runs only when you click: the worker makes a few requests and purges the public site's status file to test the purge token.",
+	"",
 	"<$list filter='[[" + SETUP + "]has[text]]' variable='checked'>",
 	"{{" + SETUP + "}}",
+	"</$list>",
+	"",
+	"!! Backups to GitHub",
+	"",
+	"<$list filter='[[" + STATUS + "]!has[backups]]' variable='unknown'>",
+	"Not known yet: the worker hasn't said whether backups are on. It's asked with the page's first tiddler list request; with no network, the answer waits for it.",
+	"</$list>",
+	"<$list filter='[[" + STATUS + "]get[backups]match[off]]' variable='off'>",
+	"Backups are off (optional): set `GITHUB_REPO` and the `GITHUB_TOKEN` secret (" + lib.guide("setup","2.4") + ") to commit every save to GitHub: the wiki's only history, since the bucket keeps the current version of each tiddler alone, and a deletion or an overwrite is final.",
+	"</$list>",
+	"<$list filter='[[" + STATUS + "]get[backups]match[on]]' variable='on'>",
+	"",
+	"<$list filter='[[" + STATUS + "]has[problem-since]]' variable='failing'>",
+	"",
+	"{{" + STATUS + "!!problem-text}}",
+	"",
+	"</$list>",
+	"<$list filter='[[" + STATUS + "]!has[problem-since]]' variable='fine'>",
+	"",
+	"Every save is committed to GitHub as it happens (" + lib.guide("setup","2.4") + ").",
+	"",
+	"</$list>",
+	"!!! Full backup",
+	"",
+	"",
+	"<$list filter='[[" + STATUS + "]has[sync-id]]' variable='some' emptyMessage='No full backup yet.'>",
+	"<$list filter='[[" + STATUS + "]get[sync-running]match[yes]]' variable='running'>",
+	"Running: {{" + STATUS + "!!sync-done}} of {{" + STATUS + "!!sync-total}} tiddlers walked, {{" + STATUS + "!!sync-committed}} committed, {{" + STATUS + "!!sync-removed}} removed, {{" + STATUS + "!!sync-failed}} not backed up (refused by GitHub, or too big to back up), as of <$view tiddler='" + STATUS + "' field='sync-updated' format='date' template='0hh:0mm:0ss'/>.",
+	"</$list>",
+	"<$list filter='[[" + STATUS + "]get[sync-running]match[no]] :filter[[" + STATUS + "]has[sync-finished]] :filter[[" + STATUS + "]!has[sync-error]]' variable='over'>",
+	"Last full backup: <$view tiddler='" + STATUS + "' field='sync-finished' format='date' template='DDth MMM YYYY 0hh:0mm'/>, {{" + STATUS + "!!sync-done}} tiddlers walked, {{" + STATUS + "!!sync-committed}} committed, {{" + STATUS + "!!sync-removed}} removed, {{" + STATUS + "!!sync-failed}} not backed up (refused by GitHub, or too big to back up).",
+	"</$list>",
+	"<$list filter='[[" + STATUS + "]get[sync-running]match[no]] :filter[[" + STATUS + "]has[sync-finished]] :filter[[" + STATUS + "]has[sync-error]]' variable='refused'>",
+	"The last full backup didn't go through: <code><$text text={{" + STATUS + "!!sync-error}}/></code> (<$view tiddler='" + STATUS + "' field='sync-finished' format='date' template='DDth MMM YYYY 0hh:0mm'/>). Start it again.",
+	"</$list>",
+	"<$list filter='[[" + STATUS + "]get[sync-running]match[no]] :filter[[" + STATUS + "]!has[sync-finished]]' variable='lost'>",
+	"The last full backup stopped without finishing (its steps were lost<$list filter='[[" + STATUS + "]has[sync-error]]' variable='problem'>; its last step's error: <code><$text text={{" + STATUS + "!!sync-error}}/></code></$list>): start it again.",
+	"</$list>",
+	"</$list>",
+	"<$list filter='[[" + STATUS + "]get[sync-running]match[yes]] :filter[[" + STATUS + "]has[sync-error]]' variable='problem'>",
+	"",
+	"Its last step didn't go through: <code><$text text={{" + STATUS + "!!sync-error}}/></code>. It's tried again by itself.",
+	"</$list>",
+	"",
+	"<$button message='" + START + "'>Back up everything to GitHub</$button> <$button message='" + REFRESH + "'>Refresh the status</$button>",
+	"",
+	"<$list filter='[[" + MESSAGE + "]has[text]]' variable='said'>",
+	"{{" + MESSAGE + "}}",
+	"</$list>",
+	"",
+	"Makes GitHub match the wiki: commits what isn't there yet, removes what's gone. Run it once after setting backups up or after a restore; run again, it changes nothing. It goes on without this tab, at about 500 commits an hour (" + lib.guide("setup","2.4") + ").",
+	"",
 	"</$list>",
 	"",
 	"!! The worker",
@@ -79,56 +134,10 @@ var TAB_TEXT = [
 	"{{" + ENGINE_MESSAGE + "}}",
 	"</$list>",
 	"",
-	"!! Backups to GitHub",
+	"!! The page",
 	"",
-	"<$list filter='[[" + STATUS + "]!has[backups]]' variable='unknown'>",
-	"Not known yet: the worker hasn't said whether backups are on. It's asked with the page's first tiddler list request; with no network, the answer waits for it.",
-	"</$list>",
-	"<$list filter='[[" + STATUS + "]get[backups]match[off]]' variable='off'>",
-	"Backups are off (optional): set `GITHUB_REPO` and the `GITHUB_TOKEN` secret (" + lib.guide("setup","2.4") + ") to commit every save to GitHub: the wiki's only history, since the bucket keeps the current version of each tiddler alone, and a deletion or an overwrite is final.",
-	"</$list>",
-	"<$list filter='[[" + STATUS + "]get[backups]match[on]]' variable='on'>",
+	"<$list filter='[[" + PAGE_STATUS + "]has[state]]' variable='known' emptyMessage='Nothing published from this tab since it loaded.'>From this tab, <$view tiddler='" + PAGE_STATUS + "' field='time' format='date' template='DDth MMM 0hh:0mm'/>: <$text text={{" + PAGE_STATUS + "!!text}}/> (" + lib.guide("operating","3.5") + ")</$list>",
 	"",
-	"<$list filter='[[" + STATUS + "]has[problem-since]]' variable='failing'>",
-	"",
-	"{{" + STATUS + "!!problem-text}}",
-	"",
-	"</$list>",
-	"<$list filter='[[" + STATUS + "]!has[problem-since]]' variable='fine'>",
-	"",
-	"Every save is committed to GitHub as it happens (" + lib.guide("setup","2.4") + ").",
-	"",
-	"</$list>",
-	"!!! Full backup",
-	"",
-	"A full backup makes GitHub mirror the wiki: tiddlers saved before backups were set up (an imported wiki, say), restored, or put in the bucket by hand are committed, and files of tiddlers no longer in the wiki are removed. Run it once after setting backups up, after a restore, or in any doubt; run again, it changes nothing. It goes on without this tab, at GitHub's pace (about 500 commits an hour), and this tab follows it.",
-	"",
-	"<$list filter='[[" + STATUS + "]has[sync-id]]' variable='some' emptyMessage='No full backup yet.'>",
-	"<$list filter='[[" + STATUS + "]get[sync-running]match[yes]]' variable='running'>",
-	"Running: {{" + STATUS + "!!sync-done}} of {{" + STATUS + "!!sync-total}} tiddlers walked, {{" + STATUS + "!!sync-committed}} committed, {{" + STATUS + "!!sync-removed}} removed, {{" + STATUS + "!!sync-failed}} not backed up (refused by GitHub, or too big to back up), as of <$view tiddler='" + STATUS + "' field='sync-updated' format='date' template='0hh:0mm:0ss'/>.",
-	"</$list>",
-	"<$list filter='[[" + STATUS + "]get[sync-running]match[no]] :filter[[" + STATUS + "]has[sync-finished]] :filter[[" + STATUS + "]!has[sync-error]]' variable='over'>",
-	"Last full backup: <$view tiddler='" + STATUS + "' field='sync-finished' format='date' template='DDth MMM YYYY 0hh:0mm'/>, {{" + STATUS + "!!sync-done}} tiddlers walked, {{" + STATUS + "!!sync-committed}} committed, {{" + STATUS + "!!sync-removed}} removed, {{" + STATUS + "!!sync-failed}} not backed up (refused by GitHub, or too big to back up).",
-	"</$list>",
-	"<$list filter='[[" + STATUS + "]get[sync-running]match[no]] :filter[[" + STATUS + "]has[sync-finished]] :filter[[" + STATUS + "]has[sync-error]]' variable='refused'>",
-	"The last full backup didn't go through: <code><$text text={{" + STATUS + "!!sync-error}}/></code> (<$view tiddler='" + STATUS + "' field='sync-finished' format='date' template='DDth MMM YYYY 0hh:0mm'/>). Start it again.",
-	"</$list>",
-	"<$list filter='[[" + STATUS + "]get[sync-running]match[no]] :filter[[" + STATUS + "]!has[sync-finished]]' variable='lost'>",
-	"The last full backup stopped without finishing (its steps were lost<$list filter='[[" + STATUS + "]has[sync-error]]' variable='problem'>; its last step's error: <code><$text text={{" + STATUS + "!!sync-error}}/></code></$list>): start it again.",
-	"</$list>",
-	"</$list>",
-	"<$list filter='[[" + STATUS + "]get[sync-running]match[yes]] :filter[[" + STATUS + "]has[sync-error]]' variable='problem'>",
-	"",
-	"Its last step didn't go through: <code><$text text={{" + STATUS + "!!sync-error}}/></code>. It's tried again by itself.",
-	"</$list>",
-	"",
-	"<$button message='" + START + "'>Back up everything to GitHub</$button> <$button message='" + REFRESH + "'>Refresh</$button>",
-	"",
-	"<$list filter='[[" + MESSAGE + "]has[text]]' variable='said'>",
-	"{{" + MESSAGE + "}}",
-	"</$list>",
-	"",
-	"</$list>"
 ].join("\n");
 
 exports.startup = function() {
@@ -302,25 +311,35 @@ exports.startup = function() {
 	// span with its class, which the plugin's stylesheet colours (never the only signal: the glyph
 	// stays), and a label a screen reader says as a word; the glyph first, a space after it, as the
 	// lines are read (the suites, troubleshooting)
-	function line(mark,text,guide) {
+	// todo: the one thing to do, on its own line under what was found (the worker's own field, or the
+	// browser's lines' below), before the link, so the reader finds the verb (design 2.20)
+	function line(mark,text,guide,todo) {
 		var kind = mark === "✓" ? "ok" : mark === "✗" ? "bad" : "none",
 			label = kind === "ok" ? "fine" : kind === "bad" ? "missing or wrong" : "not checked";
-		return "<li><span class='cfworker-mark cfworker-mark-" + kind + "' aria-label='" + label + "'>" + mark + "</span> <$text text=\"\"\"" + text + "\"\"\"/>" + (guide ? " ([[" + guide.text + "|" + guide.url + "]])" : "") + "</li>";
+		return "<li><span class='cfworker-mark cfworker-mark-" + kind + "' aria-label='" + label + "'>" + mark + "</span> <$text text=\"\"\"" + text + "\"\"\"/>" +
+			(todo ? " <br/>''To do:'' <$text text=\"\"\"" + todo + "\"\"\"/>" : "") +
+			(guide ? " ([[" + guide.text + "|" + guide.url + "]])" : "") + "</li>";
 	}
 	function mark(ok) {
 		return ok === true ? "✓" : ok === false ? "✗" : "–";
 	}
 	// This browser's own two lines: the service worker in place, and its copy of the core file,
 	// which is what the CORS rule's /_plugins/ path is for (design 1.11). Each links to the manual as
-	// the worker's lines do: opening offline, or the rule when the copy is missing
-	function browserLines(then) {
+	// the worker's lines do: opening offline, or the rule when the copy is missing; each with its own
+	// subject, "Opening offline:", since each is its own item with its own mark (no "...and", which a
+	// reader scanning for ✗ lands on without a subject, and a screen reader reads as "dot dot dot and")
+	// corsFiles: the worker's own "cors-files" result (true, false, or null for a private wiki), which
+	// says whether a missing copy of the core file is the CORS rule's doing (a public wiki whose rule
+	// doesn't cover /_plugins/) or only the first visit's (the service worker takes its copy after the
+	// page has loaded: one reload)
+	function browserLines(corsFiles,then) {
 		var lines = [],
 			offline = lib.guideLink("operating","3.13"),
 			corsRule = lib.guideLink("setup","2.7"),
 			controller = typeof navigator === "object" && navigator.serviceWorker && navigator.serviceWorker.controller;
 		lines.push(line(mark(!!controller),controller ?
 			"Opening offline: a service worker is in place in this browser." :
-			"Opening offline: no service worker is in place in this browser yet. Reload the page once, online.",offline));
+			"Opening offline: no service worker is in place in this browser yet.",offline,controller ? null : "Reload the page once, online."));
 		if(typeof caches !== "object") {
 			lines.push(line("–","This browser has no cache storage here: nothing kept for opening offline.",offline));
 			return then(lines);
@@ -332,8 +351,11 @@ exports.startup = function() {
 				return /\/_plugins\/tiddlywikicore\.js/.test(request.url);
 			});
 			lines.push(line(mark(kept),kept ?
-				"...and the core file is kept on this device: the wiki opens with no network (the page and its plugin files with it)." :
-				"...but the core file isn't kept on this device, so the wiki doesn't open with no network. On a public wiki, the CORS rule must cover /_plugins/ (see the line above); right after a first visit, give it a moment and check again.",kept ? offline : corsRule));
+				"Opening offline: the core file is kept on this device, so the wiki opens with no network (the page and its plugin files with it)." :
+				corsFiles === false ?
+					"Opening offline: the core file isn't kept on this device, so the wiki doesn't open with no network: the CORS rule doesn't cover /_plugins/ (\"The CORS rule, files\", above)." :
+					"Opening offline: the core file isn't kept on this device yet, so the wiki doesn't open with no network: the service worker takes its copy after a first visit.",kept || corsFiles !== false ? offline : corsRule,
+				kept ? null : corsFiles === false ? "Fix the rule, reload once online, then check again." : "Reload the page once, online, then check again."));
 			then(lines);
 		},function() {
 			lines.push(line("–","The cache storage couldn't be read.",offline));
@@ -343,7 +365,7 @@ exports.startup = function() {
 	function show(lines,checked) {
 		wiki.addTiddler(new $tw.Tiddler({
 			title: SETUP,
-			text: "<ul class='cfworker-setup-check'>\n" + lines.join("\n") + "\n</ul>\n\nChecked at <$view tiddler='" + SETUP + "' field='checked' format='date' template='0hh:0mm:0ss'/>.",
+			text: "<ul class='cfworker-setup-check'>\n" + lines.join("\n") + "\n</ul>\n\nChecked at <$view tiddler='" + SETUP + "' field='checked' format='date' template='DDth MMM 0hh:0mm'/>.",
 			checked: $tw.utils.stringifyDate(checked || new Date())
 		}));
 	}
@@ -361,14 +383,18 @@ exports.startup = function() {
 				try {
 					body = data ? JSON.parse(data) : null;
 				} catch(e) {}
+				var corsFiles = null;
 				var done = function() {
-					browserLines(function(own) {
+					browserLines(corsFiles,function(own) {
 						show(lines.concat(own));
 					});
 				};
 				if(body && Array.isArray(body.checks)) {
 					$tw.utils.each(body.checks,function(item) {
-						lines.push(line(mark(item.ok),String(item.text || ""),item.guide));
+						if(item.id === "cors-files") {
+							corsFiles = item.ok;
+						}
+						lines.push(line(mark(item.ok),String(item.text || ""),item.guide,item.todo ? String(item.todo) : null));
 					});
 					return done();
 				}

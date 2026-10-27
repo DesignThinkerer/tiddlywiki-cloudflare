@@ -91,11 +91,10 @@ check("the Cloudflare tab's \"Check the setup\" button lists the pieces: Access,
 // (A section given as a bare number, where the renderer takes { text, url }, showed as a link to a
 // tiddler named "undefined".)
 const OFFLINE_URL = "https://github.com/DesignThinkerer/tiddlywiki-cloudflare/blob/main/docs/operating.md#313-opening-the-wiki-offline";
-const CORS_URL = "https://github.com/DesignThinkerer/tiddlywiki-cloudflare/blob/main/docs/setup.md#27-the-zones-rules-public-site-only";
 const linksTo = (html, url) => html.split(`href="${url}"`).length - 1;
-check("...the two lines about this browser, the service worker's and the core file's, link to operating 3.13 (opening the wiki offline), and nothing links to a tiddler named \"undefined\"",
-  setup1.lines.some(l => /^✓ .*service worker is in place.*\. \(operating 3\.13\)/.test(l)) && setup1.lines.some(l => /^✓ .*core file is kept.*\. \(operating 3\.13\)/.test(l)) && linksTo(setup1.html, OFFLINE_URL) === 2 && !/undefined/.test(setup1.tab),
-  setup1.lines.filter(l => /service worker|core file/.test(l)).join(" | "));
+check("...the two lines about this browser, the service worker's and the core file's, each with its subject (Opening offline:), none beginning with an ellipsis, link to operating 3.13 (opening the wiki offline), nothing links to a tiddler named \"undefined\", and the footer says the day, not the time alone",
+  setup1.lines.some(l => /^✓ Opening offline: a service worker is in place.*\. \(operating 3\.13\)/.test(l)) && setup1.lines.some(l => /^✓ Opening offline: the core file is kept on this device, so the wiki opens with no network.*\. \(operating 3\.13\)/.test(l)) && !setup1.lines.some(l => /^[✓✗–] \.\.\./.test(l)) && linksTo(setup1.html, OFFLINE_URL) === 2 && !/undefined/.test(setup1.tab) && /Checked at \d+(st|nd|rd|th) \w+ \d\d:\d\d\./.test(setup1.tab),
+  setup1.lines.filter(l => /service worker|core file/.test(l)).join(" | ") + " | " + (setup1.tab.match(/Checked at [^.]*\./) || ["no footer"])[0]);
 
 // The marks are elements with a class and a label a screen reader says as a word, the glyph first
 // with a space after it in the text, as the lines are read here and in the manual; the stylesheet
@@ -328,8 +327,8 @@ await online(contextA);
 await reload(A);
 await dropCore(A);
 const setupNoCore = await setupCheck(A);
-check("the core file gone from the cache: the setup check's line about it says so, with setup 2.7 (the CORS rule's path), and nothing links to \"undefined\"",
-  setupNoCore.done && setupNoCore.lines.some(l => /^✗ .*core file isn't kept.*check again\. \(setup 2\.7\)/.test(l)) && /<span (?=[^>]*class="cfworker-mark cfworker-mark-bad")(?=[^>]*aria-label="missing or wrong")[^>]*>✗<\/span> /.test(setupNoCore.html) && linksTo(setupNoCore.html, CORS_URL) >= 1 && !/undefined/.test(setupNoCore.tab),
+check("the core file gone from the cache: the setup check's line about it says so in the first visit's words, with operating 3.13 (not setup 2.7: a private wiki has no CORS rule), and nothing links to \"undefined\"",
+  setupNoCore.done && setupNoCore.lines.some(l => /^✗ Opening offline: the core file isn't kept on this device yet, so the wiki doesn't open with no network: the service worker takes its copy after a first visit\. To do: Reload the page once, online, then check again\. \(operating 3\.13\)/.test(l)) && /<br>\s*<strong>To do:<\/strong>/.test(setupNoCore.html) && !setupNoCore.lines.some(l => /core file isn't kept.*setup 2\.7/.test(l)) && /<span (?=[^>]*class="cfworker-mark cfworker-mark-bad")(?=[^>]*aria-label="missing or wrong")[^>]*>✗<\/span> /.test(setupNoCore.html) && linksTo(setupNoCore.html, OFFLINE_URL) >= 2 && !/undefined/.test(setupNoCore.tab),
   setupNoCore.lines.filter(l => /core file/.test(l)).join(" | ") || `done ${setupNoCore.done}`);
 await reload(A);   // (a reload: the page asks for the file conditionally, and the worker answers 304)
 const coreBack = await waitFor(() => holds(A, CORE), 10000);
@@ -396,10 +395,13 @@ check("the setup check on a public wiki: the public site answering with the page
   setupPublic.done && setupPublic.lines.some(l => /^✓ .*rewrite/i.test(l)) && setupPublic.lines.some(l => /^✓ .*\/recipes\//.test(l)) && setupPublic.lines.some(l => /^✓ .*\/_plugins\//.test(l)) && setupPublic.lines.some(l => /^✓ .*core file/.test(l)),
   setupPublic.lines.join(" | ") || `done ${setupPublic.done}`);
 corsOn = false;
+await dropCore(A);   // (the browser's core-file line names the CORS cause only when the file isn't kept)
 const setupNoCors = await setupCheck(A);
-check("...without the CORS header: the files line fails naming /_plugins/ and setup 2.7 (what nothing said before)", setupNoCors.done && setupNoCors.lines.some(l => /^✗ .*\/_plugins\/.*2\.7/.test(l)),
-  setupNoCors.lines.filter(l => /_plugins|recipes/.test(l)).join(" | ") || `done ${setupNoCors.done}`);
+check("...without the CORS header: the files line fails naming /_plugins/ and setup 2.7 (what nothing said before), and the browser's core-file line names that line, \"The CORS rule, files\", as the cause, with setup 2.7", setupNoCors.done && setupNoCors.lines.some(l => /^✗ .*\/_plugins\/.*2\.7/.test(l)) && setupNoCors.lines.some(l => /^✗ Opening offline: the core file isn't kept on this device, so the wiki doesn't open with no network: the CORS rule doesn't cover \/_plugins\/ \("The CORS rule, files", above\)\. To do: Fix the rule, reload once online, then check again\. \(setup 2\.7\)/.test(l)),
+  setupNoCors.lines.filter(l => /_plugins|recipes|core file/.test(l)).join(" | ") || `done ${setupNoCors.done}`);
 corsOn = true;
+await reload(A);   // (the core file back in the cache, as 6b showed, before the next scenario)
+await waitFor(() => holds(A, CORE), 10000);
 // Without the CORS header (the rule of setup 2.7 missing): a new file (a second plugin) loads and runs
 // as a plain script, and isn't kept. (A new file, because a file the browser already holds in memory
 // is served from there, a year's cache, without asking the service worker.)
@@ -494,10 +496,15 @@ check("...the files the service worker keeps, each with its size", /the page\) \
 check("...and not the service worker's own settings entry, which isn't a file", !/__cfworker/.test(onlineMeasure.text), onlineMeasure.text.replace(/^.*?files/, "files").slice(0, 300));
 check("...what the browser says: this site's use of what it allows, and that it hasn't promised to keep it", /uses \d+(\.\d+)? (B|KB|MB|GB) of (the )?\d+(\.\d+)? (KB|MB|GB)/.test(onlineMeasure.text) && /hasn't promised/.test(onlineMeasure.text),
   onlineMeasure.text.replace(/^.*?uses/, "uses").slice(0, 200));
+check("...and the measure's footer says the day, not the time alone", /Measured at \d+(st|nd|rd|th) \w+ \d\d:\d\d\./.test(onlineMeasure.text), (onlineMeasure.text.match(/Measured at [^.]*\./) || ["no footer"])[0]);
 // A tiddler the page itself carries (the site subtitle, saved on another device: the worker bakes
 // it into the page in full, so this tab never loads it and the copy never sees it) is counted apart
 await addTiddler(C, { title: "$:/SiteSubtitle", text: "set on another device" });
 await settle(C);
+// (C publishes the page the subtitle changed, after its pause: awaited here, or A's reload finds the
+// stored page behind the one it renders and publishes it itself, a /page/shell request the quiet
+// measure below would count)
+await waitFor(async () => { const obj = await site.bucket.get("_page/shell.html"); return !!obj && (await obj.text()).includes("set on another device"); }, 30000);
 await reload(A);
 await waitFor(async () => (await deviceCount(A)) >= (await listedCount()) - 1, 15000);   // the fill done (the subtitle is in the page, not the copy)
 const carriedMeasure = await measure(A);
@@ -507,12 +514,14 @@ check("...a tiddler the page carries (the site subtitle, set on another device) 
   carriedLine ? carriedLine[0] : carriedMeasure.text.slice(0, 200));
 mark = responses.length;
 const quietMeasure = await measure(A);
-check("...and asks the worker nothing", quietMeasure.done && got("A", mark, r => (r.url.startsWith(BASE) && !r.url.includes("/recipes/default/tiddlers.json")) || r.url.startsWith(PUB)).length === 0,
+// (The measure's own requests are what's counted: a page publish this tab owes for the other tab's
+// change, /page/shell, is the publisher's, timed by its own pause, and lands here at times under load)
+check("...and asks the worker nothing (the publisher's own page publish apart)", quietMeasure.done && got("A", mark, r => (r.url.startsWith(BASE) && !r.url.includes("/recipes/default/tiddlers.json") && !/\/page\/(shell|core)/.test(r.url)) || r.url.startsWith(PUB)).length === 0,
   got("A", mark, r => r.url.startsWith(BASE) || r.url.startsWith(PUB)).map(r => r.url.replace(BASE, "").replace(PUB, "pub:")).join(", "));
 await A.evaluate(() => $tw.rootWidget.dispatchEvent({ type: "tm-cfworker-device-keep" }));
 await waitFor(async () => /promise/i.test(await said(A)), 10000);
 check("the button asks the browser to keep the site's data (one call, on the click) and says what it answered: not promised, here",
-  (await A.evaluate(() => window.__persistCalls)) === 1 && /didn't promise|hasn't promised/.test(await said(A)) && (await storageSaid(A)) === "best-effort", `calls ${await A.evaluate(() => window.__persistCalls)}: ${await said(A)}`);
+  (await A.evaluate(() => window.__persistCalls)) === 1 && /didn't promise|hasn't promised/.test(await said(A)) && /Chrome: a site used often, installed or bookmarked; after some days of using the wiki, or once installed, ask again/.test(await said(A)) && /Firefox: your answer to its question/.test(await said(A)) && /Safari on an iPhone or iPad \(every browser there\): add the wiki to the Home Screen \(Share → Add to Home Screen\), which keeps its data; otherwise Safari may clear them after days without a visit/.test(await said(A)) && /operating 3\.16/.test(await said(A)) && !/Ask again later/.test(await said(A)) && (await storageSaid(A)) === "best-effort", `calls ${await A.evaluate(() => window.__persistCalls)}: ${await said(A)}`);
 await A.evaluate(() => { window.__persistAnswer = true; $tw.wiki.deleteTiddler("$:/temp/cfworker/device-message"); $tw.rootWidget.dispatchEvent({ type: "tm-cfworker-device-keep" }); });
 await waitFor(async () => /promise/i.test(await said(A)), 10000);
 await offline(contextA);

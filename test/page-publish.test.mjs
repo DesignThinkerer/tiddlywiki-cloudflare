@@ -33,8 +33,13 @@ const QUIET_WINDOW = 1500;
 const add = addTiddler;
 const status = p => p.evaluate(() => {
   const t = $tw.wiki.getTiddler("$:/temp/cfworker/page-publisher");
-  return t ? { state: t.fields.state, text: t.fields.text } : null;
+  return t ? { state: t.fields.state, text: t.fields.text, time: t.fields.time instanceof Date ? t.fields.time.toISOString() : t.fields.time } : null;
 });
+// The Cloudflare tab's "The page" section: what this tab last did with the page, and when (design 1.9)
+// (anchored on the section's own first words, since a check line can begin "The page has no Browser
+// TTL…"; text/plain joins a heading to the text after it with no space)
+const pageLine = p => p.evaluate(() => (($tw.wiki.renderTiddler("text/plain", "$:/temp/cfworker/ControlPanel").replace(/\s+/g, " ").match(/The page\s*((?:From this tab|Nothing published).*?)(?=\s*Backups to GitHub|$)/) || [])[1] || "").trim());
+const pageAlerts = p => p.evaluate(() => $tw.wiki.getTiddlersWithTag("$:/tags/Alert").map(t => $tw.wiki.getTiddler(t).fields).filter(f => f.component === "Published page").map(f => f.text));
 const shell = async () => { const obj = await bucket.get("_page/shell.html"); return obj ? obj.text() : ""; };
 const MARK = name => `<!--~~ ${name} ~~-->`;
 const after = (html, name) => {
@@ -433,6 +438,10 @@ await A.route(refuse, route => route.fulfill({ status: 500, body: "unavailable" 
 await A.evaluate(t => $tw.wiki.deleteTiddler(t), STALE);
 await settle(A);
 await waitFor(async () => (await status(A))?.state === "failed");
+// (A failure the next save retries: a notification, as before, and the tab's line; no alert)
+check("a publish failed with a 5xx: the tab's \"The page\" line says what this tab last did and when, the worker's answer in it, and no alert (the next save retries it)",
+  /^From this tab, \d+(st|nd|rd|th) \w+ \d\d:\d\d: Page not published: unavailable\. It will be tried again at the next save or reload\. \(operating 3\.5\)$/.test(await pageLine(A)) && (await pageAlerts(A)).length === 0 && !!(await status(A))?.time,
+  `${await pageLine(A)} | alerts ${JSON.stringify(await pageAlerts(A))}`);
 await A.unroute(refuse);
 const staleLeft = (await shell()).includes('<meta name="cfw-stale" content="1">');
 const contextF = await browser.newContext();
@@ -449,6 +458,7 @@ await contextF.close();
 await add(A, { title: "A note after the failure", text: "publishes again" });
 await settle(A);
 await waitFor(async () => (await status(A))?.state === "published");
+check("...published again: the tab's line says so, with the time", /^From this tab, \d+(st|nd|rd|th) \w+ \d\d:\d\d: Page published\. \(operating 3\.5\)$/.test(await pageLine(A)) && !!(await status(A))?.time, await pageLine(A));
 
 // A plugin that came with index.html, updated from the wiki (the plugin library replaces it this way).
 // The page carries it with revision "0", which the worker never gave: the save creates it on the
@@ -612,6 +622,11 @@ mark = requests.length;
 await add(A, { title: "$:/SiteSubtitle", text: "refused subtitle" });
 await settle(A);
 await waitFor(async () => (await status(A))?.state === "failed" && /refused for the test/.test((await status(A)).text));
+// A refusal needs the user's action and won't repeat: an alert, replaced rather than duplicated, not
+// a three-second notification; the tab's line says the same
+check("a page the worker refuses (400): one alert, \"Published page\", with the worker's reason, and the tab's line saying not published with that reason",
+  (await pageAlerts(A)).length === 1 && /Page not published: refused for the test\. It will be sent again once it changes, or at the next reload\./.test((await pageAlerts(A))[0]) && /^From this tab, .*: Page not published: refused for the test\./.test(await pageLine(A)),
+  `${JSON.stringify(await pageAlerts(A))} | ${await pageLine(A)}`);
 await add(A, { title: "Unrelated 1", text: "x" }); await settle(A); await sleep(QUIET_WINDOW);
 await add(A, { title: "Unrelated 2", text: "y" }); await settle(A); await sleep(QUIET_WINDOW);
 const afterRefusal = shellPuts("A", mark), listGets = count("A", "GET", "/recipes/default/tiddlers.json", mark);
@@ -622,6 +637,8 @@ check("...a change to the page is sent again", shellPuts("A", mark) === 2, `${sh
 await A.unroute(refusing);
 await add(A, { title: "$:/SiteSubtitle", text: "accepted again" }); await settle(A);
 await waitFor(async () => (await shell()).includes("accepted again"));
+await waitFor(async () => (await status(A))?.state === "published");
+check("...and the alert goes once a publish goes through, the tab's line saying published", (await pageAlerts(A)).length === 0 && /: Page published\./.test(await pageLine(A)), `${JSON.stringify(await pageAlerts(A))} | ${await pageLine(A)}`);
 // A core file the worker refuses isn't sent again at the next page changes either (no page can be
 // published without it), only after a reload. (A tab that has to send the core: the stored one
 // relabelled, and the page rebuilt so it says so.)

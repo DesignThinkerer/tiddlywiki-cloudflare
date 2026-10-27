@@ -45,6 +45,8 @@ node tools/release-notes.mjs | gh release create "v$(node -p "require('./package
 
 Nothing is built or uploaded: a wiki takes the release by syncing its copy of the repository (operating 3.1), as before.
 
+The block's shape, since the notes are e-mailed to whoever watches the repository's releases and read by someone deciding whether to sync today: the pull request that dates the block opens it with **What this asks of you:** and the asks by whom they concern (a fork, a wiki set up by hand, everyone), or "Nothing", gathered from the entries' own last clauses; a security fix's entry starts with **Security:**, so the e-mailed notes say it; test-only and docs-only entries close the block in a short list, so what changed for the wiki comes first.
+
 ## Where writing goes
 
 | Kind | Where |

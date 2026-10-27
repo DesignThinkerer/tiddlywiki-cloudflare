@@ -87,12 +87,51 @@ check("...that says backups are on, no full backup yet, with the button", (await
 // (The section sits in a <$list> widget: without a blank line after its opening tag, TiddlyWiki
 // parses it inline, and the heading showed as "!!! Full backup" in the text)
 const tabHtml = await A.evaluate(t => $tw.wiki.renderTiddler("text/html", t), TAB);
-check("...its Full backup heading rendered as a heading, its sentences as paragraphs", /<h3[^>]*>Full backup<\/h3>/.test(tabHtml) && !/!!!/.test(text) && /<p>A full backup makes GitHub mirror the wiki/.test(tabHtml),
+check("...its Full backup heading rendered as a heading, its sentences as paragraphs", /<h3[^>]*>Full backup<\/h3>/.test(tabHtml) && !/!!!/.test(text) && /<p>Makes GitHub match the wiki/.test(tabHtml),
   (tabHtml.match(/.{0,60}Full backup.{0,60}/) || [])[0]);
+// Each section leads with what the user acts on: the setup's one line then the button, with the cost
+// under it; the full backup's status, then the buttons, then the explanation; backups second, after
+// the setup check README step 8 sends a new user to, the worker and the engine after
+const at = s => text.indexOf(s);
+check("the tab's order: The setup, Backups to GitHub, The worker, The engine; the setup section one line then the button, the cost under the button; the full backup's status before its buttons, the explanation after; Refresh says what it refreshes",
+  at("The setup") >= 0 && at("The setup") < at("Backups to GitHub") && at("Backups to GitHub") < at("The worker") && at("The worker") < at("The engine") &&
+  /Looks at each piece set up by hand \(Access, the public site and its rules, backups and the queue, purges, this browser's offline copy\) and, for a missing one, says what to do \(operating 3\.15\)\./.test(text) && at("Looks at each piece") < at("Check the setup") && at("Check the setup") < at("Runs only when you click: the worker makes a few requests and purges the public site's status file to test the purge token.") &&
+  at("No full backup yet") < at("Back up everything to GitHub") && at("Back up everything to GitHub") < at("Refresh the status") && at("Refresh the status") < at("Makes GitHub match the wiki: commits what isn't there yet, removes what's gone. Run it once after setting backups up or after a restore; run again, it changes nothing. It goes on without this tab, at about 500 commits an hour (setup 2.4)."),
+  text.replace(/\s+/g, " ").slice(0, 700));
 await A.waitForFunction(t => $tw.wiki.tiddlerExists(t), HINT, { timeout: 10000 }).catch(() => {});
 const hint = await A.evaluate(t => { const x = $tw.wiki.getTiddler(t); return x ? { tags: x.fields.tags, text: x.fields.text } : null; }, HINT);
-check("backups on and no full backup ever: an alert says tiddlers saved before aren't on GitHub, and where the button is",
-  !!hint && (hint.tags || []).includes("$:/tags/Alert") && /full backup/.test(hint.text) && /Cloudflare/.test(hint.text), JSON.stringify(hint));
+check("backups on and no full backup ever, tiddlers listed: an alert says tiddlers saved before aren't on GitHub, with the button in it and its message under it, the Control Panel path as \"or later from\", and that a wiki whose first tiddler was saved with backups on is all there",
+  !!hint && (hint.tags || []).includes("$:/tags/Alert") && /full backup/.test(hint.text) && /<\$button message='tm-cfworker-backup-sync'>Back up everything to GitHub<\/\$button>/.test(hint.text) && /\{\{\$:\/temp\/cfworker\/backup-sync-message\}\}/.test(hint.text) && /or later from/.test(hint.text) && /Cloudflare/.test(hint.text) && /first tiddler was saved with backups on is all there/.test(hint.text), JSON.stringify(hint));
+// An empty wiki (the list the worker answers is "[]") has nothing saved before backups: no hint at
+// load, and that is remembered on this device, so the hint doesn't come back once the first saves,
+// all backed up, fill the list; the memory cleared, the hint is due as on any wiki with tiddlers
+// (A GitHub of its own, accepting every commit and keeping none: the suite's imitation is shared, and
+// this wiki's first save would count among the files the main wiki's full backup removes)
+const emptySite = await startSite({
+  index: readWikiFile(), publicStatus: true, queue: true,
+  bindings: { GITHUB_REPO: "o/r", GITHUB_TOKEN: "ghtoken", BACKUP_RETRY_SECONDS: "1" },
+  outbound: async req => req.url.startsWith("https://api.github.com/") ? (req.method === "PUT" ? json({ content: { sha: "e" } }, 201) : json({ message: "Not Found" }, 404)) : new Response('{"success":true}')
+});
+const E = await openTab(emptySite.base + "/", "E");
+await sleep(500);
+const emptyKey = () => E.evaluate(() => localStorage.getItem("cfworker-backup-hint-empty"));
+const noHintEmpty = !(await exists(E, HINT)) && (await emptyKey()) === "yes" && (await E.evaluate(() => $tw.syncadaptor.cfworkerListedTitles().length)) === 0;
+await E.evaluate(() => $tw.wiki.addTiddler({ title: "First note", text: "saved with backups on" }));
+await settle(E);
+await E.reload();
+await E.waitForFunction(() => window.$tw && $tw.syncer && $tw.syncer.timestampLastSyncFromServer);
+await settle(E);
+await sleep(500);
+const noHintRemembered = !(await exists(E, HINT)) && (await emptyKey()) === "yes" && (await E.evaluate(() => $tw.syncadaptor.cfworkerListedTitles().length)) === 1;
+await E.evaluate(() => localStorage.removeItem("cfworker-backup-hint-empty"));
+await E.reload();
+await E.waitForFunction(() => window.$tw && $tw.syncer && $tw.syncer.timestampLastSyncFromServer);
+await E.waitForFunction(t => $tw.wiki.tiddlerExists(t), HINT, { timeout: 10000 }).catch(() => {});
+const hintBack = await exists(E, HINT);
+check("an empty wiki (the list the worker answers is []): no hint at load, and that is remembered on the device (cfworker-backup-hint-empty); its first tiddler saved and the page reloaded, the list no longer empty, still no hint; the memory cleared, the hint is due",
+  noHintEmpty && noHintRemembered && hintBack, `empty ${noHintEmpty}, remembered ${noHintRemembered}, back ${hintBack}`);
+await E.close();
+await emptySite.close();
 // Closing the alert is remembered on the device: a reload doesn't bring it back
 // The module's own removal of the hint (backups reported off) isn't the user closing it: on again,
 // with no full backup still, the hint is back
@@ -323,7 +362,7 @@ await showTab(same.page);
 const sameSeen = await waitFor(async () => (await stateOf(same.page)) === "same", 10000);
 rText = await showTab(same.page);
 check("the newest release being this worker's version: the line says so, with when it was checked, and nothing more is asked",
-  sameSeen && same.asked().length === 1 && /This is the newest release/.test(rText) && /checked at \d\d:\d\d/.test(rText) && !/newer release is out/.test(rText), `${same.asked().length} requests: ${workerSection(rText)}`);
+  sameSeen && same.asked().length === 1 && /This is the newest release/.test(rText) && /checked at \d+(st|nd|rd|th) \w+ \d\d:\d\d/.test(rText) && !/newer release is out/.test(rText), `${same.asked().length} requests: ${workerSection(rText)}`);
 await same.ctx.close();
 
 // 5d. A release older than this worker: a copy synced past it

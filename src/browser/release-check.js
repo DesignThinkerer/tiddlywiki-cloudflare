@@ -25,7 +25,7 @@ var RELEASE = "$:/temp/cfworker/release",
 	API = "https://api.github.com/repos/DesignThinkerer/tiddlywiki-cloudflare/releases/latest",   // (the tests point the page at a stand-in before boot, $tw.cfworkerReleasesApi: test/browser-harness.mjs; nothing stored in a wiki can, as with the waits, design 2.25)
 	RELEASES = lib.REPO_URL + "/releases",
 	DAY = 24 * 60 * 60 * 1000,
-	CHECKED = "<$view tiddler='" + RELEASE + "' field='checked' format='date' template='0hh:0mm'/>",
+	CHECKED = "<$view tiddler='" + RELEASE + "' field='checked' format='date' template='DDth MMM 0hh:0mm'/>",   // (the day too: the line stays in the tab for the session)
 	asking = false;   // one request at a time, however often the tab is shown meanwhile
 
 // The worker's version, from the plugin's: package.json's date before the "+", the build hash after
