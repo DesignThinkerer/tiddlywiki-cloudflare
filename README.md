@@ -15,13 +15,13 @@ What the worker adds to a plain TiddlyWeb server:
 - **As few worker requests as it can:** a page load is 2 requests, tiddler contents come from the public site, and background tabs stop polling.
 - **Backups through a Cloudflare Queue:** one commit per save, retried through outages and rate limits, with an alert in the admin wiki if they keep failing.
 
-A new wiki starts by itself: the first time you open the admin site, the worker puts an empty TiddlyWiki in the bucket. To move an existing wiki in, drag its file onto the admin wiki.
+A new wiki starts by itself: the first time you open the admin site, the worker puts an empty TiddlyWiki in the bucket. To move an existing wiki in, drag or import its file into the admin wiki.
 
 **Private, or public.** Without a public site, the wiki is private: the admin site is the only one, behind Cloudflare Access, at the worker's own `workers.dev` address — no domain needed, and nothing in the bucket is reachable by anyone else; keep the backup repository private too ([setup 2.4](docs/setup.md#24-the-backup-repository-optional)). With a public site (the bucket's custom domain, the zone's rules for it and the worker's setting), every tiddler you save is readable there by anyone the moment it's saved (drafts are never saved, so they aren't): for a wiki you publish — a blog, documentation, notes you share. A private wiki can be made public later by adding those pieces, and everything written so far goes public with them ([operating 3.22](docs/operating.md#322-making-a-private-wiki-public)); nothing moves. The other way, it's the domain that comes off the bucket, not the setting ([3.23](docs/operating.md#323-making-a-public-wiki-private-or-changing-its-domain)).
 
 ## Quick start
 
-**What you need:** a Cloudflare account (the free plan is enough) and a GitHub account (the worker is deployed from your fork of this repository; the backup goes to a repository too). For a public site, also a domain added to that Cloudflare account (a zone, with Cloudflare's nameservers set at your registrar), which can take hours, so start it first; the public site is a hostname of it, and the admin site can stay at its `workers.dev` address ([setup 2.1](docs/setup.md#21-before-you-start)).
+**What you need:** a Cloudflare account (the free plan is enough: how big a wiki it holds, in measured numbers, opens [limits 5](docs/limits.md)) and a GitHub account (the worker is deployed from your fork of this repository; the backup goes to a repository too). For a public site, also a domain added to that Cloudflare account (a zone, with Cloudflare's nameservers set at your registrar), which can take hours, so start it first; the public site is a hostname of it, and the admin site can stay at its `workers.dev` address ([setup 2.1](docs/setup.md#21-before-you-start)).
 
 About ten minutes, in this order. The setup guide, [chapter 2](docs/setup.md), has each step in full, and the wiki's own setup check (the last step) says what to do about anything missing, with the section that has the full steps.
 
@@ -52,13 +52,13 @@ Seven chapters, numbered across the pages: a section number means the same thing
 
 1. [How it fits together](#1-how-it-fits-together): the pieces, and the names used throughout
 2. [Setting up](docs/setup.md): the bucket, the queue, the backup repository, the worker, Access, the zone's rules, the first visit
-3. [Operating it](docs/operating.md): updates, plugins, backups, logs, working offline, conflicts, the app, the settings, removing the wiki
+3. [Operating it](docs/operating.md): checking the setup, conflicts, editing and opening offline, the app; then updates, backups, plugins and the page, repairs, the plugin's tabs, going public or private, removing the wiki
 4. [Troubleshooting](docs/troubleshooting.md): symptoms, causes and fixes
 5. [Known limits](docs/limits.md): what you can hit, and what to do about it
 6. [Development and tests](docs/development.md): the build, the suites, the repository layout
 7. [Reference](docs/reference.md): the Cloudflare, GitHub and TiddlyWiki documents the design relies on
 
-How the worker works, and why it's built this way: [docs/design.md](docs/design.md). What each test suite covers: [docs/tests.md](docs/tests.md). Where it's going: [docs/roadmap.md](docs/roadmap.md).
+How the worker works, and why it's built this way: [docs/design.md](docs/design.md); the design notes from when plugin files were introduced, kept for the record: [docs/external-plugins.md](docs/external-plugins.md). What each test suite covers: [docs/tests.md](docs/tests.md). Where it's going: [docs/roadmap.md](docs/roadmap.md).
 
 ---
 
@@ -92,6 +92,8 @@ flowchart LR
 
 The names the manual, the admin wiki and the worker's messages use:
 
+### The names
+
 | Name | What it is |
 |---|---|
 | **The admin site**, the admin wiki | The worker's address, behind Cloudflare Access: TiddlyWiki as you edit it. |
@@ -104,10 +106,10 @@ The names the manual, the admin wiki and the worker's messages use:
 | **The tiddler list** | `recipes/default/tiddlers.json`: every tiddler's fields but the text, with its revision. |
 | **The device copy** | The tiddlers this browser has loaded, kept in its IndexedDB, so a reload fetches only what changed. |
 | **The outbox** | The changes made in this browser that the worker hasn't confirmed yet, kept on the device. |
-| **The plugin** | `$:/plugins/cfworker/admin`: the browser modules, put in every page by the worker, with a settings tab and a device tab. |
+| **The plugin,** *TiddlyWiki on Cloudflare* | `$:/plugins/cfworker/admin`: the browser modules, put in every page by the worker, with a readme, a settings tab and a device tab. Turning it off removes all of it ([operating 3.19](docs/operating.md#319-turning-the-plugin-off-and-checking-its-on)). |
 
 ---
 
 ## Contributing, security, licence
 
-Changes follow the process in [CONTRIBUTING.md](CONTRIBUTING.md): plan first, tests first, every suite, the docs in the same pull request. A vulnerability goes through [SECURITY.md](SECURITY.md), never an issue. The code is under the [MIT licence](LICENSE); TiddlyWiki, which the worker ships, is under the BSD licence ([THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)).
+A problem the manual doesn't cover: [report it](https://github.com/DesignThinkerer/tiddlywiki-cloudflare/issues/new/choose); the bug form asks for *Check the setup*'s lines and the version. Changes follow the process in [CONTRIBUTING.md](CONTRIBUTING.md): plan first, tests first, every suite, the docs in the same pull request. A vulnerability goes through [SECURITY.md](SECURITY.md), never an issue. The code is under the [MIT licence](LICENSE); TiddlyWiki, which the worker ships, is under the BSD licence ([THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)).

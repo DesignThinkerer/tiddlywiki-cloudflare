@@ -189,6 +189,21 @@ for (const f of walkFiles(path.join(ROOT, "src"))) {
   }
 }
 check(`every literal link into the docs in the sources (${literal}) names a page and a heading that exist`, literal >= 3 && badLiteral.length === 0, badLiteral.join(" | "));
+// Links to Cloudflare's dashboard and to GitHub's settings pages (design 2.20, #164): each one reference
+// 7 lists, in the form Cloudflare's documentation uses (?to=/:account…, which the dashboard resolves to
+// the account and zone the user picks), so a page that moves is fixed in one place
+// (GitHub's token form, prefilled, is a page of its own that setup 2.4 links, not a settings page: left out by the lookahead)
+const DASH_LINK = /https:\/\/dash\.cloudflare\.com[^\s)"'`<>\]]*|https:\/\/github\.com\/settings\/[a-z-]+(?![\w/?-])/g;
+const DEEP = /^https:\/\/dash\.cloudflare\.com\/(\?to=\/:account(\/:zone)?(\/[a-z0-9-]+)*|profile\/api-tokens|)$|^https:\/\/github\.com\/settings\/[a-z-]+$/;
+const listed = new Set(fs.readFileSync(path.join(ROOT, "docs/reference.md"), "utf8").match(DASH_LINK) || []);
+const badDash = [], badShape = [...listed].filter(u => !DEEP.test(u));
+let dashLinks = 0;
+for (const f of [...walkFiles(path.join(ROOT, "docs")), path.join(ROOT, "README.md"), ...walkFiles(path.join(ROOT, "src"))]) {
+  if (path.relative(ROOT, f) === "docs/reference.md") continue;
+  for (const m of fs.readFileSync(f, "utf8").matchAll(DASH_LINK)) { dashLinks++; if (!listed.has(m[0])) badDash.push(`${path.relative(ROOT, f)}: ${m[0]}`); }
+}
+check(`every link to Cloudflare's dashboard or GitHub's settings pages in the docs and the sources (${dashLinks}) is one reference 7 lists (${listed.size}), each in the documented deep-link form`,
+  dashLinks >= 20 && listed.size >= 8 && badDash.length === 0 && badShape.length === 0, [...badDash, ...badShape.map(u => `shape: ${u}`)].join(" | ") || `${dashLinks} links, ${listed.size} listed`);
 function walkFiles(dir) { return fs.readdirSync(dir, { withFileTypes: true }).flatMap(e => e.isDirectory() ? walkFiles(path.join(dir, e.name)) : /\.(js|mjs|txt|md|yml)$/.test(e.name) ? [path.join(dir, e.name)] : []); }
 
 // The runner (tools/run-suites.mjs): --parallel <n> runs that many suites at once; what isn't a
@@ -206,6 +221,13 @@ const parallelSummary = parallelRun.out.split("=== Summary ===")[1] || "";
 check("the runner takes --parallel <n> (not as a suite's name), runs every suite named, reports what isn't one, and exits 1",
   parallelRun.code === 1 && (parallelSummary.match(/no such suite/g) || []).length === 2 && !/--parallel|FAIL\s+2\b/.test(parallelSummary) && /2 of 2 suites failed/.test(parallelSummary),
   parallelSummary.trim().replace(/\s+/g, " ").slice(0, 200) || parallelRun.out.slice(-200));
+// A suite by its script's short name too (tabs, or test:tabs, for two-tabs: package.json's test:<name>
+// scripts, which docs/tests.md is organised by), and an unknown name listing the suites it knows,
+// by file name with the short names, so nobody builds everything to learn a name
+const shortNameRun = runner("--timeout", "1", "r2", "no-such-suite-c");
+check("the runner takes a script's short name for a suite (r2 for r2-ops) and, for an unknown name, lists the suites it knows, by file name with their short names",
+  /FAIL\s+r2-ops\b/.test(shortNameRun.out) && /Not a suite: no-such-suite-c/.test(shortNameRun.out) && /The suites, by file name/.test(shortNameRun.out) && /two-tabs \(tabs, test:tabs\)/.test(shortNameRun.out) && /\bbudget\b(?! \()/.test(shortNameRun.out),
+  shortNameRun.out.replace(/\s+/g, " ").slice(0, 300));
 const noParallel = runner("--parallel", "0", "cpu");
 check("...and refuses a parallel count under 1", noParallel.code === 2 && /parallel/.test(noParallel.out), `exit ${noParallel.code}: ${noParallel.out.slice(0, 120)}`);
 // --timeout <seconds>: a suite still running after that is stopped and counted as failed, so a

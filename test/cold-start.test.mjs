@@ -99,6 +99,11 @@ check("...the two lines about this browser, the service worker's and the core fi
 // The marks are elements with a class and a label a screen reader says as a word, the glyph first
 // with a space after it in the text, as the lines are read here and in the manual; the stylesheet
 // (the plugin's part, design 2.21) colours them, never as the only signal, and drops the bullets
+// A line's dashboard page, a second link after the section's (design 2.20, #164): on this private wiki,
+// the one line for the public site's pieces says where a domain left on the bucket is removed, R2
+check("...the private wiki's one line for the public site's pieces carries R2's page as a second link after the section's: Cloudflare's deep link, its text R2",
+  /\(setup 2\.1\) \(R2\)/.test(setup1.tab) && setup1.html.includes('href="https://dash.cloudflare.com/?to=/:account/r2/overview"') && setup1.html.indexOf('>setup 2.1</a>') < setup1.html.indexOf('r2/overview'),
+  (setup1.tab.match(/.{0,120}\(setup 2\.1\).{0,40}/) || ["no setup 2.1 line"])[0]);
 check("...each mark is a span with its class and a label (fine, not checked), the glyph first in the text, in a list the stylesheet styles",
   /<span (?=[^>]*class="cfworker-mark cfworker-mark-ok")(?=[^>]*aria-label="fine")[^>]*>✓<\/span> /.test(setup1.html) && /<span (?=[^>]*class="cfworker-mark cfworker-mark-none")(?=[^>]*aria-label="not checked")[^>]*>–<\/span> /.test(setup1.html) && /<ul[^>]*class="cfworker-setup-check"[^>]*>/.test(setup1.html) && setup1.lines.length >= 5 && setup1.lines.every(l => /^[✓✗–] \S/.test(l)),
   setup1.html.replace(/\s+/g, " ").slice(0, 400));

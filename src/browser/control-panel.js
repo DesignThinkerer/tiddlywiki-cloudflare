@@ -46,6 +46,8 @@ var TAB = "$:/temp/cfworker/ControlPanel",
 	CACHE = lib.SW_CACHE;   // the service worker's cache
 
 var TAB_TEXT = [
+	"This wiki saves each change to the worker as you make it. The saver tabs beside this one are TiddlyWiki's, for single-file wikis, and aren't used here; backups to GitHub are set in the worker's dashboard (" + lib.guide("setup","2.4") + ").",
+	"",
 	"!! The setup",
 	"",
 	"Looks at each piece set up by hand (Access, the public site and its rules, backups and the queue, purges, this browser's offline copy) and, for a missing one, says what to do (" + lib.guide("operating","3.15") + ").",
@@ -138,6 +140,8 @@ var TAB_TEXT = [
 	"",
 	"<$list filter='[[" + PAGE_STATUS + "]has[state]]' variable='known' emptyMessage='Nothing published from this tab since it loaded.'>From this tab, <$view tiddler='" + PAGE_STATUS + "' field='time' format='date' template='DDth MMM 0hh:0mm'/>: <$text text={{" + PAGE_STATUS + "!!text}}/> (" + lib.guide("operating","3.5") + ")</$list>",
 	"",
+	"The plugin's settings: <$link to='$:/plugins/cfworker/admin' tabIndex='settings'>its settings tab</$link>; what this browser keeps, and forgetting it: <$link to='$:/plugins/cfworker/admin'>its device tab</$link> (Control Panel → Plugins → TiddlyWiki on Cloudflare).",
+	"",
 ].join("\n");
 
 exports.startup = function() {
@@ -155,10 +159,14 @@ exports.startup = function() {
 	}
 	proto.cfworkerControlPanel = true;
 
+	// First of Saving's sub-tabs (list-before empty: an empty field survives new $tw.Tiddler), ahead of
+	// TiddlyWiki's saver tabs, which this wiki never uses; a link to the tiddler itself opens the tab's
+	// content in the story, which the backup hint and the manual use (design 1.13)
 	wiki.addTiddler(new $tw.Tiddler({
 		title: TAB,
 		caption: "Cloudflare",
 		tags: ["$:/tags/ControlPanel/Saving"],
+		"list-before": "",
 		text: TAB_TEXT
 	}));
 
@@ -313,12 +321,15 @@ exports.startup = function() {
 	// lines are read (the suites, troubleshooting)
 	// todo: the one thing to do, on its own line under what was found (the worker's own field, or the
 	// browser's lines' below), before the link, so the reader finds the verb (design 2.20)
-	function line(mark,text,guide,todo) {
+	// link: a second link after the section's, {text, url}: the page the line's action is on, the
+	// dashboard's or GitHub's (the worker's own field, design 2.20)
+	function line(mark,text,guide,todo,link) {
 		var kind = mark === "✓" ? "ok" : mark === "✗" ? "bad" : "none",
 			label = kind === "ok" ? "fine" : kind === "bad" ? "missing or wrong" : "not checked";
 		return "<li><span class='cfworker-mark cfworker-mark-" + kind + "' aria-label='" + label + "'>" + mark + "</span> <$text text=\"\"\"" + text + "\"\"\"/>" +
 			(todo ? " <br/>''To do:'' <$text text=\"\"\"" + todo + "\"\"\"/>" : "") +
-			(guide ? " ([[" + guide.text + "|" + guide.url + "]])" : "") + "</li>";
+			(guide ? " ([[" + guide.text + "|" + guide.url + "]])" : "") +
+			(link ? " ([[" + link.text + "|" + link.url + "]])" : "") + "</li>";
 	}
 	function mark(ok) {
 		return ok === true ? "✓" : ok === false ? "✗" : "–";
@@ -394,7 +405,8 @@ exports.startup = function() {
 						if(item.id === "cors-files") {
 							corsFiles = item.ok;
 						}
-						lines.push(line(mark(item.ok),String(item.text || ""),item.guide,item.todo ? String(item.todo) : null));
+						lines.push(line(mark(item.ok),String(item.text || ""),item.guide,item.todo ? String(item.todo) : null,
+							item.link && item.link.url && item.link.text ? item.link : null));
 					});
 					return done();
 				}

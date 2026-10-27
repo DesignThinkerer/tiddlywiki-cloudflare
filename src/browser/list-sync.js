@@ -117,7 +117,7 @@ exports.startup = function() {
 			return;
 		}
 		askedToRename[title] = true;
-		renameLogger.alert(lib.link(title) + " can't be saved: the server doesn't take a tiddler titled \".\" or \"..\", or a title over " +
+		renameLogger.alert(lib.link(title) + " can't be saved: the worker doesn't take a tiddler titled \".\" or \"..\", or a title over " +
 			lib.MAX_TITLE_BYTES + " bytes. Rename it to save it; until then it's kept on this device, unsent.");
 	}
 

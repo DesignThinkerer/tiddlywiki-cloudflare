@@ -16,7 +16,7 @@ Each with its reason and what enforces it. A change that crosses one needs the r
 
 ## How a change happens
 
-1. **Plan first, in the user's words:** the README paragraph the change would add (what the user will experience) and the list of tests, by name — in an issue, or at the top of a draft pull request. Wait for a yes before writing code. A plan that reads as implementation detail is a sign the goal isn't clear yet.
+1. **Plan first, in the user's words:** the README paragraph the change would add (what the user will experience) and the list of tests, by name — in an issue, or at the top of a draft pull request. Wait for a yes before writing code. A plan that reads as implementation detail is a sign the goal isn't clear yet. A typo, a broken link or a wording fix that changes no behaviour needs no plan and no test: open the pull request, say "docs only", and run `npm run test:repository` if you have a clone (it checks every link and section reference; CI's worker job runs it too).
 2. **Tests first, run red:** write them, run them, see them fail for the right reason. A test never seen failing may not test the goal.
 3. **Implement, then every suite** (below), then `npm run lint` and `npm run check:build` (`worker.js` is committed and must be what `src/` builds).
 4. **The docs in the same PR:** the why in design 2 (the alternatives considered, and why they lost), the how in the manual's page it concerns (setup, operating, troubleshooting, limits), the what in `CHANGELOG.md` (with what an update asks of a user: an "Unreleased" entry), the roadmap updated (a finished step leaves it); the README's screenshot regenerated (`npm run screenshot`) if what it shows changed. A behaviour change without its design entry isn't finished.

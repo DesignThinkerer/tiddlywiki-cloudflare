@@ -16,7 +16,8 @@
 // worker, the core file kept) in the tab, $:/cfworker/control-panel.js.
 //
 // Each line: { id, ok: true | false | null (nothing to check, or optional), text, guide: { section,
-// text ("setup 2.6"), url } }.
+// text ("setup 2.6"), url }, todo (the one thing to do, when there is one), link: { text, url } (a second
+// link after the text: the dashboard's page that thing is on, or GitHub's, when it's there: design 2.20) }.
 
 import { accessIdentity } from "./access.js";
 import { guide } from "./docs.js";
@@ -39,6 +40,19 @@ const uncheckedLine = id => `${PIECE[id]}: not checked, the public site didn't a
 const VARS = "in the worker's Variables and Secrets";
 // GitHub's page for a fine-grained token: its permissions and the repositories it may see
 const TOKENS = "Settings → Developer settings → Personal access tokens → Fine-grained tokens";
+// The dashboard's page a line's action is on, beside the guide's section: Cloudflare's deep links in
+// the form its documentation uses, which the dashboard resolves to the account (and zone) the user
+// picks, each listed in reference 7, where the repository suite reads them; the tab shows it as a
+// second link after the section's (design 2.20, #164)
+const DASH = {
+  workers: { text: "Workers & Pages", url: "https://dash.cloudflare.com/?to=/:account/workers-and-pages" },
+  r2: { text: "R2", url: "https://dash.cloudflare.com/?to=/:account/r2/overview" },
+  rules: { text: "Rules", url: "https://dash.cloudflare.com/?to=/:account/:zone/rules/overview" },
+  cacheRules: { text: "Cache Rules", url: "https://dash.cloudflare.com/?to=/:account/:zone/caching/cache-rules" },
+  zone: { text: "the domain's overview page", url: "https://dash.cloudflare.com/?to=/:account/:zone" },
+  tokens: { text: "API Tokens", url: "https://dash.cloudflare.com/profile/api-tokens" },
+  githubTokens: { text: "GitHub's tokens", url: "https://github.com/settings/personal-access-tokens" }
+};
 // What a wiki without backups lacks, said wherever they're called optional (the Cloudflare tab says the same)
 const HISTORY = "the wiki's only history: the bucket keeps the current version of each tiddler alone, and a deletion or an overwrite is final";
 // What Cloudflare's cache answered for a path a cache rule covers (DYNAMIC: none does)
@@ -48,22 +62,23 @@ export async function setupCheck(request, env, ctx, corsHeaders) {
   const origin = new URL(request.url).origin;
   const checks = [];
   // todo: the one thing to do, its own field beside the text, which the tab shows on its own line under
-  // what was found (design 2.20); a passing line has none, a dash's is optional
-  const add = (id, ok, text, section, todo) => checks.push({ id, ok, text, guide: guide("setup", section), ...(todo ? { todo } : {}) });
+  // what was found (design 2.20); a passing line has none, a dash's is optional. link: a second link
+  // after the text, { text, url }: the page that thing is on (the dashboard's, DASH, or GitHub's), when it's there
+  const add = (id, ok, text, section, todo, link) => checks.push({ id, ok, text, guide: guide("setup", section), ...(todo ? { todo } : {}), ...(link ? { link } : {}) });
 
   // (Whom Access let in is said; the policy itself can't be read without an account-level token,
   // which the worker mustn't hold: design 2.20)
   const who = ctx.access ? await accessIdentity(request, ctx) : null;
   add("access", true, ctx.access
     ? `Cloudflare Access protects the admin site: this request came through it${who ? `, logged in as ${who}` : ""}. The policy itself isn't checked: under Workers & Pages → the worker → the Access tab (or Zero Trust → Access → Applications → the application), it should allow you alone.`
-    : "Cloudflare Access is off for this local address (ACCESS = off, for tests and local runs only): a deployed worker refuses every request that didn't come through Access.", SECTION.access);
+    : "Cloudflare Access is off for this local address (ACCESS = off, for tests and local runs only): a deployed worker refuses every request that didn't come through Access.", SECTION.access, null, ctx.access ? DASH.workers : null);
 
   const site = publicSite(env);
   let pageCached = false;   // the public site's page found cached: what missing purge settings cost (checkPurges)
   if (site) {
     pageCached = await checkPublicSite(env, site, origin, add);
   } else {
-    add("public", null, PRIVATE_LINE, SECTION.private);
+    add("public", null, PRIVATE_LINE, SECTION.private, null, DASH.r2);
   }
   await checkBackups(env, site, add);
   add("queue", !!env.BACKUP_QUEUE, env.BACKUP_QUEUE
@@ -133,7 +148,7 @@ async function checkPublicSite(env, site, origin, add) {
   if (page.error || page.status >= 500) {
     const found = page.error ? `didn't answer (${page.error}): nothing answers at PUBLIC_WIKI_URL` : `answered ${page.status}: Cloudflare's edge, with no bucket behind the host yet`;
     add("public", false, `The public site at ${site} ${found}.`, SECTION.site,
-      `If you connected the domain to the bucket in the last few minutes, Cloudflare is still setting it up: check the setup again in a few minutes. Otherwise connect the domain to the bucket (R2 → the bucket → Settings → Custom Domains, which creates its DNS record and turns public access on for it), or correct PUBLIC_WIKI_URL, ${VARS}, now "${site}", to https:// and that domain, nothing after the hostname.`);
+      `If you connected the domain to the bucket in the last few minutes, Cloudflare is still setting it up: check the setup again in a few minutes. Otherwise connect the domain to the bucket (R2 → the bucket → Settings → Custom Domains, which creates its DNS record and turns public access on for it), or correct PUBLIC_WIKI_URL, ${VARS}, now "${site}", to https:// and that domain, nothing after the hostname.`, DASH.r2);
     for (const id of PUBLIC_IDS.slice(1)) add(id, null, uncheckedLine(id), SECTION.site);
     return false;
   }
@@ -148,12 +163,12 @@ async function checkPublicSite(env, site, origin, add) {
     // (The status file is a plain object no rule touches, written with the page at the first visit:
     // 404 there while the bound bucket has built the page means the domain is on another bucket)
     add("rewrite", false, `The public site at ${host} doesn't serve this worker's bucket: its /status answers 404 while the bucket bound as WIKI_BUCKET has built the page, so the domain is connected to another bucket (one made by hand under another name, say, the deploy having made the one wrangler.toml names).`, SECTION.site,
-      `Connect the domain to the worker's bucket (R2 → the bucket bucket_name names in wrangler.toml → Settings → Custom Domains, after removing it from the other), or set bucket_name in wrangler.toml to the bucket the domain is on and deploy again.`);
+      `Connect the domain to the worker's bucket (R2 → the bucket bucket_name names in wrangler.toml → Settings → Custom Domains, after removing it from the other), or set bucket_name in wrangler.toml to the bucket the domain is on and deploy again.`, DASH.r2);
   } else {
     const found = `answered ${page.status}, ${page.etag ? `ETag ${page.etag}` : "no ETag"}, ${page.lastModified ? `Last-Modified ${page.lastModified}` : "no Last-Modified"}`;
     const known = stored ? `the stored page's are "${bareEtag(stored.httpEtag)}" and ${stored.uploaded.toUTCString()}` : "the page isn't built yet";
     add("rewrite", false, `The public site's / doesn't serve the wiki page: the rewrite rule / → /baked.html is missing or wrong (${found}; ${known}).`, SECTION.rules,
-      `Add it under the domain, Rules → Transform Rules → Rewrite URL: when the host is ${host} and the path is /, rewrite the path to /baked.html.`);
+      `Add it under the domain, Rules → Transform Rules → Rewrite URL: when the host is ${host} and the path is /, rewrite the path to /baked.html.`, DASH.rules);
   }
   const allowed = r => !r.error && (r.allowOrigin === origin || r.allowOrigin === "*");
   const found = r => r.error ? `no answer: ${r.error}` : r.allowOrigin ? `Access-Control-Allow-Origin: ${r.allowOrigin}` : "no Access-Control-Allow-Origin header";
@@ -167,12 +182,12 @@ async function checkPublicSite(env, site, origin, add) {
     allowed(list) ? "The CORS rule lets the admin site read tiddlers from the public site (/recipes/)."
       : wrongValue(list) ? `The public site's tiddlers (/recipes/) can't be read from the admin site, ${origin}: ${valueToFix(list)}; tiddlers load through the worker meanwhile, a request each.`
       : `The public site's tiddlers (/recipes/) can't be read from the admin site, ${origin} (${found(list)}): the CORS rule is missing or doesn't cover /recipes/; tiddlers load through the worker meanwhile, a request each.`, SECTION.rules,
-    allowed(list) ? null : wrongValue(list) ? fixValue : addRule);
+    allowed(list) ? null : wrongValue(list) ? fixValue : addRule, allowed(list) ? null : DASH.rules);
   add("cors-files", allowed(core),
     allowed(core) ? "The CORS rule lets the admin site keep the core and plugin files for opening offline (/_plugins/)."
       : wrongValue(core) ? `The public site's core and plugin files (/_plugins/) can't be kept by the admin site, ${origin}: ${valueToFix(core)}; the wiki runs online as before, and doesn't open offline on a device that doesn't have them.`
       : `The public site's core and plugin files (/_plugins/) can't be kept by the admin site, ${origin} (${found(core)}): the CORS rule doesn't cover /_plugins/; the wiki runs online as before, and doesn't open offline on a device that doesn't have them.`, SECTION.rules,
-    allowed(core) ? null : wrongValue(core) ? fixValue : `Add the path to the rule's When, under the domain's Rules → Transform Rules → Modify Response Header: the host is ${host} and the path starts with /recipes/ or /_plugins/.`);
+    allowed(core) ? null : wrongValue(core) ? fixValue : `Add the path to the rule's When, under the domain's Rules → Transform Rules → Modify Response Header: the host is ${host} and the path starts with /recipes/ or /_plugins/.`, allowed(core) ? null : DASH.rules);
   const cached = r => !r.error && CACHED.includes(String(r.cache || "").toUpperCase());
   const say = r => r.error ? "no answer" : r.cache || "no CF-Cache-Status header";
   const all = cached(page) && cached(core) && cached(status);
@@ -184,7 +199,7 @@ async function checkPublicSite(env, site, origin, add) {
     `Cloudflare's cache answered for the page: ${say(page)}, the core file: ${say(core)}, the status file: ${say(status)}.` +
       (all ? "" : " DYNAMIC, or no header, means no cache rule covers it, and the public site goes to the bucket for it at every request.") +
       ttl.text, SECTION.rules,
-    [all ? "" : `To cache it (optional), add under the domain's Rules → Cache Rules: ${rules.join(", ")}.`, ttl.todo].filter(Boolean).join(" ") || null);
+    [all ? "" : `To cache it (optional), add under the domain's Rules → Cache Rules: ${rules.join(", ")}.`, ttl.todo].filter(Boolean).join(" ") || null, all && !ttl.todo ? null : DASH.cacheRules);
   return cached(page);
 }
 
@@ -239,13 +254,13 @@ async function checkBackups(env, site, add) {
   const repo = await ask("");
   if (repo.status === 401) {
     add("backups", false, `GitHub refuses the token for ${gh.repo} (401${repo.message ? `, ${repo.message}` : ""}): the GITHUB_TOKEN secret is wrong or has expired.`, SECTION.backups,
-      `On GitHub (${TOKENS}), regenerate it (it keeps its repository and permission) or make a new one as in setup 2.4 (Contents: read and write, this repository only; the guide's link opens GitHub's form filled in), then replace the GITHUB_TOKEN secret ${VARS}.`);
+      `On GitHub (${TOKENS}), regenerate it (it keeps its repository and permission) or make a new one as in setup 2.4 (Contents: read and write, this repository only; the guide's link opens GitHub's form filled in), then replace the GITHUB_TOKEN secret ${VARS}.`, DASH.githubTokens);
   } else if (repo.status === 404) {
     add("backups", false, `GitHub doesn't find ${gh.repo} with this token (404): the repository doesn't exist under that name, or the token isn't allowed to see it.`, SECTION.backups,
-      `Check GITHUB_REPO (owner/repo, as in the repository's address), then the token's Repository access on GitHub (${TOKENS}): it must name that repository.`);
+      `Check GITHUB_REPO (owner/repo, as in the repository's address), then the token's Repository access on GitHub (${TOKENS}): it must name that repository.`, DASH.githubTokens);
   } else if (repo.status !== 200) {
     add("backups", false, `GitHub answered ${repo.status || "nothing"} for ${gh.repo}${repo.message ? ` (${repo.message})` : ""}.`, SECTION.backups,
-      `Check the setup again in a moment: a rate limit, or no answer, passes by itself; an answer that stays is GitHub's reason, and the token's permissions (Contents: read and write) and Repository access, on GitHub under ${TOKENS}, are where to look.`);
+      `Check the setup again in a moment: a rate limit, or no answer, passes by itself; an answer that stays is GitHub's reason, and the token's permissions (Contents: read and write) and Repository access, on GitHub under ${TOKENS}, are where to look.`, DASH.githubTokens);
   } else {
     const branch = await ask(`/branches/${encodeURIComponent(gh.branch)}`);
     if (branch.status === 200 && repo.isPublic && !site) {
@@ -281,7 +296,7 @@ async function checkPurges(env, site, add, pageCached) {
     const cost = pageCached
       ? `and the cache rule "Cache public wiki" (setup 2.7) keeps the page for its Edge TTL, a day with the guide's setting, so a change made in the admin wiki reaches the public site when that runs out; with purges, at once.`
       : `so a change shows on the public site when its cached copy expires (optional).`;
-    add("purges", null, `No purges: ${missing}, ${cost}`, SECTION.worker, todo);
+    add("purges", null, `No purges: ${missing}, ${cost}`, SECTION.worker, todo, env.CF_API_TOKEN && !env.CF_ZONE_ID ? DASH.zone : DASH.tokens);
     return;
   }
   try {
@@ -296,7 +311,7 @@ async function checkPurges(env, site, add, pageCached) {
     } else {
       const message = body && Array.isArray(body.errors) && body.errors.length ? body.errors.map(e => e.message).join("; ") : "";
       add("purges", false, `Cloudflare refused the purge (${res.status}${message ? `: ${message}` : ""}): CF_API_TOKEN needs Zone → Cache Purge on the zone CF_ZONE_ID names.`, SECTION.worker,
-        `Check CF_ZONE_ID against the zone ID on the domain's overview page, and the token under My Profile → API Tokens (its permissions, its zone, whether it has expired or was revoked); a new token there, put in the CF_API_TOKEN secret, replaces it. Then purge the public hostname once (Caching → Configuration → Purge Cache → Custom Purge → Hostname, ${new URL(site).host}; operating 3.9): what changed while purges failed stays cached until its Edge TTL otherwise.`);
+        `Check CF_ZONE_ID against the zone ID on the domain's overview page, and the token under My Profile → API Tokens (its permissions, its zone, whether it has expired or was revoked); a new token there, put in the CF_API_TOKEN secret, replaces it. Then purge the public hostname once (Caching → Configuration → Purge Cache → Custom Purge → Hostname, ${new URL(site).host}; operating 3.9): what changed while purges failed stays cached until its Edge TTL otherwise.`, DASH.tokens);
     }
   } catch (e) {
     add("purges", false, `Cloudflare's API didn't answer the purge (${e && e.message ? e.message : e}): the request to api.cloudflare.com failed before any answer.`, SECTION.worker,

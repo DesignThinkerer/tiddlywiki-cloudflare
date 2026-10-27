@@ -22,6 +22,7 @@ import { fileURLToPath } from "node:url";
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const RESULTS = path.join(ROOT, "test-results");
 const DEFAULT_TIMEOUT = 900;   // seconds a suite may run
+import * as fsAll from "node:fs";
 const USAGE = "Usage: node tools/run-suites.mjs [--parallel <n>] [--timeout <seconds>] <suite>...   (test/<suite>.test.mjs; --parallel <n>: n suites at once, 1 by default; --timeout: seconds a suite may run, 900 by default)";
 
 const suites = [];
@@ -46,6 +47,23 @@ for (let i = 0; i < args.length; i++) {
 if (suites.length === 0) {
   console.error(USAGE);
   process.exit(2);
+}
+// A suite by its file name (test/<suite>.test.mjs), or by its script's short name: tabs, or
+// test:tabs, for two-tabs, from package.json's test:<name> scripts, which docs/tests.md is organised
+// by. An unknown name is reported as before (a FAIL row, exit 1), and the suites known are listed
+// once, by file name with their short names, so nobody builds everything to learn a name
+const scriptsKnown = JSON.parse(fsAll.readFileSync(path.join(ROOT, "package.json"), "utf8")).scripts || {};
+const shortNames = new Map();   // short name, and test:<short name> -> suite
+for (const [name, command] of Object.entries(scriptsKnown)) {
+  const short = /^test:([a-z0-9]+)$/.exec(name), file = /node test\/([a-z0-9-]+)\.test\.mjs$/.exec(command);
+  if (short && file) { shortNames.set(short[1], file[1]); shortNames.set(name, file[1]); }
+}
+const suitesKnown = fsAll.readdirSync(path.join(ROOT, "test")).filter(f => f.endsWith(".test.mjs")).map(f => f.slice(0, -".test.mjs".length)).sort();
+suites.splice(0, suites.length, ...suites.map(s => suitesKnown.includes(s) ? s : (shortNames.get(s) || s)));
+const notSuites = suites.filter(s => !suitesKnown.includes(s));
+if (notSuites.length) {
+  const shortOf = suite => [...shortNames].filter(([k, v]) => v === suite && !k.startsWith("test:") && k !== suite).map(([k]) => `${k}, test:${k}`);
+  console.error(`Not a suite: ${notSuites.join(", ")}.\nThe suites, by file name (test/<name>.test.mjs), with the script's short name where it differs:\n${suitesKnown.map(s => `  ${s}${shortOf(s).length ? ` (${shortOf(s).join("; ")})` : ""}`).join("\n")}`);
 }
 mkdirSync(RESULTS, { recursive: true });
 

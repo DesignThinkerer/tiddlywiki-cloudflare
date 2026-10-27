@@ -1,12 +1,12 @@
-<!-- The process is in CONTRIBUTING.md; this is its checklist. Strike what doesn't apply, and say why. -->
+<!-- The process is in CONTRIBUTING.md; this is its checklist. Strike what doesn't apply, and say why. A typo, a broken link or a wording fix that changes no behaviour needs no plan and no test: open the pull request, say "docs only", and run `npm run test:repository` if you have a clone (it checks every link and section reference; CI's worker job runs it too). -->
 
 ## What
 
-<!-- What the user will experience: the README paragraph this adds or changes, in its words. -->
+<!-- What the user will experience: the README paragraph this adds or changes, in its words; or, when no README paragraph changes (most fixes), what the user saw before and sees now, with the manual's section it concerns. -->
 
 ## Checks
 
-<!-- The tests, by name, and what each covers. Each was seen failing before the change. -->
+<!-- The tests, by name, and what each covers. Each was seen failing before the change. Then what was run on this head, with each suite's summary line, and what was looked at by hand (CONTRIBUTING, AI-assisted contributions). -->
 
 ## Before merging
 
