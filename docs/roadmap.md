@@ -16,7 +16,7 @@ A TiddlyWiki anyone hosts on Cloudflare's free plan in about ten minutes, from a
 
 Each step is one pull request, with its tests, its page in the manual, its design entry and its changelog line. "Done when" is written as behaviour, and becomes the list of tests when the step starts.
 
-The steps the goal needed are done. The last of them, a Deploy to Cloudflare button (2026-10-19, the day the repository went public), was taken out again on 2026-10-26: its copy wasn't a fork, so every update needed a script, and the fork with *Sync fork* is the one path ([design 2.30](design.md#230-the-deploy-to-cloudflare-button-three-files-the-variables-kept-out-of-them)). What comes next comes from use: an idea goes under Parked with its reason, or to an issue first. One step is scheduled, from use (2026-10-27):
+The steps the goal needed are done. The last of them, a Deploy to Cloudflare button (2026-10-19, the day the repository went public), was taken out again on 2026-10-26: its copy wasn't a fork, so every update needed a script, and the fork with *Sync fork* is the one path ([design 2.30](design.md#230-the-deploy-to-cloudflare-button-three-files-the-variables-kept-out-of-them)). What comes next comes from use: an idea goes under Parked with its reason, or to an issue first. Two steps are scheduled, from use (2026-10-27):
 
 ### 1. A reader's copy kept: persistent storage on the public site
 
@@ -28,6 +28,16 @@ The steps the goal needed are done. The last of them, a Deploy to Cloudflare but
 - A reader who got the promise keeps the page, the engine, the plugins and every tiddler the fill brought, through the browser's cleanups; without it, nothing changes from today.
 - No worker request, nothing per save or per load: the public site still costs none.
 - The manual: the readers' paragraph of [operating 3.13](operating.md#313-opening-the-wiki-offline) says how to keep the copy and what the answer means; the design entry says why a click and why the dropdown; the public-offline suite covers the item on the public site, its absence on the admin site, and the answer shown as the browser gives it.
+
+### 2. The setup check links the repositories, and the token form filled in
+
+**Why now:** asked while setting up a demo wiki (2026-10-27). *Check the setup* names the backup repository as text and links its commits only on the passing line; it never links the repository the worker is deployed from; and where it says to make a GitHub token, it links GitHub's token list, while the form already filled in (the name, the description, a year, *Contents: read and write*) is in [setup 2.4](setup.md#24-the-backup-repository-optional) alone.
+
+**Done when:**
+- Every backups line that names `GITHUB_REPO`, failing or passing, links the repository itself; the passing line keeps its link to the commits.
+- Every line that says to make a token links GitHub's form filled in, as setup 2.4's link, the owner of `GITHUB_REPO` filled in too when GitHub's form takes it (its parameters checked against GitHub's documentation first); the token list stays the link for regenerating one.
+- The check links the repository the worker was deployed from. Open question before starting: the worker doesn't know it at run time; Workers Builds gives the build the commit and the branch (to check: whether it gives the repository's name), which `npm run build` could bake in; without it, a setting, or the project's own repository with the release line's link ([design 2.32](design.md#232-the-update-available-line-github-asked-from-the-browser-when-the-tab-is-shown-no-button-no-setting)).
+- No new request: the links come from the settings and the build; the repository suite checks each new address is listed in reference 7, as the check's other links are.
 
 ## Parked
 
