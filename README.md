@@ -4,6 +4,8 @@
 
 Host your own [TiddlyWiki](https://tiddlywiki.com) on Cloudflare's free plan: a worker for editing, R2 for storage, a public read-only site served from the cache if you want one, and every save backed up to GitHub as its own commit.
 
+**See it running:** [wiki.theophile.dev](https://wiki.theophile.dev/) is the public site of a wiki deployed from this repository as it is, with nothing edited. Its admin site, `https://admin.wiki.theophile.dev`, is behind Cloudflare Access: a visitor gets the login page and no further, which is the point.
+
 - **The admin wiki,** at the worker's own address (`https://wiki-admin.<your subdomain>.workers.dev`, or a custom domain such as `admin.wiki.example.com`), is yours to edit, behind Cloudflare Access. A Cloudflare Worker speaks TiddlyWiki's own sync protocol (TiddlyWeb) and stores every tiddler in an R2 bucket.
 - **The public wiki,** `https://wiki.example.com`, if you want one, is the same bucket served directly through its custom domain and Cloudflare's cache: read-only, and no worker involved, so visitors cost no worker requests. Without it, the wiki is private.
 
