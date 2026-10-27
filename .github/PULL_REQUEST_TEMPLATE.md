@@ -1,4 +1,4 @@
-<!-- The process is in CONTRIBUTING.md; this is its checklist. Strike what doesn't apply, and say why. A typo, a broken link or a wording fix that changes no behaviour needs no plan and no test: open the pull request, say "docs only", and run `npm run test:repository` if you have a clone (it checks every link and section reference; CI's worker job runs it too). -->
+<!-- The process is in CONTRIBUTING.md; this is its checklist. Strike what doesn't apply, and say why. A typo, a broken link or a wording fix that changes no behaviour needs no plan and no test: open the pull request, say "docs only", and run `npm run test:repository` if you have a clone (it checks every link and section reference; for such a pull request CI runs that suite alone, the browser job skipped). -->
 
 ## What
 

@@ -3,7 +3,11 @@
 # Every suite runs to the end (tools/run-suites.mjs), and a job that fails, or is cancelled by its
 # timeout, uploads test-results/ — each suite's log and, for a browser suite that failed, the
 # requests its pages made and a Playwright trace of each browser context — so a failure on the
-# runner can be read rather than guessed at (development 6, design 2.24).
+# runner can be read rather than guessed at (development 6, design 2.24). A first job reads what the
+# run is about: for a change that touches the docs alone, the browser job is skipped and the worker
+# job runs the repository suite in place of its suites, a minute instead of twelve. The two checks
+# the ruleset on main requires keep their names: a job skipped by its condition reports success,
+# where a workflow skipped by a path filter would leave them waiting.
 name: CI
 
 on:
@@ -23,8 +27,35 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    name: What changed
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.files.outputs.code }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      # The files this run is about: a pull request's against its base, a push's against the commit
+      # before it. Anything outside the docs (docs/, the README, the changelog, CONTRIBUTING, AGENTS,
+      # CLAUDE) is code; a diff that can't be read (a first push) runs everything.
+      - id: files
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          code=true
+          if files=$(git diff --name-only "$BASE" HEAD 2>/dev/null) && [ -n "$files" ]; then
+            outside=$(printf '%s\n' "$files" | grep -cvE '^(docs/.*|README\.md|CHANGELOG\.md|CONTRIBUTING\.md|AGENTS\.md|CLAUDE\.md)$' || true)
+            [ "$outside" = 0 ] && code=false
+          fi
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          echo "code changed: $code"
+          printf '%s\n' "$files"
+
   worker:
     name: Worker tests
+    needs: changes
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -37,7 +68,12 @@ jobs:
       - run: npm run lint
       # worker.js is committed: it must be what src/ builds
       - run: npm run check:build
+      # The worker suites when code changed; for a change to the docs alone, the repository suite
+      # (every link and section reference), the one check such a change needs
       - run: npm run test:fast
+        if: needs.changes.outputs.code == 'true'
+      - run: npm run test:repository
+        if: needs.changes.outputs.code != 'true'
       - uses: actions/upload-artifact@v7
         if: failure() || cancelled()
         with:
@@ -48,6 +84,8 @@ jobs:
 
   browser:
     name: Browser tests
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
