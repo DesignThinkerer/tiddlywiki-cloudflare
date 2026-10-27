@@ -3,11 +3,11 @@ title: $:/cfworker/cold-start.js
 type: application/javascript
 module-type: startup
 
-On the admin site, registers the service worker the worker serves (/sw.js?v=<its version>, baked
-into the page as $:/cfworker/sw-url), so that after one visit online the wiki opens with no network
+Registers the service worker (/sw.js?v=<its version>, baked into the page as $:/cfworker/sw-url;
+served by the worker on the admin site, a file of the bucket on the public one, registered there
+with site=public), so that after one visit online the wiki opens with no network
 (design 1.11). Registered once per version: a page already controlled by that version asks the
-browser nothing (a register() call checks the script again, a request). The public site, read-only
-and served without the worker, registers nothing.
+browser nothing (a register() call checks the script again, a request).
 \*/
 (function(){
 
@@ -28,16 +28,21 @@ exports.startup = function() {
 	if(typeof window === "undefined" || typeof navigator !== "object" || !("serviceWorker" in navigator)) {
 		return;
 	}
-	if(!lib.onAdminSite(window.location.origin + "/")) {
-		return;
-	}
 	var url = ($tw.wiki.getTiddlerText(SW_URL,"") || "").trim();
 	if(!url) {
 		return;
 	}
+	// The same address on both sites: the worker serves the script on the admin site, the bucket on
+	// the public one (written with the page), where the script is told which site it serves, since it
+	// reads no tiddler (design 2.40). A public site whose worker hasn't rebuilt the page yet has no
+	// file: the registration fails, warned below, and the site works online as before.
 	var wanted;
 	try {
-		wanted = new URL(url,window.location.href).href;
+		var address = new URL(url,window.location.href);
+		if(!lib.onAdminSite(window.location.origin + "/")) {
+			address.searchParams.set("site","public");
+		}
+		wanted = address.href;
 	} catch(e) {
 		return;
 	}

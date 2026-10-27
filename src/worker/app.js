@@ -12,6 +12,7 @@ import { purgePublicCache } from "./cache.js";
 import { tiddlerKey } from "./tiddlers.js";
 
 export const MANIFEST_KEY = "manifest.webmanifest";
+export const SW_KEY = "sw.js";   // the public site's copy of the service worker, beside the manifest (design 2.40)
 export const APP_ICON_SIZES = [192, 512];
 const APP_DIR = "_app/";
 const THEME_COLOR = "#2d6a8f";
@@ -74,10 +75,9 @@ async function manifestJson(env, { embedIcons }) {
     type: "image/png",
     purpose: "any maskable"
   })));
-  // (The public site's copy says browser: without a service worker there, an installed app would open
-  // on the browser's "No internet" page offline, and Chrome offers no install for display: browser,
-  // while Add to Home screen still makes a shortcut that opens in a browser tab: design 2.19)
-  const manifest = { name, start_url: "/", scope: "/", display: embedIcons ? "standalone" : "browser", background_color: BACKGROUND_COLOR, theme_color: THEME_COLOR, icons };
+  // Both copies say standalone: the public site has the same service worker, from the bucket, so an
+  // installed public copy opens offline like the admin one (design 2.19, 2.40)
+  const manifest = { name, start_url: "/", scope: "/", display: "standalone", background_color: BACKGROUND_COLOR, theme_color: THEME_COLOR, icons };
   if (name.length <= SHORT_NAME_LIMIT) manifest.short_name = name;
   return JSON.stringify(manifest);
 }
@@ -104,13 +104,20 @@ export async function serveIcon(env, size, corsHeaders) {
 // With each page build: the public site's copy of the manifest, written when it's missing or the
 // page's source changed (the title lives in the published page), one look otherwise; the default
 // icons go in with the first manifest ever written, unless the owner has put some. Purged from the
-// public cache when written.
-export async function ensureAppFiles(env, ctx, pageSource) {
+// public cache when written. With it, for a wiki with a public site, the public site's copy of the
+// service worker (design 2.40): sw.js at the bucket root, the worker's own script, written when the
+// version the manifest's metadata remembers isn't the script's, so the one look covers both; the
+// page's address for it carries the version, so a new script is a new address, nothing to purge.
+export async function ensureAppFiles(env, ctx, pageSource, serviceWorker = null) {
   const source = `${pageSource.index}:${pageSource.fingerprint || ""}`;
   const written = [];
   try {
     const existing = await env.WIKI_BUCKET.head(MANIFEST_KEY);
-    if (existing && existing.customMetadata?.source === source) return;
+    const scriptCurrent = !serviceWorker || existing?.customMetadata?.sw === serviceWorker.version;
+    if (existing && existing.customMetadata?.source === source && scriptCurrent) return;
+    if (serviceWorker && !scriptCurrent) {
+      await env.WIKI_BUCKET.put(SW_KEY, serviceWorker.text, { httpMetadata: { contentType: "application/javascript; charset=utf-8", cacheControl: "public, max-age=86400" }, customMetadata: { v: serviceWorker.version } });
+    }
     if (!existing) {
       for (const size of APP_ICON_SIZES) {
         if (!await env.WIKI_BUCKET.head(iconKey(size))) {
@@ -118,7 +125,7 @@ export async function ensureAppFiles(env, ctx, pageSource) {
         }
       }
     }
-    await env.WIKI_BUCKET.put(MANIFEST_KEY, await manifestJson(env, { embedIcons: false }), { httpMetadata: { contentType: MANIFEST_TYPE, cacheControl: "public, max-age=86400" }, customMetadata: { source } });
+    await env.WIKI_BUCKET.put(MANIFEST_KEY, await manifestJson(env, { embedIcons: false }), { httpMetadata: { contentType: MANIFEST_TYPE, cacheControl: "public, max-age=86400" }, customMetadata: { source, ...(serviceWorker ? { sw: serviceWorker.version } : {}) } });
     written.push(`/${MANIFEST_KEY}`);
   } catch (e) {
     console.error("The app's files couldn't be written:", e.message);

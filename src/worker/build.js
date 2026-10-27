@@ -394,8 +394,11 @@ export async function rebakeHtml(env, ctx, list = null, source = null) {
       listVersion: String(listObject ? listObject.uploaded.getTime() : 0)
     });
     if (stored) ctx.waitUntil(purgePublicCache(env, PUBLIC_PAGE_PATHS.map(path => publicUrl(env, path))));
-    // The public site's manifest and icons, beside the page (finished even if the request ends first)
-    ctx.waitUntil(ensureAppFiles(env, ctx, pageSource));
+    // The public site's manifest and icons, and its copy of the service worker, beside the page
+    // (finished even if the request ends first)
+    // (the script for a wiki with a public site only: a private wiki's bucket, exposed by a domain left
+    // on it, gets none, and its page registers nothing there)
+    ctx.waitUntil(ensureAppFiles(env, ctx, pageSource, publicSite(env) ? { text: SERVICE_WORKER_SOURCE, version: swVersion() } : null));
     return { html, page: stored };
   } catch (err) {
     console.error("Failed to rebake HTML:", err);
