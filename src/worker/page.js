@@ -273,14 +273,16 @@ export async function publishShell(request, env, ctx, corsHeaders) {
   // Over the shell checked above, or none: two tabs sending at once can't both win
   const storedShell = await env.WIKI_BUCKET.put(SHELL_KEY, bytes, {
     httpMetadata: { contentType: "text/html; charset=utf-8" },
-    customMetadata: { index: index.etag, fingerprint },
+    // (the origin it was published from: the admin site's address, baked into the page for the public
+    // site's "Log in to edit", design 2.41; both admin hostnames are behind the one Access application)
+    customMetadata: { index: index.etag, fingerprint, adminOrigin: new URL(request.url).origin },
     onlyIf: kept ? { etagMatches: kept.etag } : new Headers({ "If-None-Match": "*" })
   });
   if (!storedShell) {
     const now = await env.WIKI_BUCKET.head(SHELL_KEY);
     return new Response("Another tab published the page at the same moment. It's sent again by itself, with that change.", { status: 409, headers: withShell({ ...corsHeaders, "Content-Type": "text/plain; charset=utf-8" }, now?.etag || "") });
   }
-  const rebuilt = await untilDone(ctx, rebakeHtml(env, ctx, null, { html: bytes, index: index.etag, fingerprint, core: version, shellVersion: storedShell.uploaded.getTime(), shell: storedShell.etag }));
+  const rebuilt = await untilDone(ctx, rebakeHtml(env, ctx, null, { html: bytes, index: index.etag, fingerprint, core: version, adminOrigin: new URL(request.url).origin, shellVersion: storedShell.uploaded.getTime(), shell: storedShell.etag }));
   if (rebuilt) return new Response(null, { status: 204, headers: withShell(corsHeaders, storedShell.etag) });
   // Kept, but the page couldn't be built now (see the logs): the next admin page load builds it
   ctx.waitUntil(markPageOutdated(env));

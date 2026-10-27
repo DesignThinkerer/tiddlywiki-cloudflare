@@ -80,6 +80,19 @@ check("the tiddler shown was read from the public site, the other not (the fill 
   (await text(P, "Note one")) === "the first note" && await skinny(P, "Note two") && requests.filter(r => r.tag === "P" && r.origin === "worker").length === 0,
   `one ${JSON.stringify(await text(P, "Note one"))}, two skinny ${await skinny(P, "Note two")}, worker requests ${requests.filter(r => r.tag === "P" && r.origin === "worker").map(r => r.path).join(", ") || "none"}`);
 
+// --- 2b. The cloud icon's dropdown on the public site (design 2.41): TiddlyWeb's Login, whose prompt led
+// nowhere, replaced by a link to the admin site; the override leaves nothing to send
+const LOGIN_ITEM = "$:/plugins/tiddlywiki/tiddlyweb/syncer-actions/login", OFFLINE_ITEM = "$:/temp/cfworker/public-offline";
+const render = (p, title, type = "text/html") => p.evaluate(([t, kind]) => $tw.wiki.renderTiddler(kind, t), [title, type]).catch(() => "?");
+const adminUrl = () => P.evaluate(() => $tw.wiki.getTiddlerText("$:/cfworker/admin-url")).catch(() => null);
+const loginHtml = await render(P, LOGIN_ITEM);
+check("the dropdown's Login item is a link to the admin site, Log in to edit, in a new tab, in place of TiddlyWeb's prompt that led nowhere; the page carries the admin address the shell was published from",
+  (await adminUrl()) === BASE + "/" && loginHtml.includes(`href="${BASE}/"`) && /Log in to edit/.test(loginHtml) && /target="_blank"/.test(loginHtml) && !/tm-login/.test(loginHtml) && !/>\s*Login\s*</.test(loginHtml),
+  `admin-url ${JSON.stringify(await adminUrl())}; ${loginHtml.replace(/\s+/g, " ").slice(0, 220)}`);
+check("...online, the dropdown says nothing of offline, and the override leaves nothing to send: not dirty, no PUT from the public page",
+  (await render(P, OFFLINE_ITEM, "text/plain")).trim() === "" && !(await P.evaluate(() => $tw.syncer.isDirty()).catch(() => true)) && !requests.some(r => r.tag === "P" && r.method === "PUT"),
+  `offline line ${JSON.stringify((await render(P, OFFLINE_ITEM, "text/plain")).trim().slice(0, 60))}, dirty ${await P.evaluate(() => $tw.syncer.isDirty()).catch(() => "?")}, PUTs ${requests.filter(r => r.tag === "P" && r.method === "PUT").length}`);
+
 // --- 3. No network: the page from the cache, the tiddler read from the device copy, the unread one empty
 await sleep(1500);   // (the device copy's write of the tiddler read lands behind the tab)
 await site.stopPublic();
@@ -93,6 +106,8 @@ check("...with the tiddler read there, from the device copy, and the one never r
   (await text(P, "Note one")) === "the first note" && await skinny(P, "Note two"),
   `one ${JSON.stringify(await text(P, "Note one"))}, two skinny ${await skinny(P, "Note two")}`);
 check("...the list from the cache, marked X-Served-From: cache for the list sync", listResponses(mark).some(r => r.served === "cache"), JSON.stringify(listResponses(mark).map(r => [r.status, r.served])));
+const offlineLine = (await render(P, OFFLINE_ITEM, "text/plain")).trim();
+check("...and the dropdown says offline, in the admin site's words: what this device has loaded is here", /^Offline: what this device has loaded is here/.test(offlineLine), JSON.stringify(offlineLine.slice(0, 120)));
 
 // --- 4. Online again: the kept page at once, the current one fetched behind it, the list from the network
 await contextP.setOffline(false);
@@ -107,6 +122,7 @@ check("online, the page shown is the kept one, at once, served by the service wo
   !!onlineResponse && onlineResponse.fromServiceWorker() && !onlineError && !(await shownRebuilt()), onlineError || `from the service worker ${onlineResponse?.fromServiceWorker()}, rebuilt shown ${await shownRebuilt()}`);
 const refreshed = await waitFor(async () => (await keptPage(P)).includes('name="cfworker-test"'), 15000);
 check("...the current page fetched behind it and kept for the next load", refreshed, `kept page carries the rebuilt mark: ${refreshed}`);
+check("...online again, the offline line is gone", (await render(P, OFFLINE_ITEM, "text/plain")).trim() === "", JSON.stringify((await render(P, OFFLINE_ITEM, "text/plain")).trim().slice(0, 80)));
 check("...the list fetched from the network meanwhile, not from the cache (no timed-out fast path for a page served stale)",
   listResponses(mark).some(r => r.status === 200 && r.served !== "cache") && !listResponses(mark).some(r => r.served === "cache"), JSON.stringify(listResponses(mark).map(r => [r.status, r.served])));
 const next = await reloadSafely(P);
