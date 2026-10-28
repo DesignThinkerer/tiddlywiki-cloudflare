@@ -46,8 +46,9 @@ const proxy = http.createServer((req, res) => {
     return res.end(JSON.stringify(valid ? { email: "someone@example.com" } : { err: "no app token set" }));
   }
   if (url.pathname === "/cdn-cgi/access/callback") {
+    // Back to a path of this site only: not another origin's, which "//host" and "/\host" are to a browser
     const back = url.searchParams.get("redirect_url") || "/";
-    res.writeHead(302, { "Set-Cookie": `CF_Authorization=${token}; Path=/; HttpOnly; SameSite=Lax`, Location: back.startsWith("/") ? back : "/" });
+    res.writeHead(302, { "Set-Cookie": `CF_Authorization=${token}; Path=/; HttpOnly; SameSite=Lax`, Location: /^\/(?![/\\])/.test(back) ? back : "/" });
     return res.end();
   }
   if (!valid) {
